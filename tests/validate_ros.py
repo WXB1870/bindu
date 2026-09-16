@@ -65,7 +65,7 @@ def scenario(root, output, case, strategy='planner', profile='wheel_sim', fault=
         for name in (() if launch else ('execution','perception','recorder','task')):
             log=(logs/(name+'.log')).open('w'); handles.append(log)
             cmd=['ros2','run','bindu_runtime',name,'--ros-args','-r','__ns:='+ns,
-                 '-p','profile:='+str(root/'src/bindu_runtime/config'/f'{profile}.json'),
+                 '-p','profile:='+str(root/'src/integration/bindu_runtime/config'/f'{profile}.json'),
                  '-p','run_id:='+run,'-p','output:='+str(output/'episodes')]
             processes[name]=subprocess.Popen(cmd,stdout=log,stderr=subprocess.STDOUT,start_new_session=True)
         action=ActionClient(node,FetchDrink,ns+'/tasks/fetch_drink')

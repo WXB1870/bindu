@@ -1,8 +1,8 @@
 <?xml version="1.0"?>
 <package format="3">
-  <name>bindu_vla</name>
+  <name>bindu_hardware</name>
   <version>0.1.0</version>
-  <description>Replaceable Bindu capability; currently a simulation fixture</description>
+  <description>Device adapters, command routing and feedback aggregation</description>
   <maintainer email="maintainer@example.invalid">Bindu team</maintainer>
   <license>Proprietary</license>
   <buildtool_depend>ament_python</buildtool_depend>

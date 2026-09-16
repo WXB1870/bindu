@@ -1,11 +1,10 @@
 <?xml version="1.0"?>
 <package format="3">
-  <name>bindu_vla</name>
+  <name>bindu_tasks</name>
   <version>0.1.0</version>
-  <description>Replaceable Bindu capability; currently a simulation fixture</description>
+  <description>Task workflows and task-owned scene facts</description>
   <maintainer email="maintainer@example.invalid">Bindu team</maintainer>
   <license>Proprietary</license>
   <buildtool_depend>ament_python</buildtool_depend>
-  <exec_depend>bindu_contracts</exec_depend>
   <export><build_type>ament_python</build_type></export>
 </package>

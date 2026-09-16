@@ -1,0 +1,23 @@
+"""Structural interfaces implemented by replaceable capability adapters."""
+from typing import Dict, Protocol, Tuple
+from .contracts import Feedback, JointPlan
+
+
+class GraspStrategy(Protocol):
+    async def plan(self, profile, group, start, target) -> JointPlan: ...
+
+
+class NavigationProvider(Protocol):
+    async def navigate(self, port, context, site: str) -> None: ...
+
+
+class ExecutionIO(Protocol):
+    """Bounded I/O consumed by execution; implementations live outside control."""
+    stop_failures: Tuple[str, ...]
+
+    @property
+    def last_feedback(self) -> Feedback: ...
+    def write_joints(self, target: Dict[str, float]) -> None: ...
+    def write_base(self, velocity: Tuple[float, float]) -> None: ...
+    def stop(self) -> None: ...
+    def read_feedback(self, now: float, dt: float) -> Feedback: ...

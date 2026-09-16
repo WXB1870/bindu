@@ -36,9 +36,14 @@
 ```text
 bindu/
 ├── src/
-│   ├── bindu_interfaces/       # 共享 msg / srv / action
-│   ├── bindu_core/             # 任务、执行、驱动、I/O和记录
-│   ├── bindu_runtime/          # ROS 2 节点与装配
+│   ├── shared/                # 跨模块的数据和接口
+│   │   ├── bindu_contracts/   # 无 ROS 的数据、profile、能力/设备端口
+│   │   └── bindu_interfaces/  # ROS msg / srv / action
+│   ├── tasks/bindu_tasks/     # 任务流程、任务持有的场景事实
+│   ├── control/bindu_execution/ # 控制权、时序、轨迹执行
+│   ├── hardware/bindu_hardware/ # drivers/ 与 robot_io/，不做规划/插值
+│   ├── data/bindu_recording/  # 异步记录，不等于完整训练数据管线
+│   ├── integration/bindu_runtime/ # ROS 节点、配置、launch 与装配
 │   └── capabilities/          # 实验室能力，各自独立目录
 │       ├── bindu_kinematics/   # FK/IK，预留目录
 │       ├── bindu_vla/          # 目前仅模拟动作块
@@ -54,7 +59,7 @@ bindu/
 └── README.md 等既有主文档     # 上下文与记录入口
 ```
 
-模块核心位置、替换接口与当前限制见[架构8.5.4](软件架构设计.md#854-当前代码组织与替换边界)。包内测试放在 `src/<package>/test/`；跨包测试只放 `tests/`。不为每个模块再建说明文档。四个已有能力目录是独立 ROS 2 Python 包；三个预留目录只有 `.gitkeep`，不会被 colcon 当作已实现包构建。
+模块核心位置、替换接口与当前限制见[架构8.5.4](软件架构设计.md#854-当前代码组织与替换边界)。包内测试放在对应包的 `test/`；跨包测试只放 `tests/`。不为每个模块再建说明文档。当前共11个可构建包。分类目录本身不是 ROS 包；`bindu_core` 已移除。四个已有能力目录是独立 ROS 2 Python 包；三个预留目录只有 `.gitkeep`，不会被 colcon 当作已实现包构建。
 
 在目标开发机执行（仅模拟）：
 
@@ -63,7 +68,6 @@ cd ~/bindu
 source /opt/ros/jazzy/setup.bash
 colcon build --base-paths src --symlink-install
 source install/setup.bash
-python3 -m unittest discover -s src/bindu_core/test -v
 python3 -m unittest discover -s tests -p 'test_*.py' -v
 python3 tests/validate_ros.py --output artifacts/manual-verification
 
@@ -71,6 +75,8 @@ python3 tests/validate_ros.py --output artifacts/manual-verification
 export ROS_DOMAIN_ID=116 ROS_LOCALHOST_ONLY=1
 ros2 launch bindu_runtime skeleton.launch.py
 ```
+
+本次重分类回归使用独立构建空间，避免旧安装掩盖遗漏：在只 source `/opt/ros/jazzy/setup.bash` 的新终端执行 `colcon --log-base log/reclassified build --base-paths src --build-base build/reclassified --install-base install/reclassified --symlink-install`，随后 source `install/reclassified/setup.bash`；测试命令相同，输出为 `artifacts/reclassified-verification`。旧工作区升级时不要混用两套 install 环境。
 
 另一个已 source 环境且使用相同 ROS 域的终端提交模拟任务：
 

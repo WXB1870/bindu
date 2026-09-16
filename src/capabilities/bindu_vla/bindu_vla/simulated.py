@@ -1,4 +1,4 @@
-from bindu_core.contracts import JointPlan
+from bindu_contracts.contracts import JointPlan
 
 
 class ChunkStrategy:

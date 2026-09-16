@@ -6,6 +6,6 @@
   <maintainer email="maintainer@example.invalid">Bindu team</maintainer>
   <license>Proprietary</license>
   <buildtool_depend>ament_python</buildtool_depend>
-  <exec_depend>bindu_core</exec_depend>
+  <exec_depend>bindu_contracts</exec_depend>
   <export><build_type>ament_python</build_type></export>
 </package>
