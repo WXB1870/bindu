@@ -46,7 +46,7 @@ bindu/
 │   ├── integration/bindu_runtime/ # ROS 节点、配置、launch 与装配
 │   └── capabilities/          # 实验室能力，各自独立目录
 │       ├── bindu_kinematics/   # FK/IK，预留目录
-│       ├── bindu_vla/          # 目前仅模拟动作块
+│       ├── bindu_vla/          # 远端客户端位置，目前仅模拟动作块
 │       ├── bindu_perception/   # 目前仅模拟物体定位
 │       ├── bindu_navigation/   # 目前仅模拟移动
 │       ├── bindu_planning/     # 目前仅模拟关节轨迹
