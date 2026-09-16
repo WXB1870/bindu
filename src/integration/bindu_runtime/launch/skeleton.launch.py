@@ -3,6 +3,7 @@ from pathlib import Path
 import uuid
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
+from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 from ament_index_python.packages import get_package_share_directory
@@ -11,6 +12,8 @@ from bindu_runtime.device_assembly import DEFAULT_DRIVERS
 
 def generate_launch_description():
     defaults = {
+        'pi_enabled': 'false',
+        'pi_config': str(Path(get_package_share_directory('bindu_runtime'))/'config/pi_loopback.json'),
         'profile': str(Path(get_package_share_directory('bindu_runtime'))/'config/wheel_sim.json'),
         'run_id': uuid.uuid4().hex,
         'namespace': 'bindu_sim',
@@ -34,4 +37,7 @@ def generate_launch_description():
             package=LaunchConfiguration('perception_package') if name=='perception' else 'bindu_runtime',
             executable=LaunchConfiguration('perception_executable') if name=='perception' else name,
             name=name, namespace=LaunchConfiguration('namespace'), parameters=[parameters], output='screen'))
+    nodes.append(Node(package='bindu_runtime', executable='pi_client', name='pi_client',
+                      namespace=LaunchConfiguration('namespace'), condition=IfCondition(LaunchConfiguration('pi_enabled')),
+                      parameters=[{**common, 'pi_config': LaunchConfiguration('pi_config')}], output='screen'))
     return LaunchDescription(args+nodes)

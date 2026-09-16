@@ -2,10 +2,12 @@
 <package format="3">
   <name>bindu_vla</name>
   <version>0.1.0</version>
-  <description>Replaceable Bindu capability; currently a simulation fixture</description>
+  <description>Pi remote ZMQ client and simulation fixtures</description>
   <maintainer email="maintainer@example.invalid">Bindu team</maintainer>
   <license>Proprietary</license>
   <buildtool_depend>ament_python</buildtool_depend>
   <exec_depend>bindu_contracts</exec_depend>
+  <exec_depend>python3-numpy</exec_depend>
+  <exec_depend>python3-zmq</exec_depend>
   <export><build_type>ament_python</build_type></export>
 </package>

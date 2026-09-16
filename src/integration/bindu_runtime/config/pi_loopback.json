@@ -1,0 +1,20 @@
+{
+  "mode": "pubsub",
+  "state_bind": "tcp://127.0.0.1:15555",
+  "command_connect": "tcp://127.0.0.1:15556",
+  "state_topic": "niic/pi/state",
+  "command_topic": "4090/pi/command",
+  "request_topic": "niic/pi/state/request",
+  "state_rate_hz": 20.0,
+  "command_max_age": 0.2,
+  "observation_max_age": 0.3,
+  "max_sync_skew": 0.05,
+  "command_timeout": 1.0,
+  "require_correlation": false,
+  "joint_map": {
+    "arm_joint_1": "left_joint_1",
+    "arm_joint_2": "left_joint_2",
+    "finger_1": "left_finger_1",
+    "finger_2": "left_finger_2"
+  }
+}

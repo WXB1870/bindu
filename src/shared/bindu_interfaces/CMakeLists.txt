@@ -17,6 +17,8 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/ControlExecution.srv"
   "srv/LocateObject.srv"
   "srv/InjectFault.srv"
+  "msg/PiObservation.msg"
+  "action/PiSession.action"
   "action/FetchDrink.action"
   DEPENDENCIES builtin_interfaces geometry_msgs trajectory_msgs sensor_msgs)
 ament_export_dependencies(rosidl_default_runtime)

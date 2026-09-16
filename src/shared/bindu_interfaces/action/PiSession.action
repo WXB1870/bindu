@@ -1,0 +1,14 @@
+# Bounded streaming session for one named group; not a grasp-success action.
+string task_id
+string prompt
+string resource_group
+float64 duration
+---
+bool success
+string code
+uint64 accepted_commands
+bool simulated
+---
+string session_id
+uint64 accepted_commands
+uint64 dropped_commands

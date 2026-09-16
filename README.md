@@ -46,7 +46,7 @@ bindu/
 │   ├── integration/bindu_runtime/ # ROS 节点、配置、launch 与装配
 │   └── capabilities/          # 实验室能力，各自独立目录
 │       ├── bindu_kinematics/   # FK/IK，预留目录
-│       ├── bindu_vla/          # 远端客户端位置，目前仅模拟动作块
+│       ├── bindu_vla/          # Pi ZMQ 客户端与模拟动作块；ACT 暂不接入
 │       ├── bindu_perception/   # 目前仅模拟物体定位
 │       ├── bindu_navigation/   # 目前仅模拟移动
 │       ├── bindu_planning/     # 目前仅模拟关节轨迹
@@ -85,5 +85,35 @@ ros2 action send_goal /bindu_sim/tasks/fetch_drink bindu_interfaces/action/Fetch
 ```
 
 `strategy` 可选 `planner` / `chunk`；成功后当前模拟场景保持持物事实，新的独立实验重新启动并使用新 run_id。不要把该状态当成真实灵巧手持续保持会话。构建时显式使用 `--base-paths src`，避免扫描历史目录中的旧 ROS 工程。复现测试会自建隔离命名空间、启动并关闭其自身模拟进程，不调用机器人 SDK。
+
+### Pi 客户端运行入口
+
+本地只运行客户端；源码为 `src/capabilities/bindu_vla/bindu_vla/pi/`，ROS 适配为 `integration/bindu_runtime/bindu_runtime/pi_node.py`。配置示例 `src/integration/bindu_runtime/config/pi_loopback.json` 仅用于回环测试，实际端点与关节映射须按当前机器人和 Pi 服务填写。ACT 不在本批范围。
+
+ROS 环境需 `python3-numpy`、`python3-zmq`。本轮开发机使用系统 NumPy 1.26.4 与项目隔离目录内 pyzmq 26.4.0；复现该环境：
+
+```bash
+cd ~/bindu
+source /opt/ros/jazzy/setup.bash
+python3 -m pip install --target artifacts/pi-deps pyzmq==26.4.0
+colcon --log-base log/pi build --base-paths src --build-base build/pi --install-base install/pi --symlink-install
+source install/pi/setup.bash
+export PYTHONPATH="$PWD/artifacts/pi-deps:$PYTHONPATH"
+python3 -m unittest discover -s tests -p 'test_*.py' -v
+python3 tests/validate_pi.py --output artifacts/pi-final
+python3 tests/validate_ros.py --output artifacts/pi-regression
+```
+
+`validate_pi.py` 自建回环模拟 Pi 服务、三路合成 RGB/关节观测和模拟设备，自动收尾。它不加载模型、不连接旧配置里的服务器、不调用机器人 SDK。配置和结果保存在指定输出目录。
+
+手工启动仍使用骨架入口：
+
+```bash
+ros2 launch bindu_runtime skeleton.launch.py pi_enabled:=true
+ros2 action send_goal /bindu_sim/vla/pi/session bindu_interfaces/action/PiSession \
+  "{task_id: pi_demo, prompt: 'pick water', resource_group: arm, duration: 5.0}" --feedback
+```
+
+手工会话还需要相同 ROS 域内的 `vla/pi/observation` 输入和匹配配置的 Pi 服务；缺少新鲜观测时拒绝启动。`mode=pubsub` 为机器人 PUB 观测＋SUB 动作；`mode=pull` 为机器人 REP 回复观测请求＋SUB 动作。`duration` 结束表示本次控制会话停止，不代表抓取成功。默认仍使用模拟设备；真实机器人尚未接入。字段、时序和兼容限制见[架构8.5.4](软件架构设计.md#854-当前代码组织与替换边界)。
 
 版本管理以本目录为根、主分支为 `main`。[AGENTS.md](AGENTS.md) 随仓库维护，父目录仅保留指向它的本地链接。历史源码/ZIP、过程附件和 artifacts 不入库；文档中这些本地证据链接需在原工作区查看，测试产物可按上述命令重新生成。早期 Galbot 参考资料仍在仓库外。
