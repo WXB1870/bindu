@@ -1,0 +1,17 @@
+builtin_interfaces/Time stamp
+builtin_interfaces/Time feedback_stamp
+string instance_id
+string profile_hash
+string command_id
+string task_id
+string state
+string code
+sensor_msgs/JointState joints
+sensor_msgs/JointState reference
+float64 base_x
+float64 base_yaw
+geometry_msgs/Twist base_velocity
+bool simulated
+string[] feedback_sources
+builtin_interfaces/Time[] source_stamps
+string[] stop_failures

@@ -1,0 +1,12 @@
+uint32 schema_version
+string request_id
+string task_id
+string object_id
+---
+bool found
+string code
+string request_id
+string observation_id
+string object_id
+geometry_msgs/PoseStamped pose
+bool simulated

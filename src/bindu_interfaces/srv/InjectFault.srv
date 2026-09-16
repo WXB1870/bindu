@@ -1,0 +1,5 @@
+string fault
+float64 value
+---
+bool ok
+string code

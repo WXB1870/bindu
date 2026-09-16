@@ -1,0 +1,37 @@
+"""Composition root: select trusted capability providers without editing task flow."""
+from pathlib import Path
+import uuid
+from launch import LaunchDescription
+from launch.actions import DeclareLaunchArgument
+from launch.substitutions import LaunchConfiguration
+from launch_ros.actions import Node
+from ament_index_python.packages import get_package_share_directory
+from bindu_runtime.device_assembly import DEFAULT_DRIVERS
+
+
+def generate_launch_description():
+    defaults = {
+        'profile': str(Path(get_package_share_directory('bindu_runtime'))/'config/wheel_sim.json'),
+        'run_id': uuid.uuid4().hex,
+        'namespace': 'bindu_sim',
+        'output': '/tmp/bindu-runs',
+        'planner_provider': 'bindu_planning.simulated:PlannerStrategy',
+        'chunk_provider': 'bindu_vla.simulated:ChunkStrategy',
+        'navigation_provider': 'bindu_navigation.simulated:SimNavigation',
+        **DEFAULT_DRIVERS,
+        'perception_provider': 'bindu_perception.simulated:SimObjectLocator',
+        'perception_package': 'bindu_runtime',
+        'perception_executable': 'perception',
+    }
+    args = [DeclareLaunchArgument(key, default_value=value) for key, value in defaults.items()]
+    common = {key: LaunchConfiguration(key) for key in ('profile', 'run_id')}
+    extra = {'execution': tuple(DEFAULT_DRIVERS), 'recorder': ('output',),
+             'task': ('planner_provider', 'chunk_provider', 'navigation_provider'), 'perception': ('perception_provider',)}
+    nodes = []
+    for name, keys in extra.items():
+        parameters = {**common, **{key: LaunchConfiguration(key) for key in keys}}
+        nodes.append(Node(
+            package=LaunchConfiguration('perception_package') if name=='perception' else 'bindu_runtime',
+            executable=LaunchConfiguration('perception_executable') if name=='perception' else name,
+            name=name, namespace=LaunchConfiguration('namespace'), parameters=[parameters], output='screen'))
+    return LaunchDescription(args+nodes)

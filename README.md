@@ -15,7 +15,7 @@
 | 候选选型、官方依据、P0–P6 与验收 | [一期建设计划](一期建设计划与开源选型.md) |
 | 取舍与被替代建议 | [决策记录](决策记录.md) |
 
-其他文档只链接主定义。修改规则先改主文档，再检查图示；历史记录追加，不拿旧建议覆盖当前版本。具体协作与文件增长规则见 [AGENTS](../AGENTS.md)：优先原地更新，默认每项任务不新增 Markdown。
+其他文档只链接主定义。修改规则先改主文档，再检查图示；历史记录追加，不拿旧建议覆盖当前版本。具体协作与文件增长规则见 [AGENTS](AGENTS.md)：优先原地更新，默认每项任务不新增 Markdown。
 
 ## 图示与来源
 
@@ -36,9 +36,17 @@
 ```text
 bindu/
 ├── src/
-│   ├── bindu_interfaces/      # ROS 2 msg / srv / action
-│   ├── bindu_core/            # 无 ROS 依赖的任务、策略、执行与后端核心
-│   └── bindu_runtime/         # ROS 2 节点、launch/、config/
+│   ├── bindu_interfaces/       # 共享 msg / srv / action
+│   ├── bindu_core/             # 任务、执行、驱动、I/O和记录
+│   ├── bindu_runtime/          # ROS 2 节点与装配
+│   └── capabilities/          # 实验室能力，各自独立目录
+│       ├── bindu_kinematics/   # FK/IK，预留目录
+│       ├── bindu_vla/          # 目前仅模拟动作块
+│       ├── bindu_perception/   # 目前仅模拟物体定位
+│       ├── bindu_navigation/   # 目前仅模拟移动
+│       ├── bindu_planning/     # 目前仅模拟关节轨迹
+│       ├── bindu_interaction/  # 语音/文本任务入口，预留目录
+│       └── bindu_teleoperation/# VR/遥操作，预留目录
 ├── tests/                    # 跨进程集成与故障测试
 ├── artifacts/                # 构建日志、验证结果与模拟 episode，忽略入库
 ├── build/ install/ log/      # 目标机 colcon 生成，忽略入库
@@ -46,7 +54,7 @@ bindu/
 └── README.md 等既有主文档     # 上下文与记录入口
 ```
 
-模块核心位置、替换接口与当前限制见[架构8.5.4](软件架构设计.md#854-当前代码组织与替换边界)。包内测试放在 `src/<package>/test/`；跨包测试只放 `tests/`。不为每个模块再建说明文档。
+模块核心位置、替换接口与当前限制见[架构8.5.4](软件架构设计.md#854-当前代码组织与替换边界)。包内测试放在 `src/<package>/test/`；跨包测试只放 `tests/`。不为每个模块再建说明文档。四个已有能力目录是独立 ROS 2 Python 包；三个预留目录只有 `.gitkeep`，不会被 colcon 当作已实现包构建。
 
 在目标开发机执行（仅模拟）：
 
@@ -56,6 +64,7 @@ source /opt/ros/jazzy/setup.bash
 colcon build --base-paths src --symlink-install
 source install/setup.bash
 python3 -m unittest discover -s src/bindu_core/test -v
+python3 -m unittest discover -s tests -p 'test_*.py' -v
 python3 tests/validate_ros.py --output artifacts/manual-verification
 
 # 交互启动，保持在单机测试域
@@ -70,3 +79,5 @@ ros2 action send_goal /bindu_sim/tasks/fetch_drink bindu_interfaces/action/Fetch
 ```
 
 `strategy` 可选 `planner` / `chunk`；成功后当前模拟场景保持持物事实，新的独立实验重新启动并使用新 run_id。不要把该状态当成真实灵巧手持续保持会话。构建时显式使用 `--base-paths src`，避免扫描历史目录中的旧 ROS 工程。复现测试会自建隔离命名空间、启动并关闭其自身模拟进程，不调用机器人 SDK。
+
+版本管理以本目录为根、主分支为 `main`。[AGENTS.md](AGENTS.md) 随仓库维护，父目录仅保留指向它的本地链接。历史源码/ZIP、过程附件和 artifacts 不入库；文档中这些本地证据链接需在原工作区查看，测试产物可按上述命令重新生成。早期 Galbot 参考资料仍在仓库外。

@@ -1,0 +1,4 @@
+bindu_interfaces/MotionCommand command
+---
+bool accepted
+string code

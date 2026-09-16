@@ -1,0 +1,25 @@
+build/
+install/
+log/
+artifacts/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+.DS_Store
+
+# Local reference assets and historical experiment attachments
+/历史代码/
+/代码参考包/*
+!/代码参考包/*.md
+/过程记录/附件/
+
+# Machine-local credentials/configuration
+.env
+.env.*
+!.env.example
+.ssh/
+*.pem
+*.key
+id_rsa
+id_ed25519

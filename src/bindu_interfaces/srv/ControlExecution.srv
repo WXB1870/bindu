@@ -1,0 +1,6 @@
+string operation
+string lease_id
+uint64 epoch
+---
+bool ok
+string code

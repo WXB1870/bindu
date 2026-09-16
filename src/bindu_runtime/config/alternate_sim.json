@@ -1,0 +1,47 @@
+{
+  "name": "alternate_sim",
+  "groups": {
+    "arm": [
+      "alternative_axis_1",
+      "alternative_axis_2",
+      "alternative_axis_3"
+    ],
+    "hand": [
+      "dex_axis_1",
+      "dex_axis_2",
+      "dex_axis_3"
+    ]
+  },
+  "limits": {
+    "alternative_axis_1": [
+      -1.0,
+      1.0
+    ],
+    "alternative_axis_2": [
+      -1.0,
+      1.0
+    ],
+    "alternative_axis_3": [
+      -1.0,
+      1.0
+    ],
+    "dex_axis_1": [
+      -1.0,
+      1.0
+    ],
+    "dex_axis_2": [
+      -1.0,
+      1.0
+    ],
+    "dex_axis_3": [
+      -1.0,
+      1.0
+    ]
+  },
+  "max_speed": 1.5,
+  "capabilities": [
+    "joint_position",
+    "base_velocity",
+    "simulated_grasp"
+  ]
+}

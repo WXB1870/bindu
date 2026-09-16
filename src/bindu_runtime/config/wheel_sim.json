@@ -1,0 +1,37 @@
+{
+  "name": "wheel_sim",
+  "groups": {
+    "arm": [
+      "arm_joint_1",
+      "arm_joint_2"
+    ],
+    "hand": [
+      "finger_1",
+      "finger_2"
+    ]
+  },
+  "limits": {
+    "arm_joint_1": [
+      -1.0,
+      1.0
+    ],
+    "arm_joint_2": [
+      -1.0,
+      1.0
+    ],
+    "finger_1": [
+      -1.0,
+      1.0
+    ],
+    "finger_2": [
+      -1.0,
+      1.0
+    ]
+  },
+  "max_speed": 1.5,
+  "capabilities": [
+    "joint_position",
+    "base_velocity",
+    "simulated_grasp"
+  ]
+}

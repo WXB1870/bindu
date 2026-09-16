@@ -1,0 +1,10 @@
+string task_id
+string object_id
+string strategy
+---
+bool success
+bool simulated
+string code
+string held_object
+---
+string stage

@@ -1,0 +1,9 @@
+builtin_interfaces/Time stamp
+string run_id
+string task_id
+string command_id
+string observation_id
+string component
+string state
+string code
+bool simulated
