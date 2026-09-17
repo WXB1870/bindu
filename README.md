@@ -187,6 +187,21 @@ python3 tools/compare_interpolators.py --legacy-root 历史代码/legs_necks_con
 
 当前 Python 方案优先满足整段约束和停止语义，离线正弦测试的跟随误差高于历史 C++ 内核；不能把“共用执行层”视为已完成 VR 跟手调优或真机实时验收。
 
+低延迟优化候选位于 [experimental/adaptive_stream.cpp](src/control/bindu_execution/experimental/adaptive_stream.cpp)。它复用历史自适应内核的 jerk 建议计算，加入精确积分、整段限位与可制动检查、静止目标末段收敛、有效期内分段停止及异常时钟锁存。历史原件保持只读。候选只接受单轴位置目标，不接收目标速度/加速度，不负责动作块时间轴或控制权；尚未编入 ROS，现有运行后端不变。若后续采用，应接入共享执行层，避免在 VR/VLA 各加一套平滑器。
+
+2026-09-17 本地 macOS ARM64 / Apple Clang 21 的同限幅对照（q ±1 rad、v 1.5 rad/s、a 20 rad/s²、jerk 400 rad/s³）中，候选消除了静止边界目标最后一秒的位置波动（旧版约 0.000764 rad），峰值由 1.000440 rad 收敛到 1 rad，断流后参考速度可归零。正弦 RMS 由旧版 0.097335 rad 变为 0.099219 rad（增加 1.9%；当前 Python 为 0.196798 rad），小幅往返 RMS 增加 6.1%。合成 6/14/9/11 ms 时间戳下按实际间隔积分，位置差商导出的速度/加速度/jerk 保持限幅。8 组对照中候选单轴计算 p99 为 0.67–5.00 µs，比旧 C++ 有额外开销；这不是 Orin、多轴或硬实时保证，代码仍有动态分配。
+
+独立测试无需 ROS 或历史源码，包含非法输入、静止/边界、取消/过期、积分一致性、125 个制动初态和 8 组限幅下 34,408 个随机流采样。6 组测试及 AddressSanitizer/UndefinedBehaviorSanitizer 检查通过；本轮未重跑 ROS/VR/Pi 集成，也未连接头显或真机。上面的对照工具同时输出旧 C++、候选 C++ 与 Python 三组结果。
+
+```bash
+mkdir -p artifacts/adaptive-test
+c++ -std=c++17 -O2 -Wall -Wextra -pedantic \
+  -I src/control/bindu_execution/experimental \
+  src/control/bindu_execution/experimental/adaptive_stream.cpp \
+  tests/test_adaptive_stream.cpp -o artifacts/adaptive-test/test_adaptive_stream
+artifacts/adaptive-test/test_adaptive_stream
+```
+
 ## 开发与文档
 
 - [软件架构](软件架构设计.md)：模块职责、替换接口与实现边界。
