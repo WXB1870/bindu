@@ -15,6 +15,7 @@ import uuid
 import traceback
 import rclpy
 from rclpy.action import ActionClient
+from std_srvs.srv import Trigger
 from sensor_msgs.msg import Image
 from bindu_interfaces.action import PiSession
 from bindu_interfaces.msg import PiObservation, ExecutionState, RecorderHealth, MotionCommand, RuntimeEvent
@@ -28,7 +29,7 @@ def free_port():
         return sock.getsockname()[1]
 
 
-def run_case(root,output,name,mode='pubsub',fault='',correlate=False,launch=False):
+def run_case(root,output,name,mode='pubsub',fault='',correlate=False,launch=False,startup=False):
     run=name+'_'+uuid.uuid4().hex[:8]; namespace='/bindu_pi_'+uuid.uuid4().hex[:8]
     folder=output/run;folder.mkdir(parents=True)
     cfg=json.loads((root/'src/integration/bindu_runtime/config/pi_loopback.json').read_text())
@@ -36,7 +37,7 @@ def run_case(root,output,name,mode='pubsub',fault='',correlate=False,launch=Fals
     config=folder/'config.json';config.write_text(json.dumps(cfg))
     handles=[]; processes={}; node=rclpy.create_node('pi_verifier_'+uuid.uuid4().hex[:8])
     seen={'state':None,'health':None,'accepted':[],'events':[],'observations':0}
-    publish_enabled=[True]
+    publish_enabled=[not startup]
     def start(key,command):
         log=(folder/(key+'.log')).open('w');handles.append(log)
         processes[key]=subprocess.Popen(command,stdout=log,stderr=subprocess.STDOUT,start_new_session=True)
@@ -68,7 +69,22 @@ def run_case(root,output,name,mode='pubsub',fault='',correlate=False,launch=Fals
         client=ActionClient(node,PiSession,namespace+'/vla/pi/session')
         assert client.wait_for_server(timeout_sec=12),'no Pi action server'
         until(node,lambda:seen['state'] and seen['health'] and seen['health'].ready)
-        until(node,lambda:seen['observations']>4)
+        readiness=node.create_client(Trigger,namespace+'/vla/pi/ready')
+        assert readiness.wait_for_service(timeout_sec=5)
+        if startup:
+            # Holding input back makes the startup race deterministic: a visible
+            # Action server is not proof that its observation consumer is ready.
+            rejected=wait(node,client.send_goal_async(PiSession.Goal(task_id=run+'_early',prompt='pick water',resource_group='arm',duration=2.)))
+            assert not rejected.accepted
+            until(node,lambda:any(e.state=='PI_GOAL_REJECTED' for e in seen['events']))
+            publish_enabled[0]=True
+        deadline=time.monotonic()+5
+        ready_reply=None
+        while time.monotonic()<deadline:
+            ready_reply=wait(node,readiness.call_async(Trigger.Request()))
+            if ready_reply.success:break
+            rclpy.spin_once(node,timeout_sec=.02)
+        assert ready_reply and ready_reply.success,ready_reply
         goal=wait(node,client.send_goal_async(PiSession.Goal(task_id=run,prompt='pick water',resource_group='arm',duration=2.)))
         assert goal.accepted,'Pi goal rejected'
         future=goal.get_result_async()
@@ -135,7 +151,8 @@ def main():
     (output/'environment.json').write_text(json.dumps({'platform':platform.platform(),'python':sys.version,'ros_distro':os.environ.get('ROS_DISTRO'),
         'pyzmq':zmq.__version__,'numpy':numpy.__version__,'source_sha256':inputs},indent=2))
     cases=[('pubsub_legacy',{}),('pull_legacy',{'mode':'pull'}),('pubsub_correlated',{'correlate':True}),
-           ('pull_correlated',{'mode':'pull','correlate':True}),('pi_launch',{'launch':True})]
+           ('pull_correlated',{'mode':'pull','correlate':True}),('pi_launch',{'launch':True}),
+           ('startup_readiness',{'startup':True})]
     cases += [(fault,{'fault':fault,'correlate':fault=='wrong_session'}) for fault in
               ('cancel','disconnect','stale','missing','wrong_session','malformed','stale_observation','recorder_loss')]
     if args.case:cases=[item for item in cases if item[0] in args.case]

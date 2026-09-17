@@ -14,6 +14,7 @@ from ament_index_python.packages import get_package_share_directory
 from rclpy.action import ActionServer, GoalResponse, CancelResponse
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.task import Future
+from std_srvs.srv import Trigger
 from bindu_interfaces.action import PiSession
 from bindu_interfaces.msg import ExecutionState, RecorderHealth, PiObservation, MotionCommand
 from bindu_interfaces.srv import Lease, SubmitMotion
@@ -36,6 +37,7 @@ class PiNode(RuntimeNode):
         self.create_subscription(ExecutionState, 'execution/state', self.on_state, 1)
         self.create_subscription(RecorderHealth, 'recorder/health', self.on_health, 5)
         self.create_subscription(PiObservation, 'vla/pi/observation', self.on_observation, 1)
+        self.create_service(Trigger, 'vla/pi/ready', self.ready)
         self.server = ActionServer(self, PiSession, 'vla/pi/session', execute_callback=self.execute,
                                    goal_callback=self.goal, cancel_callback=lambda _: CancelResponse.ACCEPT,
                                    callback_group=self.group)
@@ -78,15 +80,31 @@ class PiNode(RuntimeNode):
                 not 0 <= self.now()-seconds(self.state.feedback_stamp) < .3):
             raise RuntimeError('FEEDBACK_STALE')
 
-    def goal(self, request):
+    def readiness_error(self):
         try:
             self.check()
-            self.snapshot('readiness', request.prompt)
-        except (RuntimeError, ValueError):
-            return GoalResponse.REJECT
-        if (self.busy or not request.task_id or request.resource_group not in self.profile.groups or
-                not math.isfinite(request.duration) or not 0 < request.duration <= 60 or
-                not self.lease_client.service_is_ready() or not self.submit_client.service_is_ready()):
+            self.snapshot('readiness', '')
+        except (RuntimeError, ValueError) as exc:
+            return str(exc)
+        if self.busy:
+            return 'PI_BUSY'
+        if not self.lease_client.service_is_ready() or not self.submit_client.service_is_ready():
+            return 'PI_EXECUTION_NOT_READY'
+        return ''
+
+    def ready(self, request, response):
+        reason = self.readiness_error()
+        response.success, response.message = not bool(reason), reason or 'PI_READY'
+        return response
+
+    def goal(self, request):
+        reason = self.readiness_error()
+        if (not request.task_id or request.resource_group not in self.profile.groups or
+                not math.isfinite(request.duration) or not 0 < request.duration <= 60):
+            reason = 'PI_INVALID_GOAL'
+        if reason:
+            self.event('PI_GOAL_REJECTED', reason, request.task_id)
+            self.get_logger().warning('Pi goal rejected: ' + reason)
             return GoalResponse.REJECT
         self.busy = True
         return GoalResponse.ACCEPT
