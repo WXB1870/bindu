@@ -1,10 +1,10 @@
 #pragma once
-// Experimental position-only stream kernel. Not installed in the ROS runtime.
+// Scalar position-stream primitive used by the shared native reference engine.
 // The proposal math in adaptive_stream.cpp derives from the read-only historical
 // legs_necks_control adaptive_interpolator; validation and integration are new.
 #include <vector>
 
-namespace bindu::experimental {
+namespace bindu::execution {
 struct State { double q=0., v=0., a=0., j=0.; };
 struct Limits {
     double lower=-1., upper=1., velocity=1.5, acceleration=20., jerk=400.;
@@ -12,6 +12,16 @@ struct Limits {
     double capture_acceleration=5., capture_wait=.03, capture_horizon=.4;
 };
 struct Phase { State initial; double duration=0., jerk=0.; };
+// Exact polynomial pieces of the last step, including capture and braking
+// boundaries. The group sampler uses these, never refits sampled positions.
+struct Piece {
+    State initial, final;
+    double duration=0.;
+    // Empty controls: exact constant jerk stored in initial.j. Otherwise use
+    // the original capture polynomial and time interval, without refitting.
+    std::vector<double> controls;
+    double source_duration=0.,source_elapsed=0.;
+};
 struct Brake {
     std::vector<Phase> phases;
     State final;
@@ -37,10 +47,15 @@ public:
     }
     bool faulted() const { return fault_; }
     unsigned guarded_steps() const { return guarded_; }
+    const std::vector<Piece>& pieces() const { return pieces_; }
     static bool brake(const Limits&, State, Brake&);
+    static bool valid_phase(const Limits&, const Phase&);
 private:
     bool advance(double dt);
     bool capture();
+    void record_brake(const Brake&, double elapsed, double duration);
+    void record_cubic(State initial, State final, double duration, double jerk);
+    std::vector<Piece> pieces_;
     Limits limits_;
     State state_;
     Brake safe_brake_;
@@ -50,4 +65,4 @@ private:
     std::vector<double> controls_;
     unsigned guarded_=0;
 };
-}  // namespace bindu::experimental
+}  // namespace bindu::execution

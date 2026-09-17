@@ -7,7 +7,7 @@ import unittest
 from dataclasses import replace
 from bindu_contracts.contracts import Motion
 from bindu_contracts.profile import Profile
-from bindu_execution.interpolation import Curve, State, fit_target, fit_stop
+from bindu_execution.interpolation import Curve, State, fit_target, fit_stop, fit_online
 from bindu_execution.executor import Executor, Rejected
 from bindu_hardware.drivers.simulated_joints import SimJointDriver
 from bindu_hardware.drivers.simulated_base import SimBaseDriver
@@ -132,6 +132,31 @@ class Interpolation(unittest.TestCase):
         self.assertFalse(self.e.lease_id)
         self.assertFalse(self.e.io.reference_positions)
 
+    def test_expiry_brakes_at_deadline_inside_tick(self):
+        self.e.submit(replace(self.m,valid_for=.235),10.)
+        self.tick_to(10.23)
+        expected=fit_stop(self.p,('a',),self.e.path.sample(10.235),10.235).sample(10.24)
+        self.e.tick(10.24)
+        self.assertIsNotNone(self.e.stopping)
+        for wanted,actual in zip((expected.q,expected.v,expected.a),
+                                 (self.e.reference.q,self.e.reference.v,self.e.reference.a)):
+            self.assertAlmostEqual(wanted[0],actual[0],places=9)
+
+    def test_overrun_precedes_expired_lease_sampling(self):
+        self.e.submit(self.m,10.)
+        self.tick_to(10.1)
+        self.e.tick(16.)
+        self.assertEqual(self.e.results['first'].code,'EXECUTION_OVERRUN')
+        self.assertIsNone(self.e.path)
+
+    def test_native_reference_failure_revokes_during_cancel(self):
+        self.e.profile=replace(self.p,max_transition_duration=.02)
+        self.e.submit(self.m,10.)
+        self.e.halt(10.05)
+        self.assertFalse(self.e.lease_id)
+        self.assertEqual(self.e.results['first'].state,'FAILED')
+        self.assertIn('REFERENCE_GENERATION_FAILED',self.e.results['first'].code)
+
     def test_invalid_replacement_is_transactional(self):
         self.e.submit(self.m,10.)
         self.tick_to(10.1)
@@ -152,6 +177,31 @@ class Interpolation(unittest.TestCase):
             self.assertEqual(self.e.path.sample(t).q,old.sample(t).q)
         self.tick_to(10.15)
         self.assert_bounded(self.e.reference)
+
+    def test_native_future_preview_matches_actual_handoff_derivatives(self):
+        self.e.submit(self.m,10.)
+        self.tick_to(10.1)
+        old=self.e.path
+        expected=old.sample(10.14)
+        self.e.submit(replace(self.m,command_id='future_native',stamp=10.14,positions=(-.2,)),10.1)
+        self.tick_to(10.14)
+        for wanted,actual in zip((expected.q,expected.v,expected.a),
+                                 (self.e.reference.q,self.e.reference.v,self.e.reference.a)):
+            self.assertAlmostEqual(wanted[0],actual[0],places=9)
+        self.tick_to(10.15)
+        self.assert_bounded(self.e.reference)
+
+    def test_native_binding_validates_shapes_and_finite_values(self):
+        from bindu_execution import _native
+        from importlib.machinery import EXTENSION_SUFFIXES
+        self.assertTrue(any(_native.__file__.endswith(s) for s in EXTENSION_SUFFIXES))
+        for s in (State((0.,),(),(0.,)),State((float('nan'),),(0.,),(0.,))):
+            with self.assertRaises(ValueError): Curve.between(0.,1.,s,State.rest((0.,)))
+            with self.assertRaises(ValueError): fit_online(self.p,('a',),s,(.1,),0.)
+        for t in (float('nan'),float('inf'),-.1):
+            with self.assertRaises(ValueError): Curve.between(0.,t,State.rest((0.,)),State.rest((.1,)))
+        with self.assertRaises(ValueError): _native.curve_sample(None,0.)
+        with self.assertRaises(ValueError): fit_online(self.p,('a',),State.rest((0.,)),(.1,.2),0.)
 
     def test_timed_derivatives_and_original_end_are_preserved(self):
         m = replace(self.m,mode='finite_trajectory',positions=(),offsets=(.5,1.),

@@ -17,7 +17,7 @@
 | VR 遥操作与 IK | 已接 v3.4 手柄输入、相对控制和连续 IK；当前仅单臂模拟执行 |
 | 语音交互 | 已预留模块目录 |
 | 数据记录 | 已实现异步事件与状态记录；图像同步及完整训练数据管线待实现 |
-| 共享执行层插值 | 在线目标、时序轨迹、动作块及减速停止已通过仿真；低延迟调优与真机实时适配待完成 |
+| 共享执行层插值 | C++ 统一数值内核已接入，支持在线流、定时多轴轨迹与动作块；本轮 ROS 集成重跑受开发机连接阻塞 |
 
 ## 工程入口
 
@@ -98,7 +98,7 @@ python3 tests/validate_pi.py --output artifacts/pi-check
 
 集成验证会启动并收尾各自的模拟进程。Pi 验证自带回环服务、合成图像和关节观测，无需模型权重或真实设备。
 
-共享执行层本轮已验证：13 包构建、64 项模块测试（无跳过）、16 个 ROS 集成场景、14 个 Pi 场景及 9 个遥操作场景全部通过；包含动作块时序/版本、受控停止，以及真实 Vuer 服务接收合成输入。尚未做头显现场联调。模拟测试不等于真机或实时性能验收。Pi 首版使用 NumPy 1.26.4；本轮 VR/IK 与回归使用 NumPy 2.3.5，PyZMQ 均为 26.4.0；若需要隔离安装该 PyZMQ 版本，可执行：
+此前 Python 后端已验证：13 包构建、64 项模块测试（无跳过）、16 个 ROS 集成场景、14 个 Pi 场景及 9 个遥操作场景全部通过；包含动作块时序/版本、受控停止，以及真实 Vuer 服务接收合成输入。尚未做头显现场联调。模拟测试不等于真机或实时性能验收。Pi 首版使用 NumPy 1.26.4；本轮 VR/IK 与回归使用 NumPy 2.3.5，PyZMQ 均为 26.4.0；若需要隔离安装该 PyZMQ 版本，可执行：
 
 ```bash
 python3 -m pip install --target artifacts/pi-deps pyzmq==26.4.0
@@ -169,7 +169,13 @@ ros2 action send_goal /bindu_sim/teleop/session bindu_interfaces/action/TeleopSe
 
 ## 共享执行层验证
 
-VR 与 Pi 的单步目标、有限规划轨迹和动作块共用执行层曲线程序。输入时间、导数、版本和停止语义见[动作执行契约](动作执行契约.md#2-输入模式必须显式选择)。本次增加 ROS 消息字段，更新后需重新构建并加载工作区。执行参考的加速度/jerk 限制与设备跟踪限制分开配置；示例数值仅用于仿真。
+关节参考统一由 [C++ 内核](src/control/bindu_execution/native/interpolation.hpp)生成；[Python 接口](src/control/bindu_execution/bindu_execution/interpolation.py)只负责对象/时间轴适配，不再保留第二套曲线数学实现。在线目标用自适应策略，定时 P2P、导数轨迹和动作块用时序策略，共用曲线求值、限幅及制动。ROS 执行器继续管理 revision、控制权和实测到达确认，语义见[动作执行契约](动作执行契约.md#2-输入模式必须显式选择)。原实验目录已合入 `native/`，历史源码仍只读。
+
+构建需要 C++17 编译器和与运行环境匹配的 Python 开发头文件。`colcon build` 自动构建原生扩展；模块缺失时直接报导入错误，不静默回退到 Python。更新后须重建并加载工作区，不能复制另一架构或 Python 版本的 `.so`。无 ROS 的本地测试可先构建：
+
+```bash
+(cd src/control/bindu_execution && python3 setup.py build_ext --inplace)
+```
 
 加载工作区后运行模块和 ROS 回归，`timed_chunks` 包含动作块原始时间轴、旧 revision 拒绝和减速取消：
 
@@ -178,32 +184,25 @@ python3 -m unittest discover -s tests -p 'test_*.py'
 python3 tests/validate_ros.py --case online_targets --case timed_chunks --output artifacts/execution-check
 ```
 
-保留历史源码的主工作区可独立复现 C++/Python 对照；工具仅在指定输出目录编译测试程序、生成 CSV 和 JSON。新克隆不需要历史代码即可运行当前模块测试。
+本轮本地验证：14组纯 C++ 测试及 ASan/UBSan 通过，覆盖七轴定时 P2P、分轴限幅、带导数轨迹、过期动作块/制动尾段、在线预览一致性、模式接续和运动中停止；另包含6种输入频率、30组非定时单轴 P2P、34,408个随机流采样。68项 Python 调用与执行回归通过，真实 IK 类因缺 Pinocchio/CasADi 跳过；源码分发包在干净目录重新编译和加载也通过验证。Ubuntu 开发机 SSH 超时，本次原生后端尚未完成 ROS/Pi/VR 集成重跑，不能沿用此前纯 Python 后端的集成结果；未进行真机或 Orin 验收。
+
+纯 C++ 测试不依赖 ROS、Python 或历史源码：
+
+```bash
+mkdir -p artifacts/native-test
+c++ -std=c++17 -O2 -Wall -Wextra -pedantic \
+  -I src/control/bindu_execution/native \
+  src/control/bindu_execution/native/adaptive_stream.cpp \
+  src/control/bindu_execution/native/interpolation.cpp \
+  tests/test_adaptive_stream.cpp -o artifacts/native-test/test_native
+artifacts/native-test/test_native
+```
+
+保留历史源码的主工作区可运行以下对照。工具分别测旧 C++、标量自适应、新原生在线/五次曲线策略，输出 CSV/JSON；原生策略耗时包含 Python 绑定开销，七轴项目使用实际在线策略。当前本机离线正弦 RMS 为0.099219 rad，旧内核为0.097335 rad；固定时序策略不会为了降低误差自行改变轨迹时间。测试值不等于机器人定位精度或端到端延迟，内核仍有动态分配，Python/ROS 串行执行壳仍在，不宣称硬实时。
 
 ```bash
 python3 tools/compare_interpolators.py --legacy-root 历史代码/legs_necks_control \
   --output artifacts/interpolation-comparison
-```
-
-当前 Python 方案优先满足整段约束和停止语义，离线正弦测试的跟随误差高于历史 C++ 内核；不能把“共用执行层”视为已完成 VR 跟手调优或真机实时验收。
-
-低延迟优化候选位于 [experimental/adaptive_stream.cpp](src/control/bindu_execution/experimental/adaptive_stream.cpp)。它复用历史自适应内核的 jerk 建议计算，加入精确积分、整段限位与可制动检查、静止目标末段收敛、有效期内分段停止及异常时钟锁存。历史原件保持只读。候选只接受单轴位置目标，不接收目标速度/加速度，不负责动作块时间轴或控制权；尚未编入 ROS，现有运行后端不变。若后续采用，应接入共享执行层，避免在 VR/VLA 各加一套平滑器。
-
-维护目标是一套正式执行模块，内部按在线目标、时序轨迹和动作块选择策略，共用约束与停止能力。当前 C++ 候选尚不能覆盖 Python 的多轴时序接口，因此保留用于对照；完成相同接口和模式衔接回归后再移除被替代的实现。历史只读资产不作为第二套运行实现。
-
-冗余精简已移除 C++ 无用参数、无效赋值和额外四阶求导；静止捕获结束后复用已认证的保持状态，仍处理 TTL 和新目标。Python 曲线在采样与认证之间缓存共用 q/v/a/j 系数。8组场景的 Python/C++ 共9,600个采样与精简前逐点一致；独立 C++ 6组测试（含停稳后过期/恢复）及 ASan/UBSan 通过，本地 Python 61项通过，真实 IK 测试类因缺 Pinocchio/CasADi 跳过。本次未重跑 ROS 集成。
-
-2026-09-17 本地 macOS ARM64 / Apple Clang 21 的同限幅对照（q ±1 rad、v 1.5 rad/s、a 20 rad/s²、jerk 400 rad/s³）中，候选消除了静止边界目标最后一秒的位置波动（旧版约 0.000764 rad），峰值由 1.000440 rad 收敛到 1 rad，断流后参考速度可归零。正弦 RMS 由旧版 0.097335 rad 变为 0.099219 rad（增加 1.9%；当前 Python 为 0.196798 rad），小幅往返 RMS 增加 6.1%。合成 6/14/9/11 ms 时间戳下按实际间隔积分，位置差商导出的速度/加速度/jerk 保持限幅。8 组对照中候选单轴计算 p99 为 0.67–5.00 µs，比旧 C++ 有额外开销；这不是 Orin、多轴或硬实时保证，代码仍有动态分配。
-
-独立测试无需 ROS 或历史源码，包含非法输入、静止/边界、取消/过期、积分一致性、125 个制动初态和 8 组限幅下 34,408 个随机流采样。扩展到 10 组测试及 AddressSanitizer/UndefinedBehaviorSanitizer 检查通过，新增 5/10/30/60/100/200 Hz 输入（合成 1 kHz 采样）、30 组非定时 P2P、P2P→流→P2P 接续及能力边界反例。C++ 仍缺指定到达时间、导数轨迹、动作块、同步多轴和反馈完成接口：TTL 为 2 s 的例子在 0.32 s 到达，7 个独立单轴实例的到达时间跨度为 1.70 s。不能将单轴测试通过视为完整输入契约通过，支持范围见[执行契约](动作执行契约.md#2-输入模式必须显式选择)。当前 Python 后端新增三轴定时 P2P 和流→轨迹→动作块→流的接续回归，本地 63 项通过，真实 IK 类因缺可选依赖跳过。本轮未重跑 ROS/VR/Pi 集成，也未连接头显或真机。上面的对照工具同时输出旧 C++、候选 C++ 与 Python 三组结果。
-
-```bash
-mkdir -p artifacts/adaptive-test
-c++ -std=c++17 -O2 -Wall -Wextra -pedantic \
-  -I src/control/bindu_execution/experimental \
-  src/control/bindu_execution/experimental/adaptive_stream.cpp \
-  tests/test_adaptive_stream.cpp -o artifacts/adaptive-test/test_adaptive_stream
-artifacts/adaptive-test/test_adaptive_stream
 ```
 
 ## 开发与文档

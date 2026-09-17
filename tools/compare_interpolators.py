@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Offline comparison of historical C++, the experimental repair, and Python curves.
+"""Offline comparison of historical C++, scalar adaptive, and shared native strategies.
 
 Explicit --legacy-root points to read-only historical sources. Build and CSV/JSON
 outputs stay under --output. Identical one-axis targets and v/a/jerk limits; this
@@ -21,7 +21,7 @@ import time
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(p.parent) for p in (ROOT/'src').rglob('package.xml')]
 from bindu_contracts.profile import Profile
-from bindu_execution.interpolation import State, fit_target, fit_stop
+from bindu_execution.interpolation import State, fit_target, fit_online, fit_stop
 
 HARNESS = r'''
 #include "dexbot/interpolation/adaptive_interpolator.hpp"
@@ -53,7 +53,7 @@ EXPERIMENTAL_HARNESS = r'''
 #include <chrono>
 #include <iostream>
 #include <iomanip>
-using namespace bindu::experimental;
+using namespace bindu::execution;
 int main() {
   AdaptiveStream p; p.reset(0.);
   double now,target; int update,stop;
@@ -126,7 +126,7 @@ def main():
     binary=args.output/'legacy_harness'
     subprocess.run([compiler,'-std=c++17','-O2','-I'+str(args.legacy_root/'include'),
         str(args.legacy_root/'src/dexbot/interpolation/adaptive_interpolator.cpp'),str(harness),'-o',str(binary)],check=True)
-    experimental_root=ROOT/'src/control/bindu_execution/experimental'
+    experimental_root=ROOT/'src/control/bindu_execution/native'
     experimental_harness=args.output/'experimental_harness.cpp'
     experimental_harness.write_text(EXPERIMENTAL_HARNESS)
     experimental_binary=args.output/'experimental_harness'
@@ -142,23 +142,28 @@ def main():
         experiment=subprocess.run([str(experimental_binary)],input=wire,text=True,capture_output=True)
         if experiment.returncode: raise RuntimeError(case+': '+experiment.stderr)
         experimental_rows=[list(map(float,line.split(','))) for line in experiment.stdout.splitlines()]
-        new=[];path=None;state=State.rest((0.,));last_goal=None;rejected=0
-        for t,q,update,stop in samples:
-            start=time.perf_counter()
-            state=path.sample(t) if path else state
-            if stop:
-                path=fit_stop(profile,('q',),state,t)
-            elif update and q != last_goal:
-                try:
-                    path=fit_target(profile,('q',),state,(q,),t)
-                    last_goal=q
-                except ValueError:
-                    rejected+=1
-            elapsed=(time.perf_counter()-start)*1e6
-            new.append([t,q,state.q[0],state.v[0],state.a[0],state.j[0],elapsed])
-        results[case]={'legacy':metrics(rows),'bounded':metrics(new),'bounded_rejected_updates':rejected,
-                       'experimental':metrics(experimental_rows),'experimental_guarded_steps':int(experiment.stderr)}
-        for label,data in (('legacy',rows),('bounded',new),('experimental',experimental_rows)):
+        results[case]={'legacy':metrics(rows),'scalar_adaptive':metrics(experimental_rows),
+                       'scalar_guarded_steps':int(experiment.stderr)}
+        datasets=[('legacy',rows),('scalar_adaptive',experimental_rows)]
+        for label,fitter in (('native_quintic',fit_target),('native_online',fit_online)):
+            new=[];path=None;state=State.rest((0.,));last_goal=None;rejected=0
+            for t,q,update,stop in samples:
+                start=time.perf_counter()
+                state=path.sample(t) if path else state
+                if stop:
+                    path=fit_stop(profile,('q',),state,t)
+                elif update and q != last_goal:
+                    try:
+                        path=fitter(profile,('q',),state,(q,),t)
+                        last_goal=q
+                    except ValueError:
+                        rejected+=1
+                elapsed=(time.perf_counter()-start)*1e6
+                new.append([t,q,state.q[0],state.v[0],state.a[0],state.j[0],elapsed])
+            results[case][label]=metrics(new)
+            results[case][label+'_rejected_updates']=rejected
+            datasets.append((label,new))
+        for label,data in datasets:
             with (args.output/f'{case}_{label}.csv').open('w') as f:
                 writer=csv.writer(f);writer.writerow(['time','target','q','v','a','j','compute_us']);writer.writerows(data)
     names=tuple('q'+str(i) for i in range(7))
@@ -168,20 +173,22 @@ def main():
         t=i*.01;target=tuple(.4*math.sin(2*t+k*.03) for k in range(7))
         begin=time.perf_counter()
         state=path.sample(t) if path else state
-        path=fit_target(seven,names,state,target,t)
+        path=fit_online(seven,names,state,target,t)
         timings.append((time.perf_counter()-begin)*1e6)
     seven_metrics={'updates':1000,'p50_us':statistics.median(timings),
                    'p99_us':sorted(timings)[989],'max_us':max(timings)}
     sources=[args.legacy_root/'src/dexbot/interpolation/adaptive_interpolator.cpp',
              ROOT/'src/control/bindu_execution/bindu_execution/interpolation.py',
-             experimental_root/'adaptive_stream.cpp',experimental_root/'adaptive_stream.hpp',Path(__file__).resolve()]
+             experimental_root/'adaptive_stream.cpp',experimental_root/'adaptive_stream.hpp',
+             experimental_root/'interpolation.cpp',experimental_root/'interpolation.hpp',
+             experimental_root/'curve_math.hpp',experimental_root/'python_bindings.cpp',Path(__file__).resolve()]
     hashes={str(p):hashlib.sha256(p.read_bytes()).hexdigest() for p in sources}
     result={'platform':platform.platform(),'python':sys.version,'limits':{'q':[-1,1],'v':1.5,'a':20,'j':400},
-            'source_sha256':hashes,'seven_axis_bounded':seven_metrics,'control_period':.01,'cases':results,'notes':[
+            'source_sha256':hashes,'seven_axis_native_online':seven_metrics,'control_period':.01,'cases':results,'notes':[
                 'Historical kernel advances a fixed 10 ms even in the jitter case.',
                 'All implementations publish the current state then apply the newly received target for subsequent motion.',
-                'C++ variants use the same compiler/optimization flags; Python costs are not directly algorithm-only comparable.',
-                'The experimental C++ position-stream kernel is not enabled in the ROS runtime.',
+                'Scalar C++ variants use identical compiler flags; native strategies include the Python binding overhead.',
+                'Runtime online targets use native_online; native_quintic provides synchronized P2P, timed curves and stopping.',
                 'Dropout uses legacy clearTarget versus a certified stop; RMS target error is not a dropout success metric.',
                 'Sampled derivative discrepancy contains finite-difference error and does not alone establish a constraint violation.']}
     (args.output/'comparison.json').write_text(json.dumps(result,indent=2)+'\n')

@@ -1,13 +1,14 @@
 // Proposal equations adapted from historical legs_necks_control, preserved there.
-// This experiment does not replace the deployed Python execution backend.
+// Shared scalar primitive for the native execution module.
 #include "adaptive_stream.hpp"
+#include "curve_math.hpp"
 #include <algorithm>
 #include <cmath>
 #include <functional>
 #include <stdexcept>
 #include <limits>
 
-namespace bindu::experimental {
+namespace bindu::execution {
 namespace {
 
 constexpr double kEpsilon = 1e-6;
@@ -266,31 +267,9 @@ bool valid_state(const Limits& l, State s) {
            std::abs(s.v)<=l.velocity+1e-10&&std::abs(s.a)<=l.acceleration+1e-10&&
            std::abs(s.j)<=l.jerk+1e-9;
 }
-std::vector<double> deriv(const std::vector<double>& p, double duration) {
-    std::vector<double> out;
-    for (size_t i=1; i<p.size(); ++i) out.push_back((p.size()-1)*(p[i]-p[i-1])/duration);
-    return out;
-}
-double eval(std::vector<double> p, double u) {
-    while (p.size()>1) {
-        for (size_t i=1; i<p.size(); ++i) p[i-1]=(1-u)*p[i-1]+u*p[i];
-        p.pop_back();
-    }
-    return p.front();
-}
-bool bounded(std::vector<double> p, double lo, double hi, int depth=9) {
-    constexpr double eps=1e-9;
-    if (!std::all_of(p.begin(),p.end(),[](double x){return std::isfinite(x);})) return false;
-    if (*std::min_element(p.begin(),p.end())>=lo-eps&&*std::max_element(p.begin(),p.end())<=hi+eps) return true;
-    if (!depth||p.front()<lo-eps||p.front()>hi+eps||p.back()<lo-eps||p.back()>hi+eps) return false;
-    std::vector<double> left{p.front()}, right{p.back()};
-    while (p.size()>1) {
-        for (size_t i=1; i<p.size(); ++i) p[i-1]=(p[i-1]+p[i])/2;
-        p.pop_back(); left.push_back(p.front()); right.push_back(p.back());
-    }
-    std::reverse(right.begin(),right.end());
-    return bounded(left,lo,hi,depth-1)&&bounded(right,lo,hi,depth-1);
-}
+using detail::deriv;
+using detail::eval;
+using detail::bounded;
 bool curve_valid(const Limits& l, std::vector<double> p, double t) {
     const double lo[]={l.lower,-l.velocity,-l.acceleration,-l.jerk};
     const double hi[]={l.upper,l.velocity,l.acceleration,l.jerk};
@@ -374,6 +353,10 @@ bool AdaptiveStream::brake(const Limits& l, State s, Brake& out) {
     return true;
 }
 
+bool AdaptiveStream::valid_phase(const Limits& limits,const Phase& phase) {
+    return phase_valid(limits,phase);
+}
+
 AdaptiveStream::AdaptiveStream(Limits limits):limits_(limits) {
     const auto& l=limits_;
     const double positives[]={l.velocity,l.acceleration,l.jerk,l.max_gap,l.capture_distance,
@@ -387,6 +370,7 @@ bool AdaptiveStream::reset(double now, State state) {
     if(!std::isfinite(now)||!brake(limits_,state,candidate)) return false;
     state_=state; clock_=now; safe_brake_=candidate; source_=-std::numeric_limits<double>::infinity(); guarded_=0;
     initialized_=true; fault_=tracking_=stopping_=capturing_=false;
+    pieces_.clear();
     return true;
 }
 bool AdaptiveStream::target(double source, double position, double until) {
@@ -413,6 +397,7 @@ bool AdaptiveStream::capture() {
 }
 bool AdaptiveStream::advance(double dt) {
     if(stopping_) {
+        record_brake(safe_brake_,brake_elapsed_,dt);
         brake_elapsed_+=dt; state_=safe_brake_.sample(brake_elapsed_);
         if(brake_elapsed_>=safe_brake_.duration) {
             stopping_=false;safe_brake_={};safe_brake_.final=state_;
@@ -427,10 +412,15 @@ bool AdaptiveStream::advance(double dt) {
     if(capturing_||capture()) {
         // The endpoint and its resting brake were certified when capture
         // completed. New targets clear capturing_; step() still checks TTL.
-        if(capture_elapsed_>=capture_duration_) return true;
+        if(capture_elapsed_>=capture_duration_) {
+            record_cubic(state_,state_,dt,0.);return true;
+        }
         const double elapsed=capture_elapsed_+dt;
         candidate=elapsed>=capture_duration_?State{goal_,0.,0.,0.}:sample_curve(controls_,capture_duration_,elapsed);
         if(brake(limits_,candidate,next_brake)) {
+            const double moving=std::min(dt,capture_duration_-capture_elapsed_);
+            pieces_.push_back({state_,candidate,moving,controls_,capture_duration_,capture_elapsed_});
+            if(dt>moving) record_cubic(candidate,candidate,dt-moving,0.);
             state_=candidate; safe_brake_=next_brake; capture_elapsed_=elapsed;
             return true;
         }
@@ -451,6 +441,7 @@ bool AdaptiveStream::advance(double dt) {
     if(low<=high) {
         const double wanted=std::clamp(j,low,high);
         if(acceptable(wanted,candidate,next_brake)) {
+            record_cubic(state_,candidate,dt,wanted);
             state_=candidate; safe_brake_=next_brake;return true;
         }
         // Find a less disruptive admissible jerk between the heuristic proposal
@@ -466,6 +457,7 @@ bool AdaptiveStream::advance(double dt) {
                         safe=middle;best=candidate;best_brake=next_brake;
                     } else unsafe=middle;
                 }
+                record_cubic(state_,best,dt,safe);
                 ++guarded_;state_=best;safe_brake_=best_brake;return true;
             }
         }
@@ -473,6 +465,7 @@ bool AdaptiveStream::advance(double dt) {
     ++guarded_;
     candidate=safe_brake_.sample(dt);
     if(!brake(l,candidate,next_brake)) return false;
+    record_brake(safe_brake_,0.,dt);
     state_=candidate; safe_brake_=next_brake; return true;
 }
 bool AdaptiveStream::step(double now) {
@@ -480,6 +473,7 @@ bool AdaptiveStream::step(double now) {
     const double dt=now-clock_;
     if(!std::isfinite(now)||dt<0.||dt>limits_.max_gap+1e-9) {fault_=true;return false;}
     if(dt==0.) return true;
+    pieces_.clear();
     // Split at expiry, so a delayed tick cannot extend target authority.
     if(tracking_&&now>=until_) {
         if(until_>clock_&&!advance(until_-clock_)) {fault_=true;return false;}
@@ -487,6 +481,24 @@ bool AdaptiveStream::step(double now) {
         stop();
         if(!advance(remaining)) {fault_=true;return false;}
     } else if(!advance(dt)) {fault_=true;return false;}
+    if(pieces_.empty()) record_cubic(state_,state_,dt,0.);
     clock_=now; return true;
 }
-}  // namespace bindu::experimental
+
+void AdaptiveStream::record_brake(const Brake& brake, double elapsed, double dt) {
+    double at=elapsed, end=elapsed+dt, boundary=0.;
+    for(const auto& phase:brake.phases) {
+        boundary+=phase.duration;
+        if(boundary<=at) continue;
+        const double next=std::min(end,boundary);
+        if(next>at) record_cubic(brake.sample(at),brake.sample(next),next-at,brake.sample((at+next)/2).j);
+        at=next;if(at>=end) return;
+    }
+    if(end>at) record_cubic(brake.final,brake.final,end-at,0.);
+}
+
+void AdaptiveStream::record_cubic(State initial,State final,double duration,double jerk) {
+    initial.j=jerk;
+    pieces_.push_back({initial,final,duration,{},0.,0.});
+}
+}  // namespace bindu::execution

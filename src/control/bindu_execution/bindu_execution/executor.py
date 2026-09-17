@@ -10,7 +10,7 @@ import math
 import uuid
 from bindu_contracts.contracts import Event
 from bindu_contracts.ports import ExecutionIO
-from .interpolation import State, Curve, Path, Timeline, fit_target, fit_stop, join
+from .interpolation import State, Timeline, fit_online, fit_timed, fit_stop, join
 
 
 class Rejected(ValueError):
@@ -76,7 +76,7 @@ class Executor:
         self.check_lease(lease, epoch, now)
         self.expires = now + 2.
 
-    def halt(self, now, code='CANCELED', revoke=False, emergency=False):
+    def halt(self, now, code='CANCELED', revoke=False, emergency=False, effective_at=None):
         if revoke:
             self.lease_id = ''
             self.owner = ''
@@ -86,13 +86,22 @@ class Executor:
         motion = self.active or (self.stopping[0] if self.stopping else None)
         self.last_stamp = max(self.last_stamp, now)
         self.revision += 1
+        stop_start = now if effective_at is None else effective_at
         if not emergency and self.path:
-            self.reference = self.path.sample(now)
+            try:
+                self.reference = self.path.sample(stop_start)
+            except ValueError:
+                code += ':REFERENCE_GENERATION_FAILED'
+                emergency = True
+                if self.lease_id:
+                    self.lease_id = ''
+                    self.owner = ''
+                    self.epoch += 1
         if not emergency and self.path and self.reference and (any(
                 abs(x) > 1e-8 for x in self.reference.v+self.reference.a) or any(
                 abs(self.feedback.positions[j]-q) > 1e-5 for j, q in zip(self.reference_names, self.reference.q))):
             try:
-                self.path = fit_stop(self.profile, self.reference_names, self.reference, now)
+                self.path = fit_stop(self.profile, self.reference_names, self.reference, stop_start)
                 self.stopping = (motion, code)
                 self.stop_deadline = now+self.profile.stop_timeout
                 self.active = None
@@ -140,7 +149,7 @@ class Executor:
             if (self.active and self.active.mode == m.mode and self.active.positions == m.positions
                     and self.reference_names == m.names):
                 return self.path
-            suffix = fit_target(self.profile, m.names, initial, m.positions, switch)
+            suffix = fit_online(self.profile, m.names, initial, m.positions, switch)
         else:
             # A positional waypoint means rest there unless explicit v/a are
             # supplied. Never silently discard a planner's derivatives.
@@ -153,29 +162,9 @@ class Executor:
                 if any(len(row) != len(m.names) or not all(math.isfinite(x) for x in row) for row in rows):
                     raise Rejected('DERIVATIVE_LAYOUT_MISMATCH')
             states = tuple(State(q, v, a) for q, v, a in zip(m.points, velocities, accelerations))
-            if m.mode == 'finite_trajectory' and any(abs(x) > 1e-9 for x in states[-1].v+states[-1].a):
-                raise Rejected('FINITE_ENDPOINT_NOT_AT_REST')
-            curves = []
-            previous, start = initial, switch
-            for offset, state in zip(m.offsets, states):
-                end = m.stamp+offset
-                if end <= switch+1e-5:
-                    if m.mode == 'joint_reference_segment':
-                        continue  # Expired prefix is dropped, never time-shifted.
-                    raise Rejected('EXPIRED_TRAJECTORY_PREFIX')
-                curve = Curve.between(start, end-start, previous, state)
-                if not curve.valid(self.profile, m.names):
-                    raise Rejected('TRAJECTORY_DYNAMIC_LIMIT')
-                curves.append(curve)
-                previous, start = state, end
-            if not curves:
-                raise Rejected('EXPIRED_TRAJECTORY_PREFIX')
-            if m.mode == 'joint_reference_segment':
-                # Reserve a certified braking tail before accepting a chunk.
-                # Its authority is internal; no future input is assumed.
-                tail = fit_stop(self.profile, m.names, previous, start)
-                curves.extend(tail.curves)
-            suffix = Path(tuple(curves))
+            suffix = fit_timed(self.profile, m.names, initial, states,
+                tuple(m.stamp+offset for offset in m.offsets), switch,
+                chunk=m.mode == 'joint_reference_segment')
         return join(self.path, suffix, switch) if self.path and switch > now else suffix
 
     def submit(self, m, now):
@@ -271,11 +260,12 @@ class Executor:
         if (self.active or self.stopping) and now-self.feedback.stamp > .2:
             self.halt(now, 'FEEDBACK_STALE', revoke=True, emergency=True)
             return
-        if self.lease_id and now >= self.expires:
-            self.halt(now, 'LEASE_EXPIRED', revoke=True)
         if (self.active or self.stopping) and dt > self.profile.max_tick_gap+1e-9:
             self.halt(now, 'EXECUTION_OVERRUN', revoke=True, emergency=True)
             return
+        if self.lease_id and now >= self.expires:
+            deadline = min(self.expires, self.active.stamp+self.active.valid_for) if self.active else self.expires
+            self.halt(now, 'LEASE_EXPIRED', revoke=True, effective_at=deadline)
         if self.stopping:
             self.tick_stop(now)
             return
@@ -283,7 +273,9 @@ class Executor:
         if not m:
             return
         if now >= m.stamp+m.valid_for:
-            self.halt(now, 'COMMAND_TIMEOUT')
+            self.halt(now, 'COMMAND_TIMEOUT', effective_at=m.stamp+m.valid_for)
+            if self.stopping:
+                self.tick_stop(now)
             return
         if now < m.stamp and not isinstance(self.path, Timeline):
             return
@@ -315,6 +307,8 @@ class Executor:
                 # resource may now start from measured feedback.
                 self.path = self.reference = None
                 self.reference_names = ()
+        except ValueError:
+            self.halt(now, 'REFERENCE_GENERATION_FAILED', revoke=True, emergency=True)
         except RuntimeError:
             self.halt(now, 'DEVICE_COMMAND_REJECTED', revoke=True, emergency=True)
 
@@ -328,6 +322,8 @@ class Executor:
                 self.finish_stop(now, motion, code)
             elif now >= self.stop_deadline:
                 self.halt(now, 'STOP_FEEDBACK_TIMEOUT', revoke=True, emergency=True)
+        except ValueError:
+            self.halt(now, 'REFERENCE_GENERATION_FAILED', revoke=True, emergency=True)
         except RuntimeError:
             self.halt(now, 'DEVICE_COMMAND_REJECTED', revoke=True, emergency=True)
 

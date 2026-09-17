@@ -1,14 +1,16 @@
-// Standalone experimental-kernel tests. No ROS, device SDK, or historical source.
+// Standalone native-engine tests. No ROS, device SDK, or historical source.
 #include "adaptive_stream.hpp"
+#include "interpolation.hpp"
 #include <algorithm>
 #include <cmath>
 #include <iostream>
+#include <iomanip>
 #include <limits>
 #include <random>
 #include <stdexcept>
 #include <string>
 #include <vector>
-using namespace bindu::experimental;
+using namespace bindu::execution;
 void require(bool ok,const std::string& message) { if(!ok) throw std::runtime_error(message); }
 void close(double a,double b,double eps=1e-8) {require(std::abs(a-b)<=eps,"numeric mismatch");}
 void valid(const Limits& l,State s) {
@@ -249,12 +251,108 @@ void capability_boundaries() {
     const double spread=*std::max_element(arrivals.begin(),arrivals.end())-*std::min_element(arrivals.begin(),arrivals.end());
     require(spread>.1,"expected unsynchronized scalar arrival witness");
     std::cout<<"independent_scalar_arrival_span="<<spread<<" (no group synchronization)\n";
-    std::cout<<"UNSUPPORTED: timed P2P, derivative waypoints, action chunks/revisions, group synchronization, feedback completion\n";
+    std::cout<<"SCALAR_ONLY: no timed/group API; these belong to the shared native engine and execution shell\n";
+}
+
+JointState joint_rest(size_t n,double q=0.) {
+    return {std::vector<double>(n,q),std::vector<double>(n),std::vector<double>(n),std::vector<double>(n)};
+}
+void valid_group(const JointLimits& limits,const JointState& s) {
+    require(s.q.size()==limits.size(),"native group dimensions");
+    for(size_t i=0;i<limits.size();++i) valid(limits[i],{s.q[i],s.v[i],s.a[i],s.j[i]});
+}
+template<class F> void rejected(F&& f,const char* message) {
+    bool failed=false;try {f();}catch(const std::invalid_argument&){failed=true;}require(failed,message);
+}
+void native_timed_group() {
+    JointLimits limits(7);for(size_t i=0;i<7;++i) limits[i].velocity=.3+.15*i;
+    auto zero=joint_rest(7),goal=joint_rest(7,.2);
+    auto p2p=fit_timed(limits,zero,{goal},{2.},0.,false,5.);
+    close(p2p.back()->end(),2.);
+    for(int k=0;k<=1000;++k) valid_group(limits,sample(p2p,k*.002));
+    const auto end=sample(p2p,2.);
+    for(size_t i=0;i<7;++i) {close(end.q[i],.2);close(end.v[i],0.);close(end.a[i],0.);}
+    auto waypoint=joint_rest(7,.05);waypoint.v.assign(7,.1);
+    auto trajectory=fit_timed(limits,zero,{waypoint,goal},{1.,2.},0.,false,5.);
+    auto at=sample(trajectory,1.);
+    for(size_t i=0;i<7;++i) {close(at.q[i],.05);close(at.v[i],.1);}
+    rejected([&]{fit_timed(limits,zero,{goal},{.01},0.,false,5.);},"impossible timed P2P admitted");
+    rejected([&]{fit_timed(limits,zero,{waypoint},{1.},0.,false,5.);},"nonrest finite endpoint admitted");
+    rejected([&]{fit_timed(limits,zero,{goal,goal},{1.,1.},0.,false,5.);},"duplicate knot time admitted");
+    rejected([&]{fit_timed(limits,zero,{goal,goal},{1.,1.000001},0.,true,5.);},"short future interval silently discarded");
+    std::cout<<"native_seven_axis_timed_p2p_and_derivatives=PASS\n";
+}
+void native_chunks() {
+    JointLimits limits(3);auto zero=joint_rest(3),one=joint_rest(3,.1),two=joint_rest(3,.2);
+    two.v.assign(3,.15);
+    auto path=fit_timed(limits,zero,{one,one,one,two},{-.2,-.1,.5,1.},0.,true,5.);
+    close(path.front()->end(),.5);require(path.back()->end()>1.,"chunk has no brake tail");
+    const auto knot=sample(path,1.);for(size_t i=0;i<3;++i) {close(knot.q[i],.2);close(knot.v[i],.15);}
+    for(int k=0;k<=1000;++k) valid_group(limits,sample(path,path.back()->end()*k/1000));
+    auto end=sample(path,path.back()->end());
+    for(size_t i=0;i<3;++i) {close(end.v[i],0.);close(end.a[i],0.);}
+    rejected([&]{fit_timed(limits,zero,{one},{-.1},0.,true,5.);},"expired chunk admitted");
+    std::cout<<"native_chunk_timeline_and_stop_tail=PASS\n";
+}
+void native_online_sampling() {
+    JointLimits limits(3);auto zero=joint_rest(3);
+    const std::vector<double> goal{.8,-.4,.001};
+    Online a(limits,zero,goal,0.,.01,30.),b(limits,zero,goal,0.,.01,30.);
+    a.sample(.5); // A future preview must not change any earlier reference.
+    const auto boundary=b.sample(.01),left=b.sample(.01-1e-7);
+    close((boundary.a[0]-left.a[0])/1e-7,boundary.j[0],1e-5);
+    std::vector<Point> trace{{0.,0.}};
+    for(int i=1;i<=2000;++i) {
+        const double t=i*.001;auto x=a.sample(t),y=b.sample(t);valid_group(limits,x);
+        for(size_t j=0;j<3;++j) {close(x.q[j],y.q[j]);close(x.v[j],y.v[j]);close(x.a[j],y.a[j]);close(x.j[j],y.j[j]);}
+        trace.push_back({t,x.q[0]});
+    }
+    realized_bounds(limits[0],trace);
+    for(int i=1;i<=90;++i) {
+        const double t=i*.01;auto current=a.sample(t);
+        Curves stop;
+        try {stop=fit_stop(limits,current,t,5.);}
+        catch(const std::invalid_argument&) {
+            std::cerr<<std::setprecision(17)<<"brake failure at "<<t<<'\n';
+            for(size_t axis=0;axis<limits.size();++axis) {
+                Brake brake;
+                std::cerr<<"q/v/a="<<current.q[axis]<<'/'<<current.v[axis]<<'/'<<current.a[axis]
+                         <<" scalar_brake="<<AdaptiveStream::brake(limits[axis],{current.q[axis],current.v[axis],current.a[axis],0.},brake)<<'\n';
+            }
+            throw;
+        }
+        for(const auto& c:stop) require(c->valid(limits),"native online brake certification");
+        const auto stopped=sample(stop,stop.back()->end());
+        for(size_t j=0;j<3;++j) {close(stopped.v[j],0.);close(stopped.a[j],0.);}
+    }
+    for(int i=1;i<35;++i) {
+        const double t=i*.013+.000123,h=1e-6;
+        const auto left=a.sample(t-h),middle=a.sample(t),right=a.sample(t+h);
+        for(size_t j=0;j<3;++j) {
+            close((right.q[j]-left.q[j])/(2*h),middle.v[j],1e-5);
+            close((right.v[j]-left.v[j])/(2*h),middle.a[j],1e-5);
+        }
+    }
+    const auto end=a.sample(2.);for(size_t j=0;j<3;++j) {close(end.q[j],goal[j]);close(end.v[j],0.);}
+    std::cout<<"native_online_multiaxis_preview_and_derivatives=PASS\n";
+}
+void native_mode_connection() {
+    JointLimits limits(1);Online online(limits,joint_rest(1),{.6},0.,.01,30.);
+    const auto initial=online.sample(.1);
+    auto knot=joint_rest(1,.2);knot.v[0]=.2;
+    auto timed=fit_timed(limits,initial,{knot,joint_rest(1,.3)},{.6,1.1},.1,false,5.);
+    auto first=sample(timed,.1);close(first.q[0],initial.q[0]);close(first.v[0],initial.v[0]);close(first.a[0],initial.a[0]);
+    close(sample(timed,.6).q[0],.2);close(sample(timed,.6).v[0],.2);close(timed.back()->end(),1.1);
+    for(const auto& curve:timed) require(curve->valid(limits),"mode connection limit");
+    const auto next_initial=sample(timed,.3);Online next(limits,next_initial,{-.2},.3,.01,30.);
+    close(next.sample(.3).q[0],next_initial.q[0]);close(next.sample(2.).q[0],-.2);
+    std::cout<<"native_online_timed_online_connection=PASS\n";
 }
 int main() {
     try {
         input_checks();settle_and_boundaries();stop_and_expiry();jerk_integration();braking_states();randomized_streams();
         input_rates();p2p_matrix();stream_p2p_transitions();capability_boundaries();
-        std::cout<<"PASS: 10 experimental adaptive stream test groups; capability gaps remain\n";
+        native_timed_group();native_chunks();native_online_sampling();native_mode_connection();
+        std::cout<<"PASS: 14 native reference test groups\n";
     } catch(const std::exception& e) {std::cerr<<"FAIL: "<<e.what()<<'\n';return 1;}
 }

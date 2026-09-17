@@ -1,13 +1,12 @@
-"""Bounded C2 joint references, independent of ROS and device tracking.
+"""Python contracts for the shared C++ reference engine; no numerical fallback.
 
-Quintic Bezier curves expose derivatives of the *same* position polynomial.
-Subdivision certifies whole-interval bounds using convex hulls (not a sampled
-limit check). Conservative rejection is preferable to accepting an overshoot.
-This is a reference implementation, not a hard real-time motion controller.
+The native module owns all curve, limit, adaptive-stream and braking math.
+Python keeps immutable timeline selection and the ROS-independent public state.
+Build with colcon (or setup.py build_ext --inplace for local tests) before import.
 """
 from dataclasses import dataclass
-from functools import cached_property
 import math
+from . import _native
 
 
 @dataclass(frozen=True)
@@ -23,106 +22,62 @@ class State:
         return cls(q, (0.,)*len(q), (0.,)*len(q), (0.,)*len(q))
 
 
-def evaluate(values, u):
-    values = list(values)
-    while len(values) > 1:
-        values = [(1-u)*a+u*b for a, b in zip(values, values[1:])]
-    return values[0]
+def _state(state):
+    return state.q, state.v, state.a
 
 
-def derivative(values, duration):
-    n = len(values)-1
-    return tuple(n*(b-a)/duration for a, b in zip(values, values[1:]))
-
-
-def bounded(values, lo, hi, depth=9):
-    # The tolerance only absorbs roundoff at exact endpoint limits.
-    eps = 1e-9
-    if min(values) >= lo-eps and max(values) <= hi+eps:
-        return True
-    if values[0] < lo-eps or values[0] > hi+eps or values[-1] < lo-eps or values[-1] > hi+eps:
-        return False
-    if depth == 0:
-        return False
-    row = list(values)
-    left, right = [row[0]], [row[-1]]
-    while len(row) > 1:
-        row = [(a+b)*.5 for a, b in zip(row, row[1:])]
-        left.append(row[0])
-        right.append(row[-1])
-    return bounded(left, lo, hi, depth-1) and bounded(right[::-1], lo, hi, depth-1)
+def _limits(profile, names):
+    return tuple((*profile.limits[n], profile.speed(n), profile.acceleration(n), profile.jerk(n)) for n in names)
 
 
 @dataclass(frozen=True)
 class Curve:
+    _handle: object
     start: float
     duration: float
-    controls: tuple
+
+    @classmethod
+    def _wrap(cls, handle):
+        return cls(handle, *_native.curve_info(handle))
 
     @classmethod
     def between(cls, start, duration, initial, final):
-        if not math.isfinite(duration) or duration < 1e-5:
-            raise ValueError('TRAJECTORY_INTERVAL_TOO_SHORT')
-        axes = []
-        for q, v, a, p, w, b in zip(initial.q, initial.v, initial.a, final.q, final.v, final.a):
-            axes.append((q, q+v*duration/5, q+2*v*duration/5+a*duration**2/20,
-                         p-2*w*duration/5+b*duration**2/20, p-w*duration/5, p))
-        return cls(start, duration, tuple(axes))
+        return cls._wrap(_native.between(start, duration, _state(initial), _state(final)))
 
     @property
     def end(self):
         return self.start+self.duration
 
-    @cached_property
-    def _derivatives(self):
-        # Immutable curve: sampling and certification share these coefficients.
-        # Build only q/v/a/j; no unused fourth derivative or per-tick rebuild.
-        axes = []
-        for axis in self.controls:
-            orders = [axis]
-            for _ in range(3):
-                orders.append(derivative(orders[-1], self.duration))
-            axes.append(tuple(orders))
-        return tuple(axes)
-
     def sample(self, now):
-        u = min(1., max(0., (now-self.start)/self.duration))
-        columns = [[], [], [], []]
-        for orders in self._derivatives:
-            for order, axis in enumerate(orders):
-                columns[order].append(evaluate(axis, u))
-        return State(*(tuple(c) for c in columns))
+        return State(*_native.curve_sample(self._handle, now))
 
     def valid(self, profile, names):
-        for name, orders in zip(names, self._derivatives):
-            limits = (profile.limits[name], (-profile.speed(name), profile.speed(name)),
-                      (-profile.acceleration(name), profile.acceleration(name)),
-                      (-profile.jerk(name), profile.jerk(name)))
-            for axis, (lo, hi) in zip(orders, limits):
-                if not bounded(axis, lo, hi):
-                    return False
-        return True
+        return _native.curve_valid(self._handle, _limits(profile, names))
 
 
 @dataclass(frozen=True)
 class Path:
     curves: tuple
 
+    @classmethod
+    def _wrap(cls, handles):
+        return cls(tuple(Curve._wrap(h) for h in handles))
+
     @property
     def end(self):
         return self.curves[-1].end
 
     def sample(self, now):
+        if not math.isfinite(now):
+            raise ValueError('INVALID_SAMPLE_TIME')
         for curve in self.curves:
             if now < curve.end:
                 return curve.sample(now)
         final = self.curves[-1].sample(self.end)
-        # Every executable path ends at rest. Never silently zero a derivative.
         return State(final.q, final.v, final.a, (0.,)*len(final.q))
 
 
 def join(prefix, suffix, switch):
-    # Clip the *selection interval*, preserving the original polynomial.
     return Timeline(prefix, suffix, switch) if prefix else suffix
 
 
@@ -140,45 +95,31 @@ class Timeline:
         return (self.before if now < self.switch else self.after).sample(now)
 
 
+@dataclass(frozen=True)
+class Online:
+    _handle: object
+    # A continuous target is not a finite task, even after reference arrival.
+    end = float('inf')
+
+    def sample(self, now):
+        return State(*_native.online_sample(self._handle, now))
+
+
+def fit_online(profile, names, state, target, start):
+    return Online(_native.online(_limits(profile, names), _state(state), target, start,
+                                 profile.control_period, profile.max_transition_duration))
+
+
 def fit_target(profile, names, state, target, start):
-    if any(v*(p-q) < -1e-8 for v, p, q in zip(state.v, target, state.q)):
-        # Opposite-side retargeting first removes the current momentum. A long
-        # single polynomial can otherwise keep moving the wrong way too long.
-        brake = fit_stop(profile, names, state, start)
-        continuation = fit_target(profile, names, brake.sample(brake.end), target, brake.end)
-        return Path(brake.curves+continuation.curves)
-    distance = max(abs(p-q)/profile.speed(n) for n, p, q in zip(names, target, state.q))
-    duration = max(.02, distance)
-    # Duration dilation is only allowed for online goals, never timed paths.
-    for _ in range(70):
-        if duration > profile.max_transition_duration:
-            break
-        curve = Curve.between(start, duration, state, State.rest(target))
-        if curve.valid(profile, names):
-            return Path((curve,))
-        duration *= 1.12
-        if duration > profile.max_transition_duration:
-            break
-    # A single quintic can be infeasible near a position boundary during a
-    # reversal even though a bounded brake followed by a new move is feasible.
-    # Do not keep chasing an obsolete goal merely because one polynomial fails.
-    if any(abs(x) > 1e-8 for x in state.v+state.a):
-        brake = fit_stop(profile, names, state, start)
-        continuation = fit_target(profile, names, brake.sample(brake.end), target, brake.end)
-        return Path(brake.curves+continuation.curves)
-    raise ValueError('NO_FEASIBLE_CONTINUATION')
+    """Non-timed synchronized P2P; adaptive streaming uses fit_online instead."""
+    return Path._wrap(_native.fit_target(_limits(profile, names), _state(state), target, start,
+                                         profile.max_transition_duration, profile.stop_timeout))
 
 
 def fit_stop(profile, names, state, start):
-    duration = .02
-    for _ in range(70):
-        if duration > profile.stop_timeout:
-            break
-        target = tuple(q+v*duration/2+a*duration**2/12 for q, v, a in zip(state.q, state.v, state.a))
-        curve = Curve.between(start, duration, state, State.rest(target))
-        if curve.valid(profile, names):
-            return Path((curve,))
-        duration *= 1.12
-        if duration > profile.stop_timeout:
-            break
-    raise ValueError('NO_FEASIBLE_STOP')
+    return Path._wrap(_native.fit_stop(_limits(profile, names), _state(state), start, profile.stop_timeout))
+
+
+def fit_timed(profile, names, initial, states, times, start, chunk=False):
+    return Path._wrap(_native.fit_timed(_limits(profile, names), _state(initial),
+        tuple(_state(s) for s in states), times, start, chunk, profile.stop_timeout))
