@@ -10,9 +10,18 @@ __pycache__/
 
 # Local reference assets and historical experiment attachments
 /历史代码/
-/代码参考包/*
-!/代码参考包/*.md
-/过程记录/附件/
+/代码参考包/
+/图片/
+/过程记录/
+
+# Local planning and research notes; keep files locally, outside Git tracking
+/项目上下文.md
+/当前进度.md
+/决策记录.md
+/一期建设计划与开源选型.md
+/历史代码盘点与复用评估.md
+/Galbot设计对照.md
+/系统架构图.md
 
 # Machine-local credentials/configuration
 .env

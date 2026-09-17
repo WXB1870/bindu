@@ -1,134 +1,140 @@
 # Bindu
 
-更新：2026-09-17。`bindu/` 是主工作区；本页集中维护文档入口。早期 Galbot 文档位于[参考资料](../参考资料/Galbot/)，按需对照。先读上下文和进度，再按工作范围读取主文档。
+基于 **ROS 2** 的模块化机器人控制系统，面向长程导航与移动操作。首期目标是让轮式人形根据语言指令寻找饮料、导航抓取并持物返回，后续扩展至双足人形。
 
-## 每类信息只在一个地方维护
+通过公共接口连接任务、感知、规划、VLA、遥操作和设备控制，使算法与机器人硬件可以独立替换。VLA 在机器人端仅部署客户端，模型推理在远端运行。
 
-| 内容 | 主文档 |
+## 功能状态
+
+项目处于模拟骨架与能力接入阶段，完整移动抓取和真机控制尚未完成。
+
+| 模块 | 当前状态 |
 |---|---|
-| 用户已确认的需求、设备、未知项 | [项目上下文](项目上下文.md) |
-| 已完成证据、当前阻塞与下一步 | [当前进度](当前进度.md) |
-| 历史源码、归档资产、已具备功能与复用边界 | [历史代码盘点与复用评估](历史代码盘点与复用评估.md) |
-| 分类去重后的源码精选与使用说明 | [代码参考包](代码参考包/README.md) · [下载 ZIP](代码参考包/Bindu-历史代码精选-2026-09-16.zip) |
-| 模块职责、状态所有权、首期装配 | [软件架构 v0.3](软件架构设计.md) |
-| 执行字段、时间轴、结束/取消/保持 | [执行契约 v0.2](动作执行契约.md) |
-| 候选选型、官方依据、P0–P6 与验收 | [一期建设计划](一期建设计划与开源选型.md) |
-| 取舍与被替代建议 | [决策记录](决策记录.md) |
-
-其他文档只链接主定义。修改规则先改主文档，再检查图示；历史记录追加，不拿旧建议覆盖当前版本。具体协作与文件增长规则见 [AGENTS](AGENTS.md)：优先原地更新，默认每项任务不新增 Markdown。
-
-## 图示与来源
-
-- [系统架构图册](系统架构图.md)：集中维护六层总图、模块关系、执行链和[七类职责展开](系统架构图.md#4-各层职责展开)；不同粒度的图示对应同一架构。
-- [科研汇报 PNG](图片/总体架构图-科研版-v1.png) · [生成记录](图片/总体架构图-科研版-v1-提示词.md)。静态图片不作为接口规范。
-- [Galbot 设计对照](Galbot设计对照.md)：早期参考资料的性质及取舍；参考系统与当前实验室机器分开。其他历史笔记：[RoboTwin / PI0.5](../参考资料/Galbot/robotwin_pi05.md)。
-
-## 历史与审查
-
-- [2026-09-17](过程记录/2026-09-17.md) · [2026-09-16](过程记录/2026-09-16.md) · [2026-09-15](过程记录/2026-09-15.md)：按日过程记录；9月16日的[审查详情](过程记录/2026-09-16.md#审查详情)保留问题、依据、处理及验证边界。
-
-当前实现状态见[进度](当前进度.md)。模拟开发机测试不等于机器人部署或实测；候选模块不能仅凭图示、README 或历史文件名确定控制语义。
-
-## GitHub 与开发同步
-
-仓库：[WXB1870/bindu](https://github.com/WXB1870/bindu)（公开）。Bindu 面向具身智能机器人，规划覆盖 VLA 客户端、感知、IK、规划、VR 遥操作、数据采集、建图、导航和自适应插值；实际完成情况以[当前进度](当前进度.md)为准。
-
-协作流程：本机修改和验证 → 提交并推送 GitHub → Ubuntu 拉取相同提交后构建验证。新工作区使用：
-
-```bash
-git clone https://github.com/WXB1870/bindu.git
-cd bindu
-```
-
-已配置远端的工作区使用 `git pull --ff-only`，用 `git rev-parse HEAD` 核对两机版本。拉取前检查 `git status --short` 并保留未提交修改；更新源码后按下方命令重新构建。现有 Ubuntu 工作区尚未切换完成，状态见[进度](当前进度.md)。
-
-Git 维护源码、配置模板和项目文档；历史源码、精选 ZIP、模型权重、构建产物及实验数据独立保存，忽略入库。本地参考资产与验证结果链接在新克隆中可能不存在。远端初始 MIT LICENSE 保留；历史第三方参考资产的许可仍按各自来源处理。
+| 任务与执行 | 已实现模拟任务流程、控制权、在线关节目标、取消与异常处理 |
+| Pi 客户端 | 已实现两种历史 ZMQ 模式、动作映射、时效检查和诊断；已通过模拟服务测试 |
+| 设备适配 | 已实现模拟底盘、关节和灵巧手驱动；真实设备待接入 |
+| 导航、感知、规划 | 已有模拟实现，真实算法待接入 |
+| IK、语音交互、遥操作 | 已预留模块目录 |
+| 数据记录 | 已实现异步事件与状态记录；图像同步及完整训练数据管线待实现 |
+| 自适应插值 | 高频执行与真机适配待实现 |
 
 ## 工程入口
 
-总工程名为 **bindu**，本目录同时是 ROS 2 工作区根目录。本地修改源码，目标开发机 `/home/wxb/bindu` 编译验证。
+仓库根目录同时是 ROS 2 工作区，共包含 11 个可构建包。
 
 ```text
 bindu/
 ├── src/
-│   ├── shared/                # 跨模块的数据和接口
-│   │   ├── bindu_contracts/   # 无 ROS 的数据、profile、能力/设备端口
-│   │   └── bindu_interfaces/  # ROS msg / srv / action
-│   ├── tasks/bindu_tasks/     # 任务流程、任务持有的场景事实
-│   ├── control/bindu_execution/ # 控制权、时序、轨迹执行
-│   ├── hardware/bindu_hardware/ # drivers/ 与 robot_io/，不做规划/插值
-│   ├── data/bindu_recording/  # 异步记录，不等于完整训练数据管线
-│   ├── integration/bindu_runtime/ # ROS 节点、配置、launch 与装配
-│   └── capabilities/          # 实验室能力，各自独立目录
-│       ├── bindu_kinematics/   # FK/IK，预留目录
-│       ├── bindu_vla/          # Pi ZMQ 客户端与模拟动作块；ACT 暂不接入
-│       ├── bindu_perception/   # 目前仅模拟物体定位
-│       ├── bindu_navigation/   # 目前仅模拟移动
-│       ├── bindu_planning/     # 目前仅模拟关节轨迹
-│       ├── bindu_interaction/  # 语音/文本任务入口，预留目录
-│       └── bindu_teleoperation/# VR/遥操作，预留目录
-├── tests/                    # 跨进程集成与故障测试
-├── artifacts/                # 构建日志、验证结果与模拟 episode，忽略入库
-├── build/ install/ log/      # 目标机 colcon 生成，忽略入库
-├── 历史代码/ 代码参考包/      # 参考资产，独立于生产源码
-└── README.md 等既有主文档     # 上下文与记录入口
+│   ├── shared/          # 公共契约、ROS 消息与服务
+│   ├── tasks/           # 任务流程与场景状态
+│   ├── control/         # 控制权、时序与轨迹执行
+│   ├── hardware/        # 设备驱动、命令路由与反馈汇总
+│   ├── data/            # 异步数据记录
+│   ├── integration/     # ROS 节点、配置与 launch
+│   └── capabilities/    # IK、VLA、感知、导航、规划、交互、遥操作
+├── tests/               # 模块测试与跨进程模拟验证
+├── tools/               # 开发与部署工具预留入口
+├── README.md
+├── AGENTS.md
+├── 软件架构设计.md
+├── 动作执行契约.md
+└── LICENSE
 ```
 
-模块核心位置、替换接口与当前限制见[架构8.5.4](软件架构设计.md#854-当前代码组织与替换边界)。包内测试放在对应包的 `test/`；跨包测试只放 `tests/`。不为每个模块再建说明文档。当前共11个可构建包。分类目录本身不是 ROS 包；`bindu_core` 已移除。四个已有能力目录是独立 ROS 2 Python 包；三个预留目录只有 `.gitkeep`，不会被 colcon 当作已实现包构建。
+`build/`、`install/`、`log/` 由构建生成；`artifacts/` 保存实验结果与临时依赖，均不提交 Git。`tools/` 目前只有占位文件。历史代码、图片、研究计划与过程记录在主开发工作区单独维护。
 
-在目标开发机执行（仅模拟）：
+## 环境要求
+
+- 已验证开发环境：Ubuntu 24.04、ROS 2 Jazzy、Python 3.12、x86_64。
+- 构建工具：colcon、rosdep；运行依赖包括 NumPy 和 PyZMQ。
+- Jetson Orin / Ubuntu 22.04 的部署兼容性尚未验证。
+
+下列命令假定 ROS 2 Jazzy、colcon 和已初始化的 rosdep 可用。新终端只加载当前使用的工作区，避免混用旧安装环境。
+
+## 快速开始
+
+### 1. 获取与构建
 
 ```bash
-cd ~/bindu
+git clone https://github.com/WXB1870/bindu.git
+cd bindu
 source /opt/ros/jazzy/setup.bash
+rosdep install --from-paths src --ignore-src -r -y --rosdistro jazzy
 colcon build --base-paths src --symlink-install
 source install/setup.bash
-python3 -m unittest discover -s tests -p 'test_*.py' -v
-python3 tests/validate_ros.py --output artifacts/manual-verification
+```
 
-# 交互启动，保持在单机测试域
+### 2. 启动模拟系统
+
+在工作区终端执行：
+
+```bash
 export ROS_DOMAIN_ID=116 ROS_LOCALHOST_ONLY=1
 ros2 launch bindu_runtime skeleton.launch.py
 ```
 
-本次重分类回归使用独立构建空间，避免旧安装掩盖遗漏：在只 source `/opt/ros/jazzy/setup.bash` 的新终端执行 `colcon --log-base log/reclassified build --base-paths src --build-base build/reclassified --install-base install/reclassified --symlink-install`，随后 source `install/reclassified/setup.bash`；测试命令相同，输出为 `artifacts/reclassified-verification`。旧工作区升级时不要混用两套 install 环境。
-
-另一个已 source 环境且使用相同 ROS 域的终端提交模拟任务：
+另开一个终端，进入同一工作区并提交模拟取物任务：
 
 ```bash
-ros2 action send_goal /bindu_sim/tasks/fetch_drink bindu_interfaces/action/FetchDrink   "{task_id: demo_1, object_id: drink, strategy: planner}" --feedback
-```
-
-`strategy` 可选 `planner` / `chunk`；成功后当前模拟场景保持持物事实，新的独立实验重新启动并使用新 run_id。不要把该状态当成真实灵巧手持续保持会话。构建时显式使用 `--base-paths src`，避免扫描历史目录中的旧 ROS 工程。复现测试会自建隔离命名空间、启动并关闭其自身模拟进程，不调用机器人 SDK。
-
-### Pi 客户端运行入口
-
-本地只运行客户端；源码为 `src/capabilities/bindu_vla/bindu_vla/pi/`，ROS 适配为 `integration/bindu_runtime/bindu_runtime/pi_node.py`。配置示例 `src/integration/bindu_runtime/config/pi_loopback.json` 仅用于回环测试，实际端点与关节映射须按当前机器人和 Pi 服务填写。ACT 不在本批范围。
-
-ROS 环境需 `python3-numpy`、`python3-zmq`。本轮开发机使用系统 NumPy 1.26.4 与项目隔离目录内 pyzmq 26.4.0；复现该环境：
-
-```bash
-cd ~/bindu
 source /opt/ros/jazzy/setup.bash
-python3 -m pip install --target artifacts/pi-deps pyzmq==26.4.0
-colcon --log-base log/pi build --base-paths src --build-base build/pi --install-base install/pi --symlink-install
-source install/pi/setup.bash
-export PYTHONPATH="$PWD/artifacts/pi-deps:$PYTHONPATH"
-python3 -m unittest discover -s tests -p 'test_*.py' -v
-python3 tests/validate_pi.py --output artifacts/pi-final
-python3 tests/validate_ros.py --output artifacts/pi-regression
+source install/setup.bash
+export ROS_DOMAIN_ID=116 ROS_LOCALHOST_ONLY=1
+ros2 action send_goal /bindu_sim/tasks/fetch_drink bindu_interfaces/action/FetchDrink \
+  "{task_id: demo_1, object_id: drink, strategy: planner}" --feedback
 ```
 
-`validate_pi.py` 自建回环模拟 Pi 服务、三路合成 RGB/关节观测和模拟设备，自动收尾。它不加载模型、不连接旧配置里的服务器、不调用机器人 SDK。配置和结果保存在指定输出目录。
+`strategy` 支持 `planner` 和 `chunk` 两种模拟策略。一次成功任务后，模拟场景保留持物状态；新的独立实验需重启模拟系统。以上流程不连接真实机器人。
 
-手工启动仍使用骨架入口：
+## 测试
+
+在已加载 ROS 与工作区环境的终端执行；测试输出目录应为新的实验批次。
+
+```bash
+python3 -m unittest discover -s tests -p 'test_*.py' -v
+python3 tests/validate_ros.py --output artifacts/ros-check
+python3 tests/validate_pi.py --output artifacts/pi-check
+```
+
+集成验证会启动并收尾各自的模拟进程。Pi 验证自带回环服务、合成图像和关节观测，无需模型权重或真实设备。
+
+已验证：11 包构建、28 项模块测试、14 个 Pi 集成场景；原有 15 个 ROS 场景在先前版本通过，最近的 Pi 启动诊断修正后未重跑。模拟测试不等于真机或实时性能验收。验证环境使用 NumPy 1.26.4、PyZMQ 26.4.0；若需要隔离安装该 PyZMQ 版本，可执行：
+
+```bash
+python3 -m pip install --target artifacts/pi-deps pyzmq==26.4.0
+export PYTHONPATH="$PWD/artifacts/pi-deps:$PYTHONPATH"
+```
+
+## Pi 客户端运行入口
+
+- 核心代码：[`bindu_vla/pi`](src/capabilities/bindu_vla/bindu_vla/pi/)。
+- 配置示例：[`pi_loopback.json`](src/integration/bindu_runtime/config/pi_loopback.json)。
+- `pubsub`：机器人发布观测、订阅动作。
+- `pull`：机器人回复模型端的观测请求，同时订阅动作。
+
+手工联调时，先配置服务端点、关节映射及观测输入，再启动客户端：
 
 ```bash
 ros2 launch bindu_runtime skeleton.launch.py pi_enabled:=true
+```
+
+在同一 ROS 域、已加载工作区的另一终端中查询就绪状态并发起会话：
+
+```bash
+ros2 service call /bindu_sim/vla/pi/ready std_srvs/srv/Trigger '{}'
 ros2 action send_goal /bindu_sim/vla/pi/session bindu_interfaces/action/PiSession \
   "{task_id: pi_demo, prompt: 'pick water', resource_group: arm, duration: 5.0}" --feedback
 ```
 
-手工会话还需要相同 ROS 域内的 `vla/pi/observation` 输入和匹配配置的 Pi 服务；缺少新鲜观测时拒绝启动。可调用 `/bindu_sim/vla/pi/ready`（`std_srvs/srv/Trigger`）查询客户端实际就绪状态；启动拒绝会通过 `PI_GOAL_REJECTED` 事件和节点日志说明原因。`mode=pubsub` 为机器人 PUB 观测＋SUB 动作；`mode=pull` 为机器人 REP 回复观测请求＋SUB 动作。`duration` 结束表示本次控制会话停止，不代表抓取成功。默认仍使用模拟设备；真实机器人尚未接入。字段、时序和兼容限制见[架构8.5.4](软件架构设计.md#854-当前代码组织与替换边界)。
+缺少新鲜观测时拒绝启动，原因通过 `PI_GOAL_REJECTED` 事件和节点日志给出。会话持续时间结束表示控制会话停止，不代表抓取成功。目前每个会话控制一个关节组，默认使用模拟设备，ACT 未接入。
 
-版本管理以本目录为根、主分支为 `main`。[AGENTS.md](AGENTS.md) 随仓库维护，父目录仅保留指向它的本地链接。历史源码/ZIP、过程附件和 artifacts 不入库；文档中这些本地证据链接需在原工作区查看，测试产物可按上述命令重新生成。早期 Galbot 参考资料仍在仓库外。
+## 开发与文档
+
+- [软件架构](软件架构设计.md)：模块职责、替换接口与实现边界。
+- [动作执行契约](动作执行契约.md)：目标、控制权、时间轴与停止语义。
+- [协作规范](AGENTS.md)：开发验证要求和文件管理规则。
+
+本地开发后提交并推送；目标机在保留自身未提交修改的前提下使用 `git pull --ff-only`，重新构建，并用 `git rev-parse HEAD` 核对版本。已有独立 Git 历史的工作区需先完成迁移。
+
+## License
+
+见 [MIT License](LICENSE)。历史第三方参考资产遵循各自来源许可。
