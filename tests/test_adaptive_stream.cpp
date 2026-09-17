@@ -155,9 +155,106 @@ void randomized_streams() {
     }
     std::cout<<"randomized samples: "<<total<<"\n";
 }
+
+void input_rates() {
+    for(int hz:{5,10,30,60,100,200}) {
+        AdaptiveStream p;require(p.reset(0.),"rate reset");
+        double next_update=0.,error=0.;int updates=0;
+        std::vector<Point> trace{{0.,0.}};
+        // Input arrival frequency is independent of the 1 kHz test sampler.
+        // This tests timestamp semantics, not OS or device real-time timing.
+        for(int i=1;i<=6000;++i) {
+            const double t=i*.001,q=.3*std::sin(2*t);
+            require(p.step(t),"rate step "+std::to_string(hz)+" at "+std::to_string(t));
+            valid({},p.state());trace.push_back({t,p.state().q});
+            if(t+1e-12>=next_update) {
+                const auto before=p.state();
+                require(p.target(t,q,t+2./hz+.05),"rate target");
+                close(before.q,p.state().q);close(before.v,p.state().v);close(before.a,p.state().a);
+                ++updates;next_update+=1./hz;
+            }
+            error+=(p.state().q-q)*(p.state().q-q);
+        }
+        realized_bounds({},trace);
+        p.stop();
+        for(int i=1;i<=200;++i) require(p.step(6.+i*.01),"rate stop");
+        require(p.stopped(),"rate stop did not finish");
+        std::cout<<"stream_hz="<<hz<<" updates="<<updates<<" rms="<<std::sqrt(error/6000)<<'\n';
+    }
+}
+
+void p2p_matrix() {
+    int cases=0;
+    for(double dt:{.001,.01,.02}) for(double speed:{.3,1.5})
+    for(double goal:{-1.,-.001,0.,.001,1.}) {
+        Limits l;l.velocity=speed;AdaptiveStream p(l);
+        require(p.reset(0.)&&p.target(0.,goal,12.),"P2P admission");
+        std::vector<Point> trace{{0.,0.}};
+        for(int i=1;i<=static_cast<int>(10./dt);++i) {
+            const double t=i*dt;
+            require(p.step(t),"P2P step dt="+std::to_string(dt)+" speed="+std::to_string(speed)+" goal="+std::to_string(goal));
+            valid(l,p.state());trace.push_back({t,p.state().q});
+            if(t>=9.) {close(p.state().q,goal);close(p.state().v,0.);close(p.state().a,0.);}
+        }
+        realized_bounds(l,trace);++cases;
+        // Reaching a reference is not task completion or feedback confirmation.
+        require(!p.stopped(),"active goal unexpectedly released on arrival");
+    }
+    std::cout<<"untimed_p2p_cases="<<cases<<'\n';
+}
+
+void stream_p2p_transitions() {
+    AdaptiveStream p;require(p.reset(0.)&&p.target(0.,.8,6.),"transition initial P2P");
+    std::vector<Point> trace{{0.,0.}};
+    for(int i=1;i<=500;++i) {
+        const double t=i*.01;
+        require(p.step(t),"transition step");valid({},p.state());trace.push_back({t,p.state().q});
+        if(i>=40&&i<200) {
+            const auto before=p.state();
+            require(p.target(t,.25*std::sin(3*t),t+.2),"transition stream");
+            close(before.q,p.state().q);close(before.v,p.state().v);close(before.a,p.state().a);
+        }
+        if(i==200) require(p.target(t,-.2,6.),"transition final P2P");
+        if(i>=400) {close(p.state().q,-.2);close(p.state().v,0.);close(p.state().a,0.);}
+    }
+    realized_bounds({},trace);
+    std::cout<<"untimed_p2p_to_stream_to_p2p=PASS\n";
+}
+
+void capability_boundaries() {
+    // A deadline is not represented in this API. TTL must not be advertised
+    // as a requested arrival time, or a future stamp as a trajectory queue.
+    AdaptiveStream p;require(p.reset(0.),"capability reset");
+    require(!p.target(1.,.2,2.),"unexpected future target support");
+    require(p.target(0.,.2,2.),"TTL target");double arrived=-1.;
+    for(int i=1;i<=150;++i) {
+        const double t=i*.01;require(p.step(t),"TTL witness step");
+        if(arrived<0.&&std::abs(p.state().q-.2)<1e-8&&p.state().v==0.&&p.state().a==0.) arrived=t;
+    }
+    require(arrived>0.&&arrived<1.5,"TTL versus arrival witness");
+    std::cout<<"ttl=2 reference_arrival="<<arrived<<" future_target=rejected\n";
+
+    // Seven independent scalar instances are not a synchronized group planner.
+    std::vector<AdaptiveStream> axes;std::vector<double> arrivals(7,-1.);
+    for(int axis=0;axis<7;++axis) {
+        Limits l;l.velocity=.2+.2*axis;axes.emplace_back(l);
+        require(axes.back().reset(0.)&&axes.back().target(0.,.4,7.),"scalar array target");
+    }
+    for(int i=1;i<=600;++i) for(int axis=0;axis<7;++axis) {
+        const double t=i*.01;auto& a=axes[axis];require(a.step(t),"scalar array step");
+        Limits l;l.velocity=.2+.2*axis;valid(l,a.state());
+        if(arrivals[axis]<0.&&std::abs(a.state().q-.4)<1e-8&&a.state().v==0.&&a.state().a==0.) arrivals[axis]=t;
+    }
+    for(double t:arrivals) require(t>0.,"scalar axis did not arrive");
+    const double spread=*std::max_element(arrivals.begin(),arrivals.end())-*std::min_element(arrivals.begin(),arrivals.end());
+    require(spread>.1,"expected unsynchronized scalar arrival witness");
+    std::cout<<"independent_scalar_arrival_span="<<spread<<" (no group synchronization)\n";
+    std::cout<<"UNSUPPORTED: timed P2P, derivative waypoints, action chunks/revisions, group synchronization, feedback completion\n";
+}
 int main() {
     try {
         input_checks();settle_and_boundaries();stop_and_expiry();jerk_integration();braking_states();randomized_streams();
-        std::cout<<"PASS: 6 experimental adaptive stream test groups\n";
+        input_rates();p2p_matrix();stream_p2p_transitions();capability_boundaries();
+        std::cout<<"PASS: 10 experimental adaptive stream test groups; capability gaps remain\n";
     } catch(const std::exception& e) {std::cerr<<"FAIL: "<<e.what()<<'\n';return 1;}
 }

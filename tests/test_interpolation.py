@@ -265,5 +265,59 @@ class Interpolation(unittest.TestCase):
                 raw['execution']=cfg;path.write_text(json.dumps(raw))
                 with self.assertRaises(ValueError): Profile.load(path)
 
+    def test_three_axis_timed_p2p_respects_individual_limits(self):
+        names=('a','b','c')
+        p=replace(self.p,groups={'arm':list(names)},limits={n:[-1.,1.] for n in names},
+                  joint_dynamics={n:{'velocity':v} for n,v in zip(names,(.2,.6,1.2))})
+        driver=SimJointDriver(names,1.5)
+        e=Executor(p,RobotIO(p,{'arm':driver},SimBaseDriver()))
+        lease,epoch=e.acquire('planner',['arm'],5.,10.)
+        goal=(.2,-.3,.4)
+        m=replace(self.m,lease_id=lease,epoch=epoch,names=names,mode='finite_trajectory',
+                  positions=(),offsets=(2.,),points=(goal,),valid_for=3.)
+        e.submit(m,10.)
+        self.assertEqual(e.path.end,12.)
+        for i in range(1,200):
+            e.tick(10.+i*.01)
+            self.assertIsNotNone(e.active)
+            s=e.reference
+            for axis,n in enumerate(names):
+                self.assertLessEqual(abs(s.q[axis]),1.+1e-8)
+                self.assertLessEqual(abs(s.v[axis]),p.speed(n)+1e-8)
+                self.assertLessEqual(abs(s.a[axis]),p.acceleration(n)+1e-8)
+                self.assertLessEqual(abs(s.j[axis]),p.jerk(n)+1e-8)
+        e.tick(12.)
+        self.assertEqual(e.results[m.command_id].state,'SUCCEEDED')
+        self.assertEqual(e.results[m.command_id].code,'FEEDBACK_CONFIRMED')
+        for n,q in zip(names,goal): self.assertAlmostEqual(e.io.reference_positions[n],q)
+
+    def test_stream_timed_chunk_stream_transitions(self):
+        self.e.submit(self.m,10.)
+        replacements=(
+            replace(self.m,command_id='timed',stamp=10.1,mode='finite_trajectory',
+                    positions=(),offsets=(.5,1.),points=((.2,),(.3,)),
+                    velocities=((.2,),(0.,)),valid_for=2.),
+            replace(self.m,command_id='chunk',stamp=10.2,mode='joint_reference_segment',
+                    positions=(),offsets=(.5,1.),points=((.25,),(.35,)),
+                    velocities=((.15,),(.15,)),valid_for=2.),
+            replace(self.m,command_id='stream',stamp=10.3,positions=(-.1,),valid_for=2.))
+        for m in replacements:
+            self.tick_to(m.stamp)
+            before=self.e.reference
+            if m.mode=='joint_reference_segment': m=replace(m,expected_revision=self.e.revision)
+            self.e.submit(m,m.stamp)
+            after=self.e.reference
+            for a,b in zip((before.q,before.v,before.a),(after.q,after.v,after.a)):
+                self.assertAlmostEqual(a[0],b[0],places=9)
+            self.assertIsNone(self.e.stopping)
+            self.assertEqual(self.e.results[m.command_id].state,'ACCEPTED')
+        while self.e.last_tick<11.8-1e-8:
+            self.e.tick(min(11.8,self.e.last_tick+.01))
+            self.assert_bounded(self.e.reference)
+        self.assertAlmostEqual(self.e.reference.q[0],-.1)
+        self.e.halt(11.8)
+        while self.e.stopping: self.e.tick(self.e.last_tick+.01)
+        self.assertEqual(self.e.results['stream'].state,'CANCELED')
+
 
 if __name__=='__main__': unittest.main()
