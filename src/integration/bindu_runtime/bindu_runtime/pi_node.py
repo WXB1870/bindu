@@ -134,10 +134,12 @@ class PiNode(RuntimeNode):
                 operation='release', lease_id=lease.lease_id, epoch=lease.epoch)))
             if not reply.ok:
                 return False
-            end = time.monotonic()+.5
+            end = time.monotonic()+self.profile.stop_timeout+.5
             while time.monotonic() < end:
                 state = self.state
-                if (state and not state.stop_failures and seconds(state.feedback_stamp) >= requested and
+                if state and (state.code == 'STOP_FEEDBACK_TIMEOUT' or 'EMERGENCY_STOP' in state.code):
+                    return False
+                if (state and state.state != 'STOPPING' and not state.reference.name and not state.stop_failures and seconds(state.feedback_stamp) >= requested and
                         0 <= self.now()-seconds(state.feedback_stamp) < .2 and
                         abs(state.base_velocity.linear.x) < 1e-6 and abs(state.base_velocity.angular.z) < 1e-6 and
                         all(abs(v) < .01 for v in state.joints.velocity)):

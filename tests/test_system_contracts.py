@@ -36,7 +36,8 @@ class Contracts(unittest.TestCase):
 
     def test_feedback_completion(self):
         self.e.submit(self.m,10.)
-        self.e.tick(10.5)  # Publishing the final reference alone cannot finish.
+        self.drivers['arm'].max_speed = .4
+        for i in range(1,51): self.e.tick(10+i/100)  # Actual tracking still lags.
         self.assertIsNotNone(self.e.active)
         for i in range(51,101): self.e.tick(10+i/100)
         self.assertEqual(self.e.results['cmd'].state,'SUCCEEDED')
@@ -59,8 +60,9 @@ class Contracts(unittest.TestCase):
     def test_online_expiry(self):
         m=replace(self.m,mode='joint_target',positions=(.3,.3),points=(),offsets=(),valid_for=.2)
         self.e.submit(m,10.)
-        self.e.tick(10.1)
-        self.e.tick(10.21)
+        for i in range(1,22): self.e.tick(10+i/100)
+        self.assertEqual(self.e.results['cmd'].state,'STOPPING')
+        for i in range(22,100): self.e.tick(10+i/100)
         self.assertEqual(self.e.results['cmd'].code,'COMMAND_TIMEOUT')
         self.assertEqual(self.drivers['arm'].target,self.drivers['arm'].positions)
         self.assertFalse(self.io.reference_positions)
@@ -71,7 +73,8 @@ class Contracts(unittest.TestCase):
         self.e.tick(10.02)
         self.assertEqual(self.drivers['arm'].target['a'],0.)
         self.e.tick(10.05)
-        self.assertEqual(self.drivers['arm'].target['a'],.3)
+        self.assertGreater(self.drivers['arm'].target['a'],0.)
+        self.assertLess(self.drivers['arm'].target['a'],.3)
 
     def test_replacement(self):
         self.e.submit(self.m,10.)
@@ -87,19 +90,23 @@ class Contracts(unittest.TestCase):
                 self.e.submit(replace(target, command_id='next'+str(i), stamp=10.+i*.01), 10.+i*.01)
             stop.assert_not_called()
             self.e.halt(10.11,revoke=True)
+            stop.assert_not_called()
+            self.assertTrue(self.e.stopping)
+            for i in range(12,101): self.e.tick(10+i/100)
             stop.assert_called_once()
 
-    def test_online_resource_or_task_change_still_stops(self):
+    def test_same_resource_transition_is_continuous_and_other_resource_requires_stop(self):
         target = replace(self.m, mode='joint_target', positions=(.3,.3), points=(), offsets=())
         self.e.submit(target,10.)
         with patch.object(self.io, 'stop', wraps=self.io.stop) as stop:
             self.e.submit(replace(target,command_id='other-task',task_id='other'),10.)
-            self.e.submit(replace(target,command_id='other-group',group='hand',names=('f',),positions=(.2,)),10.)
-            self.assertEqual(stop.call_count,2)
+            with self.assertRaisesRegex(Rejected,'TRANSITION_REQUIRES_STOP'):
+                self.e.submit(replace(target,command_id='other-group',group='hand',names=('f',),positions=(.2,)),10.)
+            stop.assert_not_called()
 
     def test_lease_expiry(self):
-        self.e.submit(replace(self.m,valid_for=5.),10.)
-        self.e.tick(12.1)
+        self.e.submit(replace(self.m,mode='joint_target',positions=(.3,.3),points=(),offsets=(),valid_for=5.),10.)
+        for i in range(1,202): self.e.tick(10+i/100)
         self.assertEqual(self.e.results['cmd'].code,'LEASE_EXPIRED')
         self.assertFalse(self.e.lease_id)
 

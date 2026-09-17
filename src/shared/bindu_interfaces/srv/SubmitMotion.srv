@@ -2,3 +2,5 @@ bindu_interfaces/MotionCommand command
 ---
 bool accepted
 string code
+uint64 revision
+builtin_interfaces/Time switch_stamp

@@ -22,6 +22,9 @@ class Motion:
     velocity: Tuple[float, float] = (0., 0.)
     duration: float = 0.
     schema_version: int = 1
+    velocities: Tuple[Tuple[float, ...], ...] = ()
+    accelerations: Tuple[Tuple[float, ...], ...] = ()
+    expected_revision: int = 0  # 0 disables the check; chunks require a current revision.
 
 
 @dataclass
@@ -60,3 +63,5 @@ class JointPlan:
     names: Tuple[str, ...]
     offsets: Tuple[float, ...]
     points: Tuple[Tuple[float, ...], ...]
+    velocities: Tuple[Tuple[float, ...], ...] = ()
+    accelerations: Tuple[Tuple[float, ...], ...] = ()

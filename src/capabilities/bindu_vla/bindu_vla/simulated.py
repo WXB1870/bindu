@@ -2,10 +2,21 @@ from bindu_contracts.contracts import JointPlan
 
 
 class ChunkStrategy:
-    """Deterministic 100 Hz chunk stand-in; deliberately contains no VLA model."""
+    """Synthetic timed action knots, including their derivatives; no VLA model.
+
+    This analytic test trajectory exercises the shared sampler without a second
+    100 Hz position filter or stopping at each sample.
+    """
     async def plan(self, profile, group, start, target):
-        duration = max(.5, max(abs(a-b) for a, b in zip(start, target)) / profile.max_speed + .1)
-        count = int(duration * 100) + 1
-        times = tuple((i+1) / 100 for i in range(count))
-        points = tuple(tuple(a + (b-a)*(i+1)/count for a,b in zip(start,target)) for i in range(count))
-        return JointPlan(group, tuple(profile.groups[group]), times, points)
+        duration = max(.5, 1.05*max(max(1.875*abs(a-b)/profile.speed(n),
+            (5.774*abs(a-b)/profile.acceleration(n))**.5,
+            (60*abs(a-b)/profile.jerk(n))**(1/3))
+            for n, a, b in zip(profile.groups[group], start, target)))
+        times, points, velocities, accelerations = [], [], [], []
+        for u in (.25, .5, .75, 1.):
+            times.append(duration*u)
+            points.append(tuple(a+(b-a)*(10*u**3-15*u**4+6*u**5) for a, b in zip(start, target)))
+            velocities.append(tuple((b-a)*(30*u**2-60*u**3+30*u**4)/duration for a, b in zip(start, target)))
+            accelerations.append(tuple((b-a)*(60*u-180*u**2+120*u**3)/duration**2 for a, b in zip(start, target)))
+        return JointPlan(group, tuple(profile.groups[group]), tuple(times), tuple(points),
+                         tuple(velocities), tuple(accelerations))

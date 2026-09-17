@@ -33,5 +33,13 @@
     "joint_position",
     "base_velocity",
     "simulated_grasp"
-  ]
+  ],
+  "execution": {
+    "max_acceleration": 20.0,
+    "max_jerk": 400.0,
+    "control_period": 0.01,
+    "max_tick_gap": 0.1,
+    "stop_timeout": 5.0,
+    "max_transition_duration": 30.0
+  }
 }

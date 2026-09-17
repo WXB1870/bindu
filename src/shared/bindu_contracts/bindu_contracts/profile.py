@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import hashlib
 import json
 import math
@@ -14,6 +14,22 @@ class Profile:
     max_speed: float
     capabilities: Tuple[str, ...]
     digest: str
+    max_acceleration: float = 20.
+    max_jerk: float = 400.
+    control_period: float = .01
+    max_tick_gap: float = .1
+    stop_timeout: float = 5.
+    joint_dynamics: dict = field(default_factory=dict)
+    max_transition_duration: float = 30.
+
+    def speed(self, name):
+        return self.joint_dynamics.get(name, {}).get('velocity', self.max_speed)
+
+    def acceleration(self, name):
+        return self.joint_dynamics.get(name, {}).get('acceleration', self.max_acceleration)
+
+    def jerk(self, name):
+        return self.joint_dynamics.get(name, {}).get('jerk', self.max_jerk)
 
     @classmethod
     def load(cls, path):
@@ -28,5 +44,22 @@ class Profile:
         if not math.isfinite(raw['max_speed']) or raw['max_speed'] <= 0:
             raise ValueError('invalid maximum speed')
         digest = hashlib.sha256(json.dumps(raw, sort_keys=True).encode()).hexdigest()
-        return cls(raw['name'], raw['groups'], raw['limits'], raw['max_speed'],
-                   tuple(raw['capabilities']), digest)
+        cfg = raw.get('execution', {})
+        allowed = {'max_acceleration', 'max_jerk', 'control_period', 'max_tick_gap', 'stop_timeout', 'joint_dynamics', 'max_transition_duration'}
+        if set(cfg)-allowed:
+            raise ValueError('unknown execution setting')
+        profile = cls(raw['name'], raw['groups'], raw['limits'], raw['max_speed'],
+                      tuple(raw['capabilities']), digest, **cfg)
+        for value in (profile.max_acceleration, profile.max_jerk, profile.control_period,
+                      profile.max_tick_gap, profile.stop_timeout, profile.max_transition_duration):
+            if type(value) not in (float, int) or not math.isfinite(value) or value <= 0:
+                raise ValueError('invalid execution limit')
+        if not profile.control_period <= profile.max_tick_gap < profile.stop_timeout:
+            raise ValueError('invalid execution timing')
+        if set(profile.joint_dynamics)-set(names):
+            raise ValueError('unknown dynamics joint')
+        for limits in profile.joint_dynamics.values():
+            if set(limits)-{'velocity', 'acceleration', 'jerk'} or any(
+                    type(v) not in (float, int) or not math.isfinite(v) or v <= 0 for v in limits.values()):
+                raise ValueError('invalid joint dynamics')
+        return profile

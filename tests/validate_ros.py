@@ -16,7 +16,9 @@ import rclpy
 from rclpy.action import ActionClient
 from bindu_interfaces.action import FetchDrink
 from bindu_interfaces.msg import ExecutionState, RecorderHealth
-from bindu_interfaces.srv import InjectFault, Lease, SubmitMotion
+from bindu_interfaces.srv import InjectFault, Lease, SubmitMotion, ControlExecution
+from trajectory_msgs.msg import JointTrajectoryPoint
+from builtin_interfaces.msg import Duration
 from bindu_interfaces.msg import MotionCommand
 from builtin_interfaces.msg import Time
 
@@ -141,7 +143,8 @@ def scenario(root, output, case, strategy='planner', profile='wheel_sim', fault=
             refs=[r['data'] for r in records if r['kind']=='reference' and r['data']['mode']=='finite_trajectory']
             assert len(refs)==2
             assert all(r['observation_id'] for r in refs)
-            if strategy=='chunk': assert all(len(r['points'])>=50 for r in refs)
+            if strategy=='chunk':
+                assert all(len(r['points'])==4 and all(p['velocities'] and p['accelerations'] for p in r['points']) for r in refs)
         result['records']=len(records)
         result['recorder']=summary
     else:
@@ -189,7 +192,7 @@ def online_targets(root, output):
                 rclpy.spin_once(node,timeout_sec=min(.002,max(0.,start+index*.01-time.monotonic())))
             publisher.publish(target(index))
             rclpy.spin_once(node,timeout_sec=0.)
-        until(node,lambda:seen['state'].command_id==run+'_99' and seen['state'].code=='COMMAND_TIMEOUT',3)
+        until(node,lambda:seen['state'].command_id==run+'_99' and seen['state'].code=='COMMAND_TIMEOUT' and seen['state'].state=='FAILED',3)
         assert len(seen['accepted'])==100,len(seen['accepted'])
         assert not seen['state'].reference.name, 'stopped position reference must be inactive'
         release=wait(node,lease_client.call_async(Lease.Request(operation='release',lease_id=lease.lease_id,epoch=lease.epoch)))
@@ -203,6 +206,74 @@ def online_targets(root, output):
         terminate(process)
         node.destroy_node()
         log.close()
+
+
+def timed_chunks(root, output):
+    """ROS wire derivatives, revisions, expired prefix and controlled stopping."""
+    ns='/bindu_timed_'+uuid.uuid4().hex[:8]
+    node=rclpy.create_node('timed_verifier_'+uuid.uuid4().hex[:8])
+    logdir=output/'processes'/ns[1:]; logdir.mkdir(parents=True)
+    log=(logdir/'execution.log').open('w')
+    process=subprocess.Popen(['ros2','run','bindu_runtime','execution','--ros-args',
+        '-r','__ns:='+ns],stdout=log,stderr=subprocess.STDOUT,start_new_session=True)
+    seen={'state':None,'samples':[]}
+    def receive(m):
+        seen['state']=m
+        seen['samples'].append(m)
+    sub=node.create_subscription(ExecutionState,ns+'/execution/state',receive,100)
+    lease_client=node.create_client(Lease,ns+'/execution/lease')
+    submit=node.create_client(SubmitMotion,ns+'/execution/submit')
+    control=node.create_client(ControlExecution,ns+'/execution/control')
+    try:
+        assert lease_client.wait_for_service(timeout_sec=10)
+        assert submit.wait_for_service(timeout_sec=5)
+        until(node,lambda:seen['state'] is not None)
+        revision=seen['state'].revision
+        lease=wait(node,lease_client.call_async(Lease.Request(operation='acquire',owner=ns,resources=['arm'])))
+        assert lease.ok
+        until(node,lambda:seen['state'].revision>revision)
+        def chunk(identity):
+            source=node.get_clock().now().nanoseconds-100000000
+            return MotionCommand(schema_version=1,command_id=identity,task_id=ns,
+                profile_hash=lease.profile_hash,lease_id=lease.lease_id,epoch=lease.epoch,
+                mode='joint_reference_segment',resource_group='arm',
+                stamp=Time(sec=source//1000000000,nanosec=source%1000000000),valid_for=1.5,
+                expected_revision=seen['state'].revision,joint_names=['arm_joint_1','arm_joint_2'],
+                points=[JointTrajectoryPoint(positions=[0.,0.],velocities=[0.,0.],accelerations=[0.,0.],time_from_start=Duration()),
+                        JointTrajectoryPoint(positions=[.1,.1],velocities=[.15,.15],accelerations=[0.,0.],time_from_start=Duration(nanosec=600000000))])
+        command=chunk('chunk')
+        reply=wait(node,submit.call_async(SubmitMotion.Request(command=command)))
+        assert reply.accepted,reply.code
+        assert reply.revision>command.expected_revision
+        assert reply.switch_stamp.sec+reply.switch_stamp.nanosec/1e9 >= command.stamp.sec+command.stamp.nanosec/1e9
+        command.command_id='obsolete_revision'
+        reject=wait(node,submit.call_async(SubmitMotion.Request(command=command)))
+        assert not reject.accepted and reject.code=='STALE_REVISION',reject.code
+        until(node,lambda:seen['state'].command_id=='chunk' and seen['state'].state=='FAILED',3)
+        assert seen['state'].code=='BUFFER_EXHAUSTED'
+        assert not seen['state'].reference.name
+        before=seen['state'].revision
+        command=chunk('cancel_chunk')
+        command.expected_revision=before
+        reply=wait(node,submit.call_async(SubmitMotion.Request(command=command)))
+        assert reply.accepted,reply.code
+        until(node,lambda:seen['state'].command_id=='cancel_chunk' and any(abs(v)>.02 for v in seen['state'].reference.velocity))
+        reply=wait(node,control.call_async(ControlExecution.Request(operation='stop',lease_id=lease.lease_id,epoch=lease.epoch)))
+        assert reply.ok
+        until(node,lambda:seen['state'].command_id=='cancel_chunk' and seen['state'].state=='CANCELED')
+        assert not seen['state'].reference.name
+        assert any(m.state=='STOPPING' for m in seen['samples'])
+        for m in seen['samples']:
+            assert len(m.reference.name)==len(m.reference.velocity)==len(m.reference_accelerations)==len(m.reference_jerks)
+            assert all(abs(q)<=1.+1e-8 for q in m.reference.position)
+            assert all(abs(v)<=1.5+1e-8 for v in m.reference.velocity)
+            assert all(abs(a)<=20.+1e-8 for a in m.reference_accelerations)
+            assert all(abs(j)<=400.+1e-8 for j in m.reference_jerks)
+        return {'case':'timed_chunks','passed':True,'simulated':True,'samples':len(seen['samples']),
+            'checks':['wire derivatives','revision acknowledgement','old revision rejected','expired prefix trimmed',
+                      'buffer exhaustion','controlled cancel','whole reference layout and bounds']}
+    finally:
+        terminate(process);node.destroy_node();log.close()
 
 
 def main():
@@ -228,6 +299,7 @@ def main():
            ('chunk_alternate',dict(strategy='chunk',profile='alternate_sim')),
            ('cancel',dict(cancel=True))]+[(f,dict(fault=f)) for f in ('delay','stale','reject','feedback_loss','recorder_loss','perception_loss','hand:reject','hand:feedback_loss')]
     cases.append(('online_targets',{}))
+    cases.append(('timed_chunks',{}))
     cases.append(('launch_entry',dict(launch=True)))
     if args.case:
         cases=[item for item in cases if item[0] in args.case]
@@ -235,7 +307,8 @@ def main():
     try:
         for name,kwargs in cases:
             try:
-                result=online_targets(root,output) if name=='online_targets' else scenario(root,output,name,**kwargs)
+                result=({'online_targets':online_targets,'timed_chunks':timed_chunks}[name](root,output)
+                        if name in ('online_targets','timed_chunks') else scenario(root,output,name,**kwargs))
             except Exception as exc:
                 result={'case':name,'passed':False,'error':str(exc),'traceback':traceback.format_exc()}
             results.append(result)

@@ -14,3 +14,5 @@ float64[] positions
 trajectory_msgs/JointTrajectoryPoint[] points
 geometry_msgs/Twist velocity
 float64 duration
+# Required current revision for joint_reference_segment; zero disables check otherwise.
+uint64 expected_revision

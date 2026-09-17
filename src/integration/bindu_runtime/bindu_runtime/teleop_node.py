@@ -130,9 +130,11 @@ class TeleopNode(RuntimeNode):
             reply = await self.wait(future)
             if not reply.ok:
                 return False
-            end = time.monotonic()+.5
+            end = time.monotonic()+self.profile.stop_timeout+.5
             while time.monotonic() < end:
                 s = self.state
+                if s and (s.code == 'STOP_FEEDBACK_TIMEOUT' or 'EMERGENCY_STOP' in s.code):
+                    return False
                 if (s and not s.stop_failures and seconds(s.feedback_stamp) >= requested and
                         0 <= self.now()-seconds(s.feedback_stamp) < self.cfg['feedback_max_age'] and
                         not s.reference.name and all(abs(v) < .01 for v in s.joints.velocity)):

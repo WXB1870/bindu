@@ -1,14 +1,16 @@
 """Single-owner reference executor. Call under one serialized callback group.
 
 This Python implementation validates contracts, not hard real-time performance.
-Joint targets use the simulated backend's bounded tracking; finite trajectories
-retain their own timeline. Interpolation belongs to execution; device adapters only accept references.
+Joint references are generated and bounded here; timed trajectories retain their
+own timeline. Device tracking limits are independent of reference limits.
+Device adapters only accept references.
 """
 from collections import OrderedDict, deque
 import math
 import uuid
 from bindu_contracts.contracts import Event
 from bindu_contracts.ports import ExecutionIO
+from .interpolation import State, Curve, Path, Timeline, fit_target, fit_stop, join
 
 
 class Rejected(ValueError):
@@ -25,12 +27,18 @@ class Executor:
         self.expires = 0.
         self.active = None
         self.started = 0.
-        self.initial = {}
         self.last_stamp = 0.
         self.feedback = robot_io.last_feedback
         self.events = deque(maxlen=2048)
         self.results = OrderedDict()
         self.last_tick = None
+        self.path = None
+        self.reference = None
+        self.reference_names = ()
+        self.stopping = None
+        self.stop_deadline = 0.
+        self.revision = 1
+        self.held_references = {}
 
     def emit(self, now, motion, state, code):
         event = Event(now, motion.task_id if motion else '', motion.command_id if motion else '',
@@ -44,7 +52,7 @@ class Executor:
 
     def acquire(self, owner, groups, ttl, now):
         self.tick(now)
-        if self.lease_id:
+        if self.lease_id or self.stopping:
             raise Rejected('BUSY')
         if not owner or not 0 < ttl <= 5 or not groups:
             raise Rejected('INVALID_LEASE')
@@ -56,6 +64,8 @@ class Executor:
         self.lease_id = uuid.uuid4().hex
         self.owner, self.groups, self.expires = owner, tuple(groups), now + ttl
         self.last_stamp = 0.
+        self.held_references.clear()
+        self.revision += 1
         return self.lease_id, self.epoch
 
     def check_lease(self, lease, epoch, now):
@@ -66,22 +76,116 @@ class Executor:
         self.check_lease(lease, epoch, now)
         self.expires = now + 2.
 
-    def halt(self, now, code='CANCELED', revoke=False):
-        self.io.stop()
-        if self.io.stop_failures:
-            code = 'STOP_REQUEST_FAILED:' + ','.join(self.io.stop_failures)
-            revoke = True
-        if self.active:
-            self.emit(now, self.active, 'CANCELED' if code == 'CANCELED' else 'FAILED', code)
-        self.active = None
+    def halt(self, now, code='CANCELED', revoke=False, emergency=False):
         if revoke:
             self.lease_id = ''
             self.owner = ''
             self.epoch += 1
+        if self.stopping and not emergency:
+            return
+        motion = self.active or (self.stopping[0] if self.stopping else None)
+        self.last_stamp = max(self.last_stamp, now)
+        self.revision += 1
+        if not emergency and self.path:
+            self.reference = self.path.sample(now)
+        if not emergency and self.path and self.reference and (any(
+                abs(x) > 1e-8 for x in self.reference.v+self.reference.a) or any(
+                abs(self.feedback.positions[j]-q) > 1e-5 for j, q in zip(self.reference_names, self.reference.q))):
+            try:
+                self.path = fit_stop(self.profile, self.reference_names, self.reference, now)
+                self.stopping = (motion, code)
+                self.stop_deadline = now+self.profile.stop_timeout
+                self.active = None
+                self.emit(now, motion, 'STOPPING', code)
+                return
+            except ValueError:
+                # Feedback/driver faults and an uncertifiable braking envelope
+                # use the device stop. Do not report this as a smooth stop.
+                code += ':EMERGENCY_STOP_NO_FEASIBLE_BRAKE'
+                self.lease_id = ''
+                self.owner = ''
+                self.epoch += 1
+        elif not emergency and self.held_references and not self.references_arrived():
+            # A finite goal may satisfy its arrival tolerance while its device
+            # is still converging. Keep that resting reference until feedback
+            # confirms it instead of truncating it at the measured position.
+            try:
+                self.io.write_base((0., 0.))
+                self.stopping = (motion, code)
+                self.stop_deadline = now+self.profile.stop_timeout
+                self.active = None
+                self.emit(now, motion, 'STOPPING', code)
+                return
+            except RuntimeError:
+                code = 'DEVICE_COMMAND_REJECTED'
+        self.finish_stop(now, motion, code)
+
+    def finish_stop(self, now, motion, code):
+        self.io.stop()
+        if self.io.stop_failures:
+            code = 'STOP_REQUEST_FAILED:' + ','.join(self.io.stop_failures)
+            self.lease_id = ''
+            self.owner = ''
+            self.epoch += 1
+        self.emit(now, motion, 'CANCELED' if code == 'CANCELED' else 'FAILED', code)
+        self.active = self.stopping = self.path = self.reference = None
+        self.reference_names = ()
+        self.held_references.clear()
+
+    def prepare_path(self, m, now):
+        switch = max(now, m.stamp)
+        initial = (self.path.sample(switch) if self.path and self.reference_names == m.names
+                   else State.rest(self.held_references.get(j, self.feedback.positions[j]) for j in m.names))
+        if m.mode == 'joint_target':
+            if (self.active and self.active.mode == m.mode and self.active.positions == m.positions
+                    and self.reference_names == m.names):
+                return self.path
+            suffix = fit_target(self.profile, m.names, initial, m.positions, switch)
+        else:
+            # A positional waypoint means rest there unless explicit v/a are
+            # supplied. Never silently discard a planner's derivatives.
+            zero = (0.,)*len(m.names)
+            velocities = m.velocities or (zero,)*len(m.points)
+            accelerations = m.accelerations or (zero,)*len(m.points)
+            if len(velocities) != len(m.points) or len(accelerations) != len(m.points):
+                raise Rejected('DERIVATIVE_LAYOUT_MISMATCH')
+            for rows in (velocities, accelerations):
+                if any(len(row) != len(m.names) or not all(math.isfinite(x) for x in row) for row in rows):
+                    raise Rejected('DERIVATIVE_LAYOUT_MISMATCH')
+            states = tuple(State(q, v, a) for q, v, a in zip(m.points, velocities, accelerations))
+            if m.mode == 'finite_trajectory' and any(abs(x) > 1e-9 for x in states[-1].v+states[-1].a):
+                raise Rejected('FINITE_ENDPOINT_NOT_AT_REST')
+            curves = []
+            previous, start = initial, switch
+            for offset, state in zip(m.offsets, states):
+                end = m.stamp+offset
+                if end <= switch+1e-5:
+                    if m.mode == 'joint_reference_segment':
+                        continue  # Expired prefix is dropped, never time-shifted.
+                    raise Rejected('EXPIRED_TRAJECTORY_PREFIX')
+                curve = Curve.between(start, end-start, previous, state)
+                if not curve.valid(self.profile, m.names):
+                    raise Rejected('TRAJECTORY_DYNAMIC_LIMIT')
+                curves.append(curve)
+                previous, start = state, end
+            if not curves:
+                raise Rejected('EXPIRED_TRAJECTORY_PREFIX')
+            if m.mode == 'joint_reference_segment':
+                # Reserve a certified braking tail before accepting a chunk.
+                # Its authority is internal; no future input is assumed.
+                tail = fit_stop(self.profile, m.names, previous, start)
+                curves.extend(tail.curves)
+            suffix = Path(tuple(curves))
+        return join(self.path, suffix, switch) if self.path and switch > now else suffix
 
     def submit(self, m, now):
         self.tick(now)
         self.check_lease(m.lease_id, m.epoch, now)
+        if self.stopping:
+            raise Rejected('STOPPING')
+        if (m.expected_revision and m.expected_revision != self.revision) or (
+                m.mode == 'joint_reference_segment' and not m.expected_revision):
+            raise Rejected('STALE_REVISION')
         if m.schema_version != 1 or m.profile_hash != self.profile.digest:
             raise Rejected('SCHEMA_OR_PROFILE_MISMATCH')
         if not m.command_id or not m.task_id or m.command_id in self.results:
@@ -97,22 +201,24 @@ class Executor:
         if m.mode == 'base_velocity':
             if m.group != 'base' or 'base_velocity' not in self.profile.capabilities:
                 raise Rejected('UNSUPPORTED_CAPABILITY')
-            if m.names or m.positions or m.points or not 0 < m.duration < m.valid_for:
+            if m.names or m.positions or m.points or m.offsets or m.velocities or m.accelerations or not 0 < m.duration < m.valid_for:
                 raise Rejected('INVALID_BASE_COMMAND')
             if len(m.velocity) != 2 or not all(math.isfinite(x) and abs(x) <= .4 for x in m.velocity):
                 raise Rejected('BASE_LIMIT')
-        elif m.mode in ('joint_target', 'finite_trajectory'):
+        elif m.mode in ('joint_target', 'finite_trajectory', 'joint_reference_segment'):
             if m.group not in self.profile.groups or 'joint_position' not in self.profile.capabilities:
                 raise Rejected('UNSUPPORTED_CAPABILITY')
             if (m.velocity != (0., 0.) or m.duration or
-                    (m.mode == 'joint_target' and (m.points or m.offsets)) or
-                    (m.mode == 'finite_trajectory' and m.positions)):
+                    (m.mode == 'joint_target' and (m.points or m.offsets or m.velocities or m.accelerations)) or
+                    (m.mode != 'joint_target' and m.positions)):
                 raise Rejected('MIXED_COMMAND_PAYLOAD')
             if tuple(self.profile.groups.get(m.group, ())) != m.names:
                 raise Rejected('JOINT_LAYOUT_MISMATCH')
             values = (m.positions,) if m.mode == 'joint_target' else m.points
             if not values:
                 raise Rejected('EMPTY_TRAJECTORY')
+            if len(values) > 1024:
+                raise Rejected('TRAJECTORY_TOO_LARGE')
             for point in values:
                 if len(point) != len(m.names):
                     raise Rejected('DIMENSION_MISMATCH')
@@ -120,84 +226,113 @@ class Executor:
                     lo, hi = self.profile.limits[joint]
                     if not math.isfinite(value) or not lo <= value <= hi:
                         raise Rejected('JOINT_LIMIT')
-            if m.mode == 'finite_trajectory':
+            if m.mode != 'joint_target':
                 if (len(m.offsets) != len(m.points) or not all(math.isfinite(t) for t in m.offsets) or
-                        not 0 < m.offsets[0] or not all(a < b for a, b in zip(m.offsets, m.offsets[1:])) or
-                        m.stamp + m.offsets[-1] >= m.stamp + m.valid_for or m.stamp < now - .1):
+                        not 0 <= m.offsets[0] or not all(a < b for a, b in zip(m.offsets, m.offsets[1:])) or
+                        m.offsets[-1] >= m.valid_for or (m.mode == 'finite_trajectory' and m.stamp < now - .1)):
                     raise Rejected('INVALID_TRAJECTORY_TIME')
-                previous = tuple(self.feedback.positions[j] for j in m.names)
-                previous_t = 0.
-                for t, point in zip(m.offsets, m.points):
-                    if any(abs(q - p) / (t - previous_t) > self.profile.max_speed for p, q in zip(previous, point)):
-                        raise Rejected('TRAJECTORY_SPEED_LIMIT')
-                    previous, previous_t = point, t
         else:
             raise Rejected('UNSUPPORTED_MODE')
+        if self.path and m.names != self.reference_names:
+            raise Rejected('TRANSITION_REQUIRES_STOP')
+        if self.active and (self.active.mode == 'base_velocity') != (m.mode == 'base_velocity'):
+            raise Rejected('TRANSITION_REQUIRES_STOP')
+        try:
+            candidate = None if m.mode == 'base_velocity' else self.prepare_path(m, now)
+        except ValueError as exc:
+            raise Rejected(str(exc)) from exc
+        # All checks and preparation precede this serialized commit. Rejected
+        # replacements leave the existing timeline and revision intact.
         if self.active:
-            # A fresh sample of the same online stream is a continuation, not a
-            # device stop/restart. Mode, task or resource changes still stop.
-            continuation = (m.mode == self.active.mode == 'joint_target' and
-                            m.group == self.active.group and m.task_id == self.active.task_id and
-                            m.lease_id == self.active.lease_id and m.epoch == self.active.epoch)
-            if not continuation:
-                self.io.stop()
-                if self.io.stop_failures:
-                    self.halt(now, 'STOP_REQUEST_FAILED', revoke=True)
-                    raise Rejected('STOP_REQUEST_FAILED')
             self.emit(now, self.active, 'SUPERSEDED', 'REPLACED')
         self.active, self.started = m, m.stamp
         self.last_stamp = m.stamp
-        self.initial = dict(self.feedback.positions)
+        self.path = candidate
+        self.reference_names = m.names
+        for name in m.names:
+            self.held_references.pop(name, None)
+        if candidate:
+            self.reference = candidate.sample(now)
+        self.revision += 1
         self.emit(now, m, 'ACCEPTED', 'OK')
 
     def tick(self, now):
-        if self.last_tick is not None and now < self.last_tick:
-            self.halt(now, 'CLOCK_RESET', revoke=True)
-        dt = 0. if self.last_tick is None else max(0., now - self.last_tick)
+        if not math.isfinite(now) or (self.last_tick is not None and now < self.last_tick):
+            self.halt(now if math.isfinite(now) else (self.last_tick or 0.), 'CLOCK_RESET', revoke=True, emergency=True)
+            self.last_tick = now if math.isfinite(now) else None
+            return
+        dt = 0. if self.last_tick is None else max(0., now-self.last_tick)
         self.last_tick = now
         try:
             self.feedback = self.io.read_feedback(now, dt)
         except RuntimeError:
-            self.halt(now, 'DEVICE_FEEDBACK_ERROR', revoke=True)
+            self.halt(now, 'DEVICE_FEEDBACK_ERROR', revoke=True, emergency=True)
+            return
+        if (self.active or self.stopping) and now-self.feedback.stamp > .2:
+            self.halt(now, 'FEEDBACK_STALE', revoke=True, emergency=True)
             return
         if self.lease_id and now >= self.expires:
             self.halt(now, 'LEASE_EXPIRED', revoke=True)
+        if (self.active or self.stopping) and dt > self.profile.max_tick_gap+1e-9:
+            self.halt(now, 'EXECUTION_OVERRUN', revoke=True, emergency=True)
+            return
+        if self.stopping:
+            self.tick_stop(now)
+            return
         m = self.active
         if not m:
             return
-        if now - self.feedback.stamp > .2:
-            self.halt(now, 'FEEDBACK_STALE', revoke=True)
-            return
-        if now >= m.stamp + m.valid_for:
+        if now >= m.stamp+m.valid_for:
             self.halt(now, 'COMMAND_TIMEOUT')
             return
-        if now < m.stamp:
+        if now < m.stamp and not isinstance(self.path, Timeline):
             return
-        elapsed = max(0., now - self.started)
+        elapsed = max(0., now-self.started)
         try:
             if m.mode == 'base_velocity':
                 self.io.write_base(m.velocity if elapsed < m.duration else (0., 0.))
                 done = elapsed >= m.duration and self.feedback.base_velocity == (0., 0.)
             else:
-                goal = m.positions
-                if m.mode == 'finite_trajectory':
-                    times = (0.,) + m.offsets
-                    points = (tuple(self.initial[j] for j in m.names),) + m.points
-                    goal = points[-1]
-                    for i in range(1, len(times)):
-                        if elapsed < times[i]:
-                            alpha = (elapsed - times[i-1]) / (times[i] - times[i-1])
-                            goal = tuple(a + alpha * (b - a) for a, b in zip(points[i-1], points[i]))
-                            break
-                self.io.write_joints(dict(zip(m.names, goal)))
+                if isinstance(self.path, Timeline) and now >= self.path.switch:
+                    self.path = self.path.after
+                self.reference = self.path.sample(now)
+                self.io.write_joints(dict(zip(m.names, self.reference.q)))
+                if m.mode == 'joint_reference_segment' and elapsed >= m.offsets[-1]:
+                    self.stopping = (m, 'BUFFER_EXHAUSTED')
+                    self.stop_deadline = now+self.profile.stop_timeout
+                    self.active = None
+                    self.emit(now, m, 'STOPPING', 'BUFFER_EXHAUSTED')
+                    return
                 target = m.points[-1] if m.mode == 'finite_trajectory' else m.positions
-                done = all(abs(self.feedback.positions[j] - q) < .015 for j, q in zip(m.names, target))
-                done = done and (m.mode != 'finite_trajectory' or elapsed >= m.offsets[-1])
-                # Online targets keep their session alive until replaced or explicitly halted.
-                if m.mode == 'joint_target':
-                    done = False
+                done = (m.mode == 'finite_trajectory' and now >= self.path.end and
+                        all(abs(self.feedback.positions[j]-q) < .015 for j, q in zip(m.names, target)))
             if done:
                 self.emit(now, m, 'SUCCEEDED', 'FEEDBACK_CONFIRMED')
+                if self.reference:
+                    self.held_references.update(zip(self.reference_names, self.reference.q))
                 self.active = None
+                # Keep the reference at rest for the next command. A different
+                # resource may now start from measured feedback.
+                self.path = self.reference = None
+                self.reference_names = ()
         except RuntimeError:
-            self.halt(now, 'DEVICE_COMMAND_REJECTED', revoke=True)
+            self.halt(now, 'DEVICE_COMMAND_REJECTED', revoke=True, emergency=True)
+
+    def tick_stop(self, now):
+        motion, code = self.stopping
+        try:
+            if self.path:
+                self.reference = self.path.sample(now)
+                self.io.write_joints(dict(zip(self.reference_names, self.reference.q)))
+            if (not self.path or now >= self.path.end) and self.references_arrived():
+                self.finish_stop(now, motion, code)
+            elif now >= self.stop_deadline:
+                self.halt(now, 'STOP_FEEDBACK_TIMEOUT', revoke=True, emergency=True)
+        except RuntimeError:
+            self.halt(now, 'DEVICE_COMMAND_REJECTED', revoke=True, emergency=True)
+
+    def references_arrived(self):
+        targets = dict(self.held_references)
+        if self.reference:
+            targets.update(zip(self.reference_names, self.reference.q))
+        return all(abs(self.feedback.positions[j]-q) < 1e-5 for j, q in targets.items())

@@ -159,9 +159,11 @@ class TaskNode(RuntimeNode):
         positions = dict(zip(self.state.joints.name, self.state.joints.position))
         plan = await strategy.plan(self.profile, group, tuple(positions[j] for j in self.profile.groups[group]), target)
         command = MotionCommand(mode='finite_trajectory', resource_group=plan.group, joint_names=list(plan.names))
-        for t, q in zip(plan.offsets, plan.points):
+        for i, (t, q) in enumerate(zip(plan.offsets, plan.points)):
             ns = round(t*1e9)
-            command.points.append(JointTrajectoryPoint(positions=list(q), time_from_start=Duration(sec=ns//1000000000,nanosec=ns%1000000000)))
+            command.points.append(JointTrajectoryPoint(positions=list(q),
+                velocities=list(plan.velocities[i]) if plan.velocities else [],
+                accelerations=list(plan.accelerations[i]) if plan.accelerations else [], time_from_start=Duration(sec=ns//1000000000,nanosec=ns%1000000000)))
         await self.move(ctx, command)
 
     async def stop(self, ctx):
@@ -172,10 +174,12 @@ class TaskNode(RuntimeNode):
             requested_at = self.now()
             response = await self.wait(self.lease_client.call_async(Lease.Request(operation='release',lease_id=ctx.lease_id,epoch=ctx.epoch)),1.)
             ctx.lease_id = ''
-            end = time.monotonic()+.5
+            end = time.monotonic()+self.profile.stop_timeout+.5
             while time.monotonic() < end:
                 s = self.state
-                if (s and not s.stop_failures and seconds(s.feedback_stamp) >= requested_at and 0 <= self.now()-seconds(s.feedback_stamp) < .2 and
+                if s and (s.code == 'STOP_FEEDBACK_TIMEOUT' or 'EMERGENCY_STOP' in s.code):
+                    return False
+                if (response.ok and s and s.state != 'STOPPING' and not s.reference.name and not s.stop_failures and seconds(s.feedback_stamp) >= requested_at and 0 <= self.now()-seconds(s.feedback_stamp) < .2 and
                     abs(s.base_velocity.linear.x)<1e-6 and abs(s.base_velocity.angular.z)<1e-6 and
                     all(abs(v)<.01 for v in s.joints.velocity)):
                     return True

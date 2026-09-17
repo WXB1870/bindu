@@ -1,0 +1,269 @@
+"""Whole-curve limits and execution timeline/stop regressions; no ROS required."""
+import json
+import math
+from pathlib import Path
+import tempfile
+import unittest
+from dataclasses import replace
+from bindu_contracts.contracts import Motion
+from bindu_contracts.profile import Profile
+from bindu_execution.interpolation import Curve, State, fit_target, fit_stop
+from bindu_execution.executor import Executor, Rejected
+from bindu_hardware.drivers.simulated_joints import SimJointDriver
+from bindu_hardware.drivers.simulated_base import SimBaseDriver
+from bindu_hardware.robot_io.system import RobotIO
+
+
+class Interpolation(unittest.TestCase):
+    def setUp(self):
+        self.p = Profile('test', {'arm':['a']}, {'a':[-1.,1.]}, 1.5,
+                         ('joint_position',), 'test')
+        self.d = SimJointDriver(['a'], 1.5)
+        self.e = Executor(self.p, RobotIO(self.p, {'arm':self.d}, SimBaseDriver()))
+        lease, epoch = self.e.acquire('vr', ['arm'], 5., 10.)
+        self.m = Motion('first', lease, epoch, 'test', 't', '', 'joint_target',
+                        'arm', 10., 1., names=('a',), positions=(.6,))
+
+    def tick_to(self, end):
+        while self.e.last_tick < end-1e-8:
+            self.e.tick(min(end, self.e.last_tick+.01))
+        if self.e.last_tick < end:
+            self.e.tick(end)
+
+    def assert_bounded(self, state):
+        self.assertLessEqual(abs(state.q[0]), 1.+1e-8)
+        self.assertLessEqual(abs(state.v[0]), self.p.speed('a')+1e-8)
+        self.assertLessEqual(abs(state.a[0]), self.p.acceleration('a')+1e-8)
+        self.assertLessEqual(abs(state.j[0]), self.p.jerk('a')+1e-8)
+
+    def test_one_polynomial_derivatives(self):
+        path = fit_target(self.p, ('a',), State((.1,),(.15,),(-.4,)), (.7,), 0.)
+        h = 1e-5
+        for i in range(1,100):
+            t = path.end*i/100
+            left, s, right = path.sample(t-h), path.sample(t), path.sample(t+h)
+            for lhs, rhs in (((right.q[0]-left.q[0])/(2*h),s.v[0]),
+                             ((right.v[0]-left.v[0])/(2*h),s.a[0]),
+                             ((right.a[0]-left.a[0])/(2*h),s.j[0])):
+                self.assertAlmostEqual(lhs,rhs,places=5)
+            self.assert_bounded(s)
+
+    def test_interior_overshoot_is_rejected(self):
+        c = Curve.between(0., 1., State((.99,),(.5,),(0.,)), State.rest((.99,)))
+        self.assertGreater(c.sample(.2).q[0],1.)
+        self.assertFalse(c.valid(self.p, ('a',)))
+
+    def test_update_uses_reference_not_lagging_feedback(self):
+        self.d.max_speed = .1
+        self.e.submit(self.m,10.)
+        self.tick_to(10.2)
+        old = self.e.reference
+        self.assertGreater(old.q[0],self.e.feedback.positions['a'])
+        self.e.submit(replace(self.m,command_id='new',stamp=10.2,positions=(-.2,)),10.2)
+        new = self.e.path.sample(10.2)
+        for a,b in zip((old.q,old.v,old.a),(new.q,new.v,new.a)):
+            self.assertAlmostEqual(a[0],b[0],places=10)
+
+    def test_stream_reversals_and_jitter(self):
+        self.e.submit(self.m,10.)
+        now = 10.
+        samples = [(now,self.e.reference.q[0])]
+        for i in range(1,401):
+            now += (.006,.014,.009,.011)[i%4]
+            self.e.tick(now)
+            target = .6*math.sin((now-10.)*3)
+            old = self.e.reference
+            self.e.submit(replace(self.m,command_id=str(i),stamp=now,positions=(target,)),now)
+            samples.append((now,self.e.reference.q[0]))
+            if old:
+                self.assert_bounded(self.e.reference)
+                self.assertAlmostEqual(old.q[0], self.e.reference.q[0], places=9)
+                self.assertAlmostEqual(old.v[0], self.e.reference.v[0], places=9)
+                self.assertAlmostEqual(old.a[0], self.e.reference.a[0], places=9)
+
+        # Divided differences of published positions independently bound the
+        # realized derivatives, including irregular intervals and retargets.
+        times=[t for t,q in samples]
+        values=[q for t,q in samples]
+        for order,limit in enumerate((self.p.speed('a'),self.p.acceleration('a'),self.p.jerk('a')),1):
+            values=[(values[i+1]-values[i])/(times[i+order]-times[i]) for i in range(len(values)-1)]
+            self.assertLessEqual(max(abs(v)*math.factorial(order) for v in values),limit+1e-5)
+
+    def test_same_goal_does_not_restart_curve(self):
+        self.e.submit(self.m,10.)
+        end = self.e.path.end
+        for i in range(1,80):
+            now = 10+i*.01
+            self.e.submit(replace(self.m,command_id=str(i),stamp=now),now)
+            self.assertEqual(self.e.path.end,end)
+        self.assertAlmostEqual(self.e.reference.q[0],.6)
+
+    def test_controlled_stop_and_ownership_fence(self):
+        self.e.submit(self.m,10.)
+        self.tick_to(10.2)
+        before = self.e.reference
+        self.e.halt(10.2,revoke=True)
+        self.assertIsNotNone(self.e.stopping)
+        self.assertFalse(self.e.lease_id)
+        self.assertAlmostEqual(self.e.path.sample(10.2).q[0],before.q[0],places=10)
+        with self.assertRaisesRegex(Rejected,'BUSY'):
+            self.e.acquire('pi',['arm'],2.,10.2)
+        while self.e.stopping:
+            self.e.tick(self.e.last_tick+.01)
+            if self.e.reference: self.assert_bounded(self.e.reference)
+        self.assertEqual(self.e.results['first'].state,'CANCELED')
+        self.assertFalse(self.e.io.reference_positions)
+        lease,epoch = self.e.acquire('pi',['arm'],2.,self.e.last_tick)
+        self.e.submit(replace(self.m,command_id='pi',lease_id=lease,epoch=epoch,stamp=self.e.last_tick),self.e.last_tick)
+        self.assertAlmostEqual(self.e.reference.q[0],self.e.feedback.positions['a'])
+
+    def test_stop_with_lease_blocks_new_targets(self):
+        self.e.submit(self.m,10.)
+        self.tick_to(10.2)
+        self.e.halt(10.2)
+        with self.assertRaisesRegex(Rejected,'STOPPING'):
+            self.e.submit(replace(self.m,command_id='late',stamp=10.2),10.2)
+
+    def test_timer_overrun_does_not_jump_to_late_sample(self):
+        self.e.submit(self.m,10.)
+        self.tick_to(10.1)
+        self.e.tick(10.5)
+        self.assertEqual(self.e.results['first'].code,'EXECUTION_OVERRUN')
+        self.assertFalse(self.e.lease_id)
+        self.assertFalse(self.e.io.reference_positions)
+
+    def test_invalid_replacement_is_transactional(self):
+        self.e.submit(self.m,10.)
+        self.tick_to(10.1)
+        old,revision = self.e.path,self.e.revision
+        bad = replace(self.m,command_id='bad',mode='finite_trajectory',stamp=10.1,
+                      positions=(),offsets=(.01,),points=((-1.,),))
+        with self.assertRaisesRegex(Rejected,'DYNAMIC_LIMIT'): self.e.submit(bad,10.1)
+        self.assertIs(self.e.path,old)
+        self.assertEqual(self.e.revision,revision)
+        self.assertEqual(self.e.active.command_id,'first')
+
+    def test_future_replacement_preserves_prefix(self):
+        self.e.submit(self.m,10.)
+        self.tick_to(10.1)
+        old = self.e.path
+        self.e.submit(replace(self.m,command_id='future',stamp=10.14,positions=(-.2,)),10.1)
+        for t in (10.11,10.13,10.14):
+            self.assertEqual(self.e.path.sample(t).q,old.sample(t).q)
+        self.tick_to(10.15)
+        self.assert_bounded(self.e.reference)
+
+    def test_timed_derivatives_and_original_end_are_preserved(self):
+        m = replace(self.m,mode='finite_trajectory',positions=(),offsets=(.5,1.),
+                    points=((.15,),(.3,)),velocities=((.4,),(0.,)),
+                    accelerations=((0.,),(0.,)),valid_for=2.)
+        self.e.submit(m,10.)
+        self.assertEqual(self.e.path.end,11.)
+        self.assertAlmostEqual(self.e.path.sample(10.5).v[0],.4)
+        self.assertAlmostEqual(self.e.path.sample(10.5-1e-7).v[0],.4,places=5)
+
+    def test_finite_nonrest_endpoint_and_partial_derivatives_rejected(self):
+        m=replace(self.m,mode='finite_trajectory',positions=(),offsets=(.5,),points=((.1,),),velocities=((.1,),))
+        with self.assertRaisesRegex(Rejected,'NOT_AT_REST'): self.e.submit(m,10.)
+        with self.assertRaisesRegex(Rejected,'DERIVATIVE_LAYOUT'):
+            self.e.submit(replace(m,velocities=((),)),10.)
+
+    def test_chunk_trims_expired_prefix_without_retiming(self):
+        m=replace(self.m,mode='joint_reference_segment',positions=(),stamp=9.8,
+            offsets=(0.,.1,.7,1.2),points=((-1.,),(-1.,),(.1,),(.2,)),
+            expected_revision=self.e.revision,valid_for=2.)
+        self.e.submit(m,10.)
+        self.assertAlmostEqual(self.e.path.sample(10.5).q[0],.1)
+        self.assertAlmostEqual(self.e.path.sample(11.).q[0],.2)
+        self.assertAlmostEqual(self.e.path.curves[0].end,10.5)
+        self.tick_to(11.1)
+        self.assertEqual(self.e.results['first'].code,'BUFFER_EXHAUSTED')
+        self.assertIsNone(self.e.active)
+
+    def test_chunk_stale_revision_and_no_future_knots(self):
+        m=replace(self.m,mode='joint_reference_segment',positions=(),offsets=(.5,),points=((.1,),))
+        with self.assertRaisesRegex(Rejected,'STALE_REVISION'): self.e.submit(m,10.)
+        with self.assertRaisesRegex(Rejected,'EXPIRED_TRAJECTORY_PREFIX'):
+            self.e.submit(replace(m,stamp=9.,valid_for=2.,expected_revision=self.e.revision),10.)
+
+    def test_chunk_nonzero_endpoint_has_certified_stop_tail(self):
+        m=replace(self.m,mode='joint_reference_segment',positions=(),offsets=(.5,),points=((.1,),),
+            velocities=((.3,),),expected_revision=self.e.revision)
+        self.e.submit(m,10.)
+        self.assertGreater(self.e.path.end,10.5)
+        self.assertAlmostEqual(self.e.path.sample(10.5).v[0],.3)
+        for curve in self.e.path.curves: self.assertTrue(curve.valid(self.p,('a',)))
+        self.tick_to(10.9)
+        self.assertIsNone(self.e.stopping)
+        self.assertEqual(self.e.results['first'].code,'BUFFER_EXHAUSTED')
+
+    def test_braking_envelopes_near_both_limits(self):
+        for goal in (-1.,-.9,0.,.9,1.):
+            path=fit_target(self.p,('a',),State.rest((0.,)),(goal,),0.)
+            for i in range(1,100):
+                t=path.end*i/100
+                stop=fit_stop(self.p,('a',),path.sample(t),t)
+                self.assertTrue(all(c.valid(self.p,('a',)) for c in stop.curves))
+                final=stop.sample(stop.end)
+                self.assertAlmostEqual(final.v[0],0.,places=8)
+                self.assertAlmostEqual(final.a[0],0.,places=8)
+
+    def test_large_online_move_has_separate_transition_horizon(self):
+        p=replace(self.p,max_speed=.1)
+        path=fit_target(p,('a',),State.rest((0.,)),(1.,),0.)
+        self.assertGreater(path.end,p.stop_timeout)
+        self.assertTrue(all(c.valid(p,('a',)) for c in path.curves))
+
+    def test_stop_waits_for_feedback_or_reports_timeout(self):
+        self.e.submit(self.m,10.)
+        self.tick_to(10.2)
+        self.d.max_speed=0.
+        self.e.halt(10.2,revoke=True)
+        self.tick_to(11.)
+        self.assertTrue(self.e.stopping)
+        self.tick_to(15.3)
+        self.assertEqual(self.e.results['first'].code,'STOP_FEEDBACK_TIMEOUT')
+        self.assertFalse(self.e.lease_id)
+
+    def test_finite_next_command_uses_held_reference(self):
+        m=replace(self.m,mode='finite_trajectory',positions=(),offsets=(.5,),points=((.3,),))
+        self.e.submit(m,10.)
+        self.tick_to(10.5)
+        self.assertEqual(self.e.results['first'].state,'SUCCEEDED')
+        self.d.positions['a']=.299
+        self.d.target['a']=.299
+        self.e.submit(replace(self.m,command_id='next',stamp=10.5),10.5)
+        self.assertAlmostEqual(self.e.reference.q[0],.3)
+
+    def test_release_after_finite_tolerance_waits_for_resting_reference(self):
+        m=replace(self.m,mode='finite_trajectory',positions=(),offsets=(.5,),points=((.3,),))
+        self.e.submit(m,10.)
+        self.tick_to(10.5)
+        self.d.positions['a']=.29
+        self.e.tick(10.5)
+        self.e.halt(10.5,revoke=True)
+        self.assertTrue(self.e.stopping)
+        self.assertIsNone(self.e.path)
+        self.assertAlmostEqual(self.d.target['a'],.3)
+        with self.assertRaisesRegex(Rejected,'BUSY'):
+            self.e.acquire('new',['arm'],2.,10.5)
+        self.tick_to(10.6)
+        self.assertIsNone(self.e.stopping)
+        self.assertAlmostEqual(self.d.positions['a'],.3)
+
+    def test_per_joint_configuration_validation(self):
+        p=replace(self.p,joint_dynamics={'a':{'velocity':.2,'acceleration':.8,'jerk':4.}})
+        curve=fit_target(p,('a',),State.rest((0.,)),(.2,),0.).curves[0]
+        self.assertTrue(curve.valid(p,('a',)))
+        self.assertGreater(curve.duration,1.)
+        root=Path(__file__).resolve().parents[1]
+        raw=json.loads((root/'src/integration/bindu_runtime/config/wheel_sim.json').read_text())
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'bad.json'
+            for cfg in ({'max_jerk':float('nan')},{'control_period':1.,'max_tick_gap':.1},
+                        {'joint_dynamics':{'unknown':{'velocity':1.}}}):
+                raw['execution']=cfg;path.write_text(json.dumps(raw))
+                with self.assertRaises(ValueError): Profile.load(path)
+
+
+if __name__=='__main__': unittest.main()

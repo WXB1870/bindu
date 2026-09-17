@@ -29,7 +29,8 @@ class CapabilityContract(unittest.TestCase):
                     plan = asyncio.run(strategy.plan(profile, 'arm', (0.,)*len(names), (.3,)*len(names)))
                     motion = Motion('plan', lease, epoch, profile.digest, 'task', 'obs',
                                     'finite_trajectory', 'arm', 10., 1.5,
-                                    names=plan.names, offsets=plan.offsets, points=plan.points)
+                                    names=plan.names, offsets=plan.offsets, points=plan.points,
+                                    velocities=plan.velocities, accelerations=plan.accelerations)
                     engine.submit(motion, 10.)
                     for i in range(1,101): engine.tick(10.+i*.01)
                     self.assertEqual(engine.results['plan'].state, 'SUCCEEDED')

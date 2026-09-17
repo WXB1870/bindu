@@ -44,5 +44,13 @@
   "max_speed": 0.5,
   "capabilities": [
     "joint_position"
-  ]
+  ],
+  "execution": {
+    "max_acceleration": 3.0,
+    "max_jerk": 30.0,
+    "control_period": 0.01,
+    "max_tick_gap": 0.1,
+    "stop_timeout": 5.0,
+    "max_transition_duration": 30.0
+  }
 }

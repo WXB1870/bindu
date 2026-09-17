@@ -167,6 +167,26 @@ ros2 action send_goal /bindu_sim/teleop/session bindu_interfaces/action/TeleopSe
 - VR 时间戳为输入服务收到事件的时刻，未提供头显采样时间或网络时延估计；轮询不会刷新旧帧时间。输入、模式、IK 残差/耗时、接受目标与实测反馈异步记录，示教图像和完整训练数据集尚未实现。
 - 会话到时表示控制结束，不代表抓取成功。运行层继续拒绝真实设备模式；本批没有连接电机、部署真机服务或承诺 IK 达到 100 Hz。
 
+## 共享执行层验证
+
+VR 与 Pi 的单步目标、有限规划轨迹和动作块共用执行层曲线程序。输入时间、导数、版本和停止语义见[动作执行契约](动作执行契约.md#2-输入模式必须显式选择)。本次增加 ROS 消息字段，更新后需重新构建并加载工作区。执行参考的加速度/jerk 限制与设备跟踪限制分开配置；示例数值仅用于仿真。
+
+加载工作区后运行模块和 ROS 回归，`timed_chunks` 包含动作块原始时间轴、旧 revision 拒绝和减速取消：
+
+```bash
+python3 -m unittest discover -s tests -p 'test_*.py'
+python3 tests/validate_ros.py --case online_targets --case timed_chunks --output artifacts/execution-check
+```
+
+保留历史源码的主工作区可独立复现 C++/Python 对照；工具仅在指定输出目录编译测试程序、生成 CSV 和 JSON。新克隆不需要历史代码即可运行当前模块测试。
+
+```bash
+python3 tools/compare_interpolators.py --legacy-root 历史代码/legs_necks_control \
+  --output artifacts/interpolation-comparison
+```
+
+当前 Python 方案优先满足整段约束和停止语义，离线正弦测试的跟随误差高于历史 C++ 内核；不能把“共用执行层”视为已完成 VR 跟手调优或真机实时验收。
+
 ## 开发与文档
 
 - [软件架构](软件架构设计.md)：模块职责、替换接口与实现边界。

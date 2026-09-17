@@ -15,3 +15,6 @@ bool simulated
 string[] feedback_sources
 builtin_interfaces/Time[] source_stamps
 string[] stop_failures
+uint64 revision
+float64[] reference_accelerations
+float64[] reference_jerks
