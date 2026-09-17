@@ -75,15 +75,10 @@ double newtonRaphson(
 
 std::pair<double, double> solveSuggestedVelocityAndAcceleration(
     double distance,
-    double velocity,
-    double acceleration,
     double max_velocity,
     double max_acceleration,
     double max_jerk)
 {
-    (void)velocity;
-    (void)acceleration;
-
     if (max_acceleration * max_acceleration >= max_velocity * max_jerk)
     {
         const double d1 = max_jerk * std::pow(max_velocity / max_jerk, 1.5) / 3.0;
@@ -207,7 +202,6 @@ double computeBestAcceleration(
     const int direction = distance_half < 0.0 ? -1 : 1;
     distance_half *= static_cast<double>(direction);
     velocity *= static_cast<double>(direction);
-    acceleration *= static_cast<double>(direction);
     target_velocity *= static_cast<double>(direction);
 
     velocity -= target_velocity;
@@ -224,8 +218,6 @@ double computeBestJerk(
     double velocity,
     double acceleration,
     double target_position,
-    double target_velocity,
-    double target_acceleration,
     double frequency_hz,
     double max_velocity,
     double max_acceleration,
@@ -237,18 +229,9 @@ double computeBestJerk(
     distance_half *= static_cast<double>(direction);
     velocity *= static_cast<double>(direction);
     acceleration *= static_cast<double>(direction);
-    target_velocity *= static_cast<double>(direction);
-    target_acceleration *= static_cast<double>(direction);
-
-    velocity -= target_velocity;
-    acceleration -= target_acceleration;
-    const double adjusted_max_velocity = std::max(max_velocity - target_velocity, 0.0);
-
     auto [velocity_suggested, acceleration_suggested] = solveSuggestedVelocityAndAcceleration(
         distance_half,
-        velocity,
-        acceleration,
-        adjusted_max_velocity,
+        max_velocity,
         max_acceleration,
         max_jerk);
     acceleration_suggested = -acceleration_suggested;
@@ -313,7 +296,7 @@ bool curve_valid(const Limits& l, std::vector<double> p, double t) {
     const double hi[]={l.upper,l.velocity,l.acceleration,l.jerk};
     for (int i=0;i<4;++i) {
         if (!bounded(p,lo[i],hi[i])) return false;
-        p=deriv(p,t);
+        if(i<3) p=deriv(p,t);
     }
     return true;
 }
@@ -348,7 +331,10 @@ bool phase_valid(const Limits& l, const Phase& p) {
 State sample_curve(std::vector<double> p,double t,double elapsed) {
     const double u=std::clamp(elapsed/t,0.,1.);
     double value[4];
-    for(int i=0;i<4;++i) {value[i]=eval(p,u); p=deriv(p,t);}
+    for(int i=0;i<4;++i) {
+        value[i]=eval(p,u);
+        if(i<3) p=deriv(p,t);
+    }
     return {value[0],value[1],value[2],value[3]};
 }
 }
@@ -439,6 +425,9 @@ bool AdaptiveStream::advance(double dt) {
     }
     Brake next_brake; State candidate;
     if(capturing_||capture()) {
+        // The endpoint and its resting brake were certified when capture
+        // completed. New targets clear capturing_; step() still checks TTL.
+        if(capture_elapsed_>=capture_duration_) return true;
         const double elapsed=capture_elapsed_+dt;
         candidate=elapsed>=capture_duration_?State{goal_,0.,0.,0.}:sample_curve(controls_,capture_duration_,elapsed);
         if(brake(limits_,candidate,next_brake)) {
@@ -448,7 +437,7 @@ bool AdaptiveStream::advance(double dt) {
         capturing_=false;
     }
     const auto& l=limits_;
-    const double j=computeBestJerk(state_.q,state_.v,state_.a,goal_,0.,0.,1./dt,l.velocity,l.acceleration,l.jerk);
+    const double j=computeBestJerk(state_.q,state_.v,state_.a,goal_,1./dt,l.velocity,l.acceleration,l.jerk);
     if(!std::isfinite(j)) return false;
     const double low=std::max({-l.jerk,(-l.acceleration-state_.a)/dt,2*(-l.velocity-state_.v-state_.a*dt)/(dt*dt)});
     const double high=std::min({l.jerk,(l.acceleration-state_.a)/dt,2*(l.velocity-state_.v-state_.a*dt)/(dt*dt)});

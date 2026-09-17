@@ -70,6 +70,16 @@ void settle_and_boundaries() {
             if(i>=500) {close(p.state().q,goal);close(p.state().v,0.);close(p.state().a,0.);}
         }
         realized_bounds({},trace);
+        // The settled fast path must still expire and accept a later target.
+        require(p.target(6.,goal,6.025),"settled TTL update");
+        require(p.step(6.01)&&p.step(6.03),"settled expiry");
+        require(p.stopped(),"settled reference ignored expiry");
+        const double next=goal>0.?-.1:.1;
+        require(p.target(6.03,next,8.),"settled retarget");
+        for(int i=1;i<=150;++i) {
+            require(p.step(6.03+i*.01),"settled resume step");valid({},p.state());
+        }
+        close(p.state().q,next);close(p.state().v,0.);close(p.state().a,0.);
     }
 }
 void stop_and_expiry() {

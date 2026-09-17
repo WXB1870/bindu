@@ -6,6 +6,7 @@ limit check). Conservative rejection is preferable to accepting an overshoot.
 This is a reference implementation, not a hard real-time motion controller.
 """
 from dataclasses import dataclass
+from functools import cached_property
 import math
 
 
@@ -72,24 +73,34 @@ class Curve:
     def end(self):
         return self.start+self.duration
 
+    @cached_property
+    def _derivatives(self):
+        # Immutable curve: sampling and certification share these coefficients.
+        # Build only q/v/a/j; no unused fourth derivative or per-tick rebuild.
+        axes = []
+        for axis in self.controls:
+            orders = [axis]
+            for _ in range(3):
+                orders.append(derivative(orders[-1], self.duration))
+            axes.append(tuple(orders))
+        return tuple(axes)
+
     def sample(self, now):
         u = min(1., max(0., (now-self.start)/self.duration))
         columns = [[], [], [], []]
-        for axis in self.controls:
-            for order in range(4):
+        for orders in self._derivatives:
+            for order, axis in enumerate(orders):
                 columns[order].append(evaluate(axis, u))
-                axis = derivative(axis, self.duration)
         return State(*(tuple(c) for c in columns))
 
     def valid(self, profile, names):
-        for name, axis in zip(names, self.controls):
+        for name, orders in zip(names, self._derivatives):
             limits = (profile.limits[name], (-profile.speed(name), profile.speed(name)),
                       (-profile.acceleration(name), profile.acceleration(name)),
                       (-profile.jerk(name), profile.jerk(name)))
-            for lo, hi in limits:
+            for axis, (lo, hi) in zip(orders, limits):
                 if not bounded(axis, lo, hi):
                     return False
-                axis = derivative(axis, self.duration)
         return True
 
 
