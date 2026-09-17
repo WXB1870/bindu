@@ -1,0 +1,48 @@
+{
+  "name": "huawei_v34_left_sim",
+  "groups": {
+    "left_arm": [
+      "l_joint_1",
+      "l_joint_2",
+      "l_joint_3",
+      "l_joint_4",
+      "l_joint_5",
+      "l_joint_6",
+      "l_joint_7"
+    ]
+  },
+  "limits": {
+    "l_joint_1": [
+      -1.5707963,
+      3.1415927
+    ],
+    "l_joint_2": [
+      -0.2617994,
+      3.403392
+    ],
+    "l_joint_3": [
+      -1.5707963,
+      1.5707963
+    ],
+    "l_joint_4": [
+      -2.3561945,
+      0.7853982
+    ],
+    "l_joint_5": [
+      -1.5,
+      1.5
+    ],
+    "l_joint_6": [
+      -1.5,
+      1.5
+    ],
+    "l_joint_7": [
+      -1.5,
+      1.5
+    ]
+  },
+  "max_speed": 0.5,
+  "capabilities": [
+    "joint_position"
+  ]
+}

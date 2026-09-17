@@ -79,6 +79,24 @@ class Contracts(unittest.TestCase):
         self.assertEqual(self.e.results['cmd'].state,'SUPERSEDED')
         with self.assertRaisesRegex(Rejected,'DUPLICATE'): self.e.submit(self.m,10.)
 
+    def test_online_continuation_does_not_stop_devices(self):
+        target = replace(self.m, mode='joint_target', positions=(.3,.3), points=(), offsets=())
+        self.e.submit(target,10.)
+        with patch.object(self.io, 'stop', wraps=self.io.stop) as stop:
+            for i in range(1,11):
+                self.e.submit(replace(target, command_id='next'+str(i), stamp=10.+i*.01), 10.+i*.01)
+            stop.assert_not_called()
+            self.e.halt(10.11,revoke=True)
+            stop.assert_called_once()
+
+    def test_online_resource_or_task_change_still_stops(self):
+        target = replace(self.m, mode='joint_target', positions=(.3,.3), points=(), offsets=())
+        self.e.submit(target,10.)
+        with patch.object(self.io, 'stop', wraps=self.io.stop) as stop:
+            self.e.submit(replace(target,command_id='other-task',task_id='other'),10.)
+            self.e.submit(replace(target,command_id='other-group',group='hand',names=('f',),positions=(.2,)),10.)
+            self.assertEqual(stop.call_count,2)
+
     def test_lease_expiry(self):
         self.e.submit(replace(self.m,valid_for=5.),10.)
         self.e.tick(12.1)

@@ -1,0 +1,13 @@
+# One configured arm, simulation execution only in this implementation.
+string task_id
+string resource_group
+float64 duration
+---
+bool success
+string code
+uint64 accepted_commands
+bool simulated
+---
+string session_id
+string mode
+uint64 accepted_commands

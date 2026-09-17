@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 from rosidl_runtime_py.convert import message_to_ordereddict
 from bindu_recording.recorder import AsyncRecorder
-from bindu_interfaces.msg import RuntimeEvent, ExecutionState, RecorderHealth, MotionCommand, ObjectObservation
+from bindu_interfaces.msg import RuntimeEvent, ExecutionState, RecorderHealth, MotionCommand, ObjectObservation, VRInput
 from .common import RuntimeNode, EVENT_QOS, stamp, spin
 
 
@@ -18,6 +18,7 @@ class RecorderNode(RuntimeNode):
         self.create_subscription(ExecutionState, 'execution/state', lambda m:self.record('feedback',m), 20)
         self.create_subscription(MotionCommand, 'execution/accepted', lambda m:self.record('reference',m), EVENT_QOS)
         self.create_subscription(ObjectObservation, 'perception/observations', lambda m:self.record('observation',m), EVENT_QOS)
+        self.create_subscription(VRInput, 'teleop/vr/input', lambda m:self.record('vr_input',m), 20)
         self.pub = self.create_publisher(RecorderHealth, 'recorder/health', 5)
         self.create_timer(.1, self.health)
 

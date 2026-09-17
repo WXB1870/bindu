@@ -14,13 +14,14 @@
 | Pi 客户端 | 已实现两种历史 ZMQ 模式、动作映射、时效检查和诊断；已通过模拟服务测试 |
 | 设备适配 | 已实现模拟底盘、关节和灵巧手驱动；真实设备待接入 |
 | 导航、感知、规划 | 已有模拟实现，真实算法待接入 |
-| IK、语音交互、遥操作 | 已预留模块目录 |
+| VR 遥操作与 IK | 已接 v3.4 手柄输入、相对控制和连续 IK；当前仅单臂模拟执行 |
+| 语音交互 | 已预留模块目录 |
 | 数据记录 | 已实现异步事件与状态记录；图像同步及完整训练数据管线待实现 |
 | 自适应插值 | 高频执行与真机适配待实现 |
 
 ## 工程入口
 
-仓库根目录同时是 ROS 2 工作区，共包含 11 个可构建包。
+仓库根目录同时是 ROS 2 工作区，共包含 13 个可构建包。
 
 ```text
 bindu/
@@ -41,7 +42,7 @@ bindu/
 └── LICENSE
 ```
 
-`build/`、`install/`、`log/` 由构建生成；`artifacts/` 保存实验结果与临时依赖，均不提交 Git。`tools/` 目前只有占位文件。历史代码、图片、研究计划与过程记录在主开发工作区单独维护。
+`build/`、`install/`、`log/` 由构建生成；`artifacts/` 保存实验结果与临时依赖，均不提交 Git。`tools/requirements-teleop.txt` 保存可选 VR/IK 验证依赖。历史代码、图片、研究计划与过程记录在主开发工作区单独维护。
 
 ## 环境要求
 
@@ -97,7 +98,7 @@ python3 tests/validate_pi.py --output artifacts/pi-check
 
 集成验证会启动并收尾各自的模拟进程。Pi 验证自带回环服务、合成图像和关节观测，无需模型权重或真实设备。
 
-已验证：11 包构建、28 项模块测试、14 个 Pi 集成场景；原有 15 个 ROS 场景在先前版本通过，最近的 Pi 启动诊断修正后未重跑。模拟测试不等于真机或实时性能验收。验证环境使用 NumPy 1.26.4、PyZMQ 26.4.0；若需要隔离安装该 PyZMQ 版本，可执行：
+已验证：13 包构建、43 项模块测试、14 个 Pi 集成场景和 15 个原 ROS 场景。9 个遥操作专项场景通过，包含真实 Vuer 服务接收合成输入；尚未做头显现场联调。模拟测试不等于真机或实时性能验收。Pi 首版使用 NumPy 1.26.4；本轮 VR/IK 与回归使用 NumPy 2.3.5，PyZMQ 均为 26.4.0；若需要隔离安装该 PyZMQ 版本，可执行：
 
 ```bash
 python3 -m pip install --target artifacts/pi-deps pyzmq==26.4.0
@@ -126,6 +127,45 @@ ros2 action send_goal /bindu_sim/vla/pi/session bindu_interfaces/action/PiSessio
 ```
 
 缺少新鲜观测时拒绝启动，原因通过 `PI_GOAL_REJECTED` 事件和节点日志给出。会话持续时间结束表示控制会话停止，不代表抓取成功。目前每个会话控制一个关节组，默认使用模拟设备，ACT 未接入。
+
+## VR 遥操作运行入口
+
+核心代码位于 [`bindu_teleoperation`](src/capabilities/bindu_teleoperation/bindu_teleoperation/) 和 [`bindu_kinematics`](src/capabilities/bindu_kinematics/bindu_kinematics/)。本批接入 v3.4 的 `CONTROLLER_MOVE` 输入、OpenXR 坐标转换和相对控制，使用独立进程进行 Pinocchio FK / CasADi 连续 IK，经公共执行服务驱动 **7 轴左臂模拟器**。输入端与机器人驱动分离，后续仍以 VR 为遥操作入口。
+
+可选依赖在 Ubuntu 24.04 / Python 3.12 / x86_64 验证；Orin 尚未验证。先按快速开始构建并加载 ROS 与工作区，再在当前工作区隔离安装依赖。下面的库路径用于避免 ROS 自带 EigenPy 与 Pinocchio wheel 混用，仅影响当前终端：
+
+```bash
+python3 -m pip install --target artifacts/teleop-deps -r tools/requirements-teleop.txt
+export BINDU_TELEOP_DEPS="$PWD/artifacts/teleop-deps"
+export PYTHONPATH="$BINDU_TELEOP_DEPS:$BINDU_TELEOP_DEPS/cmeel.prefix/lib/python3.12/site-packages:$PYTHONPATH"
+export LD_LIBRARY_PATH="$BINDU_TELEOP_DEPS/cmeel.prefix/lib:$LD_LIBRARY_PATH"
+export OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1
+export ROS_DOMAIN_ID=119 ROS_LOCALHOST_ONLY=1
+python3 tests/validate_teleop.py --output artifacts/teleop-check
+```
+
+专项验证启动自己的模拟进程：覆盖启动入口、合成手柄事件经真实 Vuer WebSocket 服务接入、暂停/重接、取消、断流、追踪无效、连接身份改变、不可达目标和记录器退出。真实头显的浏览器、TLS、跟踪质量与操控感受仍需现场联调。
+
+连接头显时，使用本机有效的 TLS 证书和私钥路径，并让头显能访问输入服务地址。证书不随代码分发；默认仅监听 `127.0.0.1`，下面显式开启局域网输入：
+
+```bash
+ros2 launch bindu_runtime teleop.launch.py vr_enabled:=true host:=0.0.0.0 \
+  cert_file:=/绝对路径/cert.pem key_file:=/绝对路径/key.pem
+```
+
+头显访问输入主机的 HTTPS 8012 端口并进入 VR。另一个已加载相同 ROS 域和工作区的终端查询就绪并开启会话：
+
+```bash
+ros2 service call /bindu_sim/teleop/ready std_srvs/srv/Trigger '{}'
+ros2 action send_goal /bindu_sim/teleop/session bindu_interfaces/action/TeleopSession \
+  "{task_id: vr_demo, resource_group: left_arm, duration: 60.0}" --feedback
+```
+
+- 每次会话先松开左握持键，再握持超过 1 秒进入跟随；松开暂停，重新握持后以当前实测关节 FK 和当前 VR 姿态重新建立基准。左 B 停止会话，接收端锁存此停止输入，重新连接浏览器后方可再次启动。
+- `init` 按键目前明确返回 `VR_INIT_NOT_CONFIGURED`；尚未有核实过的初始姿态，不自动回零。扳机值会记录，尚未控制灵巧手。右臂、双臂/手部并发、图像显示及训练数据同步未接入本批。
+- [遥操作配置](src/integration/bindu_runtime/config/teleop_v34.json)与[本体配置](src/integration/bindu_runtime/config/huawei_v34_left_sim.json)定义资源、具名关节、时间限制、比例和模型。旧模型只保留运动学/惯性文本，未包含碰撞几何；非活动关节固定在配置值，不能当作当前本体标定。
+- VR 时间戳为输入服务收到事件的时刻，未提供头显采样时间或网络时延估计；轮询不会刷新旧帧时间。输入、模式、IK 残差/耗时、接受目标与实测反馈异步记录，示教图像和完整训练数据集尚未实现。
+- 会话到时表示控制结束，不代表抓取成功。运行层继续拒绝真实设备模式；本批没有连接电机、部署真机服务或承诺 IK 达到 100 Hz。
 
 ## 开发与文档
 

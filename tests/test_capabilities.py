@@ -50,6 +50,8 @@ class DependencyBoundaries(unittest.TestCase):
             'bindu_vla': {'bindu_contracts'},
             'bindu_navigation': {'bindu_contracts'},
             'bindu_perception': {'bindu_contracts'},
+            'bindu_teleoperation': {'bindu_contracts'},
+            'bindu_kinematics': {'bindu_contracts'},
         }
         for manifest in source.rglob('package.xml'):
             xml = ET.parse(manifest).getroot()

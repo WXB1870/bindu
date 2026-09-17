@@ -134,10 +134,16 @@ class Executor:
         else:
             raise Rejected('UNSUPPORTED_MODE')
         if self.active:
-            self.io.stop()
-            if self.io.stop_failures:
-                self.halt(now, 'STOP_REQUEST_FAILED', revoke=True)
-                raise Rejected('STOP_REQUEST_FAILED')
+            # A fresh sample of the same online stream is a continuation, not a
+            # device stop/restart. Mode, task or resource changes still stop.
+            continuation = (m.mode == self.active.mode == 'joint_target' and
+                            m.group == self.active.group and m.task_id == self.active.task_id and
+                            m.lease_id == self.active.lease_id and m.epoch == self.active.epoch)
+            if not continuation:
+                self.io.stop()
+                if self.io.stop_failures:
+                    self.halt(now, 'STOP_REQUEST_FAILED', revoke=True)
+                    raise Rejected('STOP_REQUEST_FAILED')
             self.emit(now, self.active, 'SUPERSEDED', 'REPLACED')
         self.active, self.started = m, m.stamp
         self.last_stamp = m.stamp

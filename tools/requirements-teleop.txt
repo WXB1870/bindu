@@ -1,0 +1,10 @@
+# Optional VR/IK environment validated on Ubuntu 24.04 / CPython 3.12 x86_64.
+# Keep isolated from the system ROS Python environment; see README.
+numpy==2.3.5
+pin==3.9.0
+casadi==3.7.2
+vuer==0.0.60
+params-proto==2.13.2
+aiohttp==3.11.18
+aiohttp-cors==0.7.0
+pyzmq==26.4.0
