@@ -86,7 +86,9 @@ class TeleopSession:
             self.anchor_input = current
             self.anchor_pending = True
         else:
-            target = relative_target(self.anchor_input, current, self.anchor_robot, self.cfg['position_scale'])
+            target = relative_target(self.anchor_input, current, self.anchor_robot, self.cfg['position_scale'],
+                                     mapping_mode=self.cfg.get('mapping_mode', 'v34_anchor'),
+                                     operator_yaw_rad=self.cfg.get('operator_yaw_rad', 0.))
         self.last_requested = self.seq
         return IKRequest(self.identity+'_'+str(self.seq), self.generation, self.frame.stamp,
                          self.frame.stamp+self.cfg['command_max_age'], self.names, seed, target)

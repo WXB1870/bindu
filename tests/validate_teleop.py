@@ -83,6 +83,8 @@ def run_case(root,output,case):
             if not control['enabled'] or case=='websocket':return
             counter[0]+=1
             pose=np.eye(4);pose[2,3]=control['delta']
+            if control.get('rolled'):
+                pose[:3,:3]=[[1,0,0],[0,0,-1],[0,1,0]]
             pub.publish(VRInput(stamp=node.get_clock().now().to_msg(),source_id=control['source'],
                 seq=counter[0],side='left',pose=pose.ravel().tolist(),grip=control['grip'],valid=control['valid']))
         node.create_timer(.02,publish)
@@ -138,6 +140,7 @@ def run_case(root,output,case):
             held=dict(zip(seen['state'].joints.name,seen['state'].joints.position))
             count=len(seen['accepted'])
             control['delta']=.2
+            control['rolled']=True  # Change wrist orientation while disengaged.
             end=time.monotonic()+.2
             until(node,lambda:time.monotonic()>=end)
             assert len(seen['accepted'])==count,'commands issued while idle'
@@ -145,6 +148,16 @@ def run_case(root,output,case):
             until(node,lambda:len(seen['accepted'])>count,seconds=4.)
             anchor=seen['accepted'][count]
             assert max(abs(q-held[n]) for n,q in zip(anchor.joint_names,anchor.positions))<.005,'re-anchor jumped'
+            target_start=len(seen['events'])
+            def new_targets():
+                return [json.loads(e.code)['target'] for e in seen['events'][target_start:]
+                        if e.state=='TELEOP_IK_RESULT' and json.loads(e.code)['target']]
+            until(node,lambda:bool(new_targets()))
+            origin=np.array(new_targets()[-1]).reshape(4,4)
+            control['delta']=.204
+            expected=origin.copy();expected[0,3]-=.004  # OpenXR +Z -> robot -X.
+            until(node,lambda:any(np.allclose(np.array(t).reshape(4,4),expected,atol=1e-7)
+                                  for t in new_targets()))
         response=wait(node,future,10.)
         result=response.result
         if case in ('normal','websocket','clutch'):

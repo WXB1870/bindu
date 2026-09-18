@@ -1,7 +1,7 @@
 import json
 import math
 from pathlib import Path
-from .vr.mapping import pose_matrix
+from .vr.mapping import pose_matrix, mapping_rotation
 
 
 def load_config(path, profile, model_root):
@@ -19,6 +19,10 @@ def load_config(path, profile, model_root):
             raise ValueError('TELEOP_INVALID_CONFIG: '+key)
     if cfg['input_max_age'] > cfg['command_max_age'] or cfg['command_max_age'] > 1.:
         raise ValueError('TELEOP_INVALID_FRESHNESS')
+    # Preserve old configurations; the shipped example explicitly opts in.
+    cfg.setdefault('mapping_mode', 'v34_anchor')
+    cfg.setdefault('operator_yaw_rad', 0.)
+    mapping_rotation(cfg['mapping_mode'], cfg['operator_yaw_rad'])
     for key in ('smooth_weight', 'solve_timeout', 'position_tolerance', 'rotation_tolerance', 'max_joint_step'):
         if not math.isfinite(model[key]) or model[key] <= 0:
             raise ValueError('TELEOP_INVALID_IK_CONFIG: '+key)

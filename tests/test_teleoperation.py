@@ -1,4 +1,5 @@
 import json
+import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
@@ -54,6 +55,89 @@ class VRContracts(unittest.TestCase):
         target=np.array(relative_target(anchor,current,robot,.5)).reshape(4,4)
         np.testing.assert_allclose(target[:3,3],[.35,.2,.5])
         np.testing.assert_allclose(relative_target(anchor,anchor,robot),robot.ravel())
+
+    def test_base_mapping_translation_is_independent_of_starting_wrist(self):
+        robot=np.eye(4);robot[:3,3]=[.3,.2,.5]
+        robot[:3,:3]=[[0,0,1],[0,1,0],[-1,0,0]]
+        for angle in (0.,np.pi/2,-np.pi/3):
+            c,s=np.cos(angle),np.sin(angle)
+            anchor=np.eye(4);anchor[:3,3]=[1,2,3]
+            anchor[:3,:3]=[[c,-s,0],[s,c,0],[0,0,1]]
+            current=anchor.copy();current[0,3]+=.1
+            for yaw,expected in ((0.,[.35,.2,.5]),(np.pi/2,[.3,.25,.5])):
+                target=np.array(relative_target(anchor,current,robot,.5,
+                    mapping_mode='robot_base',operator_yaw_rad=yaw)).reshape(4,4)
+                np.testing.assert_allclose(target[:3,3],expected,atol=1e-12)
+                np.testing.assert_allclose(target[:3,:3],robot[:3,:3],atol=1e-12)
+                np.testing.assert_allclose(relative_target(anchor,anchor,robot,
+                    mapping_mode='robot_base',operator_yaw_rad=yaw),robot.ravel(),atol=1e-12)
+
+    def test_base_mapping_rotation_and_calibration_use_the_same_axes(self):
+        anchor=np.eye(4);anchor[:3,:3]=[[0,-1,0],[1,0,0],[0,0,1]]
+        robot=np.eye(4);robot[:3,:3]=[[0,1,0],[-1,0,0],[0,0,1]]
+        c,s=np.cos(.3),np.sin(.3)
+        rotate_x=np.array([[1,0,0],[0,c,-s],[0,s,c]])
+        rotate_y=np.array([[c,0,s],[0,1,0],[-s,0,c]])
+        current=anchor.copy();current[:3,:3]=rotate_x @ anchor[:3,:3]
+        for yaw,expected in ((0.,rotate_x),(np.pi/2,rotate_y)):
+            target=np.array(relative_target(anchor,current,robot,
+                mapping_mode='robot_base',operator_yaw_rad=yaw)).reshape(4,4)
+            np.testing.assert_allclose(target[:3,:3],expected @ robot[:3,:3],atol=1e-12)
+        legacy=np.array(relative_target(anchor,current,robot)).reshape(4,4)
+        np.testing.assert_allclose(legacy[:3,:3],rotate_y.T @ robot[:3,:3],atol=1e-12)
+
+    def test_mapping_config_preserves_old_defaults_and_rejects_ignored_yaw(self):
+        profile=Profile.load(ROOT/'src/integration/bindu_runtime/config/huawei_v34_left_sim.json')
+        cfg=json.loads((ROOT/'src/integration/bindu_runtime/config/teleop_v34.json').read_text())
+        cfg.pop('mapping_mode');cfg.pop('operator_yaw_rad')
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'teleop.json'
+            path.write_text(json.dumps(cfg))
+            loaded=load_config(path,profile,ROOT/'src/capabilities/bindu_kinematics/models')
+            self.assertEqual((loaded['mapping_mode'],loaded['operator_yaw_rad']),('v34_anchor',0.))
+            for mode,yaw in (('unknown',0.),('robot_base',True),('robot_base','90'),
+                             ('robot_base',float('nan')),('robot_base',float('inf')),('v34_anchor',.1)):
+                with self.subTest(mode=mode,yaw=yaw):
+                    path.write_text(json.dumps(dict(cfg,mapping_mode=mode,operator_yaw_rad=yaw)))
+                    with self.assertRaises(ValueError):
+                        load_config(path,profile,ROOT/'src/capabilities/bindu_kinematics/models')
+
+    def test_base_mapping_reclutch_preserves_direction_and_anchors_at_feedback(self):
+        self.cfg['mapping_mode']='robot_base'
+        self.cfg['operator_yaw_rad']=0.
+        seq=0
+        def ingest(now,pose,grip):
+            nonlocal seq
+            seq+=1
+            self.session.ingest(replace(self.frame,seq=seq,stamp=now,
+                                        pose=tuple(pose.ravel()),grip=grip),now)
+        previous=None
+        for i in range(2):
+            start=10.+i*3.
+            pose=np.eye(4);pose[:3,3]=[i,0.,.2]
+            if i:pose[:3,:3]=[[0,-1,0],[1,0,0],[0,0,1]]
+            feedback=np.eye(4);feedback[:3,3]=[.3+i*.1,.2,.5]
+            feedback[:3,:3]=[[0,0,1],[0,1,0],[-1,0,0]]
+            positions=dict.fromkeys(self.names,.1*i)
+            ingest(start,pose,0.)
+            if previous:
+                self.assertFalse(self.session.accept_result(previous,start))
+            ingest(start+.01,pose,1.)
+            ingest(start+1.02,pose,1.)
+            req=self.session.request(positions,start+1.02,start+1.02)
+            self.assertFalse(req.target)
+            self.assertEqual(req.seed,tuple(positions.values()))
+            self.session.accept_result(IKResult(req,True,'OK',req.seed,tuple(feedback.ravel())),start+1.03)
+            ingest(start+1.04,pose,1.)
+            req=self.session.request(positions,start+1.04,start+1.04)
+            np.testing.assert_allclose(req.target,feedback.ravel(),atol=1e-12)
+            moved=pose.copy();moved[0,3]+=.01
+            ingest(start+1.05,moved,1.)
+            req=self.session.request(positions,start+1.05,start+1.05)
+            target=np.array(req.target).reshape(4,4)
+            # Raw OpenXR +X maps to robot -Y regardless of starting wrist pose.
+            np.testing.assert_allclose(target[:3,3]-feedback[:3,3],[0,-.01,0],atol=1e-12)
+            previous=IKResult(req,True,'OK',req.seed,tuple(target.ravel()))
 
     def test_requires_release_then_timed_engagement(self):
         for i in range(20):

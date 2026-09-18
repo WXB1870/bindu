@@ -7,6 +7,8 @@
   "command_max_age": 0.4,
   "engage_seconds": 1.0,
   "position_scale": 1.0,
+  "mapping_mode": "robot_base",
+  "operator_yaw_rad": 0.0,
   "kinematics": {
     "urdf": "huawei_v34_kinematic.urdf",
     "joint_names": [
