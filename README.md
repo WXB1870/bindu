@@ -52,6 +52,14 @@ bindu/
 
 下列命令假定 ROS 2 Jazzy、colcon 和已初始化的 rosdep 可用。新终端只加载当前使用的工作区，避免混用旧安装环境。
 
+### Conda 兼容性
+
+2026年9月18日，在 Ubuntu 24.04 / x86_64 上验证了 **Conda Python 3.12.14 + 系统 ROS 2 Jazzy**：13包构建、71项模块、16个 ROS、14个 Pi 和9个 VR 场景通过。首轮一个场景在故障注入前因反馈过期结束，原用例连续3次及全组复测通过；不等同长期稳定性或 Orin 验收。系统 ROS、消息库及构建辅助包仍由 apt 提供，这不是独立的全 Conda ROS 发行版。
+
+- 使用单独 Conda 环境，测试采用 setuptools 68.1.2；IK/VR 固定依赖见 `tools/requirements-teleop.txt`。在环境内追加 `/usr/lib/python3/dist-packages` 供 ROS 构建辅助包使用，禁用用户级 site-packages，避免混入个人环境。
+- 先加载系统 ROS，再按[VR 入口](#vr-遥操作运行入口)设置 Pinocchio 的 Python 与动态库搜索顺序，依赖根改为 Conda 的 `lib/python3.12/site-packages`。仅执行 `conda activate` 不够：误加载系统旧 Pinocchio 与环境 NumPy 2 的组合曾导致段错误。
+- 用 Conda 的 `python /usr/bin/colcon build` 构建，并显式设置 CMake 的 `Python3_EXECUTABLE` / `PYTHON_EXECUTABLE` 为该环境解释器；使用独立源码、build/install，重新编译原生扩展。核对生成的节点入口和实际进程解释器，不能仅检查 shell 是否激活。系统 `ros2` 启动器仍可使用系统 Python。
+
 ## 快速开始
 
 ### 1. 获取与构建

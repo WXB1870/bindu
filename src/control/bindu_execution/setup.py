@@ -1,10 +1,11 @@
-from os.path import relpath
 from pathlib import Path
 from setuptools import Extension, find_packages, setup
 
 # colcon symlink-install runs this symlinked script from its build directory.
-# Keep paths relative for setuptools archives, but resolve the real source root.
-native = Path(relpath(Path(__file__).resolve().parent / 'native'))
+# Archives use relative paths. Editable builds outside the source directory
+# need absolute paths: some distutils versions mishandle ../ in object paths.
+source_root = Path(__file__).resolve().parent
+native = Path('native') if Path.cwd().resolve() == source_root else source_root / 'native'
 
 setup(
     name='bindu_execution', version='0.1.0', packages=find_packages(),
