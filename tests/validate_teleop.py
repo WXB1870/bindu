@@ -14,6 +14,7 @@ import subprocess
 import threading
 import time
 import uuid
+from collections import Counter
 import numpy as np
 import rclpy
 from rclpy.action import ActionClient
@@ -75,10 +76,12 @@ def run_case(root,output,case):
         processes[key]=subprocess.Popen(cmd,stdout=log,stderr=subprocess.STDOUT,start_new_session=True)
     try:
         profile=root/'src/integration/bindu_runtime/config/huawei_v34_left_sim.json'
-        if case=='normal':
+        launched = case in ('normal', 'websocket_launch')
+        if launched:
             start('launch',['ros2','launch','bindu_runtime','teleop.launch.py','namespace:='+namespace,
-                            'run_id:='+run,'output:='+str(output/'episodes')])
-        for executable in (() if case=='normal' else ('execution','recorder','teleop','teleop_display')):
+                            'run_id:='+run,'output:='+str(output/'episodes')]+
+                            (['vr_enabled:=true','port:='+str(port)] if case=='websocket_launch' else []))
+        for executable in (() if launched else ('execution','recorder','teleop','teleop_display')):
             start(executable,['ros2','run','bindu_runtime',executable,'--ros-args','-r','__ns:='+namespace,
                               '-p','profile:='+str(profile),'-p','run_id:='+run,
                               '-p','output:='+str(output/'episodes')])
@@ -101,8 +104,9 @@ def run_case(root,output,case):
                 seq=counter[0],side='left',pose=pose.ravel().tolist(),grip=control['grip'],valid=control['valid']))
         node.create_timer(.02,publish)
         if case.startswith('websocket'):
-            start('vr_input',['ros2','run','bindu_runtime','vr_input','--ros-args','-r','__ns:='+namespace,
-                             '-p','profile:='+str(profile),'-p','run_id:='+run,'-p','port:='+str(port)])
+            if not launched:
+                start('vr_input',['ros2','run','bindu_runtime','vr_input','--ros-args','-r','__ns:='+namespace,
+                                 '-p','profile:='+str(profile),'-p','run_id:='+run,'-p','port:='+str(port)])
             peer=threading.Thread(target=websocket_peer,args=(port,control,stopped,errors),daemon=True)
             peer.start()
         client=ActionClient(node,TeleopSession,namespace+'/teleop/session')
@@ -123,6 +127,11 @@ def run_case(root,output,case):
             if response.success:break
             rclpy.spin_once(node,timeout_sec=.05)
         assert response and response.success,(response,errors)
+        if case != 'normal':
+            # The optional observer must be listening before this test emits
+            # lifecycle events. Teleop readiness deliberately doesn't await UI.
+            until(node,lambda:seen['display'] and seen['display'][-1]['mode']=='WAITING'
+                  and seen['display'][-1]['measured'] is not None,seconds=10.)
         duration=5.5 if case in ('clutch','websocket_display_loss') else 3.5
         goal=wait(node,client.send_goal_async(TeleopSession.Goal(task_id=run,resource_group='left_arm',duration=duration)))
         assert goal.accepted,'goal rejected'
@@ -186,7 +195,7 @@ def run_case(root,output,case):
                                   for t in new_targets()))
         response=wait(node,future,10.)
         result=response.result
-        if case in ('normal','websocket','clutch','websocket_display_loss'):
+        if case in ('normal','websocket','websocket_launch','clutch','websocket_display_loss'):
             assert response.status==4 and result.success and result.code=='TELEOP_SESSION_COMPLETE',result
         elif case=='cancel':
             assert response.status==5 and result.code=='CANCELED',result
@@ -217,7 +226,7 @@ def run_case(root,output,case):
         if case.startswith('websocket'):
             assert any('teleopFeedback' in repr(p) and 'teleopStatus' in repr(p)
                        for p in control.get('display_packets',[])), 'no rendered Vuer display'
-            if case=='websocket':
+            if case in ('websocket','websocket_launch'):
                 assert any('targetPose' in repr(p) and 'measuredPose' in repr(p)
                            for p in control.get('display_packets',[])), 'no end effector markers'
             previous_source=seen['inputs'][-1].source_id
@@ -231,7 +240,7 @@ def run_case(root,output,case):
             assert not errors,errors
         # Stop recorder cleanly before inspecting its durable output.
         if case!='recorder_loss':
-            terminate(processes['launch' if case=='normal' else 'recorder'])
+            terminate(processes['launch' if launched else 'recorder'])
             summary=json.loads((output/'episodes'/run/'summary.json').read_text())
             assert summary['writer_complete'],summary
         return {'case':case,'passed':True,'code':result.code,'accepted':result.accepted_commands,
@@ -241,6 +250,16 @@ def run_case(root,output,case):
         stopped.set()
         if peer:peer.join(timeout=3)
         for process in processes.values():terminate(process)
+        (folder/'display-diagnostics.json').write_text(json.dumps({
+            'snapshots':len(seen['display']),
+            'modes':dict(Counter(v['mode'] for v in seen['display'])),
+            'reasons':dict(Counter(v['reason'] for v in seen['display'])),
+            'with_target':sum(bool(v['target']) for v in seen['display']),
+            'first':seen['display'][0] if seen['display'] else None,
+            'last':seen['display'][-1] if seen['display'] else None,
+            'lifecycle':[{'state':m.state,'code':m.code,'stamp':m.stamp.sec+m.stamp.nanosec/1e9}
+                         for m in seen['events'] if m.state in ('TELEOP_STARTED','TELEOP_MODE','TELEOP_ENDED')]
+        },indent=2))
         node.destroy_node()
         for handle in handles:handle.close()
 
@@ -248,7 +267,7 @@ def run_case(root,output,case):
 def main():
     parser=argparse.ArgumentParser()
     parser.add_argument('--output',type=Path,required=True)
-    parser.add_argument('--cases',nargs='+',default=['normal','websocket','clutch','cancel','disconnect','invalid','reconnect','unreachable','recorder_loss','websocket_display_loss'])
+    parser.add_argument('--cases',nargs='+',default=['normal','websocket','websocket_launch','clutch','cancel','disconnect','invalid','reconnect','unreachable','recorder_loss','websocket_display_loss'])
     args=parser.parse_args();args.output.mkdir(parents=True,exist_ok=False)
     root=Path(__file__).resolve().parents[1]
     rclpy.init();results=[]
