@@ -99,7 +99,7 @@ class PiNode(RuntimeNode):
 
     def goal(self, request):
         reason = self.readiness_error()
-        if (not request.task_id or request.resource_group not in self.profile.groups or
+        if (not request.task_id or request.resource_group not in self.cfg['resource_groups'] or
                 not math.isfinite(request.duration) or not 0 < request.duration <= 60):
             reason = 'PI_INVALID_GOAL'
         if reason:

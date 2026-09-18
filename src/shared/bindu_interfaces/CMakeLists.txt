@@ -24,6 +24,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/VRInput.msg"
   "action/TeleopSession.action"
   "action/FetchDrink.action"
+  "action/NavigateToSite.action"
   DEPENDENCIES builtin_interfaces geometry_msgs trajectory_msgs sensor_msgs)
 ament_export_dependencies(rosidl_default_runtime)
 ament_package()

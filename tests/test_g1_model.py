@@ -50,6 +50,58 @@ class G1ModelTests(unittest.TestCase):
                     self.assertAlmostEqual(value, .04 if name in names else 0., places=5)
 
 
+    def test_g1_pi_map_and_single_arm_scope(self):
+        from bindu_vla.pi.adapter import load_config, CommandAdapter, observation_payload, IMAGE_KEYS
+        from bindu_vla.pi.protocol import Message
+        import numpy as np
+        profile = Profile.load(PROFILE)
+        cfg = load_config(ROOT/'src/integration/bindu_runtime/config/pi_g1.json', profile)
+        self.assertEqual(cfg['joint_map'], {n:n for n in profile.limits})
+        self.assertEqual(cfg['resource_groups'], ['left_arm', 'right_arm'])
+        self.assertTrue(cfg['require_correlation'])
+        positions = {n: .001*i for i,n in enumerate(profile.limits)}
+        images = {n: np.zeros((224,224,3), dtype=np.uint8) for n in IMAGE_KEYS}
+        payload = observation_payload(cfg, positions, images, 'obs', 'session', 'test')
+        self.assertEqual(payload['关节状态字典'], positions)
+        for group in ('leg', 'waist', 'head'):
+            with self.assertRaisesRegex(ValueError, 'PI_RESOURCE_GROUPS'):
+                CommandAdapter(cfg, profile, group, 'session', 10.)
+        for group in cfg['resource_groups']:
+            adapter = CommandAdapter(cfg, profile, group, 'session', 10.)
+            adapter.observe('obs', 49.9)
+            message = Message(cfg['command_topic'], 1, 10.1,
+                              {'关节命令字典': positions, 'bindu': payload['bindu']}, {})
+            names, values, stamp, obs = adapter.convert(message, 10.2, 50.)
+            self.assertEqual(names, tuple(profile.groups[group]))
+            self.assertEqual(values, tuple(positions[n] for n in names))
+            self.assertAlmostEqual(stamp, 49.9)
+            self.assertEqual(obs, 'obs')
+
+    def test_g1_session_samples_body_feedback_in_model_order(self):
+        import numpy as np
+        from bindu_contracts.teleoperation import VRFrame
+        from bindu_teleoperation.config import load_config
+        from bindu_teleoperation.session import TeleopSession
+        profile = Profile.load(PROFILE)
+        for side in ('left', 'right'):
+            cfg = load_config(ROOT/f'src/integration/bindu_runtime/config/teleop_g1_{side}.json', profile, URDF.parent)
+            names = profile.groups[side+'_arm']
+            session = TeleopSession(cfg, names)
+            frame = VRFrame('vr', 0, 10., side, tuple(np.eye(4).ravel()))
+            session.ingest(frame, 10.)
+            for i in range(1,13):
+                session.ingest(replace(frame, seq=i, stamp=10.+i*.1, grip=1.), 10.+i*.1)
+            positions = {n: .001*i for i,n in enumerate(reversed(profile.limits))}
+            missing = dict(positions); missing.pop('leg_joint1')
+            with self.assertRaises(KeyError): session.request(missing, 11.2, 11.2)
+            invalid = dict(positions, leg_joint1=float('nan'))
+            with self.assertRaisesRegex(ValueError, 'TELEOP_INVALID_FEEDBACK'):
+                session.request(invalid, 11.2, 11.2)
+            request = session.request(positions, 11.2, 11.2)
+            self.assertEqual(request.seed, tuple(positions[n] for n in names))
+            self.assertEqual(request.context, tuple(positions[n] for n in sorted(set(profile.limits)-set(names))))
+
+
 class G1KinematicsTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -85,6 +137,33 @@ class G1KinematicsTests(unittest.TestCase):
             joint_values = [values[n] for n in names]
             np.testing.assert_allclose(arm.fk(joint_values), expected, atol=1e-8)
             np.testing.assert_allclose(np.array(symbolic(joint_values)), expected, atol=1e-8)
+
+    def test_g1_ik_requires_measured_body_pose_for_both_arms(self):
+        import numpy as np
+        from bindu_kinematics.pinocchio_casadi import PinocchioCasadiIK
+        from bindu_teleoperation.config import load_config
+        from bindu_contracts.teleoperation import IKRequest
+        profile = Profile.load(PROFILE)
+        for side in ('left', 'right'):
+            cfg = load_config(ROOT/f'src/integration/bindu_runtime/config/teleop_g1_{side}.json', profile, URDF.parent)
+            solver = PinocchioCasadiIK(cfg['kinematics'])
+            body = dict(solver.arm.cfg['locked_joints'])
+            body.update(leg_joint1=.1, leg_joint2=.2, leg_joint3=.1)
+            context = tuple(body[n] for n in solver.arm.context_names)
+            q = np.zeros(7)
+            pose = solver.arm.fk(q, context)
+            self.assertGreater(np.linalg.norm(pose-solver.arm.fk(q)), .01)
+            np.testing.assert_allclose(np.array(solver.context_fk(q,context)),pose,atol=1e-8)
+            request = IKRequest('g1',1,10.,10.4,solver.arm.names,tuple(q),context=context)
+            actual = solver.solve(request)
+            self.assertTrue(actual.success,actual)
+            np.testing.assert_allclose(np.array(actual.pose).reshape(4,4),pose,atol=1e-8)
+            target_q=q.copy();target_q[0]=.01
+            solved=solver.solve(replace(request,target=tuple(solver.arm.fk(target_q,context).ravel())))
+            self.assertTrue(solved.success,solved)
+            self.assertEqual(solver.solve(replace(request,context=())).code,'IK_INVALID_CONTEXT')
+            self.assertEqual(solver.solve(replace(request,context=(float('nan'),)*len(context))).code,'IK_INVALID_CONTEXT')
+
 
 
 if __name__ == '__main__': unittest.main()

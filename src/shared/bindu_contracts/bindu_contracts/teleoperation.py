@@ -31,6 +31,7 @@ class IKRequest:
     names: Tuple[str, ...]
     seed: Tuple[float, ...]
     target: Tuple[float, ...] = ()  # Empty requests FK only.
+    context: Tuple[float, ...] = ()  # Measured non-active joints, sorted by name.
 
 
 @dataclass(frozen=True)

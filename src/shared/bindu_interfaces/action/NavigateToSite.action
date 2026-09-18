@@ -1,0 +1,8 @@
+string task_id
+string site
+---
+bool success
+bool simulated
+string code
+---
+string stage

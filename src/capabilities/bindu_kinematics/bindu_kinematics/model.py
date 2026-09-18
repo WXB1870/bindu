@@ -19,6 +19,11 @@ class ArmModel:
         if any(n not in self.full.names for n in self.names):
             raise ValueError('MODEL_UNKNOWN_JOINT')
         reference = pin.neutral(self.full)
+        self.context_names = tuple(sorted(n for n in self.full.names[1:] if n not in self.names))
+        self.context_default = tuple(config['locked_joints'][n] for n in self.context_names)
+        self.context_indices = [self.full.joints[self.full.getJointId(n)].idx_q for n in self.context_names]
+        self.full_indices = [self.full.joints[self.full.getJointId(n)].idx_q for n in self.names]
+        self.full_data = self.full.createData()
         locked = []
         for jid in range(1, self.full.njoints):
             joint = self.full.joints[jid]
@@ -37,13 +42,14 @@ class ArmModel:
         if self.frame >= self.model.nframes:
             raise ValueError('MODEL_UNKNOWN_FRAME')
 
-    def fk(self, values):
-        q = np.zeros(self.model.nq)
-        q[self.indices] = values
-        self.pin.framesForwardKinematics(self.model, self.data, q)
-        return self.data.oMf[self.frame].homogeneous @ self.offset
+    def fk(self, values, context=None):
+        q = self.pin.neutral(self.full)
+        q[self.full_indices] = values
+        q[self.context_indices] = self.context_default if context is None else context
+        self.pin.framesForwardKinematics(self.full, self.full_data, q)
+        return self.full_data.oMf[self.full.getFrameId(self.cfg['ee_link'])].homogeneous @ self.offset
 
-    def symbolic_fk(self):
+    def symbolic_fk(self, parameterize_context=False):
         import casadi as ca
         root = ET.parse(self.cfg['urdf']).getroot()
         by_child = {j.find('child').get('link'): j for j in root.findall('joint')}
@@ -53,6 +59,7 @@ class ArmModel:
             chain.append(j)
             link = j.find('parent').get('link')
         q = ca.SX.sym('q', len(self.names))
+        context = ca.SX.sym('context', len(self.context_names))
         transform = ca.SX.eye(4)
         for joint in reversed(chain):
             origin = joint.find('origin')
@@ -65,7 +72,8 @@ class ArmModel:
             kind, name = joint.get('type'), joint.get('name')
             if kind == 'fixed':
                 continue
-            value = q[self.names.index(name)] if name in self.names else self.cfg['locked_joints'][name]
+            value = (q[self.names.index(name)] if name in self.names else
+                     context[self.context_names.index(name)] if parameterize_context else self.cfg['locked_joints'][name])
             axis_node = joint.find('axis')
             axis = np.asarray([float(x) for x in axis_node.get('xyz', '1 0 0').split()] if axis_node is not None else [1., 0., 0.])
             axis /= np.linalg.norm(axis)
@@ -78,4 +86,5 @@ class ArmModel:
             else:
                 raise ValueError('MODEL_UNSUPPORTED_JOINT')
             transform = transform @ motion
-        return q, transform @ ca.DM(self.offset)
+        result = transform @ ca.DM(self.offset)
+        return (q, context, result) if parameterize_context else (q, result)

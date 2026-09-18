@@ -1,0 +1,39 @@
+{
+  "mode": "pubsub",
+  "state_bind": "tcp://127.0.0.1:15555",
+  "command_connect": "tcp://127.0.0.1:15556",
+  "state_topic": "niic/pi/state",
+  "command_topic": "4090/pi/command",
+  "request_topic": "niic/pi/state/request",
+  "state_rate_hz": 20.0,
+  "command_max_age": 0.2,
+  "observation_max_age": 0.3,
+  "max_sync_skew": 0.05,
+  "command_timeout": 1.0,
+  "require_correlation": true,
+  "joint_map": {
+    "leg_joint1": "leg_joint1",
+    "leg_joint2": "leg_joint2",
+    "leg_joint3": "leg_joint3",
+    "head_joint1": "head_joint1",
+    "head_joint2": "head_joint2",
+    "left_arm_joint1": "left_arm_joint1",
+    "left_arm_joint2": "left_arm_joint2",
+    "left_arm_joint3": "left_arm_joint3",
+    "left_arm_joint4": "left_arm_joint4",
+    "left_arm_joint5": "left_arm_joint5",
+    "left_arm_joint6": "left_arm_joint6",
+    "left_arm_joint7": "left_arm_joint7",
+    "right_arm_joint1": "right_arm_joint1",
+    "right_arm_joint2": "right_arm_joint2",
+    "right_arm_joint3": "right_arm_joint3",
+    "right_arm_joint4": "right_arm_joint4",
+    "right_arm_joint5": "right_arm_joint5",
+    "right_arm_joint6": "right_arm_joint6",
+    "right_arm_joint7": "right_arm_joint7"
+  },
+  "resource_groups": [
+    "left_arm",
+    "right_arm"
+  ]
+}

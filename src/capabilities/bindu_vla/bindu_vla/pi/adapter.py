@@ -28,6 +28,10 @@ def load_config(path, profile):
         raise ValueError('PI_CONFIG_TIMING')
     if type(cfg['require_correlation']) is not bool:
         raise ValueError('PI_CONFIG_CORRELATION')
+    groups = cfg.setdefault('resource_groups', list(profile.groups))
+    if (not isinstance(groups, list) or not groups or any(not isinstance(g, str) for g in groups)
+            or len(groups) != len(set(groups)) or not set(groups) <= set(profile.groups)):
+        raise ValueError('PI_RESOURCE_GROUPS')
     return cfg
 
 
@@ -48,6 +52,8 @@ def observation_payload(cfg, positions, images, observation_id, session_id, prom
 
 class CommandAdapter:
     def __init__(self, cfg, profile, group, session_id, started_wall):
+        if group not in cfg.get('resource_groups', profile.groups):
+            raise ValueError('PI_RESOURCE_GROUPS')
         self.cfg, self.profile, self.group = cfg, profile, group
         self.session_id, self.started_wall = session_id, started_wall
         self.last_seq = -1

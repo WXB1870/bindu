@@ -23,8 +23,9 @@ class TeleopNode(RuntimeNode):
     def __init__(self):
         super().__init__('teleop')
         self.declare_parameter('teleop_config', str(Path(get_package_share_directory('bindu_runtime'))/'config/teleop_v34.json'))
+        self.declare_parameter('model_root', str(Path(get_package_share_directory('bindu_kinematics'))/'models'))
         self.cfg = load_config(self.get_parameter('teleop_config').value, self.profile,
-                               Path(get_package_share_directory('bindu_kinematics'))/'models')
+                               self.get_parameter('model_root').value)
         self.worker = KinematicsWorker(self.cfg['kinematics'])
         self.worker_error = ''
         self.solution = self.frame = self.state = self.health = None
@@ -215,6 +216,12 @@ class TeleopNode(RuntimeNode):
                 if self.solution is not None and pending is None:
                     solution, self.solution = self.solution, None
                     req = solution.request
+                    if req.context:
+                        measured = dict(zip(s.joints.name, s.joints.position))
+                        names = sorted(self.cfg['kinematics']['locked_joints'])
+                        if any(not math.isfinite(measured[n]) or abs(measured[n]-v)>.01
+                               for n,v in zip(names,req.context)):
+                            raise ValueError('TELEOP_CONTEXT_CHANGED')
                     self.event('TELEOP_IK_RESULT', json.dumps({'code':solution.code,
                         'generation':req.generation, 'elapsed':solution.elapsed,
                         'target':req.target, 'input_stamp':req.stamp, 'position_error':solution.position_error,

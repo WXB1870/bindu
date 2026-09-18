@@ -23,7 +23,9 @@ from std_msgs.msg import String
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 from bindu_interfaces.action import TeleopSession
 from bindu_interfaces.msg import VRInput, ExecutionState, MotionCommand, RuntimeEvent
-from bindu_interfaces.srv import Lease
+from bindu_interfaces.srv import Lease, SubmitMotion
+from trajectory_msgs.msg import JointTrajectoryPoint
+from builtin_interfaces.msg import Duration
 from bindu_runtime.common import stamp
 from validate_ros import until, wait, terminate
 
@@ -47,6 +49,9 @@ def websocket_peer(port, control, stop, errors):
                 state={'squeezeValue':control['grip'],'triggerValue':0.,'aButton':False,'bButton':False}
                 value={'left':pose.ravel(order='F').tolist(),'right':np.eye(4).ravel().tolist(),
                        'leftState':state,'rightState':dict(state,squeezeValue=0.)}
+                if control.get('side')=='right':
+                    value={'right':value['left'],'left':value['right'],
+                           'rightState':state,'leftState':dict(state,squeezeValue=0.)}
                 ws.send(packb({'etype':'CONTROLLER_MOVE','key':'motionControllers','value':value},use_bin_type=True))
                 for _ in range(4):
                     try:
@@ -60,14 +65,16 @@ def websocket_peer(port, control, stop, errors):
         errors.append(str(exc))
 
 
-def run_case(root,output,case):
+def run_case(root,output,case,g1=False,side='left'):
+    group=side+'_arm'
+    joint_names=[f'{side}_arm_joint{i}' for i in range(1,8)] if g1 else [f'l_joint_{i}' for i in range(1,8)]
     run=case+'_'+uuid.uuid4().hex[:8]
     namespace='/bindu_vr_'+uuid.uuid4().hex[:8]
     folder=output/run;folder.mkdir(parents=True)
     processes={};handles=[]
     node=rclpy.create_node('teleop_verifier_'+uuid.uuid4().hex[:8])
     seen={'state':None,'accepted':[],'events':[],'inputs':[],'display':[]}
-    control={'grip':0.,'delta':0.,'enabled':True,'valid':True,'source':'synthetic'}
+    control={'side':side,'grip':0.,'delta':0.,'enabled':True,'valid':True,'source':'synthetic'}
     stopped=threading.Event();errors=[];peer=None
     with socket.socket() as sock:
         sock.bind(('127.0.0.1',0));port=sock.getsockname()[1]
@@ -75,16 +82,18 @@ def run_case(root,output,case):
         log=(folder/(key+'.log')).open('w');handles.append(log)
         processes[key]=subprocess.Popen(cmd,stdout=log,stderr=subprocess.STDOUT,start_new_session=True)
     try:
-        profile=root/'src/integration/bindu_runtime/config/huawei_v34_left_sim.json'
+        profile=root/('src/integration/bindu_runtime/config/g1_provisional_sim.json' if g1 else 'src/integration/bindu_runtime/config/huawei_v34_left_sim.json')
+        extra = ['-p','teleop_config:='+str(root/f'src/integration/bindu_runtime/config/teleop_g1_{side}.json'),
+                 '-p','model_root:='+str(root/'src/hardware/bindu_description/urdf')] if g1 else []
         launched = case in ('normal', 'websocket_launch')
         if launched:
-            start('launch',['ros2','launch','bindu_runtime','teleop.launch.py','namespace:='+namespace,
-                            'run_id:='+run,'output:='+str(output/'episodes')]+
+            start('launch',['ros2','launch','bindu_runtime','g1_sim.launch.py' if g1 else 'teleop.launch.py','namespace:='+namespace,
+                            'run_id:='+run,'output:='+str(output/'episodes')]+(['teleop_enabled:=true','side:='+side] if g1 else [])+
                             (['vr_enabled:=true','port:='+str(port)] if case=='websocket_launch' else []))
         for executable in (() if launched else ('execution','recorder','teleop','teleop_display')):
             start(executable,['ros2','run','bindu_runtime',executable,'--ros-args','-r','__ns:='+namespace,
                               '-p','profile:='+str(profile),'-p','run_id:='+run,
-                              '-p','output:='+str(output/'episodes')])
+                              '-p','output:='+str(output/'episodes')]+extra)
         node.create_subscription(ExecutionState,namespace+'/execution/state',lambda m:seen.update(state=m),10)
         node.create_subscription(MotionCommand,namespace+'/execution/accepted',lambda m:seen['accepted'].append(m),512)
         node.create_subscription(RuntimeEvent,namespace+'/events',lambda m:seen['events'].append(m),512)
@@ -101,12 +110,12 @@ def run_case(root,output,case):
             if control.get('rolled'):
                 pose[:3,:3]=[[1,0,0],[0,0,-1],[0,1,0]]
             pub.publish(VRInput(stamp=node.get_clock().now().to_msg(),source_id=control['source'],
-                seq=counter[0],side='left',pose=pose.ravel().tolist(),grip=control['grip'],valid=control['valid']))
+                seq=counter[0],side=side,pose=pose.ravel().tolist(),grip=control['grip'],valid=control['valid']))
         node.create_timer(.02,publish)
         if case.startswith('websocket'):
             if not launched:
                 start('vr_input',['ros2','run','bindu_runtime','vr_input','--ros-args','-r','__ns:='+namespace,
-                                 '-p','profile:='+str(profile),'-p','run_id:='+run,'-p','port:='+str(port)])
+                                 '-p','profile:='+str(profile),'-p','run_id:='+run,'-p','side:='+side,'-p','port:='+str(port)])
             peer=threading.Thread(target=websocket_peer,args=(port,control,stopped,errors),daemon=True)
             peer.start()
         client=ActionClient(node,TeleopSession,namespace+'/teleop/session')
@@ -132,8 +141,32 @@ def run_case(root,output,case):
             # lifecycle events. Teleop readiness deliberately doesn't await UI.
             until(node,lambda:seen['display'] and seen['display'][-1]['mode']=='WAITING'
                   and seen['display'][-1]['measured'] is not None,seconds=10.)
+        if case=='body_pose':
+            assert g1
+            lease_client=node.create_client(Lease,namespace+'/execution/lease')
+            submit=node.create_client(SubmitMotion,namespace+'/execution/submit')
+            for body_group,target in [('leg',[.05,.1]),('waist',[.05])]:
+                lease=wait(node,lease_client.call_async(Lease.Request(operation='acquire',owner='posture',resources=[body_group])))
+                assert lease.ok
+                names=['leg_joint1','leg_joint2'] if body_group=='leg' else ['leg_joint3']
+                cmd=MotionCommand(schema_version=1,command_id=uuid.uuid4().hex,lease_id=lease.lease_id,epoch=lease.epoch,
+                    profile_hash=seen['state'].profile_hash,task_id=run,mode='finite_trajectory',resource_group=body_group,
+                    stamp=node.get_clock().now().to_msg(),valid_for=1.8,joint_names=names,
+                    points=[JointTrajectoryPoint(positions=target,time_from_start=Duration(sec=1))])
+                assert wait(node,submit.call_async(SubmitMotion.Request(command=cmd))).accepted
+                until(node,lambda:seen['state'].command_id==cmd.command_id and seen['state'].state=='SUCCEEDED')
+                assert wait(node,lease_client.call_async(Lease.Request(operation='release',lease_id=lease.lease_id,epoch=lease.epoch))).ok
+            from bindu_kinematics.model import ArmModel
+            cfg=json.loads((root/f'src/integration/bindu_runtime/config/teleop_g1_{side}.json').read_text())['kinematics']
+            cfg['urdf']=str(root/'src/hardware/bindu_description/urdf/g1_provisional.urdf')
+            model=ArmModel(cfg);positions=dict(zip(seen['state'].joints.name,seen['state'].joints.position))
+            pose=model.fk([positions[n] for n in model.names],[positions[n] for n in model.context_names]).ravel()
+            until(node,lambda:seen['display'] and seen['display'][-1]['measured'] is not None and
+                  np.allclose(seen['display'][-1]['measured'],pose,atol=1e-5))
+            seen['accepted'].clear()
+        baseline=dict(zip(seen['state'].joints.name,seen['state'].joints.position))
         duration=5.5 if case in ('clutch','websocket_display_loss') else 3.5
-        goal=wait(node,client.send_goal_async(TeleopSession.Goal(task_id=run,resource_group='left_arm',duration=duration)))
+        goal=wait(node,client.send_goal_async(TeleopSession.Goal(task_id=run,resource_group=group,duration=duration)))
         assert goal.accepted,'goal rejected'
         future=goal.get_result_async()
         until(node,lambda:any(e.state=='TELEOP_STARTED' for e in seen['events']))
@@ -144,7 +177,7 @@ def run_case(root,output,case):
         until(node,lambda:len(seen['accepted'])>=5,seconds=8.)
         lease=node.create_client(Lease,namespace+'/execution/lease')
         assert lease.wait_for_service(timeout_sec=2)
-        busy=wait(node,lease.call_async(Lease.Request(operation='acquire',owner='pi-competitor',resources=['left_arm'])))
+        busy=wait(node,lease.call_async(Lease.Request(operation='acquire',owner='pi-competitor',resources=[group])))
         assert not busy.ok and busy.code=='BUSY',busy
         if case != 'normal':
             until(node,lambda:any(v['mode']=='FOLLOW' and v['target'] and v['measured'] and v['error']
@@ -195,7 +228,7 @@ def run_case(root,output,case):
                                   for t in new_targets()))
         response=wait(node,future,10.)
         result=response.result
-        if case in ('normal','websocket','websocket_launch','clutch','websocket_display_loss'):
+        if case in ('normal','body_pose','websocket','websocket_launch','clutch','websocket_display_loss'):
             assert response.status==4 and result.success and result.code=='TELEOP_SESSION_COMPLETE',result
         elif case=='cancel':
             assert response.status==5 and result.code=='CANCELED',result
@@ -216,12 +249,15 @@ def run_case(root,output,case):
         until(node,lambda:not seen['state'].reference.name)
         if case in ('normal','websocket'):
             assert max(abs(q) for q in seen['state'].joints.position)>.0001,'arm did not move'
-        new=wait(node,lease.call_async(Lease.Request(operation='acquire',owner='after-vr',resources=['left_arm'])))
+        new=wait(node,lease.call_async(Lease.Request(operation='acquire',owner='after-vr',resources=[group])))
         assert new.ok,new
         assert wait(node,lease.call_async(Lease.Request(operation='release',lease_id=new.lease_id,epoch=new.epoch))).ok
         assert seen['inputs'] and not errors,errors
+        if g1:
+            positions=dict(zip(seen['state'].joints.name,seen['state'].joints.position))
+            assert all(abs(v-baseline[n])<1e-5 for n,v in positions.items() if n not in joint_names)
         for command in seen['accepted']:
-            assert command.resource_group=='left_arm' and command.joint_names==[f'l_joint_{i}' for i in range(1,8)]
+            assert command.resource_group==group and command.joint_names==joint_names
             assert command.observation_id==command.command_id
         if case.startswith('websocket'):
             assert any('teleopFeedback' in repr(p) and 'teleopStatus' in repr(p)
@@ -268,13 +304,14 @@ def main():
     parser=argparse.ArgumentParser()
     parser.add_argument('--output',type=Path,required=True)
     parser.add_argument('--cases',nargs='+',default=['normal','websocket','websocket_launch','clutch','cancel','disconnect','invalid','reconnect','unreachable','recorder_loss','websocket_display_loss'])
+    parser.add_argument('--g1',action='store_true');parser.add_argument('--side',choices=['left','right'],default='left')
     args=parser.parse_args();args.output.mkdir(parents=True,exist_ok=False)
     root=Path(__file__).resolve().parents[1]
     rclpy.init();results=[]
     try:
         for case in args.cases:
             try:
-                result=run_case(root,args.output,case)
+                result=run_case(root,args.output,case,args.g1,args.side)
             except Exception as exc:
                 import traceback
                 traceback.print_exc()

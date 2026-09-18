@@ -78,7 +78,9 @@ class TeleopSession:
         if self.mode != 'follow' or self.anchor_pending or self.seq == self.last_requested:
             return None
         seed = tuple(positions[n] for n in self.names)
-        if not all(math.isfinite(q) for q in seed):
+        context = (tuple(positions[n] for n in sorted(self.cfg['kinematics']['locked_joints']))
+                   if self.cfg['kinematics'].get('measured_context', False) else ())
+        if not all(math.isfinite(q) for q in seed+context):
             raise ValueError('TELEOP_INVALID_FEEDBACK')
         current = tuple(robot_pose(self.frame.pose).ravel())
         target = ()
@@ -91,7 +93,7 @@ class TeleopSession:
                                      operator_yaw_rad=self.cfg.get('operator_yaw_rad', 0.))
         self.last_requested = self.seq
         return IKRequest(self.identity+'_'+str(self.seq), self.generation, self.frame.stamp,
-                         self.frame.stamp+self.cfg['command_max_age'], self.names, seed, target)
+                         self.frame.stamp+self.cfg['command_max_age'], self.names, seed, target, context)
 
     def accept_result(self, result, now):
         req = result.request

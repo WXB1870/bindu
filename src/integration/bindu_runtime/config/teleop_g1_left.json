@@ -1,0 +1,63 @@
+{
+  "simulation_only": true,
+  "side": "left",
+  "resource_group": "left_arm",
+  "input_max_age": 0.25,
+  "feedback_max_age": 0.2,
+  "command_max_age": 0.4,
+  "engage_seconds": 1.0,
+  "position_scale": 1.0,
+  "mapping_mode": "robot_base",
+  "operator_yaw_rad": 0.0,
+  "kinematics": {
+    "urdf": "g1_provisional.urdf",
+    "joint_names": [
+      "left_arm_joint1",
+      "left_arm_joint2",
+      "left_arm_joint3",
+      "left_arm_joint4",
+      "left_arm_joint5",
+      "left_arm_joint6",
+      "left_arm_joint7"
+    ],
+    "ee_link": "left_arm_end_effector_mount_link",
+    "tool_transform": [
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1
+    ],
+    "locked_joints": {
+      "head_joint1": 0.0,
+      "head_joint2": 0.0,
+      "leg_joint1": 0.0,
+      "leg_joint2": 0.0,
+      "leg_joint3": 0.0,
+      "right_arm_joint1": 0.0,
+      "right_arm_joint2": 0.0,
+      "right_arm_joint3": 0.0,
+      "right_arm_joint4": 0.0,
+      "right_arm_joint5": 0.0,
+      "right_arm_joint6": 0.0,
+      "right_arm_joint7": 0.0
+    },
+    "smooth_weight": 0.8,
+    "solve_timeout": 0.12,
+    "position_tolerance": 0.015,
+    "rotation_tolerance": 0.1,
+    "max_joint_step": 0.25,
+    "measured_context": true
+  }
+}

@@ -53,7 +53,9 @@ def main():
                 if args.fault=='disconnect' and now-first_command>.6:
                     continue
                 target={wire:.2 for wire in cfg['joint_map'].values()}
-                if args.fault=='missing': target.pop('left_joint_2')
+                if args.fault=='missing':
+                    for name in list(target):
+                        if name=='left_joint_2' or name.endswith('_arm_joint2'):target.pop(name)
                 payload={'关节命令字典':target}
                 if args.correlate:
                     payload['bindu']=dict(latest['bindu'])

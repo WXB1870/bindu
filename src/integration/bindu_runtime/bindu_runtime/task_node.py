@@ -8,7 +8,7 @@ from rclpy.action import ActionServer, GoalResponse, CancelResponse
 from rclpy.callback_groups import ReentrantCallbackGroup
 from trajectory_msgs.msg import JointTrajectoryPoint
 from builtin_interfaces.msg import Duration
-from bindu_interfaces.action import FetchDrink
+from bindu_interfaces.action import FetchDrink, NavigateToSite
 from bindu_interfaces.msg import ExecutionState, RecorderHealth, MotionCommand
 from bindu_interfaces.srv import Lease, SubmitMotion, ControlExecution, LocateObject
 from bindu_tasks.scene import Scene
@@ -59,6 +59,23 @@ class TaskNode(RuntimeNode):
         self.create_timer(.3, self.renew, callback_group=self.group)
         if hasattr(self.navigation, "bind"):
             self.navigation.bind(self)
+        self.nav_server = ActionServer(self, NavigateToSite, 'navigation/navigate_to_site',
+            execute_callback=self.execute_site, goal_callback=self.goal_site,
+            cancel_callback=lambda _:CancelResponse.ACCEPT, callback_group=self.group)
+
+    def goal_site(self, request):
+        ready = (self.state and self.state.profile_hash == self.profile.digest and self.health and
+                 self.health.ready and 0 <= self.now()-seconds(self.health.stamp) < .75 and
+                 all(c.service_is_ready() for c in (self.lease_client,self.submit_client,self.control_client)))
+        config = getattr(self.navigation, 'config', None)
+        supported = (request.task_id and config and request.site in config.sites and
+                     'base_velocity' in self.profile.capabilities)
+        if not ready or not supported or not self.busy.acquire(blocking=False):
+            return GoalResponse.REJECT
+        return GoalResponse.ACCEPT
+
+    async def execute_site(self, goal):
+        return await self.execute_task(goal, navigation_only=True)
 
     def on_state(self, state):
         self.state = state
@@ -215,22 +232,32 @@ class TaskNode(RuntimeNode):
         self.scene.confirm_grasp(object_id, positions, self.profile.groups['hand'], target)
 
     async def execute(self, goal):
+        return await self.execute_task(goal, navigation_only=False)
+
+    async def execute_task(self, goal, navigation_only):
         ctx = Attempt(goal.request.task_id, goal)
         self.current = ctx
-        result = FetchDrink.Result(simulated=True)
+        result = NavigateToSite.Result(simulated=True) if navigation_only else FetchDrink.Result(simulated=True)
         try:
             lease = await self.wait(self.lease_client.call_async(Lease.Request(operation='acquire', owner=ctx.task_id,
-                              resources=['arm','hand','base'])), 1., ctx)
+                              resources=['base'] if navigation_only else ['arm','hand','base'])), 1., ctx)
             if not lease.ok:
                 raise RuntimeError(lease.code)
             ctx.lease_id, ctx.epoch = lease.lease_id, lease.epoch
             if lease.profile_hash != self.profile.digest:
                 raise RuntimeError('PROFILE_MISMATCH')
-            strategy = self.strategies[goal.request.strategy]
-            await fetch_drink(self, ctx, goal.request.object_id, strategy)
+            if navigation_only:
+                goal.publish_feedback(NavigateToSite.Feedback(stage='NAVIGATE'))
+                await self.navigate(ctx, goal.request.site)
+            else:
+                strategy = self.strategies[goal.request.strategy]
+                await fetch_drink(self, ctx, goal.request.object_id, strategy)
             if not await self.stop(ctx):
                 raise RuntimeError('STOP_UNCONFIRMED')
-            result.success, result.code, result.held_object = True, 'SIMULATED_TASK_COMPLETE', self.scene.held_object
+            result.success = True
+            result.code = 'NAVIGATION_COMPLETE' if navigation_only else 'SIMULATED_TASK_COMPLETE'
+            if not navigation_only:
+                result.held_object = self.scene.held_object
             goal.succeed()
         except Canceled:
             result.code = 'CANCELED' if await self.stop(ctx) else 'STOP_UNCONFIRMED'

@@ -14,6 +14,10 @@ def load_config(path, profile, model_root):
     model = cfg['kinematics']
     if tuple(model['joint_names']) != tuple(profile.groups[group]):
         raise ValueError('TELEOP_MODEL_LAYOUT')
+    if model.get('measured_context', False):
+        others = {n for names in profile.groups.values() for n in names}-set(model['joint_names'])
+        if set(model['locked_joints']) != others:
+            raise ValueError('TELEOP_CONTEXT_LAYOUT')
     for key in ('input_max_age', 'feedback_max_age', 'command_max_age', 'engage_seconds', 'position_scale'):
         if not isinstance(cfg[key], (int, float)) or not math.isfinite(cfg[key]) or cfg[key] <= 0:
             raise ValueError('TELEOP_INVALID_CONFIG: '+key)

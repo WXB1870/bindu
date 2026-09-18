@@ -29,10 +29,13 @@ def free_port():
         return sock.getsockname()[1]
 
 
-def run_case(root,output,name,mode='pubsub',fault='',correlate=False,launch=False,startup=False):
+def run_case(root,output,name,mode='pubsub',fault='',correlate=False,launch=False,startup=False,g1=False,side='left'):
+    group=side+'_arm' if g1 else 'arm'
+    names=[f'{side}_arm_joint{i}' for i in range(1,8)] if g1 else ['arm_joint_1','arm_joint_2']
+    if g1:correlate=True
     run=name+'_'+uuid.uuid4().hex[:8]; namespace='/bindu_pi_'+uuid.uuid4().hex[:8]
     folder=output/run;folder.mkdir(parents=True)
-    cfg=json.loads((root/'src/integration/bindu_runtime/config/pi_loopback.json').read_text())
+    cfg=json.loads((root/('src/integration/bindu_runtime/config/pi_g1.json' if g1 else 'src/integration/bindu_runtime/config/pi_loopback.json')).read_text())
     cfg.update(mode=mode,state_bind=f'tcp://127.0.0.1:{free_port()}',command_connect=f'tcp://127.0.0.1:{free_port()}',require_correlation=correlate)
     config=folder/'config.json';config.write_text(json.dumps(cfg))
     handles=[]; processes={}; node=rclpy.create_node('pi_verifier_'+uuid.uuid4().hex[:8])
@@ -43,12 +46,12 @@ def run_case(root,output,name,mode='pubsub',fault='',correlate=False,launch=Fals
         processes[key]=subprocess.Popen(command,stdout=log,stderr=subprocess.STDOUT,start_new_session=True)
     try:
         if launch:
-            start('launch',['ros2','launch','bindu_runtime','skeleton.launch.py','namespace:='+namespace,
+            start('launch',['ros2','launch','bindu_runtime','g1_sim.launch.py' if g1 else 'skeleton.launch.py','namespace:='+namespace,
                   'run_id:='+run,'output:='+str(output/'episodes'),'pi_enabled:=true','pi_config:='+str(config)])
         else:
             for executable in ('execution','recorder','pi_client'):
                 start(executable,['ros2','run','bindu_runtime',executable,'--ros-args','-r','__ns:='+namespace,
-                    '-p','run_id:='+run,'-p','output:='+str(output/'episodes'),'-p','pi_config:='+str(config)])
+                    '-p','run_id:='+run,'-p','output:='+str(output/'episodes'),'-p','pi_config:='+str(config)]+(['-p','profile:='+str(root/'src/integration/bindu_runtime/config/g1_provisional_sim.json')] if g1 else []))
         peerfault=fault if fault not in ('cancel','stale_observation','recorder_loss') else ''
         start('peer',[sys.executable,str(root/'tests/pi_peer.py'),'--config',str(config),
                       '--output',str(folder/'peer.json'),'--fault',peerfault]+(['--correlate'] if correlate else []))
@@ -74,7 +77,7 @@ def run_case(root,output,name,mode='pubsub',fault='',correlate=False,launch=Fals
         if startup:
             # Holding input back makes the startup race deterministic: a visible
             # Action server is not proof that its observation consumer is ready.
-            rejected=wait(node,client.send_goal_async(PiSession.Goal(task_id=run+'_early',prompt='pick water',resource_group='arm',duration=2.)))
+            rejected=wait(node,client.send_goal_async(PiSession.Goal(task_id=run+'_early',prompt='pick water',resource_group=group,duration=2.)))
             assert not rejected.accepted
             until(node,lambda:any(e.state=='PI_GOAL_REJECTED' for e in seen['events']))
             publish_enabled[0]=True
@@ -85,7 +88,10 @@ def run_case(root,output,name,mode='pubsub',fault='',correlate=False,launch=Fals
             if ready_reply.success:break
             rclpy.spin_once(node,timeout_sec=.02)
         assert ready_reply and ready_reply.success,ready_reply
-        goal=wait(node,client.send_goal_async(PiSession.Goal(task_id=run,prompt='pick water',resource_group='arm',duration=2.)))
+        if g1:
+            rejected=wait(node,client.send_goal_async(PiSession.Goal(task_id=run+'_body',prompt='test',resource_group='leg',duration=2.)))
+            assert not rejected.accepted,'Pi admitted an unsupported body group'
+        goal=wait(node,client.send_goal_async(PiSession.Goal(task_id=run,prompt='pick water',resource_group=group,duration=2.)))
         assert goal.accepted,'Pi goal rejected'
         future=goal.get_result_async()
         if fault in ('cancel','stale_observation','recorder_loss'):
@@ -99,7 +105,7 @@ def run_case(root,output,name,mode='pubsub',fault='',correlate=False,launch=Fals
             until(node,lambda:len(seen['accepted'])>=5)
             lease=node.create_client(Lease,namespace+'/execution/lease')
             assert lease.wait_for_service(timeout_sec=3)
-            busy=wait(node,lease.call_async(Lease.Request(operation='acquire',owner='competitor',resources=['arm'])))
+            busy=wait(node,lease.call_async(Lease.Request(operation='acquire',owner='competitor',resources=[group])))
             assert not busy.ok and busy.code=='BUSY'
         response=wait(node,future,8)
         result=response.result
@@ -122,16 +128,18 @@ def run_case(root,output,name,mode='pubsub',fault='',correlate=False,launch=Fals
         until(node,lambda:len(seen['accepted'])>=result.accepted_commands)
         assert result.accepted_commands==len(seen['accepted']), (result.accepted_commands,len(seen['accepted']))
         until(node,lambda:seen['state'] and not seen['state'].reference.name)
-        assert all(abs(q-.2)<.02 for q in seen['state'].joints.position[:2]) if not fault else True
+        positions=dict(zip(seen['state'].joints.name,seen['state'].joints.position))
+        assert all(abs(positions[n]-.2)<.02 for n in names) if not fault else True
+        if g1:assert all(abs(q)<1e-5 for n,q in positions.items() if n not in names)
         peer=json.loads((folder/'peer.json').read_text());assert peer['observations']>0
         for command in seen['accepted']:
-            assert command.mode=='joint_target' and command.resource_group=='arm'
-            assert command.joint_names==['arm_joint_1','arm_joint_2']
+            assert command.mode=='joint_target' and command.resource_group==group
+            assert command.joint_names==names
             assert bool(command.observation_id)==correlate
         # Confirm cancellation/release revoked the old lease and ownership is reusable.
         lease=node.create_client(Lease,namespace+'/execution/lease')
         assert lease.wait_for_service(timeout_sec=3)
-        new=wait(node,lease.call_async(Lease.Request(operation='acquire',owner='after-pi',resources=['arm'])))
+        new=wait(node,lease.call_async(Lease.Request(operation='acquire',owner='after-pi',resources=[group])))
         assert new.ok,new
         assert wait(node,lease.call_async(Lease.Request(operation='release',lease_id=new.lease_id,epoch=new.epoch))).ok
         return {'case':name,'passed':True,'simulated':True,'code':result.code,'accepted':result.accepted_commands,
@@ -144,6 +152,7 @@ def run_case(root,output,name,mode='pubsub',fault='',correlate=False,launch=Fals
 
 def main():
     parser=argparse.ArgumentParser();parser.add_argument('--output',default='artifacts/pi-verification');parser.add_argument('--case',action='append')
+    parser.add_argument('--g1',action='store_true');parser.add_argument('--side',choices=['left','right'],default='left')
     args=parser.parse_args();root=Path(__file__).resolve().parents[1];output=Path(args.output).resolve();output.mkdir(parents=True,exist_ok=True)
     os.environ['ROS_DOMAIN_ID']='116';os.environ['ROS_LOCALHOST_ONLY']='1'
     import zmq,numpy
@@ -160,7 +169,7 @@ def main():
     rclpy.init();results=[]
     try:
         for name,kwargs in cases:
-            try:result=run_case(root,output,name,**kwargs)
+            try:result=run_case(root,output,name,g1=args.g1,side=args.side,**kwargs)
             except Exception as exc:result={'case':name,'passed':False,'error':str(exc),'traceback':traceback.format_exc()}
             results.append(result);print(json.dumps(result),flush=True)
             (output/'results.json').write_text(json.dumps({'passed':all(r['passed'] for r in results),'cases':results},indent=2))

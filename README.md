@@ -157,11 +157,44 @@ ros2 launch bindu_runtime g1_sim.launch.py
 python3 tests/validate_g1.py --output artifacts/g1-check
 ```
 
-第一条命令启动执行器、记录器、实测状态桥和`robot_state_publisher`；第二条自行启动独立命名空间做验证。模型通过`robot_description`加载，19轴反馈发布为`joint_states`并驱动TF；`odom→base_link`使用差速模拟反馈，保留源时间，失联不会刷新旧姿态。TF话题隔离在各自命名空间，当前不发布`map→odom`。共享执行器按控制组串行执行，尚无双臂协同或全身IK控制器；本入口不启动依赖手部的取物任务。
+第一条命令启动执行器、记录器、实测状态桥、`robot_state_publisher`和到站导航Action；第二条自行启动独立命名空间做验证。模型通过`robot_description`加载，19轴反馈发布为`joint_states`并驱动TF；`odom→base_link`使用差速模拟反馈，保留源时间，失联不会刷新旧姿态。TF话题隔离在各自命名空间，当前不发布`map→odom`。共享执行器按控制组串行执行，尚无双臂协同或全身IK控制器；本入口不启动依赖手部的取物任务。
+
+G1 能力统一从同一入口选择（需要重建工作区以生成新增的 `NavigateToSite` Action）：
+
+```bash
+# 左臂 VR/IK 与显示；右臂改为 side:=right。头显连接另需 host/TLS 配置。
+ros2 launch bindu_runtime g1_sim.launch.py vr_enabled:=true side:=left
+# 已有 VRInput 源时，仅启用 IK 与显示。
+ros2 launch bindu_runtime g1_sim.launch.py teleop_enabled:=true side:=left
+# Pi 客户端；另需配置服务端点并提供三路 RGB 与全身关节观测。
+ros2 launch bindu_runtime g1_sim.launch.py pi_enabled:=true
+```
+
+以上是不同启动方式，不应在同一命名空间重复启动。VR 左右臂分别使用 `teleop_g1_left/right.json`；会话资源为 `left_arm` 或 `right_arm`，一次控制一臂。IK 和显示使用当前腿腰、头部及另一臂反馈，优化变量只有所选臂的7轴；非活动关节缺失/非法或求解期间姿态变化时拒绝下发。末端暂用法兰坐标，不包含手爪TCP标定。Pi 的 `pi_g1.json` 显式映射19轴观测，要求动作关联观测与会话，允许同样的两个单臂资源；不表示远端模型已支持该本体，默认端点仍为本地测试地址。
+
+到站导航无需手部/感知服务，默认开启，可用 `navigation_enabled:=false` 关闭。接入满足前述身份与时间契约的导航后端后，可提交：
+
+```bash
+ros2 action send_goal /bindu_g1_sim/navigation/navigate_to_site bindu_interfaces/action/NavigateToSite \
+  "{task_id: g1_nav_1, site: pickup}" --feedback
+```
+
+Action 仅申请底盘控制权；后端成功、定位误差与停稳条件仍必须同时满足。启动入口不包含导航后端、地图、定位或SLAM，无后端会明确失败。`navigation_sim.json` 中的站点只用于协议模拟。
+
+G1 集成回归入口（均自行启动隔离模拟进程）：
+
+```bash
+python3 tests/validate_teleop.py --g1 --output artifacts/g1-vr-left --cases normal body_pose clutch cancel
+python3 tests/validate_teleop.py --g1 --side right --output artifacts/g1-vr-right --cases normal body_pose
+python3 tests/validate_pi.py --g1 --output artifacts/g1-pi
+python3 tests/validate_navigation.py --g1 --output artifacts/g1-navigation
+```
+
+2026-09-19 本机 macOS/ARM64、Python 3.12 完成106项模块测试，无跳过，含G1两侧实际IK、非零腿腰姿态与旧单臂回归。新增ROS场景尚未运行：开发机SSH连接超时；旧批次通过不代表本批跨进程链路已验收。
 
 模型来源与修改范围见[架构](软件架构设计.md#854-当前代码组织与替换边界)，Apache-2.0许可随描述包分发。需要重生成时，将固定提交的原URDF传给`python3 tools/derive_g1_model.py /path/to/galbot_one_golf.urdf`；工具校验源码SHA256并统一生成模型与profile，避免限位表漂移。
 
-Ubuntu/Jazzy验证：14包构建、103项模块、9项全身场景及5项相关导航回归通过。TF与FK按同一时间戳的实测样本对照；初轮用较早TF与最终目标比较而失败，修正验证器后通过，精度阈值未放宽。
+此前9月18日Ubuntu/Jazzy验证：14包构建、103项模块、9项全身场景及5项相关导航回归通过。TF与FK按同一时间戳的实测样本对照；初轮用较早TF与最终目标比较而失败，修正验证器后通过，精度阈值未放宽。
 
 ## Pi 客户端运行入口
 

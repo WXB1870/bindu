@@ -16,8 +16,9 @@ class TeleopDisplayNode(RuntimeNode):
     def __init__(self):
         super().__init__('teleop_display')
         self.declare_parameter('teleop_config', str(Path(get_package_share_directory('bindu_runtime'))/'config/teleop_v34.json'))
+        self.declare_parameter('model_root', str(Path(get_package_share_directory('bindu_kinematics'))/'models'))
         cfg = load_config(self.get_parameter('teleop_config').value, self.profile,
-                          Path(get_package_share_directory('bindu_kinematics'))/'models')
+                          self.get_parameter('model_root').value)
         self.feedback = TeleopFeedback(cfg)
         self.model = ArmModel(cfg['kinematics'])
         self.state = self.frame = None
@@ -50,7 +51,11 @@ class TeleopDisplayNode(RuntimeNode):
                     q = [positions[name] for name in self.model.names]
                     if not all(math.isfinite(v) for v in q):
                         raise ValueError('DISPLAY_JOINT_NONFINITE')
-                    measured = self.model.fk(q).ravel().tolist()
+                    context = ([positions[n] for n in self.model.context_names]
+                               if self.model.cfg.get('measured_context', False) else None)
+                    if context is not None and not all(math.isfinite(v) for v in context):
+                        raise ValueError('DISPLAY_CONTEXT_NONFINITE')
+                    measured = self.model.fk(q, context).ravel().tolist()
                 except (ValueError, KeyError) as exc:
                     error = 'DISPLAY_FK_INVALID: ' + str(exc)
         frame = self.frame
