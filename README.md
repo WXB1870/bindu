@@ -22,7 +22,7 @@
 
 ## 工程入口
 
-仓库根目录同时是 ROS 2 工作区，共包含 13 个可构建包。
+仓库根目录同时是 ROS 2 工作区，共包含 14 个可构建包。
 
 ```text
 bindu/
@@ -30,7 +30,7 @@ bindu/
 │   ├── shared/          # 公共契约、ROS 消息与服务
 │   ├── tasks/           # 任务流程与场景状态
 │   ├── control/         # 控制权、时序与轨迹执行
-│   ├── hardware/        # 设备驱动、命令路由与反馈汇总
+│   ├── hardware/        # 设备驱动、反馈汇总与公共本体描述
 │   ├── data/            # 异步数据记录
 │   ├── integration/     # ROS 节点、配置与 launch
 │   └── capabilities/    # IK、VLA、感知、导航、规划、交互、遥操作
@@ -137,6 +137,31 @@ python3 tests/validate_navigation.py --output artifacts/navigation-check
 - **未修改的 Nav2 `/cmd_vel` 不能直接接入本批入口。** 它缺少目标身份，不能由普通转发节点在接收时补当前目标ID。真实Nav2命令来源隔离/目标关联及TF定位适配属于下一批；本批未声称已完成该桥接。
 - 到点需要后端Action成功、全局位姿误差达标、底盘反馈持续停稳；取消先关速度入口，再停止执行并取消后端。停稳或取消无法确认时明确失败。输入使用best-effort有界队列，Action/执行服务保留可靠通信；丢失输入触发短期有效期和门控超时。
 - 底盘独立速度/加速度参数及停止语义见[执行契约](动作执行契约.md#2-输入模式必须显式选择)。真实底盘、雷达、地图、全局定位与建图尚未接入；动作块适配和手部扩展继续暂缓。
+
+## 临时 G1 全身模拟入口
+
+采用固定版本的 Galbot One Golf 派生[运动学模型](src/hardware/bindu_description/urdf/g1_provisional.urdf)，[执行配置](src/integration/bindu_runtime/config/g1_provisional_sim.json)覆盖19个关节轴，底盘另用机体线速度`v`和角速度`ω`控制：
+
+| 控制组 | 关节顺序 | 数量 |
+|---|---|---|
+| `leg` | `leg_joint1`、`leg_joint2`，连杆升降 | 2 |
+| `waist` | `leg_joint3`，腰部俯仰 | 1 |
+| `head` | `head_joint1`、`head_joint2` | 2 |
+| `left_arm` | `left_arm_joint1` → `left_arm_joint7` | 7 |
+| `right_arm` | `right_arm_joint1` → `right_arm_joint7` | 7 |
+
+角度单位为rad。位置限位逐轴取自原URDF，保留左右臂不对称范围；速度上限暂取原值与0.5 rad/s的较小值，加速度/jerk的2 rad/s²、12 rad/s³为模拟执行配置，不能作实机参数。额外腿腰轴`leg_joint4/5`固定在零位；手爪与轮子子树省略，底盘由差速模拟驱动负责，手臂保留法兰安装坐标。模型只保留运动学/惯性，不含视觉网格或碰撞几何；三轴腿腰映射是临时近似，尚未做实机标定。
+
+```bash
+ros2 launch bindu_runtime g1_sim.launch.py
+python3 tests/validate_g1.py --output artifacts/g1-check
+```
+
+第一条命令启动执行器、记录器、实测状态桥和`robot_state_publisher`；第二条自行启动独立命名空间做验证。模型通过`robot_description`加载，19轴反馈发布为`joint_states`并驱动TF；`odom→base_link`使用差速模拟反馈，保留源时间，失联不会刷新旧姿态。TF话题隔离在各自命名空间，当前不发布`map→odom`。共享执行器按控制组串行执行，尚无双臂协同或全身IK控制器；本入口不启动依赖手部的取物任务。
+
+模型来源与修改范围见[架构](软件架构设计.md#854-当前代码组织与替换边界)，Apache-2.0许可随描述包分发。需要重生成时，将固定提交的原URDF传给`python3 tools/derive_g1_model.py /path/to/galbot_one_golf.urdf`；工具校验源码SHA256并统一生成模型与profile，避免限位表漂移。
+
+Ubuntu/Jazzy验证：14包构建、103项模块、9项全身场景及5项相关导航回归通过。TF与FK按同一时间戳的实测样本对照；初轮用较早TF与最终目标比较而失败，修正验证器后通过，精度阈值未放宽。
 
 ## Pi 客户端运行入口
 

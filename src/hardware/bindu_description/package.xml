@@ -1,0 +1,10 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>bindu_description</name>
+  <version>0.1.0</version>
+  <description>Provisional G1 kinematic description for Bindu simulation.</description>
+  <maintainer email="24S136111@stu.hit.edu.cn">xavier</maintainer>
+  <license>Apache-2.0</license>
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <export><build_type>ament_cmake</build_type></export>
+</package>

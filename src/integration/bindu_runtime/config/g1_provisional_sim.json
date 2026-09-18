@@ -1,0 +1,190 @@
+{
+  "name": "g1_provisional_sim",
+  "groups": {
+    "leg": [
+      "leg_joint1",
+      "leg_joint2"
+    ],
+    "waist": [
+      "leg_joint3"
+    ],
+    "head": [
+      "head_joint1",
+      "head_joint2"
+    ],
+    "left_arm": [
+      "left_arm_joint1",
+      "left_arm_joint2",
+      "left_arm_joint3",
+      "left_arm_joint4",
+      "left_arm_joint5",
+      "left_arm_joint6",
+      "left_arm_joint7"
+    ],
+    "right_arm": [
+      "right_arm_joint1",
+      "right_arm_joint2",
+      "right_arm_joint3",
+      "right_arm_joint4",
+      "right_arm_joint5",
+      "right_arm_joint6",
+      "right_arm_joint7"
+    ]
+  },
+  "limits": {
+    "leg_joint1": [
+      0.0,
+      0.9374
+    ],
+    "leg_joint2": [
+      0.0,
+      2.5847
+    ],
+    "leg_joint3": [
+      0.0,
+      2.3262
+    ],
+    "head_joint1": [
+      -1.5208,
+      1.5208
+    ],
+    "head_joint2": [
+      -0.2143461,
+      0.4935988
+    ],
+    "left_arm_joint1": [
+      -3.00432619,
+      3.00432619
+    ],
+    "left_arm_joint2": [
+      -1.608062789,
+      1.608062789
+    ],
+    "left_arm_joint3": [
+      -2.916972222,
+      2.916972222
+    ],
+    "left_arm_joint4": [
+      -2.5679938779914946,
+      1.869862177
+    ],
+    "left_arm_joint5": [
+      -2.916972222,
+      2.916972222
+    ],
+    "left_arm_joint6": [
+      -0.8226646259971648,
+      0.7353981633974483
+    ],
+    "left_arm_joint7": [
+      -1.538202778,
+      1.538202778
+    ],
+    "right_arm_joint1": [
+      -3.00432619,
+      3.00432619
+    ],
+    "right_arm_joint2": [
+      -1.608062789,
+      1.608062789
+    ],
+    "right_arm_joint3": [
+      -2.916972222,
+      2.916972222
+    ],
+    "right_arm_joint4": [
+      -1.869862177,
+      2.5679938779914946
+    ],
+    "right_arm_joint5": [
+      -2.916972222,
+      2.916972222
+    ],
+    "right_arm_joint6": [
+      -0.7353981633974483,
+      0.8226646259971648
+    ],
+    "right_arm_joint7": [
+      -1.538202778,
+      1.538202778
+    ]
+  },
+  "max_speed": 0.5,
+  "capabilities": [
+    "joint_position",
+    "base_velocity"
+  ],
+  "execution": {
+    "max_acceleration": 2.0,
+    "max_jerk": 12.0,
+    "control_period": 0.01,
+    "max_tick_gap": 0.1,
+    "stop_timeout": 5.0,
+    "max_transition_duration": 30.0,
+    "joint_dynamics": {
+      "leg_joint1": {
+        "velocity": 0.5
+      },
+      "leg_joint2": {
+        "velocity": 0.5
+      },
+      "leg_joint3": {
+        "velocity": 0.5
+      },
+      "head_joint1": {
+        "velocity": 0.5
+      },
+      "head_joint2": {
+        "velocity": 0.5
+      },
+      "left_arm_joint1": {
+        "velocity": 0.5
+      },
+      "left_arm_joint2": {
+        "velocity": 0.5
+      },
+      "left_arm_joint3": {
+        "velocity": 0.5
+      },
+      "left_arm_joint4": {
+        "velocity": 0.5
+      },
+      "left_arm_joint5": {
+        "velocity": 0.5
+      },
+      "left_arm_joint6": {
+        "velocity": 0.5
+      },
+      "left_arm_joint7": {
+        "velocity": 0.5
+      },
+      "right_arm_joint1": {
+        "velocity": 0.5
+      },
+      "right_arm_joint2": {
+        "velocity": 0.5
+      },
+      "right_arm_joint3": {
+        "velocity": 0.5
+      },
+      "right_arm_joint4": {
+        "velocity": 0.5
+      },
+      "right_arm_joint5": {
+        "velocity": 0.5
+      },
+      "right_arm_joint6": {
+        "velocity": 0.5
+      },
+      "right_arm_joint7": {
+        "velocity": 0.5
+      }
+    },
+    "base_limits": {
+      "linear_velocity": 0.4,
+      "angular_velocity": 0.4,
+      "linear_acceleration": 1.0,
+      "angular_acceleration": 2.0
+    }
+  }
+}
