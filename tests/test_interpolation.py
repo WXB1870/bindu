@@ -4,10 +4,11 @@ import math
 from pathlib import Path
 import tempfile
 import unittest
+import weakref
 from dataclasses import replace
 from bindu_contracts.contracts import Motion
 from bindu_contracts.profile import Profile
-from bindu_execution.interpolation import Curve, State, fit_target, fit_stop, fit_online
+from bindu_execution.interpolation import Curve, State, Timeline, fit_target, fit_stop, fit_online
 from bindu_execution.executor import Executor, Rejected
 from bindu_hardware.drivers.simulated_joints import SimJointDriver
 from bindu_hardware.drivers.simulated_base import SimBaseDriver
@@ -190,6 +191,85 @@ class Interpolation(unittest.TestCase):
             self.assertAlmostEqual(wanted[0],actual[0],places=9)
         self.tick_to(10.15)
         self.assert_bounded(self.e.reference)
+
+    def test_continuous_future_stream_releases_expired_paths(self):
+        self.e.submit(self.m,10.)
+        retired = []
+        for i in range(1,2001):
+            now = 10+i*.01
+            if i%50 == 0:
+                self.e.renew(self.m.lease_id,self.m.epoch,now)
+            old = self.e.path
+            times = (now,now+.015,now+.04)
+            expected = [old.sample(t) for t in times]
+            self.e.submit(replace(self.m,command_id=str(i),stamp=now+.04,
+                                  positions=(.1*math.sin(i*.005),)),now)
+            for t,wanted in zip(times,expected):
+                actual = self.e.path.sample(t)
+                for lhs,rhs in zip((wanted.q,wanted.v,wanted.a),(actual.q,actual.v,actual.a)):
+                    self.assertAlmostEqual(lhs[0],rhs[0],places=9)
+            self.assert_bounded(self.e.reference)
+            node,depth = self.e.path,0
+            while isinstance(node,Timeline):
+                depth += 1
+                node = node.before
+            self.assertLessEqual(depth,5)  # Only the next 40ms, with rounding margin.
+            retired.append(weakref.ref(node))
+        del old,node
+        self.assertTrue(all(ref() is None for ref in retired[:-10]))
+        self.tick_to(30.05)
+        self.assertNotIsInstance(self.e.path,Timeline)
+
+    def test_same_future_switch_replaces_unreachable_suffix(self):
+        self.e.submit(self.m,10.)
+        self.tick_to(10.1)
+        old = self.e.path
+        before = old.sample(10.12)
+        at_switch = old.sample(10.14)
+        retired = []
+        for i in range(1200):
+            self.e.submit(replace(self.m,command_id=str(i),stamp=10.14,
+                                  positions=((.1,-.1)[i%2],)),10.1)
+            retired.append(weakref.ref(self.e.path.after))
+        self.assertIs(self.e.path.before,old)
+        self.assertEqual(self.e.path.sample(10.12),before)
+        actual = self.e.path.sample(10.14)
+        for lhs,rhs in zip((at_switch.q,at_switch.v,at_switch.a),(actual.q,actual.v,actual.a)):
+            self.assertAlmostEqual(lhs[0],rhs[0],places=9)
+        self.assertTrue(all(ref() is None for ref in retired[:-1]))
+
+    def test_future_pruning_preserves_timed_path_and_saved_snapshot(self):
+        self.e.submit(self.m,10.)
+        for i in range(1,5):
+            self.e.submit(replace(self.m,command_id=str(i),stamp=10.1+i*.01,
+                                  positions=(.1*i,)),10.1)
+        self.e.submit(replace(self.m,command_id='timed',mode='finite_trajectory',
+                              stamp=10.15,positions=(),offsets=(1.,),points=((.2,),),
+                              valid_for=2.),10.1)
+        snapshot = self.e.path
+        times = (10.1,10.115,10.12,10.139,10.15,10.4,11.15)
+        expected = [snapshot.sample(t) for t in times]
+        self.e.tick(10.12)
+        self.assertEqual(self.e.path.end,11.15)
+        for t,wanted in zip(times,expected):
+            self.assertEqual(snapshot.sample(t),wanted)
+            if t >= 10.12:
+                self.assertEqual(self.e.path.sample(t),wanted)
+
+    def test_future_pruning_keeps_lease_expiry_braking_boundary(self):
+        self.e.submit(self.m,10.)
+        for i in range(1,20):
+            now = 10+i*.01
+            self.e.submit(replace(self.m,command_id=str(i),stamp=now+.04,
+                                  positions=(.1*math.sin(i*.05),)),now)
+        self.e.expires = 10.195
+        expected = fit_stop(self.p,('a',),self.e.path.sample(10.195),10.195).sample(10.2)
+        self.e.tick(10.2)
+        self.assertIsNotNone(self.e.stopping)
+        self.assertFalse(self.e.lease_id)
+        for lhs,rhs in zip((expected.q,expected.v,expected.a),
+                           (self.e.reference.q,self.e.reference.v,self.e.reference.a)):
+            self.assertAlmostEqual(lhs[0],rhs[0],places=9)
 
     def test_native_binding_validates_shapes_and_finite_values(self):
         from bindu_execution import _native

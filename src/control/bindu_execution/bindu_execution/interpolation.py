@@ -78,7 +78,32 @@ class Path:
 
 
 def join(prefix, suffix, switch):
+    # A replacement at the same (or earlier) boundary makes these suffixes
+    # unreachable. Retain only the part that can execute before the new switch.
+    while isinstance(prefix, Timeline) and switch <= prefix.switch:
+        prefix = prefix.before
     return Timeline(prefix, suffix, switch) if prefix else suffix
+
+
+def trim_before(path, now):
+    """Release elapsed branches, preserving samples at/after now and snapshots.
+
+    Walk inside pending switches too: the outermost switch may stay in the
+    future forever during streaming. Rebuild only changed immutable ancestors.
+    Call after expiry handling, which may need to sample an earlier deadline.
+    """
+    if not isinstance(path, Timeline):
+        return path
+    pending = []
+    while isinstance(path, Timeline):
+        if now >= path.switch:
+            path = path.after
+        else:
+            pending.append(path)
+            path = path.before
+    for node in reversed(pending):
+        path = node if path is node.before else Timeline(path, node.after, node.switch)
+    return path
 
 
 @dataclass(frozen=True)
@@ -92,7 +117,10 @@ class Timeline:
         return self.after.end
 
     def sample(self, now):
-        return (self.before if now < self.switch else self.after).sample(now)
+        path = self
+        while isinstance(path, Timeline):
+            path = path.before if now < path.switch else path.after
+        return path.sample(now)
 
 
 @dataclass(frozen=True)

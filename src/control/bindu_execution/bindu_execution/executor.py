@@ -10,7 +10,7 @@ import math
 import uuid
 from bindu_contracts.contracts import Event
 from bindu_contracts.ports import ExecutionIO
-from .interpolation import State, Timeline, fit_online, fit_timed, fit_stop, join
+from .interpolation import State, Timeline, fit_online, fit_timed, fit_stop, join, trim_before
 
 
 class Rejected(ValueError):
@@ -285,8 +285,7 @@ class Executor:
                 self.io.write_base(m.velocity if elapsed < m.duration else (0., 0.))
                 done = elapsed >= m.duration and self.feedback.base_velocity == (0., 0.)
             else:
-                if isinstance(self.path, Timeline) and now >= self.path.switch:
-                    self.path = self.path.after
+                self.path = trim_before(self.path, now)
                 self.reference = self.path.sample(now)
                 self.io.write_joints(dict(zip(m.names, self.reference.q)))
                 if m.mode == 'joint_reference_segment' and elapsed >= m.offsets[-1]:
