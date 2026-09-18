@@ -17,6 +17,7 @@ class BaseReading:
     yaw: float
     velocity: Tuple[float, float]
     simulated: bool
+    y: float = 0.
 
 
 class JointPositionDriver(Protocol):

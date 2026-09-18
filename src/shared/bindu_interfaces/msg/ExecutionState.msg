@@ -9,6 +9,7 @@ string code
 sensor_msgs/JointState joints
 sensor_msgs/JointState reference
 float64 base_x
+float64 base_y
 float64 base_yaw
 geometry_msgs/Twist base_velocity
 bool simulated

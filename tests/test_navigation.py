@@ -147,5 +147,43 @@ class BaseStreamTests(unittest.TestCase):
         with self.assertRaisesRegex(Rejected,'RESOURCE_NOT_OWNED'):
             self.e.submit(replace(self.m,command_id='other',lease_id=lease,epoch=epoch),10.)
 
+    def test_differential_arc_and_reverse(self):
+        self.base.write_velocity((.2, .4))
+        for i in range(100): reading = self.base.read(10+i*.01, .01)
+        self.assertAlmostEqual(reading.x, .5*math.sin(.4))
+        self.assertAlmostEqual(reading.y, .5*(1-math.cos(.4)))
+        self.assertAlmostEqual(reading.yaw, .4)
+        self.base.write_velocity((-.2, -.4))
+        for i in range(100): reading = self.base.read(11+i*.01, .01)
+        self.assertAlmostEqual(reading.x, 0.)
+        self.assertAlmostEqual(reading.y, 0.)
+        self.assertAlmostEqual(reading.yaw, 0.)
+
+    def test_rotation_then_forward_uses_body_heading(self):
+        self.base.write_velocity((0., math.pi/2))
+        for i in range(100): reading = self.base.read(10+i*.01, .01)
+        self.assertAlmostEqual(reading.x, 0.)
+        self.assertAlmostEqual(reading.y, 0.)
+        self.base.write_velocity((.2, 0.))
+        for i in range(100): reading = self.base.read(11+i*.01, .01)
+        self.assertAlmostEqual(reading.x, 0.)
+        self.assertAlmostEqual(reading.y, .2)
+        self.base.request_stop()
+        stopped = self.base.read(12., .01)
+        self.assertEqual((stopped.x, stopped.y), (reading.x, reading.y))
+
+    def test_planar_feedback_propagates_and_frozen_stamp_stays_frozen(self):
+        self.base.yaw = math.pi/2
+        self.base.write_velocity((.2, 0.))
+        reading = self.io.read_feedback(10., .01)
+        self.assertAlmostEqual(reading.base_y, .002)
+        self.base.inject_fault('feedback_loss')
+        frozen = self.io.read_feedback(10.01, .01)
+        self.assertEqual((frozen.stamp, frozen.base_y), (reading.stamp, reading.base_y))
+        self.base.inject_fault('')
+        self.base.y = float('nan')
+        with self.assertRaisesRegex(RuntimeError, 'INVALID_DEVICE_FEEDBACK'):
+            self.io.read_feedback(10.02, .01)
+
 
 if __name__ == '__main__': unittest.main()

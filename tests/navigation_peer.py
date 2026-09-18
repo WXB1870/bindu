@@ -53,6 +53,7 @@ class Peer(RuntimeNode):
             p.pose.header.frame_id='map'
             p.pose.header.stamp=self.state.feedback_stamp
             p.pose.pose.position.x=self.state.base_x
+            p.pose.pose.position.y=self.state.base_y
             p.pose.pose.orientation.z=math.sin(self.state.base_yaw/2)
             p.pose.pose.orientation.w=math.cos(self.state.base_yaw/2)
             if self.active and self.case=='wrong_map': p.map_id='wrong_version'
@@ -64,7 +65,25 @@ class Peer(RuntimeNode):
         goal_id=bytes(self.active.goal_id.uuid).hex()
         error=self.active.request.pose.pose.position.x-self.state.base_x
         v=max(-.15,min(.15,error*2))
+        w=0.
         if abs(error)<.015: v=0.
+        if self.case == 'differential_turn':
+            target=self.active.request.pose.pose
+            dx,dy=target.position.x-self.state.base_x,target.position.y-self.state.base_y
+            distance=math.hypot(dx,dy)
+            heading=math.atan2(dy,dx)-self.state.base_yaw
+            heading=math.atan2(math.sin(heading),math.cos(heading))
+            direction=1.
+            if abs(heading)>math.pi/2:
+                direction=-1.
+                heading=math.atan2(math.sin(heading+math.pi),math.cos(heading+math.pi))
+            if distance<.015:
+                v=0.
+                yaw=2*math.atan2(target.orientation.z,target.orientation.w)
+                heading=math.atan2(math.sin(yaw-self.state.base_yaw),math.cos(yaw-self.state.base_yaw))
+            else:
+                v=direction*min(.15,distance*2) if abs(heading)<.3 else 0.
+            w=max(-.4,min(.4,heading*2)) if abs(heading)>.015 else 0.
         if self.case=='timeout': v=0.
         if self.case=='source_change' and elapsed>.25: self.source='restarted'
         self.sequence+=1
@@ -72,6 +91,7 @@ class Peer(RuntimeNode):
         msg.command.header.stamp=stamp(self.now())
         msg.command.header.frame_id='base_link'
         msg.command.twist.linear.x=v
+        msg.command.twist.angular.z=w
         if self.case=='invalid_axis': msg.command.twist.linear.y=.1
         self.velocity_pub.publish(msg)
         if self.previous and self.case=='late_old_goal':
@@ -96,11 +116,14 @@ class Peer(RuntimeNode):
                     return result
                 if self.case=='abort' and elapsed>.3:
                     result.error_code=1; result.error_msg='fixture_failure'; goal.abort(); return result
-                if self.case=='false_success' and elapsed>.05:
+                if self.case in ('false_success','false_yaw_success') and elapsed>.05:
                     goal.succeed(); return result
                 if self.case not in ('timeout','input_loss','pose_loss','source_change','invalid_axis','wrong_map','cancel','backend_loss','feedback_loss') and self.state:
-                    error=abs(self.state.base_x-goal.request.pose.pose.position.x)
-                    if elapsed>.3 and error<.025 and abs(self.state.base_velocity.linear.x)<.02:
+                    target=goal.request.pose.pose
+                    error=math.hypot(self.state.base_x-target.position.x,self.state.base_y-target.position.y)
+                    yaw=2*math.atan2(target.orientation.z,target.orientation.w)-self.state.base_yaw
+                    yaw=abs(math.atan2(math.sin(yaw),math.cos(yaw)))
+                    if elapsed>.3 and error<.025 and yaw<.03 and abs(self.state.base_velocity.linear.x)<.02 and abs(self.state.base_velocity.angular.z)<.02:
                         goal.succeed(); return result
                 if elapsed>15:
                     result.error_code=1; goal.abort(); return result

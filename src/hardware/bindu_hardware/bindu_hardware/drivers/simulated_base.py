@@ -1,11 +1,12 @@
+import math
 from bindu_contracts.devices import BaseReading
 
 
 class SimBaseDriver:
-    """Velocity-controlled wheel fixture; no localization or dynamics model."""
+    """Ideal differential-drive SE(2) fixture; no slip, localization or dynamics."""
     def __init__(self):
         self.velocity = (0., 0.)
-        self.x = self.yaw = 0.
+        self.x = self.y = self.yaw = 0.
         self.fault = ''
         self.reading = BaseReading(0., 0., 0., self.velocity, True)
 
@@ -19,10 +20,16 @@ class SimBaseDriver:
 
     def read(self, now, dt):
         dt = max(0., min(dt, .05))
-        self.x += self.velocity[0] * dt
-        self.yaw += self.velocity[1] * dt
+        linear, angular = self.velocity
+        turn = angular * dt
+        # Exact constant-twist integration, stable also for almost straight motion.
+        half = turn / 2
+        distance = linear * dt * (math.sin(half) / half if half else 1.)
+        self.x += distance * math.cos(self.yaw + half)
+        self.y += distance * math.sin(self.yaw + half)
+        self.yaw = math.atan2(math.sin(self.yaw + turn), math.cos(self.yaw + turn))
         if self.fault != 'feedback_loss':
-            self.reading = BaseReading(now, self.x, self.yaw, self.velocity, True)
+            self.reading = BaseReading(now, self.x, self.yaw, self.velocity, True, y=self.y)
         return self.reading
 
     def inject_fault(self, fault):

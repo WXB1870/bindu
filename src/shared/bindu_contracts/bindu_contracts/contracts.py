@@ -35,6 +35,7 @@ class Feedback:
     base_yaw: float
     base_velocity: Tuple[float, float]
     simulated: bool = True
+    base_y: float = 0.
 
 
 @dataclass(frozen=True)

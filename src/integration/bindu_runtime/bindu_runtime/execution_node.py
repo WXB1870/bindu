@@ -110,7 +110,7 @@ class ExecutionNode(RuntimeNode):
         active = self.engine.active
         msg = ExecutionState(stamp=stamp(now), feedback_stamp=stamp(fb.stamp),
                              instance_id=self.instance_id, profile_hash=self.profile.digest,
-                             simulated=True, base_x=fb.base_x, base_yaw=fb.base_yaw)
+                             simulated=True, base_x=fb.base_x, base_y=fb.base_y, base_yaw=fb.base_yaw)
         msg.joints.header.stamp = stamp(fb.stamp)
         msg.feedback_sources = list(self.robot_io.feedback.source_stamps)
         msg.source_stamps = [stamp(t) for t in self.robot_io.feedback.source_stamps.values()]

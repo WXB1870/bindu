@@ -128,6 +128,10 @@ python3 tests/validate_navigation.py --output artifacts/navigation-check
 
 2026-09-18 在 Ubuntu/Jazzy、bindu Conda Python 3.12 环境完成13包构建，97项模块及16项导航场景通过；原有16 ROS、14 Pi、11 VR场景回归通过。nav2_msgs使用1.3.13。首轮2项因测试源停止更新而报定位过期；测试源改串行回调后完整通过，超时阈值未放宽。模拟结果不代表现场稳定性。
 
+随后按差速底盘要求校验：修复模拟器将机体前进量直接累加为全局x的问题，改为平面x/y/yaw积分并补齐二维反馈。新增圆弧/倒车、原地转向后前进、二维往返和错误朝向成功检查。此处是无打滑的理想运动学，仍未模拟轮地接触或真实定位；`ExecutionState`新增`base_y`后须重建所有依赖它的ROS包。临时G1模型基准及实机差异见[架构实现边界](软件架构设计.md#854-当前代码组织与替换边界)。
+
+差速校验在独立Ubuntu/Jazzy工作区完成13包重建、100项模块、18项导航和16项通用ROS场景，全部通过；Pi/VR端到端场景沿用上一批证据，本批未重跑。
+
 - 站点与门控参数见 [`navigation_sim.json`](src/integration/bindu_runtime/config/navigation_sim.json)，只包含测试地图版本和测试站点；重复站点ID、非法位姿/参数拒绝加载，不能直接换成未经坐标核对的历史航点。
 - `navigation_backend` 指定后端命名空间，接口为 `navigate_to_pose`、`velocity`、`pose`。速度使用 [`NavigationVelocity`](src/shared/bindu_interfaces/msg/NavigationVelocity.msg)，必须在命令产生时附实际Action目标UUID、来源进程实例、单调序号、源时间及机体frame。定位使用 [`NavigationPose`](src/shared/bindu_interfaces/msg/NavigationPose.msg)，保留测量时间、地图版本与全局frame；后续定位/TF适配不得用接收时间刷新旧数据。
 - **未修改的 Nav2 `/cmd_vel` 不能直接接入本批入口。** 它缺少目标身份，不能由普通转发节点在接收时补当前目标ID。真实Nav2命令来源隔离/目标关联及TF定位适配属于下一批；本批未声称已完成该桥接。

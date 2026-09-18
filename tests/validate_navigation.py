@@ -2,6 +2,7 @@
 """N1 ROS action/velocity fixture tests; not a real Nav2 or SLAM acceptance."""
 import argparse
 import json
+import math
 import os
 from pathlib import Path
 import signal
@@ -19,7 +20,7 @@ from bindu_interfaces.srv import InjectFault, Lease
 from validate_ros import wait, until, terminate
 
 
-CASES=('normal','late_old_goal','reject','cancel','abort','input_loss','pose_loss','source_change',
+CASES=('normal','differential_turn','false_yaw_success','late_old_goal','reject','cancel','abort','input_loss','pose_loss','source_change',
        'false_success','invalid_axis','wrong_map','timeout','backend_loss','feedback_loss','late_accept','lease_busy')
 
 
@@ -36,6 +37,10 @@ def run_case(root,output,case):
     try:
         config=json.loads((root/'src/integration/bindu_runtime/config/navigation_sim.json').read_text())
         if case=='timeout':config['timeout']=1.
+        if case=='differential_turn':
+            config['sites'][0].update(x=.1,y=.04,yaw=.35)
+        if case=='false_yaw_success':
+            config['sites'][0].update(x=0.,y=0.,yaw=.5)
         cfg=folder/'navigation.json';cfg.write_text(json.dumps(config))
         start('launch',['ros2','launch','bindu_runtime','skeleton.launch.py','namespace:='+ns,'run_id:='+run,
             'output:='+str(output/'episodes'),'navigation_provider:=bindu_runtime.navigation:Nav2Navigation',
@@ -74,13 +79,19 @@ def run_case(root,output,case):
         result={'case':case,'status':response.status,'success':response.result.success,'code':code,
                 'nav_succeeded':sum(e.state=='NAV_SUCCEEDED' for e in seen['events']),
                 'base_commands':sum(m.mode=='base_velocity' for m in seen['accepted'])}
-        if case in ('normal','late_old_goal'):
+        if case in ('normal','late_old_goal','differential_turn'):
             assert response.status==4 and response.result.success and result['nav_succeeded']==2,result
+            if case=='differential_turn':
+                assert any(abs(m.velocity.angular.z)>.1 for m in seen['accepted']),'no turning command'
+                assert seen['state'].base_y != 0.,'y feedback never integrated'
+                assert math.hypot(seen['state'].base_x,seen['state'].base_y)<=config['position_tolerance']
+                assert abs(seen['state'].base_yaw)<=config['yaw_tolerance']
         elif case=='cancel':
             assert response.status==5 and code=='CANCELED',result
         else:
             expected={'reject':'NAV_GOAL_REJECTED','abort':'NAV_ACTION_FAILED','input_loss':'NAV_INPUT_TIMEOUT',
                 'pose_loss':'NAV_POSE_STALE','source_change':'NAV_SOURCE_CHANGED','false_success':'NAV_GOAL_POSE_MISMATCH',
+                'false_yaw_success':'NAV_GOAL_POSE_MISMATCH',
                 'invalid_axis':'NAV_UNSUPPORTED_VELOCITY_AXIS','wrong_map':'NAV_INVALID_POSE','timeout':'NAV_TIMEOUT',
                 'backend_loss':'NAV_CANCEL_UNCONFIRMED','feedback_loss':'NAV_STOP_UNCONFIRMED',
                 'late_accept':'NAV_CANCEL_UNCONFIRMED','lease_busy':'BUSY'}[case]
