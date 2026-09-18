@@ -40,6 +40,12 @@
     "control_period": 0.01,
     "max_tick_gap": 0.1,
     "stop_timeout": 5.0,
-    "max_transition_duration": 30.0
+    "max_transition_duration": 30.0,
+    "base_limits": {
+      "linear_velocity": 0.4,
+      "angular_velocity": 0.4,
+      "linear_acceleration": 1.0,
+      "angular_acceleration": 2.0
+    }
   }
 }

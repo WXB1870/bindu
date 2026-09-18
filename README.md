@@ -13,7 +13,8 @@
 | 任务与执行 | 已实现模拟任务流程、控制权、在线关节目标、取消与异常处理 |
 | Pi 客户端 | 已实现两种历史 ZMQ 模式、动作映射、时效检查和诊断；已通过模拟服务测试 |
 | 设备适配 | 已实现模拟底盘、关节和灵巧手驱动；真实设备待接入 |
-| 导航、感知、规划 | 已有模拟实现，真实算法待接入 |
+| 导航 | 已实现站点、Nav2 Action 适配与受控速度入口；当前用协议替身验证，真实 Nav2/建图待接入 |
+| 感知、规划 | 已有模拟实现，真实算法待接入 |
 | VR 遥操作与 IK | 已接 v3.4 手柄输入、相对控制和连续 IK；单臂模拟末端/状态可视反馈已通过 ROS/Vuer 验证 |
 | 语音交互 | 已预留模块目录 |
 | 数据记录 | 已实现异步事件与状态记录；图像同步及完整训练数据管线待实现 |
@@ -112,6 +113,26 @@ python3 tests/validate_pi.py --output artifacts/pi-check
 python3 -m pip install --target artifacts/pi-deps pyzmq==26.4.0
 export PYTHONPATH="$PWD/artifacts/pi-deps:$PYTHONPATH"
 ```
+
+## 导航适配验证入口
+
+首批导航适配保留任务的 `navigate(port, context, site)` 接口；选择 `bindu_runtime.navigation:Nav2Navigation` 时，通过 `nav2_msgs/action/NavigateToPose` 调用后端，目标速度经已有租约、revision和执行器到模拟底盘。默认启动仍使用原 `SimNavigation`。
+
+在按快速开始完成依赖安装/构建的 Ubuntu ROS 环境中运行：
+
+```bash
+python3 tests/validate_navigation.py --output artifacts/navigation-check
+```
+
+该验证器自行启动、收尾隔离命名空间的任务/执行/记录节点和 `tests/navigation_peer.py` 协议替身，覆盖往返、取消、断流、旧目标消息、来源变化、定位失效、错误成功结果和停稳检查。它使用真实 ROS Action 通信，但没有路径规划、障碍物、SLAM或物理底盘模型，不能作为真实 Nav2 导航验收。
+
+2026-09-18 在 Ubuntu/Jazzy、bindu Conda Python 3.12 环境完成13包构建，97项模块及16项导航场景通过；原有16 ROS、14 Pi、11 VR场景回归通过。nav2_msgs使用1.3.13。首轮2项因测试源停止更新而报定位过期；测试源改串行回调后完整通过，超时阈值未放宽。模拟结果不代表现场稳定性。
+
+- 站点与门控参数见 [`navigation_sim.json`](src/integration/bindu_runtime/config/navigation_sim.json)，只包含测试地图版本和测试站点；重复站点ID、非法位姿/参数拒绝加载，不能直接换成未经坐标核对的历史航点。
+- `navigation_backend` 指定后端命名空间，接口为 `navigate_to_pose`、`velocity`、`pose`。速度使用 [`NavigationVelocity`](src/shared/bindu_interfaces/msg/NavigationVelocity.msg)，必须在命令产生时附实际Action目标UUID、来源进程实例、单调序号、源时间及机体frame。定位使用 [`NavigationPose`](src/shared/bindu_interfaces/msg/NavigationPose.msg)，保留测量时间、地图版本与全局frame；后续定位/TF适配不得用接收时间刷新旧数据。
+- **未修改的 Nav2 `/cmd_vel` 不能直接接入本批入口。** 它缺少目标身份，不能由普通转发节点在接收时补当前目标ID。真实Nav2命令来源隔离/目标关联及TF定位适配属于下一批；本批未声称已完成该桥接。
+- 到点需要后端Action成功、全局位姿误差达标、底盘反馈持续停稳；取消先关速度入口，再停止执行并取消后端。停稳或取消无法确认时明确失败。输入使用best-effort有界队列，Action/执行服务保留可靠通信；丢失输入触发短期有效期和门控超时。
+- 底盘独立速度/加速度参数及停止语义见[执行契约](动作执行契约.md#2-输入模式必须显式选择)。真实底盘、雷达、地图、全局定位与建图尚未接入；动作块适配和手部扩展继续暂缓。
 
 ## Pi 客户端运行入口
 

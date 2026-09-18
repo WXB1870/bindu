@@ -39,6 +39,7 @@ class Executor:
         self.stop_deadline = 0.
         self.revision = 1
         self.held_references = {}
+        self.base_reference = (0., 0.)
 
     def emit(self, now, motion, state, code):
         event = Event(now, motion.task_id if motion else '', motion.command_id if motion else '',
@@ -131,6 +132,7 @@ class Executor:
 
     def finish_stop(self, now, motion, code):
         self.io.stop()
+        self.base_reference = (0., 0.)
         if self.io.stop_failures:
             code = 'STOP_REQUEST_FAILED:' + ','.join(self.io.stop_failures)
             self.lease_id = ''
@@ -192,7 +194,8 @@ class Executor:
                 raise Rejected('UNSUPPORTED_CAPABILITY')
             if m.names or m.positions or m.points or m.offsets or m.velocities or m.accelerations or not 0 < m.duration < m.valid_for:
                 raise Rejected('INVALID_BASE_COMMAND')
-            if len(m.velocity) != 2 or not all(math.isfinite(x) and abs(x) <= .4 for x in m.velocity):
+            if len(m.velocity) != 2 or not all(math.isfinite(x) and abs(x) <= self.profile.base_speed(axis)
+                    for axis, x in zip(("linear", "angular"), m.velocity)):
                 raise Rejected('BASE_LIMIT')
         elif m.mode in ('joint_target', 'finite_trajectory', 'joint_reference_segment'):
             if m.group not in self.profile.groups or 'joint_position' not in self.profile.capabilities:
@@ -282,8 +285,12 @@ class Executor:
         elapsed = max(0., now-self.started)
         try:
             if m.mode == 'base_velocity':
-                self.io.write_base(m.velocity if elapsed < m.duration else (0., 0.))
-                done = elapsed >= m.duration and self.feedback.base_velocity == (0., 0.)
+                target = m.velocity if elapsed < m.duration else (0., 0.)
+                self.base_reference = tuple(v + max(-self.profile.base_acceleration(axis)*dt,
+                    min(self.profile.base_acceleration(axis)*dt, t-v))
+                    for axis, v, t in zip(("linear", "angular"), self.base_reference, target))
+                self.io.write_base(self.base_reference)
+                done = elapsed >= m.duration and self.base_reference == (0., 0.) and self.feedback.base_velocity == (0., 0.)
             else:
                 self.path = trim_before(self.path, now)
                 self.reference = self.path.sample(now)

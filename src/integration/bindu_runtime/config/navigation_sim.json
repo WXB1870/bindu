@@ -1,0 +1,17 @@
+{
+  "map_id": "navigation_fixture_v1",
+  "frame": "map",
+  "base_frame": "base_link",
+  "timeout": 12.0,
+  "input_timeout": 0.3,
+  "pose_timeout": 0.3,
+  "position_tolerance": 0.04,
+  "yaw_tolerance": 0.08,
+  "stop_speed": 0.01,
+  "stop_duration": 0.15,
+  "stop_timeout": 2.0,
+  "sites": [
+    {"name": "pickup", "x": 0.1, "y": 0.0, "yaw": 0.0},
+    {"name": "home", "x": 0.0, "y": 0.0, "yaw": 0.0}
+  ]
+}

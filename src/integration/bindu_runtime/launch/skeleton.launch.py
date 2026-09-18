@@ -20,6 +20,8 @@ def generate_launch_description():
         'output': '/tmp/bindu-runs',
         'planner_provider': 'bindu_planning.simulated:PlannerStrategy',
         'chunk_provider': 'bindu_vla.simulated:ChunkStrategy',
+        'navigation_config': str(Path(get_package_share_directory('bindu_runtime'))/'config/navigation_sim.json'),
+        'navigation_backend': 'navigation/backend',
         'navigation_provider': 'bindu_navigation.simulated:SimNavigation',
         **DEFAULT_DRIVERS,
         'perception_provider': 'bindu_perception.simulated:SimObjectLocator',
@@ -29,7 +31,7 @@ def generate_launch_description():
     args = [DeclareLaunchArgument(key, default_value=value) for key, value in defaults.items()]
     common = {key: LaunchConfiguration(key) for key in ('profile', 'run_id')}
     extra = {'execution': tuple(DEFAULT_DRIVERS), 'recorder': ('output',),
-             'task': ('planner_provider', 'chunk_provider', 'navigation_provider'), 'perception': ('perception_provider',)}
+             'task': ('planner_provider', 'chunk_provider', 'navigation_provider', 'navigation_config', 'navigation_backend'), 'perception': ('perception_provider',)}
     nodes = []
     for name, keys in extra.items():
         parameters = {**common, **{key: LaunchConfiguration(key) for key in keys}}

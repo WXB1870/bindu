@@ -57,6 +57,8 @@ class TaskNode(RuntimeNode):
                                    goal_callback=self.goal, cancel_callback=lambda _:CancelResponse.ACCEPT,
                                    callback_group=self.group)
         self.create_timer(.3, self.renew, callback_group=self.group)
+        if hasattr(self.navigation, "bind"):
+            self.navigation.bind(self)
 
     def on_state(self, state):
         self.state = state

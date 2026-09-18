@@ -19,6 +19,8 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/InjectFault.srv"
   "msg/PiObservation.msg"
   "action/PiSession.action"
+  "msg/NavigationVelocity.msg"
+  "msg/NavigationPose.msg"
   "msg/VRInput.msg"
   "action/TeleopSession.action"
   "action/FetchDrink.action"
