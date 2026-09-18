@@ -1,5 +1,8 @@
 """Explicitly launched Vuer input process; no hardware output."""
 import time
+import json
+from rclpy.qos import QoSProfile, ReliabilityPolicy
+from std_msgs.msg import String
 from bindu_teleoperation.vr.receiver import VuerReceiver
 from bindu_interfaces.msg import VRInput
 from .common import RuntimeNode, stamp, spin
@@ -19,6 +22,17 @@ class VRInputNode(RuntimeNode):
         self.receiver = VuerReceiver(cfg)
         self.publisher = self.create_publisher(VRInput, 'teleop/vr/input', 1)
         self.timer = self.create_timer(.005, self.poll)
+        self.create_subscription(String, 'teleop/display', self.on_display,
+                                 QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT))
+
+    def on_display(self, msg):
+        try:
+            view = json.loads(msg.data)
+            if (view['run_id'] == self.run_id and view['profile_hash'] == self.profile.digest
+                    and 0 <= self.now()-view['stamp'] <= .6):
+                self.receiver.display(view)
+        except (ValueError, KeyError, TypeError):
+            pass
 
     def poll(self):
         try:

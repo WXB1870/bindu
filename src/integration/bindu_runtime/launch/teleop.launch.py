@@ -31,4 +31,8 @@ def generate_launch_description():
     nodes.append(Node(package='bindu_runtime', executable='vr_input',
                       condition=IfCondition(LaunchConfiguration('vr_enabled')),
                       namespace=LaunchConfiguration('namespace'), output='screen', parameters=[{**common, **vr}]))
+    nodes.append(Node(package='bindu_runtime', executable='teleop_display',
+                      condition=IfCondition(LaunchConfiguration('vr_enabled')),
+                      namespace=LaunchConfiguration('namespace'), output='screen',
+                      parameters=[{**common, 'teleop_config': LaunchConfiguration('teleop_config')}]))
     return LaunchDescription(args+nodes)

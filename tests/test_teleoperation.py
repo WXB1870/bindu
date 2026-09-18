@@ -10,6 +10,8 @@ from bindu_teleoperation.config import load_config
 from bindu_teleoperation.vr.receiver import decode_controller
 from bindu_teleoperation.vr.mapping import pose_matrix, robot_pose, relative_target
 from bindu_teleoperation.session import TeleopSession
+from bindu_teleoperation.feedback import TeleopFeedback, display_snapshot
+from bindu_teleoperation.vr.display import viewer_matrix
 
 ROOT = Path(__file__).resolve().parents[1]
 POSE = tuple(np.eye(4).ravel())
@@ -19,6 +21,83 @@ def configuration():
     profile = Profile.load(ROOT/'src/integration/bindu_runtime/config/huawei_v34_left_sim.json')
     return load_config(ROOT/'src/integration/bindu_runtime/config/teleop_v34.json', profile,
                        ROOT/'src/capabilities/bindu_kinematics/models')
+
+
+class DisplayFeedbackTests(unittest.TestCase):
+    def setUp(self):
+        self.view = TeleopFeedback(configuration())
+        self.view.event('TELEOP_STARTED', '{}', 'task', 10.)
+        self.view.event('TELEOP_MODE', 'follow', 'task', 10.1)
+
+    def target(self, stamp=10.15):
+        pose = np.eye(4); pose[0, 3] = .01
+        self.view.event('TELEOP_IK_RESULT', json.dumps({'code': 'OK', 'input_stamp': stamp,
+            'target': pose.ravel().tolist()}), 'task', 10.16)
+
+    def snapshot(self, now=10.2, **kwargs):
+        values = dict(measured=list(POSE), measured_stamp=10.15, input_stamp=10.15, input_valid=True)
+        values.update(kwargs)
+        return self.view.snapshot(now, **values)
+
+    def test_error_uses_feedback_and_target(self):
+        self.target()
+        view = self.snapshot()
+        self.assertEqual(view['mode'], 'FOLLOW')
+        self.assertAlmostEqual(view['error']['position_m'], .01)
+        self.assertAlmostEqual(view['error']['rotation_rad'], 0.)
+
+    def test_pause_and_late_result_cannot_resurrect_target(self):
+        self.target()
+        self.view.event('TELEOP_MODE', 'idle', 'task', 10.17)
+        self.view.event('TELEOP_IK_RESULT', json.dumps({'code': 'OK', 'input_stamp': 10.15,
+            'target': list(POSE)}), 'task', 10.18)
+        self.assertEqual(self.snapshot()['mode'], 'PAUSED')
+        self.assertIsNone(self.snapshot()['target'])
+        self.view.event('TELEOP_MODE', 'follow', 'task', 10.19)
+        self.view.event('TELEOP_IK_RESULT', json.dumps({'code': 'OK', 'input_stamp': 10.15,
+            'target': list(POSE)}), 'task', 10.20)
+        self.assertIsNone(self.snapshot()['target'])
+
+    def test_stale_feedback_input_and_observer_clear_live_error(self):
+        self.target()
+        for changes, reason in (({'measured_stamp': 9.}, 'TELEOP_FEEDBACK_STALE'),
+                                ({'input_stamp': 9.}, 'VR_INPUT_TIMEOUT'),
+                                ({'input_valid': False}, 'VR_TRACKING_INVALID')):
+            view = self.snapshot(**changes)
+            self.assertIsNone(view['target'])
+            self.assertIsNone(view['error'])
+            self.assertEqual(view['reason'], reason)
+        view = display_snapshot(self.snapshot(), .7)
+        self.assertEqual(view['mode'], 'DISPLAY_STALE')
+        self.assertIsNone(view['measured'])
+        target_stale = self.snapshot(now=10.8, measured_stamp=10.8, input_stamp=10.8)
+        self.assertIsNone(target_stale['target'])
+        self.assertEqual(target_stale['reason'], 'Waiting for fresh target')
+
+    def test_end_reason_sticky_until_new_session(self):
+        self.target()
+        self.view.event('TELEOP_ENDED', '{"code":"IK_RESIDUAL"}', 'task', 10.2)
+        self.assertEqual(self.snapshot(now=11.)['reason'], 'IK_RESIDUAL')
+        self.assertIsNone(self.snapshot()['target'])
+        self.view.event('TELEOP_STARTED', '{}', 'new', 11.)
+        self.assertEqual(self.snapshot()['mode'], 'PAUSED')
+        self.view.event('TELEOP_ENDED', '{"code":"OLD"}', 'task', 11.1)
+        self.assertEqual(self.snapshot()['mode'], 'PAUSED')
+
+    def test_viewer_transform_preserves_local_axis_and_position(self):
+        pose = np.eye(4); pose[:3, 3] = [1, 2, 3]
+        shown = np.array(viewer_matrix(pose)).reshape(4, 4, order='F')
+        np.testing.assert_allclose(shown[:3, 3], [-2, 3, -2])
+        np.testing.assert_allclose(shown[:3, 0], [0, 0, -1])
+
+    def test_full_display_queue_never_waits(self):
+        from queue import Queue
+        from bindu_teleoperation.vr.receiver import _latest_put
+        output = Queue(maxsize=1)
+        for i in range(1000):
+            _latest_put(output, i)
+        self.assertEqual(output.qsize(), 1)
+        self.assertEqual(output.get_nowait(), 999)
 
 
 class VRContracts(unittest.TestCase):

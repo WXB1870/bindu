@@ -10,6 +10,7 @@ import queue
 import time
 import tempfile
 import uuid
+from pathlib import Path
 from dataclasses import replace
 import numpy as np
 from bindu_contracts.teleoperation import VRFrame
@@ -54,11 +55,14 @@ def _latest_put(output, item):
             pass
 
 
-def _serve(config, output):
+def _serve(config, output, feedback):
     try:
         from vuer import Vuer
-        from vuer.schemas import MotionControllers
+        from vuer.schemas import MotionControllers, Scene, Grid
         static = tempfile.TemporaryDirectory(prefix='bindu-vr-static-')
+        # Serve Pillow's bundled font locally; the headset needs no font CDN.
+        from PIL import ImageFont
+        (Path(static.name)/'display.ttf').write_bytes(ImageFont.load_default(size=14).font_bytes)
         app = Vuer(host=config['host'], port=config['port'],
                    cert=config['cert_file'], key=config['key_file'],
                    static_root=static.name, queries={'grid': True}, queue_len=2)
@@ -68,6 +72,8 @@ def _serve(config, output):
         clutch_seq = 0
         previous_grip = 0.
         stop_latched = False
+        latest_display = None
+        display_received = float('-inf')
 
         async def on_controller(event, session):
             nonlocal owner, identity, seq, clutch_seq, previous_grip, stop_latched
@@ -88,11 +94,30 @@ def _serve(config, output):
             _latest_put(output, ('frame', frame))
 
         async def display(session):
-            nonlocal owner
-            session.upsert(MotionControllers(stream=True, key='motionControllers',
-                                             left=True, right=True), to='bgChildren')
+            nonlocal owner, latest_display, display_received
+            from ..feedback import display_snapshot
+            from .display import render
+            session.set(Scene(camPosition=[0., 1., 2.], camRotation=[0., 0., 0.],
+                bgChildren=[Grid(key='default-grid'),
+                            MotionControllers(stream=True, key='motionControllers', left=True, right=True)]))
+            render_error = ''
             try:
                 while session.CURRENT_WS_ID in app.ws:
+                    for _ in range(2):
+                        try:
+                            display_received, latest_display = feedback.get_nowait()
+                        except queue.Empty:
+                            break
+                    view = display_snapshot(latest_display, time.time()-display_received)
+                    try:
+                        scene = await asyncio.to_thread(render, view)
+                        session.upsert(scene, to='bgChildren')
+                        render_error = ''
+                    except Exception as exc:
+                        # Rendering is optional and must never invalidate controller input.
+                        if str(exc) != render_error:
+                            print('TELEOP_DISPLAY_FAILED:', exc, flush=True)
+                            render_error = str(exc)
                     await asyncio.sleep(.1)
             finally:
                 if owner is session:
@@ -109,8 +134,13 @@ class VuerReceiver:
     def __init__(self, config):
         ctx = mp.get_context('spawn')
         self.output = ctx.Queue(maxsize=2)
-        self.process = ctx.Process(target=_serve, args=(config, self.output), daemon=True)
+        self.feedback = ctx.Queue(maxsize=1)
+        self.process = ctx.Process(target=_serve, args=(config, self.output, self.feedback), daemon=True)
         self.process.start()
+
+    def display(self, snapshot):
+        # Wall clock is shared on supported hosts, including macOS Python <3.10.
+        _latest_put(self.feedback, (time.time(), snapshot))
 
     def poll(self):
         latest = None
@@ -135,3 +165,5 @@ class VuerReceiver:
             self.process.join(timeout=1.)
         self.output.close()
         self.output.cancel_join_thread()
+        self.feedback.close()
+        self.feedback.cancel_join_thread()

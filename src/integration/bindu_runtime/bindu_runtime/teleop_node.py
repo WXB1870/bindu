@@ -217,7 +217,7 @@ class TeleopNode(RuntimeNode):
                     req = solution.request
                     self.event('TELEOP_IK_RESULT', json.dumps({'code':solution.code,
                         'generation':req.generation, 'elapsed':solution.elapsed,
-                        'target':req.target, 'position_error':solution.position_error,
+                        'target':req.target, 'input_stamp':req.stamp, 'position_error':solution.position_error,
                         'rotation_error':solution.rotation_error}), goal.request.task_id,
                         req.request_id, req.request_id)
                     if session.accept_result(solution, self.now()):
