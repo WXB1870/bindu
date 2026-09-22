@@ -1,5 +1,5 @@
 """ROS-independent immutable commands, observations and feedback contracts."""
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Dict, Tuple
 
 
@@ -36,6 +36,7 @@ class Feedback:
     base_velocity: Tuple[float, float]
     simulated: bool = True
     base_y: float = 0.
+    joint_velocities: Dict[str, float] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

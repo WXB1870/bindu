@@ -122,7 +122,7 @@ class ExecutionNode(RuntimeNode):
         msg.reference.name = list(reference)
         msg.reference.position = list(reference.values())
         dt = fb.stamp - previous.stamp
-        msg.joints.velocity = [(q-previous.positions[j])/dt if dt > 0 else 0.
+        msg.joints.velocity = [fb.joint_velocities.get(j, (q-previous.positions[j])/dt if dt > 0 else 0.)
                                for j,q in fb.positions.items()]
         msg.base_velocity.linear.x, msg.base_velocity.angular.z = fb.base_velocity
         msg.revision = self.engine.revision

@@ -10,6 +10,16 @@ DEFAULT_DRIVERS = {
 
 
 def assemble_devices(node, profile):
+    node.declare_parameter('device_backend', 'kinematic')
+    backend = node.get_parameter('device_backend').value
+    if backend == 'external_simulation':
+        from .simulation_devices import SimulationDevices, PhysicsJoints, PhysicsBase
+        transport = SimulationDevices(node, profile)
+        joints = {group: PhysicsJoints(transport, group) for group in profile.groups}
+        base = PhysicsBase(transport)
+        return RobotIO(profile, joints, base), {**joints, 'base': base}
+    if backend != 'kinematic':
+        raise ValueError('UNKNOWN_DEVICE_BACKEND')
     for name, default in DEFAULT_DRIVERS.items():
         node.declare_parameter(name, default)
     joints = {}

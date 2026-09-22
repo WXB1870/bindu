@@ -9,6 +9,8 @@ find_package(sensor_msgs REQUIRED)
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/MotionCommand.msg"
   "msg/ExecutionState.msg"
+  "msg/SimulationCommand.msg"
+  "msg/SimulationFeedback.msg"
   "msg/RuntimeEvent.msg"
   "msg/RecorderHealth.msg"
   "msg/ObjectObservation.msg"

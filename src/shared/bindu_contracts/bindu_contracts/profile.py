@@ -23,6 +23,7 @@ class Profile:
     max_transition_duration: float = 30.
 
     base_limits: dict = field(default_factory=dict)
+    feedback_tolerances: dict = field(default_factory=dict)
 
     def base_speed(self, axis):
         return self.base_limits.get(axis + "_velocity", .4)
@@ -53,7 +54,7 @@ class Profile:
             raise ValueError('invalid maximum speed')
         digest = hashlib.sha256(json.dumps(raw, sort_keys=True).encode()).hexdigest()
         cfg = raw.get('execution', {})
-        allowed = {'max_acceleration', 'max_jerk', 'control_period', 'max_tick_gap', 'stop_timeout', 'joint_dynamics', 'max_transition_duration', 'base_limits'}
+        allowed = {'max_acceleration', 'max_jerk', 'control_period', 'max_tick_gap', 'stop_timeout', 'joint_dynamics', 'max_transition_duration', 'base_limits', 'feedback_tolerances'}
         if set(cfg)-allowed:
             raise ValueError('unknown execution setting')
         profile = cls(raw['name'], raw['groups'], raw['limits'], raw['max_speed'],
@@ -73,4 +74,7 @@ class Profile:
         if set(profile.base_limits)-{a+"_"+k for a in ("linear", "angular") for k in ("velocity", "acceleration")} or any(
                 type(v) not in (float, int) or not math.isfinite(v) or v <= 0 for v in profile.base_limits.values()):
             raise ValueError("invalid base limits")
+        if set(profile.feedback_tolerances)-{'joint_position', 'joint_velocity', 'base_linear_velocity', 'base_angular_velocity'} or any(
+                type(v) not in (float, int) or not math.isfinite(v) or v <= 0 for v in profile.feedback_tolerances.values()):
+            raise ValueError('invalid feedback tolerances')
         return profile

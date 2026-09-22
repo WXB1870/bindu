@@ -198,6 +198,39 @@ python3 tests/validate_navigation.py --g1 --output artifacts/g1-navigation
 
 此前9月18日Ubuntu/Jazzy验证：14包构建、103项模块、9项全身场景及5项相关导航回归通过。TF与FK按同一时间戳的实测样本对照；初轮用较早TF与最终目标比较而失败，修正验证器后通过，精度阈值未放宽。
 
+### Isaac Sim 图形物理仿真
+
+`g1_sim.launch.py`默认仍为运动学模拟。可选`device_backend:=external_simulation`通过独立ROS设备桥连接Isaac Sim：PhysX负责重力、轮地接触和驱动响应，执行器读取实际关节位置/速度及底盘位姿，不把下发目标当反馈。当前仅在本机Isaac Sim **6.0.0-rc.22**、Ubuntu24.04/Jazzy、RTX4090测试；脚本使用该RC版本的导入API，其他版本须另行验证。
+
+先按上文重建工作区，生成新增`SimulationCommand/SimulationFeedback`接口，然后准备固定版本资产：
+
+```bash
+python3 tools/prepare_g1_physics.py
+# 可离线复用该固定提交的上游目录：追加 --source /path/to/galbot_one_golf_description
+export BINDU_INSTALL="$PWD/install"
+export ISAAC_SIM_PATH="$HOME/isaacsim/_build/linux-x86_64/release"
+tools/run_g1_isaac.sh
+```
+
+默认打开完整G1图形界面，追加`--headless`才使用无头模式，`--no-ros`仅展示静止本体。启动器隔离Conda/Python动态库并限定ROS localhost，默认域125、命名空间`/bindu_g1_physics`。首次初始化可能较慢，等待终端`BINDU_G1_PHYSICS_READY`后，在另一个已加载ROS/Bindu工作区的终端运行：
+
+```bash
+export ROS_DOMAIN_ID=125 ROS_LOCALHOST_ONLY=1
+python3 tests/validate_physics.py --output artifacts/g1-physics-check
+```
+
+验证器自行启动和收尾同命名空间的G1执行/记录节点，检测19轴实测反馈、五组关节跟踪、取消后实际停稳、直行/圆弧及执行进程失联保护；图形仿真继续保留。每个仿真实例只接受首个执行器身份，重新运行验证器或替换执行器前须重启图形仿真。若手动运行能力入口，不要同时运行验证器：
+
+```bash
+ros2 launch bindu_runtime g1_sim.launch.py namespace:=/bindu_g1_physics \
+  profile:="$PWD/artifacts/g1-physics-model/g1_physics_sim.json" \
+  device_backend:=external_simulation navigation_enabled:=false
+```
+
+模型生成在忽略入库的`artifacts/g1-physics-model`：恢复同一上游版本的本体视觉/碰撞资产，并保留Apache-2.0许可与来源指纹。该Isaac RC的GLB导入曾只生成空节点，工具改用匹配的上游USD视觉网格；同时按URDF重建关节并校验两侧关节坐标。两只驱动轮及低摩擦支撑为合成几何，尺寸、惯性、增益、初始姿态和120Hz物理步长集中在[physics.json](src/hardware/bindu_description/physics.json)，尚未标定。无质量固定坐标框架使用微小数值质量；自碰撞关闭，未验证手部、抓取接触、相机图像、SLAM或Nav2避障。完整外观和物理设备闭环不等于真机模型验收。 本机RC完整扩展卸载曾崩溃，启动器采用Isaac默认快速退出，先完成Bindu日志和ROS清理；异常路径保留非零返回码。物理步长是积分配置，不代表已达到实时频率。
+
+本批物理验证：117项模块与10项PhysX检查通过；五组关节跟踪最大目标误差0.00050rad，直行0.0837m、圆弧0.0696m/0.1215rad，执行器冻结后实测线速度0.000142m/s。相关运动学回归G1全身9、VR4、Pi14通过；旧ROS首轮15/16、导航17/18，其启动拒绝场景单独复测各通过，启动偶发性尚未解决。以上不代表VR/Pi/导航已经完成物理环境验收。
+
 ## Pi 客户端运行入口
 
 - 核心代码：[`bindu_vla/pi`](src/capabilities/bindu_vla/bindu_vla/pi/)。

@@ -290,7 +290,9 @@ class Executor:
                     min(self.profile.base_acceleration(axis)*dt, t-v))
                     for axis, v, t in zip(("linear", "angular"), self.base_reference, target))
                 self.io.write_base(self.base_reference)
-                done = elapsed >= m.duration and self.base_reference == (0., 0.) and self.feedback.base_velocity == (0., 0.)
+                done = (elapsed >= m.duration and self.base_reference == (0., 0.) and
+                        all(abs(v) <= self.profile.feedback_tolerances.get('base_'+axis+'_velocity', 0.)
+                            for axis, v in zip(('linear', 'angular'), self.feedback.base_velocity)))
             else:
                 self.path = trim_before(self.path, now)
                 self.reference = self.path.sample(now)
@@ -303,7 +305,9 @@ class Executor:
                     return
                 target = m.points[-1] if m.mode == 'finite_trajectory' else m.positions
                 done = (m.mode == 'finite_trajectory' and now >= self.path.end and
-                        all(abs(self.feedback.positions[j]-q) < .015 for j, q in zip(m.names, target)))
+                        all(abs(self.feedback.positions[j]-q) < self.profile.feedback_tolerances.get('joint_position', .015)
+                            and abs(self.feedback.joint_velocities.get(j, 0.)) <= self.profile.feedback_tolerances.get('joint_velocity', .01)
+                            for j, q in zip(m.names, target)))
             if done:
                 self.emit(now, m, 'SUCCEEDED', 'FEEDBACK_CONFIRMED')
                 if self.reference:
@@ -337,4 +341,7 @@ class Executor:
         targets = dict(self.held_references)
         if self.reference:
             targets.update(zip(self.reference_names, self.reference.q))
-        return all(abs(self.feedback.positions[j]-q) < 1e-5 for j, q in targets.items())
+        tolerance = self.profile.feedback_tolerances.get('joint_position', 1e-5)
+        velocity = self.profile.feedback_tolerances.get('joint_velocity', .01)
+        return all(abs(self.feedback.positions[j]-q) < tolerance and
+                   abs(self.feedback.joint_velocities.get(j, 0.)) <= velocity for j, q in targets.items())

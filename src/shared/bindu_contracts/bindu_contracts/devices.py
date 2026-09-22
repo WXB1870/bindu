@@ -1,5 +1,5 @@
 """Nonblocking device contracts in SI units; no task or trajectory ownership."""
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Dict, Protocol, Tuple
 
 
@@ -8,6 +8,7 @@ class JointReading:
     stamp: float
     positions: Dict[str, float]
     simulated: bool
+    velocities: Dict[str, float] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

@@ -15,9 +15,10 @@ def assemble(context):
     side = LaunchConfiguration('side').perform(context)
     if side not in ('left', 'right'):
         raise ValueError('G1_SIDE_MUST_BE_LEFT_OR_RIGHT')
-    common = {'profile': str(share/'config/g1_provisional_sim.json'), 'run_id': LaunchConfiguration('run_id')}
+    common = {'profile': LaunchConfiguration('profile'), 'run_id': LaunchConfiguration('run_id')}
     nodes = [Node(package='bindu_runtime', executable=name, namespace=LaunchConfiguration('namespace'),
-                  parameters=[{**common, **({'output': LaunchConfiguration('output')} if name == 'recorder' else {})}],
+                  parameters=[{**common, **({'output': LaunchConfiguration('output')} if name == 'recorder' else {}),
+                               **({'device_backend': LaunchConfiguration('device_backend')} if name == 'execution' else {})}],
                   remappings=[('/tf', 'tf'), ('/tf_static', 'tf_static')], output='screen')
              for name in ('execution', 'recorder', 'description_state')]
     nodes.append(Node(package='robot_state_publisher', executable='robot_state_publisher',
@@ -52,6 +53,7 @@ def assemble(context):
 def generate_launch_description():
     share = Path(get_package_share_directory('bindu_runtime'))
     defaults = {'namespace':'bindu_g1_sim', 'run_id':uuid.uuid4().hex, 'output':'/tmp/bindu-runs',
+                'profile':str(share/'config/g1_provisional_sim.json'), 'device_backend':'kinematic',
                 'teleop_enabled':'false', 'vr_enabled':'false', 'side':'left', 'host':'127.0.0.1',
                 'port':'8012', 'cert_file':'', 'key_file':'', 'pi_enabled':'false',
                 'pi_config':str(share/'config/pi_g1.json'), 'navigation_enabled':'true',

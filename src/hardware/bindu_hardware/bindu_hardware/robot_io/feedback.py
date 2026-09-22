@@ -16,13 +16,17 @@ class FeedbackCollector:
         for group, reading in readings.items():
             if set(reading.positions) != set(self.groups[group]):
                 raise RuntimeError('FEEDBACK_LAYOUT_MISMATCH')
+            if reading.velocities and set(reading.velocities) != set(reading.positions):
+                raise RuntimeError('FEEDBACK_VELOCITY_LAYOUT_MISMATCH')
         stamps = {name: reading.stamp for name, reading in readings.items()}
         stamps['base'] = base.stamp
         positions = {joint: readings[group].positions[joint] for group, names in self.groups.items() for joint in names}
-        values = list(stamps.values()) + list(positions.values()) + [base.x, base.y, base.yaw, *base.velocity]
+        velocities = {n: v for reading in readings.values() for n, v in reading.velocities.items()}
+        values = list(stamps.values()) + list(positions.values()) + list(velocities.values()) + [base.x, base.y, base.yaw, *base.velocity]
         if not all(math.isfinite(value) for value in values) or any(t > now + .05 for t in stamps.values()):
             raise RuntimeError('INVALID_DEVICE_FEEDBACK')
         self.source_stamps = stamps
         self.last = Feedback(min(stamps.values()), positions, base.x, base.yaw, base.velocity,
-                             base.simulated and all(r.simulated for r in readings.values()), base_y=base.y)
+                             base.simulated and all(r.simulated for r in readings.values()), base_y=base.y,
+                             joint_velocities=velocities)
         return self.last
