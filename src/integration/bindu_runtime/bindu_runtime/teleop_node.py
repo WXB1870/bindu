@@ -209,6 +209,12 @@ class TeleopNode(RuntimeNode):
                             raise RuntimeError('TELEOP_HOLD_UNCONFIRMED')
                     last_mode = session.mode
                     self.event('TELEOP_MODE', session.mode, goal.request.task_id)
+                    if session.mode == 'idle':
+                        # Physical braking may outlast the input deadline.
+                        # Re-ingest the receiver's latest frame next iteration;
+                        # do not age-check the pre-braking session snapshot.
+                        await self.pause()
+                        continue
                 s = self.state
                 if (session.mode == 'follow' and s.command_id.startswith(session.identity+'_') and
                         s.state == 'FAILED'):

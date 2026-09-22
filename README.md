@@ -224,6 +224,8 @@ python3 tests/validate_physics.py --suite boundaries --output artifacts/g1-physi
 python3 tests/validate_physics.py --suite faults --output artifacts/g1-physics-faults
 python3 tests/validate_physics.py --suite soak --soak-seconds 600 \
   --soak-amplitude .45 --soak-period 12 --output artifacts/g1-physics-soak
+# 真实Vuer WebSocket接收合成手柄输入；右臂改为 --side right，使用新批次目录
+python3 tests/validate_physics.py --suite vr --side left --output artifacts/g1-physics-vr-left
 ```
 
 验证器自行启动和收尾同命名空间的G1执行/记录节点，检测19轴实测反馈、五组关节跟踪、取消后实际停稳、直行/圆弧及执行进程失联保护；图形仿真继续保留。 `--suite dynamics`复用Pinocchio/CasADi独立IK工作进程，验证左右臂末端目标到达、不可达目标不下发、20Hz连续笛卡尔目标、100Hz关节目标换向、取消/TTL断流保持及旧租约/越限/错序拒绝。IK种子和非活动关节均来自PhysX反馈；末端误差为实测关节FK在`base_link`中的推算，不是独立视觉或PhysX连杆位姿测量。该批使用合成目标，不含现场头显、Vuer接收或Pi服务；原始目标、执行参考和物理反馈分别记录在输出目录。每个仿真实例只接受首个执行器身份，重新运行验证器或替换执行器前须重启图形仿真。若手动运行能力入口，不要同时运行验证器：
@@ -235,6 +237,8 @@ ros2 launch bindu_runtime g1_sim.launch.py namespace:=/bindu_g1_physics \
 ```
 
 `boundaries`增加双臂近奇异小步、突变拒绝、工作空间外扩扫描，以及独立PhysX连杆位姿与关节FK的同源时间对照。`simulation/link_poses`为world帧的PoseArray，固定顺序为base_link、左法兰、右法兰；由物理张量直接测量。`faults`通过隔离ROS中继注入反馈丢失、旧反馈重复、命令丢失/延迟及实例身份变化，检查看门狗保持、旧租约拒绝和故障锁定；身份变化为消息注入，不等于真实进程重启。`soak`默认100Hz运行10分钟，肩部±0.45rad、肘部±0.27rad、周期12秒；逐帧输入、参考和反馈以压缩JSONL保存，另留接纳计数、时间对齐跟踪误差与执行器内存趋势，失败批次也保留。
+
+`vr`走真实Vuer WebSocket → CONTROLLER_MOVE解码 → ROS VRInput → 独立IK工作进程 → 租约执行器 → PhysX反馈链路。合成双手柄以名义72Hz发送OpenXR列主序矩阵；活动手柄做20秒三维弧线（x/y/z范围约80/80/120mm）及±0.08rad转腕，加入人为设定的0.15mm位置噪声、±2ms间隔抖动和周期25ms发送延迟，并渐变握持/扳机值。测试松手后手柄迁移214mm/转腕0.5rad再握持、取消、缺失手柄位姿和输入静默，检查实际停稳、重接无跳变及恢复输入不自动续跑。准备姿态单独用有限轨迹设置；开始运动前等待Vuer/IK/观察节点就绪及连续5秒新鲜物理采样。扳机只记录，不控制手部。原始WebSocket包、解码/IK事件/接受命令/执行状态、PhysX反馈及观察曲线均保留；这些输入分布不是头显实测数据。本批左右臂各5项检查通过：原始手柄帧4796/4862，接纳目标3162/3175；首个完整弧线的观察跟踪RMS为3.58/3.84mm、最大7.58/8.64mm（10Hz最新目标对实测关节FK，含时间滞后）。214mm手柄迁移后重新握持的首目标关节差为0，松手后保持漂移约3.4e-5rad；追踪无效和断流均停稳、恢复输入不自动续跑。修复了等待物理停稳后继续检查旧VR帧而误报输入超时的问题；117项模块及旧G1离合/断流/无效追踪3项回归通过。深弯肘准备姿态未满足速度停稳、启动期约330ms反馈发布阻塞及Vuer断连收尾异常的失败记录均保留；改用已验证姿态并等待启动采样稳定，不代表这些问题已解决。
 
 2026-09-22扩展验证：双臂IK边界与独立连杆位姿8项通过，438个同时间样本最大位置/姿态差8.40e-7m/8.96e-7rad；当前IK位置容差15mm，外扩10mm仍可接纳，30/80mm拒绝。大幅度100Hz流连续600秒、60,000/60,000接纳，实测肩部总摆幅0.9003rad、肘部0.5400rad，跟踪RMS0.00195rad、最大0.01021rad，执行器预热后RSS增长0.004MiB。早期长流约66秒失败，诊断发现第2代GC占用235.67ms并阻塞物理推进；就绪前回收/冻结初始化对象后通过完整10分钟，运行期新对象仍正常GC、退出解冻，原超时阈值不变。此结果不能替代30分钟及更长稳定性验证。故障组6项、117项模块及旧ROS取消/反馈丢失/动作块3项通过；同时修复历史停止失败记录污染恢复后新取消/释放服务响应的问题，受理停止仍不等于实测停稳。
 

@@ -214,7 +214,8 @@ def main():
     parser.add_argument('--namespace',default='/bindu_g1_physics')
     parser.add_argument('--model',type=Path,default=Path('artifacts/g1-physics-model'))
     parser.add_argument('--output',type=Path,required=True)
-    parser.add_argument('--suite',choices=('basic','dynamics','soak','boundaries','faults'),default='basic')
+    parser.add_argument('--suite',choices=('basic','dynamics','soak','boundaries','faults','vr'),default='basic')
+    parser.add_argument('--side',choices=('left','right'),default='left')
     parser.add_argument('--soak-seconds',type=float,default=600.)
     parser.add_argument('--soak-amplitude',type=float,default=.45,help='Shoulder oscillation amplitude in rad; elbow uses 60 percent')
     parser.add_argument('--soak-period',type=float,default=12.,help='Oscillation period in seconds')
@@ -274,13 +275,22 @@ def main():
     try:
         until(node,lambda:'physics' in seen and seen['physics'].ready,seconds=20.)
         assert seen['physics'].profile_hash==profile.digest
-        process=subprocess.Popen(['ros2','launch','bindu_runtime','g1_sim.launch.py','namespace:='+args.namespace,
+        launch=['ros2','launch','bindu_runtime','g1_sim.launch.py','namespace:='+args.namespace,
             'profile:='+str((args.model/'g1_physics_sim.json').resolve()),'device_backend:=external_simulation',
-            'navigation_enabled:=false','output:='+str((args.output/'episodes').resolve())],
+            'navigation_enabled:=false','output:='+str((args.output/'episodes').resolve())]
+        if args.suite=='vr':
+            import socket
+            with socket.socket() as sock:
+                sock.bind(('127.0.0.1',0));args.vr_port=sock.getsockname()[1]
+            launch+=['vr_enabled:=true','side:='+args.side,'port:='+str(args.vr_port)]
+        process=subprocess.Popen(launch,
             stdout=log,stderr=subprocess.STDOUT,start_new_session=True)
         assert lease_client.wait_for_service(timeout_sec=15.)
         until(node,lambda:'state' in seen and seen['state'].feedback_stamp.sec>0)
         results.append({'case':'physics_feedback_19_axes','passed':len(seen['physics'].joints.name)==19})
+        if args.suite == 'vr':
+            from physics_vr import vr_checks
+            vr_checks(node,args,profile,seen,results,command,send,finished,release,drain)
         if args.suite == 'faults':
             from physics_faults import fault_checks
             fault_checks(node,profile,seen,results,command,send,release,drain,submit,control,current,relay)
