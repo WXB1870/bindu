@@ -190,7 +190,9 @@ python3 tests/validate_pi.py --g1 --output artifacts/g1-pi
 python3 tests/validate_navigation.py --g1 --output artifacts/g1-navigation
 ```
 
-2026-09-19 本机 macOS/ARM64、Python 3.12 完成106项模块测试，无跳过，含G1两侧实际IK、非零腿腰姿态与旧单臂回归。新增ROS场景尚未运行：开发机SSH连接超时；旧批次通过不代表本批跨进程链路已验收。
+2026-09-19 本机 macOS/ARM64、Python 3.12 完成106项模块测试，无跳过；当时因开发机SSH连接超时，新增ROS场景未运行。2026-09-22 在 Ubuntu 24.04 / Jazzy / bindu Conda Python 3.12.14 上完成14包独立重建（含新增Action），106项模块无跳过、9项G1全身、左/右臂VR 11/3项、Pi左臂14项及右臂2种通信模式、18项到站导航全部通过；旧入口16 ROS、14 Pi、18导航及11 VR回归通过。VR包含真实Vuer服务接收合成输入，导航仍使用协议替身。
+
+本批首轮构建因Conda旧`argparse`覆盖标准库失败，导航首轮因未加载隔离`nav2_msgs 1.3.13`失败；调整环境路径后通过，受影响的G1全身及左右VR/Pi完整启动另行复测通过，未修改运行源码或放宽阈值。Vuer连接断开及部分节点SIGINT收尾仍有异常日志；功能断言通过不代表退出过程完全正常。本批模拟进程已收尾，未运行现场头显、真实Pi模型、真实Nav2/SLAM或真机。
 
 模型来源与修改范围见[架构](软件架构设计.md#854-当前代码组织与替换边界)，Apache-2.0许可随描述包分发。需要重生成时，将固定提交的原URDF传给`python3 tools/derive_g1_model.py /path/to/galbot_one_golf.urdf`；工具校验源码SHA256并统一生成模型与profile，避免限位表漂移。
 
