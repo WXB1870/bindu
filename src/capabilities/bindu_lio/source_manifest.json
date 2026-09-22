@@ -1,0 +1,169 @@
+{
+  "archive": "历史代码/代码/导航-源码.zip",
+  "archive_sha256": "dc0b9db7609685323b77d85deaeda8b5af62b32d3be496f3b16bfa945654ec6b",
+  "upstream": "https://github.com/hku-mars/FAST_LIO",
+  "license": "vendor/fast_lio/LICENSE",
+  "files": [
+    {
+      "archive_member": "nav_src/src/NEXTE_Sentry_Nav/sentry_slam/FAST_LIO/include/common_lib.h",
+      "source_sha256": "8ba52138be2d523fbac056968614c00584dd8a6390866008a4de03f479ec1136",
+      "path": "vendor/fast_lio/include/common_lib.h",
+      "adapted": true,
+      "adapted_sha256": "57a24d52ebc37d8a6a2215963ef47b0228f7d08cdfe9e73b72f80a449677615b"
+    },
+    {
+      "archive_member": "nav_src/src/NEXTE_Sentry_Nav/sentry_slam/FAST_LIO/include/Exp_mat.h",
+      "source_sha256": "abce87e1fb0e60febf42f38b75f4c018bac24c1bf652e26b7a510a9296d3031d",
+      "path": "vendor/fast_lio/include/Exp_mat.h",
+      "adapted": false,
+      "adapted_sha256": "abce87e1fb0e60febf42f38b75f4c018bac24c1bf652e26b7a510a9296d3031d"
+    },
+    {
+      "archive_member": "nav_src/src/NEXTE_Sentry_Nav/sentry_slam/FAST_LIO/include/ikd-Tree/ikd_Tree.cpp",
+      "source_sha256": "ec3cbbbb6386eb6c68f9aa081c48b5d62209ada44fe167a002d4e3b112a1ea9f",
+      "path": "vendor/fast_lio/include/ikd-Tree/ikd_Tree.cpp",
+      "adapted": false,
+      "adapted_sha256": "ec3cbbbb6386eb6c68f9aa081c48b5d62209ada44fe167a002d4e3b112a1ea9f"
+    },
+    {
+      "archive_member": "nav_src/src/NEXTE_Sentry_Nav/sentry_slam/FAST_LIO/include/ikd-Tree/ikd_Tree.h",
+      "source_sha256": "bb87cab944c6c59e0be61cb0b3a2cd0e334d93dc1bf768875058857278135a4b",
+      "path": "vendor/fast_lio/include/ikd-Tree/ikd_Tree.h",
+      "adapted": false,
+      "adapted_sha256": "bb87cab944c6c59e0be61cb0b3a2cd0e334d93dc1bf768875058857278135a4b"
+    },
+    {
+      "archive_member": "nav_src/src/NEXTE_Sentry_Nav/sentry_slam/FAST_LIO/include/IKFoM_toolkit/esekfom/esekfom.hpp",
+      "source_sha256": "b990411209fe06ae64112c8bc807b0c2a13922fc1460ec2745c6701cc9344e85",
+      "path": "vendor/fast_lio/include/IKFoM_toolkit/esekfom/esekfom.hpp",
+      "adapted": false,
+      "adapted_sha256": "b990411209fe06ae64112c8bc807b0c2a13922fc1460ec2745c6701cc9344e85"
+    },
+    {
+      "archive_member": "nav_src/src/NEXTE_Sentry_Nav/sentry_slam/FAST_LIO/include/IKFoM_toolkit/esekfom/util.hpp",
+      "source_sha256": "3c4265d25ea3f8c7f586d1e34bc352e981e09e30555e42011cd23a0a147d6918",
+      "path": "vendor/fast_lio/include/IKFoM_toolkit/esekfom/util.hpp",
+      "adapted": false,
+      "adapted_sha256": "3c4265d25ea3f8c7f586d1e34bc352e981e09e30555e42011cd23a0a147d6918"
+    },
+    {
+      "archive_member": "nav_src/src/NEXTE_Sentry_Nav/sentry_slam/FAST_LIO/include/IKFoM_toolkit/mtk/build_manifold.hpp",
+      "source_sha256": "0e88522551d02e78dc995e6c9d7883d9ecca7190379ec047ab839fff7186ea0f",
+      "path": "vendor/fast_lio/include/IKFoM_toolkit/mtk/build_manifold.hpp",
+      "adapted": false,
+      "adapted_sha256": "0e88522551d02e78dc995e6c9d7883d9ecca7190379ec047ab839fff7186ea0f"
+    },
+    {
+      "archive_member": "nav_src/src/NEXTE_Sentry_Nav/sentry_slam/FAST_LIO/include/IKFoM_toolkit/mtk/src/mtkmath.hpp",
+      "source_sha256": "f9627989cf578f35ec5594a6956b4e9283d4dd109b26e7d2621682c508546295",
+      "path": "vendor/fast_lio/include/IKFoM_toolkit/mtk/src/mtkmath.hpp",
+      "adapted": false,
+      "adapted_sha256": "f9627989cf578f35ec5594a6956b4e9283d4dd109b26e7d2621682c508546295"
+    },
+    {
+      "archive_member": "nav_src/src/NEXTE_Sentry_Nav/sentry_slam/FAST_LIO/include/IKFoM_toolkit/mtk/src/SubManifold.hpp",
+      "source_sha256": "96709f0f453a0c8776b1969064275ebf14dc5234b7024e68eb1cfc51a513864f",
+      "path": "vendor/fast_lio/include/IKFoM_toolkit/mtk/src/SubManifold.hpp",
+      "adapted": false,
+      "adapted_sha256": "96709f0f453a0c8776b1969064275ebf14dc5234b7024e68eb1cfc51a513864f"
+    },
+    {
+      "archive_member": "nav_src/src/NEXTE_Sentry_Nav/sentry_slam/FAST_LIO/include/IKFoM_toolkit/mtk/src/vectview.hpp",
+      "source_sha256": "7855408124ea65df4423bae5f97d5104af5552318796bc6324bdbf98a45101f3",
+      "path": "vendor/fast_lio/include/IKFoM_toolkit/mtk/src/vectview.hpp",
+      "adapted": false,
+      "adapted_sha256": "7855408124ea65df4423bae5f97d5104af5552318796bc6324bdbf98a45101f3"
+    },
+    {
+      "archive_member": "nav_src/src/NEXTE_Sentry_Nav/sentry_slam/FAST_LIO/include/IKFoM_toolkit/mtk/startIdx.hpp",
+      "source_sha256": "79cdc368bb4e083f5fda7549094c0aba8b599aee1f88e9f2a8b7fa785bf1f757",
+      "path": "vendor/fast_lio/include/IKFoM_toolkit/mtk/startIdx.hpp",
+      "adapted": false,
+      "adapted_sha256": "79cdc368bb4e083f5fda7549094c0aba8b599aee1f88e9f2a8b7fa785bf1f757"
+    },
+    {
+      "archive_member": "nav_src/src/NEXTE_Sentry_Nav/sentry_slam/FAST_LIO/include/IKFoM_toolkit/mtk/types/S2.hpp",
+      "source_sha256": "f861be0bbb1a80d968189c90f9ef6b8e56b5f4bb19a9043a2e41c9397c215d56",
+      "path": "vendor/fast_lio/include/IKFoM_toolkit/mtk/types/S2.hpp",
+      "adapted": false,
+      "adapted_sha256": "f861be0bbb1a80d968189c90f9ef6b8e56b5f4bb19a9043a2e41c9397c215d56"
+    },
+    {
+      "archive_member": "nav_src/src/NEXTE_Sentry_Nav/sentry_slam/FAST_LIO/include/IKFoM_toolkit/mtk/types/SOn.hpp",
+      "source_sha256": "90a8384a05d656698e6826b892561dc6cd619b62a7e32f9e6e3a9253e5e0c8aa",
+      "path": "vendor/fast_lio/include/IKFoM_toolkit/mtk/types/SOn.hpp",
+      "adapted": false,
+      "adapted_sha256": "90a8384a05d656698e6826b892561dc6cd619b62a7e32f9e6e3a9253e5e0c8aa"
+    },
+    {
+      "archive_member": "nav_src/src/NEXTE_Sentry_Nav/sentry_slam/FAST_LIO/include/IKFoM_toolkit/mtk/types/vect.hpp",
+      "source_sha256": "771ecededd51dc694bdadb57f8a49fad7bc6091c6f6112142096954649ac405f",
+      "path": "vendor/fast_lio/include/IKFoM_toolkit/mtk/types/vect.hpp",
+      "adapted": false,
+      "adapted_sha256": "771ecededd51dc694bdadb57f8a49fad7bc6091c6f6112142096954649ac405f"
+    },
+    {
+      "archive_member": "nav_src/src/NEXTE_Sentry_Nav/sentry_slam/FAST_LIO/include/IKFoM_toolkit/mtk/types/wrapped_cv_mat.hpp",
+      "source_sha256": "3040f43fcb4195a2572a8819be012ebd2c4b59a38cfae86fcac3e01d7039a589",
+      "path": "vendor/fast_lio/include/IKFoM_toolkit/mtk/types/wrapped_cv_mat.hpp",
+      "adapted": false,
+      "adapted_sha256": "3040f43fcb4195a2572a8819be012ebd2c4b59a38cfae86fcac3e01d7039a589"
+    },
+    {
+      "archive_member": "nav_src/src/NEXTE_Sentry_Nav/sentry_slam/FAST_LIO/include/so3_math.h",
+      "source_sha256": "e02f73dc804c3f539a80fe49d4221a85dbfeaee4cf0b643d7af062b49148e9f7",
+      "path": "vendor/fast_lio/include/so3_math.h",
+      "adapted": false,
+      "adapted_sha256": "e02f73dc804c3f539a80fe49d4221a85dbfeaee4cf0b643d7af062b49148e9f7"
+    },
+    {
+      "archive_member": "nav_src/src/NEXTE_Sentry_Nav/sentry_slam/FAST_LIO/include/use-ikfom.hpp",
+      "source_sha256": "1ee2c078ee757ff2dffedf48da764daec152baa79876a70785d010cc2e6165ab",
+      "path": "vendor/fast_lio/include/use-ikfom.hpp",
+      "adapted": false,
+      "adapted_sha256": "1ee2c078ee757ff2dffedf48da764daec152baa79876a70785d010cc2e6165ab"
+    },
+    {
+      "archive_member": "nav_src/src/NEXTE_Sentry_Nav/sentry_slam/FAST_LIO/LICENSE",
+      "source_sha256": "8177f97513213526df2cf6184d8ff986c675afb514d4e68a404010521b880643",
+      "path": "vendor/fast_lio/LICENSE",
+      "adapted": false,
+      "adapted_sha256": "8177f97513213526df2cf6184d8ff986c675afb514d4e68a404010521b880643"
+    },
+    {
+      "archive_member": "nav_src/src/NEXTE_Sentry_Nav/sentry_slam/FAST_LIO/src/IMU_Processing.hpp",
+      "source_sha256": "e6289641ea5bbb8c83e38eb81bab4fece6bc97e4df0b93134db8f06997a1bba6",
+      "path": "vendor/fast_lio/src/IMU_Processing.hpp",
+      "adapted": true,
+      "adapted_sha256": "4f3f2c075a2b8ca438ba4a4c0a3e3bf6ccac59c9328db5991dd0f086b73fd022"
+    },
+    {
+      "archive_member": "nav_src/src/NEXTE_Sentry_Nav/sentry_slam/FAST_LIO/src/laserMapping.cpp",
+      "source_sha256": "0598dad2e6afa3bff9843199f098f1fbbb4543b0c57e1beeb5d705d18e09e2ee",
+      "path": "vendor/fast_lio/src/estimator.hpp",
+      "adapted": true,
+      "adapted_sha256": "47f6e172ce6d38347386a0bbe28fe96563d58bf55c15a6eaabeeca2c85797dad"
+    },
+    {
+      "archive_member": "nav_src/src/NEXTE_Sentry_Nav/sentry_slam/FAST_LIO_LOCALIZATION/scripts/global_localization.py",
+      "source_sha256": "071158648242d77fffe1e3fb98147b3f6d2aec14a89abf31b73de682b3f1f29f",
+      "path": "bindu_lio/localization.py",
+      "adapted": true,
+      "adapted_sha256": "3749d6b718de281756e3e9ad9601b154e97681d5c281c389a99b97aaa9fa9700"
+    },
+    {
+      "archive_member": "nav_src/src/livox_ros_driver2/msg/CustomMsg.msg",
+      "source_sha256": "f42d6709db951b1fa307e929e742c0593cbf0d1b0ff977d2ed63ad8d7cee0a96",
+      "path": "bindu_lio/livox_input_node.py",
+      "adapted": true,
+      "adapted_sha256": "1d8fc201ebd34d22825e5e14868783b0016fef7959bcc52c061e8051fa49cf74"
+    }
+  ],
+  "modifications": [
+    "ROS 1 transport removed from numerical core; explicit timed-cloud and SI IMU contract in ROS 2 adapter.",
+    "Source scan-matching scratch buffers are resized before indexed writes instead of writing cleared vectors.",
+    "IMU initialization now initializes acceleration and previous scan end; transport interpolates the final IMU sample to scan end.",
+    "Original map crop, nearest-plane Jacobian, iterated filter, ikd-Tree and undistortion equations retained.",
+    "Seeded global localization keeps coarse/fine point-to-point ICP; adds immutable snapshots, radial crop, quality/step gates and source-age limits."
+  ]
+}

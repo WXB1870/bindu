@@ -1,0 +1,31 @@
+# Algorithm settings. Measured transforms/frames/topics come from a separate
+# sensor configuration; no historical MID360/G1 extrinsics are assumed here.
+lio:
+  scan_voxel: 0.2
+  map_voxel: 0.2
+  max_iterations: 4
+  gyro_noise: 0.1
+  accel_noise: 0.1
+  gyro_bias_noise: 0.0001
+  accel_bias_noise: 0.0001
+  blind: 0.3
+  max_range: 50.0
+  max_input_age: 0.5
+  max_imu_gap: 0.05
+  max_scan_duration: 0.2
+  max_scan_points: 100000
+  max_map_points: 2000000
+registration:
+  map_voxel: 0.2
+  scan_voxel: 0.1
+  correspondence: 0.3
+  min_fitness: 0.8
+  max_rmse: 0.12
+  crop_radius: 30.0
+  max_translation_step: 0.5
+  max_rotation_step: 0.35
+  min_points: 30
+  input_timeout: 0.5
+  pair_tolerance: 0.02
+  max_scan_points: 100000
+  max_map_points: 2000000

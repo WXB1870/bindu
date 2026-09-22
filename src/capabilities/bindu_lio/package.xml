@@ -1,0 +1,25 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>bindu_lio</name>
+  <version>0.1.0</version>
+  <description>ROS 2 adaptation of the supplied FAST-LIO estimator, isolated from execution.</description>
+  <maintainer email="maintainer@example.invalid">Bindu team</maintainer>
+  <license>GPL-2.0-only</license>
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <buildtool_depend>ament_cmake_python</buildtool_depend>
+  <depend>rclcpp</depend>
+  <depend>sensor_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>std_msgs</depend>
+  <depend>std_srvs</depend>
+  <depend>tf2_ros</depend>
+  <depend>pcl_conversions</depend>
+  <depend>eigen</depend>
+  <depend>libpcl-all-dev</depend>
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>sensor_msgs_py</exec_depend>
+  <exec_depend>python3-numpy</exec_depend>
+  <exec_depend>python3-scipy</exec_depend>
+  <export><build_type>ament_cmake</build_type></export>
+</package>

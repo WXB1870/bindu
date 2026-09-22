@@ -13,7 +13,7 @@
 | 任务与执行 | 已实现模拟任务流程、控制权、在线关节目标、取消与异常处理 |
 | Pi 客户端 | 已实现两种历史 ZMQ 模式、动作映射、时效检查和诊断；已通过模拟服务测试 |
 | 设备适配 | 已实现模拟底盘、关节和灵巧手驱动；真实设备待接入 |
-| 导航 | 已接真实Nav2、SLAM Toolbox建图与AMCL地图定位；Isaac中验证地图保存重载、导航和断流停车，未接真机 |
+| 导航 | 已接Nav2仿真；历史FAST-LIO与3D ICP已迁移至ROS 2并通过合成数据验证，真实3D传感器／Isaac三维输入待接入 |
 | 感知、规划 | 已有模拟实现，真实算法待接入 |
 | VR 遥操作与 IK | 已接 v3.4 手柄输入、相对控制和连续 IK；单臂模拟末端/状态可视反馈已通过 ROS/Vuer 验证 |
 | 语音交互 | 已预留模块目录 |
@@ -22,7 +22,7 @@
 
 ## 工程入口
 
-仓库根目录同时是 ROS 2 工作区，共包含 14 个可构建包。
+仓库根目录同时是 ROS 2 工作区，共包含 15 个可构建包。
 
 ```text
 bindu/
@@ -324,6 +324,41 @@ python3 tests/validate_localization_physics.py \
 2026-09-22分阶段验证：五个建图航点、位姿图恢复/栅格地图保存、AMCL重载、正常往返及前进断流停车通过。建图定位RMS约31.8mm，AMCL正常往返定位RMS约36.7mm（与独立物理真值同原点、50ms内最近采样比较，未作刚体拟合）；桌边/返回实际到站误差100.6/51.4mm。断流注入时线速度0.062m/s，额外移动75.8mm，约0.622秒后满足150ms窗口的停稳判据。**断流恢复后的近距离回站失败，返回NAV_ACTION_FAILED:105并停稳；完整验证不是全绿。** 123项模块和6项旧导航回归通过。结果、失败批次及数据指纹索引为该批`verification.json`，地图和曲线为`restored-verified-tests/room.yaml`、`mapping_localization.png`。
 
 本机依赖在`artifacts/slam-physics-2026-09-22/deps`隔离解包，环境入口为该批`env.sh`；未修改系统安装，不适用于新机器直接复制。地图、压缩原始扫描/位姿、轨迹、成功与失败批次保存在同目录。传感器为固定高度水平二维射线，不能替代3D雷达/IMU、真实传感器标定或完整碰撞验收；AMCL与Nav2到站成功也不代表精细抓取对位达标。旧低位腿关节停稳回归失败仍待排查。本机曾出现DDS生命周期服务响应超时，导致自动启动失败且需重启算法；失败日志保留，未宣称启动稳定性已解决。验证器等待AMCL处理首帧扫描后才采集收敛结果。
+
+## 历史三维导航迁移入口
+
+2026-09-22按用户要求，以本地`导航-源码.zip`中的FAST-LIO和FAST_LIO_LOCALIZATION为后续主路线。原二维SLAM Toolbox/AMCL保留为已验证基线。算法进程位于[`bindu_lio`](src/capabilities/bindu_lio/)，与站点业务、Nav2和共享执行层隔离；原始ZIP不改。保留迭代滤波、IMU去畸变、局部地图及ikd-Tree和两级点到点ICP，来源指纹／适配范围见[`source_manifest.json`](src/capabilities/bindu_lio/source_manifest.json)，该包按随附GPL-2.0许可维护，原文件声明保留。公共执行模块不导入此算法包。
+
+- `fast_lio`：带时间点云＋IMU → `navigation/odom`及`odom→base_link`、`lio/cloud_registered`；地图服务`lio/save_map`保存PCD，地图坐标为建图实例的odom系，重载时作为配置地图坐标，站点和二维栅格必须一起核对。地图路径预配置，已有文件拒绝覆盖；地图体素数有上限，达到上限锁定失败。
+- `lio_localization`：重载PCD，接收`initialpose`后用粗／细两级ICP估计`map→odom`。初值按同一观测的`T_map_base × inverse(T_odom_base)`换算；匹配要求点数、fitness、RMSE和修正幅度同时达标。单工作线程／单待处理扫描，旧初值对应的异步结果丢弃；失败或过期不继续刷新TF。不是地点识别、任意位置重定位或回环优化。
+- `lio_scan`：按同时间的LIO位姿和显式外参，把去畸变点云投影为`navigation/scan`。切片内没有回波的方向标为NaN未知，不能当作无遮挡；高度和外参必须按实际传感器设置。可选发布`base_link→lidar`静态TF，已有机器人描述发布该边时关闭。
+- `livox_input`：可选订阅已运行的`livox_ros_driver2/CustomMsg`，保留header/timebase与逐点offset_time，按原参考的line/tag规则过滤。需单独安装真正的Livox驱动消息包；本入口不启动设备驱动。该分支尚未与真实Livox驱动联调。
+
+点云输入要求小端FLOAT32的`x/y/z/intensity/time`，`time`为相对header采集起点的秒数，**不允许用接收时间或零偏移伪造逐点时间**。IMU为m/s²（含重力）和rad/s，必须和点云同一ROS时钟；启动时保持静止初始化。外参采用xyz＋xyzw，`imu_from_lidar`将雷达坐标转换到IMU坐标，`imu_from_base`将底盘坐标转换到IMU坐标。配置显式指定所有frame，不静默套用历史MID360/Tracer外参。输入过期、IMU间断、扫描重叠、队列超限或跟踪失效锁定后需重启估计器；节点不发布运动指令，导航侧仍由原有定位时效／停止契约接管。
+
+ROS 2 Jazzy工作区增加PCL/Eigen依赖后构建；ICP的Open3D等可选依赖需独立安装，不混入VR/IK构建环境：
+
+```bash
+source /opt/ros/jazzy/setup.bash
+colcon build --packages-select bindu_lio bindu_runtime --cmake-args -DCMAKE_BUILD_TYPE=Release
+source install/setup.bash
+# 仅给定位进程使用的可选Python依赖
+python3 -m pip install --target artifacts/lio-python -r tools/requirements-navigation.txt
+```
+
+启动示例中的传感器配置是**合成测试fixture**，零外参不是实机标定，也不是现有Isaac二维射线输入的适配：
+
+```bash
+ros2 launch bindu_runtime lio.launch.py namespace:=/bindu_lio_test \
+  sensor_config:="$PWD/src/integration/bindu_runtime/config/navigation_lio_fixture.json" \
+  mode:=mapping save_map:="$PWD/artifacts/lio-room.pcd"
+# 有输入并完成建图后，另一个终端保存；不会覆盖已有PCD
+ros2 service call /bindu_lio_test/lio/save_map std_srvs/srv/Trigger '{}'
+```
+
+重载定位时先收尾建图实例，给**定位进程所在终端**增加`PYTHONPATH="$PWD/artifacts/lio-python:$PYTHONPATH"`，再用相同入口的`mode:=localization pcd_map:=/绝对路径/map.pcd`并发送`initialpose`。已有同坐标的二维栅格可用`grid_map:=/绝对路径/map.yaml`启动Nav2 map_server；不可把旧地图随意换名使用。随后原`navigation_physics.launch.py`可消费相同命名空间的`navigation/odom`、`navigation/scan`和TF；算法速度仍必须经过目标身份、租约和执行层。此模式独占map→odom和odom→base，不能并行启动AMCL/SLAM或模拟器旧odom发布者。当前尚未完成这个3D链路的Isaac往返验收。
+
+验证入口：`tests/validate_lio.py --binary install/bindu_lio/lib/bindu_lio/fast_lio --output artifacts/lio-check`使用时间展开的合成三维房间扫描与IMU，检查动态估计、采集时间、错误字段拒绝、断流及PCD保存；`tests/validate_lio_localization.py --map artifacts/lio-check/map.pcd --output artifacts/lio-localization-check`验证真实ROS点云重载定位、错误匹配和重设初值；`test_lio_localization.py`、`test_lio_ros_adapters.py`覆盖配准和扫描外参。以上不连接真实机器人。
 
 ## Pi 客户端运行入口
 

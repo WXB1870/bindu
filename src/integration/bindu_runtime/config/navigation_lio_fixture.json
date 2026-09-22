@@ -1,0 +1,23 @@
+{
+  "simulation_only": true,
+  "input_type": "timed_cloud",
+  "points_topic": "lio/points",
+  "imu_topic": "lio/imu",
+  "frames": {
+    "map": "map",
+    "odom": "odom",
+    "base": "base_link",
+    "lidar": "lidar",
+    "imu": "imu"
+  },
+  "imu_from_lidar": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
+  "imu_from_base": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
+  "scan_projection": {
+    "min_height": 0.0,
+    "max_height": 1.0,
+    "min_range": 0.3,
+    "max_range": 30.0,
+    "bins": 720,
+    "publish_sensor_tf": true
+  }
+}
