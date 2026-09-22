@@ -216,6 +216,7 @@ def main():
                 body.apply_action(ArticulationAction(joint_positions=body.get_joint_positions()[selected], joint_indices=selected))
         if not args.no_ros:
             import rclpy
+            from rclpy.signals import SignalHandlerOptions
             from rclpy.qos import QoSProfile, ReliabilityPolicy
             from bindu_contracts.profile import Profile
             from bindu_hardware.drivers.physics import PhysicsCommandGate
@@ -224,7 +225,9 @@ def main():
             profile = Profile.load(args.model/'g1_physics_sim.json')
             joint_names = [n for group in profile.groups.values() for n in group]
             gate = PhysicsCommandGate(profile, simulator_id, cfg['command_timeout'])
-            rclpy.init()
+            # Keep our quit flag authoritative. rclpy's default SIGINT handler
+            # can invalidate the context halfway through publishing a sample.
+            rclpy.init(signal_handler_options=SignalHandlerOptions.NO)
             node = rclpy.create_node('isaac_physics', namespace=args.namespace)
             def now(): return node.get_clock().now().nanoseconds/1e9
             def receive(command):
