@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""SLAM -> saved map -> AMCL -> navigation in an already running Isaac fixture.
+"""SLAM/AMCL or FAST-LIO/ICP navigation in an already running Isaac fixture.
 
 Owns only the localization launch. Requires navigation_physics.launch with
 require_scan:=true and the mapping sites. Ground truth is recorded for scoring,
@@ -41,8 +41,14 @@ def main():
     p.add_argument('--output',type=Path,required=True);p.add_argument('--map',type=Path)
     p.add_argument('--phase',choices=['full','mapping','localization','restore'],default='full')
     p.add_argument('--pose-graph',type=Path)
+    p.add_argument('--backend',choices=['slam','lio'],default='slam')
+    p.add_argument('--sensor-config',type=Path)
+    p.add_argument('--pcd-map',type=Path)
+    p.add_argument('--navigation-cases',choices=['all','roundtrip','fault'],default='all',
+                   help='Split normal and fault cases without changing their acceptance thresholds.')
     args=p.parse_args()
     if args.phase=='restore' and not args.pose_graph:p.error('--phase restore requires --pose-graph')
+    if args.backend=='lio' and (not args.sensor_config or args.phase=='restore'):p.error('LIO requires --sensor-config and supports full/mapping/localization')
     args.output.mkdir(parents=True,exist_ok=False)
     cfg=json.loads(args.sites.read_text());sites={r['name']:r for r in cfg['sites']}
     ns=args.namespace;results=[];seen={};physical=[];poses=[];odom=[];estimates=[];statics=set();process=None
@@ -64,6 +70,10 @@ def main():
         elif topic=='tf_static':
             statics.update((t.header.frame_id,t.child_frame_id) for t in msg.transforms)
     best=QoSProfile(depth=100,reliability=ReliabilityPolicy.BEST_EFFORT)
+    evidence=None
+    if args.backend=='lio':
+        from lio_physics_support import LioEvidence
+        evidence=LioEvidence(node,ns,best,raw,seen)
     latched=QoSProfile(depth=1,durability=DurabilityPolicy.TRANSIENT_LOCAL)
     for topic,typ,qos in [('simulation/feedback',SimulationFeedback,best),('navigation/backend/pose',NavigationPose,best),
                          ('navigation/odom',Odometry,100),('navigation/scan',LaserScan,best),('navigation/map',OccupancyGrid,latched),
@@ -85,7 +95,7 @@ def main():
             # Deactivate/cleanup before invalidating the ROS context: SLAM's
             # teardown may still create timers while cleaning lifecycle state.
             from nav2_msgs.srv import ManageLifecycleNodes
-            manager=node.create_client(ManageLifecycleNodes,ns+'/localization_manager/manage_nodes')
+            manager=node.create_client(ManageLifecycleNodes,ns+('/lio_map_manager/manage_nodes' if args.backend=='lio' else '/localization_manager/manage_nodes'))
             try:
                 if manager.wait_for_service(timeout_sec=2.):
                     response=wait(node,manager.call_async(ManageLifecycleNodes.Request(command=ManageLifecycleNodes.Request.SHUTDOWN)),seconds=8.)
@@ -100,6 +110,18 @@ def main():
         nonlocal process
         if process:stop_localizer();process=None;drain(1.)
         seen.pop('navigation/map',None);seen.pop('localization/pose',None)
+        if args.backend=='lio':
+            seen.pop('navigation/odom',None);seen.pop('navigation/scan',None)
+            cmd=['ros2','launch','bindu_runtime','lio.launch.py','namespace:='+ns,'sensor_config:='+str(args.sensor_config.resolve()),'mode:='+mode]
+            if mode=='mapping':cmd.append('save_map:='+str((args.output/'room.pcd').resolve()))
+            else:cmd+=['pcd_map:='+str((args.pcd_map or args.output/'room.pcd').resolve()),'grid_map:='+str(mapfile.resolve())]
+            with (args.output/(mode+'_'+str(len(results))+'.log')).open('w') as log:process=subprocess.Popen(cmd,stdout=log,stderr=subprocess.STDOUT,start_new_session=True)
+            until(node,lambda:'navigation/odom' in seen and 'navigation/scan' in seen,seconds=30.)
+            assert owner('navigation/odom')==[ns+'/fast_lio'],owner('navigation/odom')
+            if mode=='localization':
+                until(node,lambda:'navigation/map' in seen,seconds=20.)
+                assert owner('navigation/map')==[ns+'/lio_map_server'],owner('navigation/map')
+            return
         cmd=['ros2','launch','bindu_runtime','localization.launch.py','namespace:='+ns,'navigation_robot:='+str(args.robot.resolve()),'mode:='+mode]
         if mode=='mapping' and args.pose_graph:cmd.append('pose_graph:='+str(args.pose_graph.resolve()))
         if mapfile:cmd.append('map:='+str(mapfile.resolve()))
@@ -193,33 +215,58 @@ def main():
                 'physical_position_error_m':error,'passed':True}
     try:
         assert action.wait_for_server(timeout_sec=20.)
-        until(node,lambda:all(t in seen for t in ('simulation/feedback','navigation/odom','navigation/scan')),seconds=25.)
-        drain(2.)
+        until(node,lambda:all(t in seen for t in (('simulation/feedback','lio/points','lio/imu') if args.backend=='lio' else ('simulation/feedback','navigation/odom','navigation/scan'))),seconds=25.)
+        if args.backend=='lio':
+            # New DDS participants can stall the fixture during discovery.
+            # Start an estimator only after five seconds of fresh acquisition;
+            # never forgive an IMU gap after it has started tracking.
+            stable=time.monotonic();deadline=stable+30.;previous=physical[-1]['stamp']
+            while time.monotonic()-stable<5.:
+                rclpy.spin_once(node,timeout_sec=.01)
+                current=physical[-1]['stamp']
+                if current-previous>.05 or not 0<=time.time()-current<.05:stable=time.monotonic()
+                previous=current
+                assert time.monotonic()<deadline,'physical feedback did not stabilize before LIO startup'
+        else:drain(2.)
         assert not node.get_publishers_info_by_topic(ns+'/navigation/map'),'simulator must not publish a synthetic map'
         mapfile=(args.map.resolve() if args.map else (args.output/'room.yaml').resolve())
         if args.phase in ('full','mapping','restore'):
             launch('mapping')
-            m=seen['navigation/map'];initial_known=sum(v>=0 for v in m.data)
-            save_result({'case':'slam_started','map_publishers':owner('navigation/map'),'initial_known_cells':initial_known,'passed':True})
-            if args.phase!='restore':
+            if args.backend=='lio':
+                save_result({'case':'lio_started','odom_publishers':owner('navigation/odom'),'passed':True})
                 for site in ['mapping_south','mapping_east','mapping_north','mapping_west','home']:
                     save_result(map_drive(site))
-            drain(2.);m=seen['navigation/map'];occupied=sum(v>=65 for v in m.data);free=sum(0<=v<25 for v in m.data)
-            assert occupied>100 and free>1000,(occupied,free)
-            (args.output/'slam_grid.json').write_text(json.dumps(message_to_ordereddict(m)))
-            from slam_toolbox.srv import SerializePoseGraph
-            client=node.create_client(SerializePoseGraph,ns+'/slam_toolbox/serialize_map')
-            assert client.wait_for_service(timeout_sec=5.)
-            reply=wait(node,client.call_async(SerializePoseGraph.Request(filename=str((args.output/'room_graph').resolve()))),seconds=10.)
-            assert reply.result==0,reply
-            binary=Path(get_package_prefix('nav2_map_server'))/'lib/nav2_map_server/map_saver_cli'
-            with (args.output/'map-save.log').open('w') as log:
-                saver=subprocess.Popen([str(binary),'-f',str(mapfile.with_suffix('')),'--ros-args','-r','__ns:='+ns,'-r','map:=navigation/map','-p','save_map_timeout:=10.0','-p','map_subscribe_transient_local:=true'],stdout=log,stderr=subprocess.STDOUT)
-                until(node,lambda:saver.poll() is not None,seconds=15.)
-                assert saver.returncode==0,(args.output/'map-save.log').read_text()
-            assert mapfile.is_file() and mapfile.with_suffix('.pgm').is_file(),'map save missing'
-            save_result({'case':'map_saved','yaml':str(mapfile),'occupied_cells':occupied,'free_cells':free,'width':m.info.width,'height':m.info.height,
-                         'resolution':m.info.resolution,'graph_saved':True,'passed':True})
+                from std_srvs.srv import Trigger
+                client=node.create_client(Trigger,ns+'/lio/save_map');assert client.wait_for_service(timeout_sec=5.)
+                response=wait(node,client.call_async(Trigger.Request()),seconds=15.)
+                assert response.success,response.message
+                evidence.collect=False
+                from concurrent.futures import ThreadPoolExecutor
+                with ThreadPoolExecutor(max_workers=1) as pool:
+                    grid=wait(node,pool.submit(evidence.save_grid,args.output,odom.copy()),seconds=20.)
+                save_result({'case':'map_saved','yaml':str(mapfile),'pcd':str(args.output/'room.pcd'),**grid,'passed':True})
+            else:
+                m=seen['navigation/map'];initial_known=sum(v>=0 for v in m.data)
+                save_result({'case':'slam_started','map_publishers':owner('navigation/map'),'initial_known_cells':initial_known,'passed':True})
+                if args.phase!='restore':
+                    for site in ['mapping_south','mapping_east','mapping_north','mapping_west','home']:
+                        save_result(map_drive(site))
+                drain(2.);m=seen['navigation/map'];occupied=sum(v>=65 for v in m.data);free=sum(0<=v<25 for v in m.data)
+                assert occupied>100 and free>1000,(occupied,free)
+                (args.output/'slam_grid.json').write_text(json.dumps(message_to_ordereddict(m)))
+                from slam_toolbox.srv import SerializePoseGraph
+                client=node.create_client(SerializePoseGraph,ns+'/slam_toolbox/serialize_map')
+                assert client.wait_for_service(timeout_sec=5.)
+                reply=wait(node,client.call_async(SerializePoseGraph.Request(filename=str((args.output/'room_graph').resolve()))),seconds=10.)
+                assert reply.result==0,reply
+                binary=Path(get_package_prefix('nav2_map_server'))/'lib/nav2_map_server/map_saver_cli'
+                with (args.output/'map-save.log').open('w') as log:
+                    saver=subprocess.Popen([str(binary),'-f',str(mapfile.with_suffix('')),'--ros-args','-r','__ns:='+ns,'-r','map:=navigation/map','-p','save_map_timeout:=10.0','-p','map_subscribe_transient_local:=true'],stdout=log,stderr=subprocess.STDOUT)
+                    until(node,lambda:saver.poll() is not None,seconds=15.)
+                    assert saver.returncode==0,(args.output/'map-save.log').read_text()
+                assert mapfile.is_file() and mapfile.with_suffix('.pgm').is_file(),'map save missing'
+                save_result({'case':'map_saved','yaml':str(mapfile),'occupied_cells':occupied,'free_cells':free,'width':m.info.width,'height':m.info.height,
+                             'resolution':m.info.resolution,'graph_saved':True,'passed':True})
         if args.phase in ('full','localization','restore'):
             launch('localization',mapfile)
             until(node,lambda:init_pose.get_subscription_count()>0,seconds=10.)
@@ -229,23 +276,47 @@ def main():
             initial.pose.pose.orientation.z=math.sin(.12/2);initial.pose.pose.orientation.w=math.cos(.12/2)
             initial.pose.covariance[0]=initial.pose.covariance[7]=.25**2;initial.pose.covariance[35]=.2**2
             init_pose.publish(initial)
-            nomotion=node.create_client(Empty,ns+'/request_nomotion_update');assert nomotion.wait_for_service(timeout_sec=10.)
-            before=len(estimates)
-            wait(node,nomotion.call_async(Empty.Request()))
-            until(node,lambda:len(estimates)>before,seconds=15.)
-            before=len(estimates)
-            for _ in range(15):wait(node,nomotion.call_async(Empty.Request()));drain(.2)
-            until(node,lambda:len(estimates)>=before+5,seconds=10.)
-            estimate=estimates[-1];last=physical[-1];error=math.hypot(estimate['x']-last['x'],estimate['y']-last['y'])
-            angle=abs(math.atan2(math.sin(estimate['yaw']-last['yaw']),math.cos(estimate['yaw']-last['yaw'])))
-            assert error<.12 and angle<.12,(estimate,last,error,angle)
-            save_result({'case':'amcl_reloaded_localization','map_publishers':owner('navigation/map'),
-                'prior':[.25,-.2,.12],'estimate':estimate,'physical_error_m':error,'yaw_error_rad':angle,'passed':True})
-            save_result(navigate('pickup'));save_result(navigate('home'))
-            save_result(navigate('pickup',inject=True))
-            save_result(navigate('home'))
+            if args.backend=='lio':
+                began=time.time()
+                until(node,lambda:poses and poses[-1]['stamp']>began and 'lio/localization_status' in seen and seen['lio/localization_status'].data.startswith('LOCALIZED:'),seconds=25.)
+                drain(2.)
+                estimate=poses[-1];last=physical[-1]
+                error=math.hypot(estimate['x']-last['x'],estimate['y']-last['y'])
+                angle=abs(math.atan2(math.sin(estimate['yaw']-last['yaw']),math.cos(estimate['yaw']-last['yaw'])))
+                assert error<.12 and angle<.12,(estimate,last)
+                save_result({'case':'icp_reloaded_localization','prior':[.25,-.2,.12],'physical_error_m':error,'yaw_error_rad':angle,'passed':True})
+            else:
+                nomotion=node.create_client(Empty,ns+'/request_nomotion_update');assert nomotion.wait_for_service(timeout_sec=10.)
+                before=len(estimates)
+                wait(node,nomotion.call_async(Empty.Request()))
+                until(node,lambda:len(estimates)>before,seconds=15.)
+                before=len(estimates)
+                for _ in range(15):wait(node,nomotion.call_async(Empty.Request()));drain(.2)
+                until(node,lambda:len(estimates)>=before+5,seconds=10.)
+                estimate=estimates[-1];last=physical[-1];error=math.hypot(estimate['x']-last['x'],estimate['y']-last['y'])
+                angle=abs(math.atan2(math.sin(estimate['yaw']-last['yaw']),math.cos(estimate['yaw']-last['yaw'])))
+                assert error<.12 and angle<.12,(estimate,last,error,angle)
+                save_result({'case':'amcl_reloaded_localization','map_publishers':owner('navigation/map'),
+                    'prior':[.25,-.2,.12],'estimate':estimate,'physical_error_m':error,'yaw_error_rad':angle,'passed':True})
+            if args.navigation_cases in ('all','roundtrip'):
+                save_result(navigate('pickup'));save_result(navigate('home'))
+            if args.navigation_cases in ('all','fault'):
+                save_result(navigate('pickup',inject=True))
+            if args.backend=='lio' and args.navigation_cases in ('all','fault'):
+                # Explicit recovery uses the last algorithm estimate, never PhysX truth.
+                prior=poses[-1].copy()
+                launch('localization',mapfile)
+                until(node,lambda:init_pose.get_subscription_count()>0,seconds=10.)
+                initial.pose.pose.position.x=prior['x'];initial.pose.pose.position.y=prior['y']
+                initial.pose.pose.orientation.z=math.sin(prior['yaw']/2);initial.pose.pose.orientation.w=math.cos(prior['yaw']/2)
+                initial.header.stamp=node.get_clock().now().to_msg();init_pose.publish(initial)
+                restarted=time.time()
+                until(node,lambda:poses and poses[-1]['stamp']>restarted,seconds=25.)
+                save_result({'case':'explicit_lio_restart_after_scan_loss','prior_source':'last algorithm estimate','prior':prior,'passed':True})
+            if args.navigation_cases in ('all','fault'):
+                save_result(navigate('home'))
     except Exception as exc:
-        save_result({'case':'failure','passed':False,'error':str(exc),'traceback':traceback.format_exc()})
+        save_result({'case':'failure','passed':False,'error':str(exc),'traceback':traceback.format_exc(),'lio_status':getattr(seen.get('lio/status'),'data',None),'localization_status':getattr(seen.get('lio/localization_status'),'data',None)})
     finally:
         sensor_fault.publish(String(data='clear'));drain(.2)
         if process:stop_localizer()

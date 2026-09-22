@@ -42,6 +42,7 @@ Eigen::Isometry3d transform_parameter(rclcpp::Node &node, const std::string &nam
 class LioNode final : public rclcpp::Node {
 public:
     LioNode() : Node("fast_lio") {
+        mapping_frame_ = declare_parameter<std::string>("mapping_frame", "");
         odom_frame_ = declare_parameter<std::string>("odom_frame", "odom");
         base_frame_ = declare_parameter<std::string>("base_frame", "base_link");
         lidar_frame_ = declare_parameter<std::string>("lidar_frame", "lidar");
@@ -320,6 +321,16 @@ private:
         transform.transform.translation.z = pose.translation().z();
         transform.transform.rotation = odom.pose.pose.orientation;
         tf_->sendTransform(transform);
+        if (!mapping_frame_.empty()) {
+            // Map origin is defined by this estimator instance, not world truth.
+            // Dynamic source-time TF expires if the mapper stops producing data.
+            geometry_msgs::msg::TransformStamped origin;
+            origin.header = odom.header;
+            origin.header.frame_id = mapping_frame_;
+            origin.child_frame_id = odom_frame_;
+            origin.transform.rotation.w = 1.;
+            tf_->sendTransform(origin);
+        }
         Cloud registered;
         pcl::toROSMsg(*core::feats_down_world, registered);
         registered.header = odom.header;
@@ -351,7 +362,7 @@ private:
         } catch (const std::exception &error) { response.message = error.what(); }
     }
 
-    std::string odom_frame_, base_frame_, lidar_frame_, imu_frame_, map_path_, status_;
+    std::string mapping_frame_, odom_frame_, base_frame_, lidar_frame_, imu_frame_, map_path_, status_;
     Eigen::Isometry3d imu_from_base_;
     double max_age_, max_imu_gap_, max_scan_time_, blind_, max_range_, map_voxel_;
     double last_imu_ = 0., last_cloud_ = 0., last_cloud_end_ = 0.;

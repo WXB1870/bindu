@@ -13,7 +13,7 @@
 | 任务与执行 | 已实现模拟任务流程、控制权、在线关节目标、取消与异常处理 |
 | Pi 客户端 | 已实现两种历史 ZMQ 模式、动作映射、时效检查和诊断；已通过模拟服务测试 |
 | 设备适配 | 已实现模拟底盘、关节和灵巧手驱动；真实设备待接入 |
-| 导航 | 已接Nav2仿真；历史FAST-LIO与3D ICP已迁移至ROS 2并通过合成数据验证，真实3D传感器／Isaac三维输入待接入 |
+| 导航 | 已接Nav2仿真；历史FAST-LIO与3D ICP已迁移至ROS 2并通过合成数据验证，Isaac建图/到站/断流恢复分批通过，正常往返受反馈间断阻塞；真实3D传感器待接入 |
 | 感知、规划 | 已有模拟实现，真实算法待接入 |
 | VR 遥操作与 IK | 已接 v3.4 手柄输入、相对控制和连续 IK；单臂模拟末端/状态可视反馈已通过 ROS/Vuer 验证 |
 | 语音交互 | 已预留模块目录 |
@@ -356,9 +356,33 @@ ros2 launch bindu_runtime lio.launch.py namespace:=/bindu_lio_test \
 ros2 service call /bindu_lio_test/lio/save_map std_srvs/srv/Trigger '{}'
 ```
 
-重载定位时先收尾建图实例，给**定位进程所在终端**增加`PYTHONPATH="$PWD/artifacts/lio-python:$PYTHONPATH"`，再用相同入口的`mode:=localization pcd_map:=/绝对路径/map.pcd`并发送`initialpose`。已有同坐标的二维栅格可用`grid_map:=/绝对路径/map.yaml`启动Nav2 map_server；不可把旧地图随意换名使用。随后原`navigation_physics.launch.py`可消费相同命名空间的`navigation/odom`、`navigation/scan`和TF；算法速度仍必须经过目标身份、租约和执行层。此模式独占map→odom和odom→base，不能并行启动AMCL/SLAM或模拟器旧odom发布者。当前尚未完成这个3D链路的Isaac往返验收。
+重载定位时先收尾建图实例，给**定位进程所在终端**增加`PYTHONPATH="$PWD/artifacts/lio-python:$PYTHONPATH"`，再用相同入口的`mode:=localization pcd_map:=/绝对路径/map.pcd`并发送`initialpose`。已有同坐标的二维栅格可用`grid_map:=/绝对路径/map.yaml`启动Nav2 map_server；不可把旧地图随意换名使用。随后原`navigation_physics.launch.py`可消费相同命名空间的`navigation/odom`、`navigation/scan`和TF；算法速度仍必须经过目标身份、租约和执行层。此模式独占map→odom和odom→base，不能并行启动AMCL/SLAM或模拟器旧odom发布者。Isaac三维物理复测入口见下文；各批通过与失败边界单独记录。
 
 验证入口：`tests/validate_lio.py --binary install/bindu_lio/lib/bindu_lio/fast_lio --output artifacts/lio-check`使用时间展开的合成三维房间扫描与IMU，检查动态估计、采集时间、错误字段拒绝、断流及PCD保存；`tests/validate_lio_localization.py --map artifacts/lio-check/map.pcd --output artifacts/lio-localization-check`验证真实ROS点云重载定位、错误匹配和重设初值；`test_lio_localization.py`、`test_lio_ros_adapters.py`覆盖配准和扫描外参。以上不连接真实机器人。
+
+### 三维算法的 Isaac 同场景复测
+
+复用上面的房间、站立收臂模型、`navigation_mapping_sites.json`和Nav2装配，Isaac启动参数改为`--navigation-sensors src/integration/bindu_runtime/config/navigation_lio_isaac.json`。该配置独立描述8个仰角、360个方位、每12个物理步完成一帧的三维射线扫描和IMU；逐束采样使用当时的PhysX姿态，`time`保存实际采集偏移。5mm距离噪声沿用二维基线，IMU另加0.02m/s²和0.002rad/s的高斯噪声，均为未标定的测试假设。
+
+`tools/isaac_lio_sensors.py`只发布原始点云和IMU，不发布机器人位置、地图或TF。IMU通过物理姿态的差分获得，使用与执行器一致的墙上采集时间，并转换重力/角速度到传感器坐标；这不是特定雷达型号的完整误差模型。建图时FAST-LIO按测量时间发布map→odom原点定义；定位时该边仅由ICP发布，避免保留静态恒等变换跨模式冒充有效定位。
+
+新工作区先重建`bindu_lio`和`bindu_runtime`。Open3D运行依赖只在运行时加入`PYTHONPATH`，不要让其附带的setuptools进入colcon构建环境。保持与Isaac相同的ROS域，Nav2按前面的`require_scan:=true`入口启动；第三个终端运行：
+
+```bash
+python3 tests/validate_localization_physics.py --backend lio \
+  --sensor-config src/integration/bindu_runtime/config/navigation_lio_isaac.json \
+  --robot src/integration/bindu_runtime/config/navigation_g1_fixture.json \
+  --sites src/integration/bindu_runtime/config/navigation_mapping_sites.json \
+  --output artifacts/lio-physics-tests
+```
+
+验证器复用二维基线的五个建图航点、初值偏置、往返目标及位置/航向/停稳判据。保存原生PCD，并从带同时间LIO位姿的实际注册点云生成5cm栅格：观测射线标自由空间，高度0.1–0.95m的回波标占据，0.2m点云体素按0.1m半宽保守覆盖；没有读取场景障碍物坐标生成地图。这个切片与体素覆盖是本次fixture的配置，替换传感器外参、体素或场景高度时须同步调整。物理真值只用于传感器合成、设备反馈及独立误差评估。
+
+FAST-LIO断流锁定后要求显式重启，故新测试在确认停车后重启LIO/ICP并重新提供近似初值，再提交回站目标；不会通过扫描恢复自动续跑旧目标。单独复测定位可追加`--phase localization --pcd-map /绝对路径/room.pcd --map /同坐标地图/room.yaml`。原始点云以字段信息和base64数据保存于压缩观测日志；失败批次不覆盖。比较精度时须同时说明二维/三维输入、轮式误差与IMU噪声的差异，不能把差值全部归因于算法。
+
+2026-09-22同场景实测分批完成：FAST-LIO五航点建图到点误差16.7–33.1mm，建图定位RMS15.9mm；PCD与5cm栅格保存、ICP重载初值收敛通过。桌边单程定位RMS25.5mm，到站35.1mm；行进中断雷达触发`NAV_POSE_STALE`，额外移动44.1mm、约0.634秒后满足150ms停稳窗口，显式重启并用最后算法位姿初始化后回站57.5mm。10项LIO模块、2项IMU采样、6项旧导航和3项Fast DDS原生身份检查通过。原始数据、地图、曲线与失败批次保留在`artifacts/lio-physics-2026-09-22/verification.json`索引中。定位单程与建图属于不同阶段，不应混用误差统计。
+
+**完整正常往返仍未通过**：返程准备及后续重测出现约107–320ms的仿真反馈间断，FAST-LIO按50ms IMU间断保护锁定；新增耗时诊断把主要停顿定位到反馈读取／发布阶段，尚未确认更底层原因。启动前连续5秒反馈稳定的门槛不能消除后续故障。隔离CycloneDDS对照可定位，但原生发布者身份校验拒绝合法输入，未绕过校验或切换项目默认中间件。`--navigation-cases fault`可独立复现断流/恢复，`roundtrip`可独立复测正常往返；默认`all`保持完整顺序。这些通过是分批结果，不等于一次端到端全绿，也不证明真实雷达精度或算法必然优于二维基线。
 
 ## Pi 客户端运行入口
 

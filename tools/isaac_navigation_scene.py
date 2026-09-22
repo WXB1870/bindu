@@ -12,7 +12,9 @@ def add_room(world, config):
     for row in config['boxes']:
         box = UsdGeom.Cube.Define(world.stage, '/World/Room/'+row['name'])
         box.CreateSizeAttr(1.)
-        box.AddTranslateOp().Set(Gf.Vec3d(*row['center']))
+        center=list(row['center'])
+        if row.get('variant'):center[2]=-20.  # Fault fixtures start disabled in every sensor mode.
+        box.AddTranslateOp().Set(Gf.Vec3d(*center))
         box.AddScaleOp().Set(Gf.Vec3d(*row['size']))
         box.CreateDisplayColorAttr([Gf.Vec3f(*row.get('color', [.55,.6,.65]))])
         UsdPhysics.CollisionAPI.Apply(box.GetPrim())

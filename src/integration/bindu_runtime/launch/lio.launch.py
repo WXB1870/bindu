@@ -32,7 +32,8 @@ def assemble(context):
     nodes = [Node(
         package='bindu_lio', executable='fast_lio', namespace=namespace, output='screen',
         parameters=[{**parameters['lio'], **frame_parameters, **transforms,
-                     'save_map_path': value('save_map'), 'use_sim_time': use_sim_time}],
+                     'save_map_path': value('save_map'), 'use_sim_time': use_sim_time,
+                     'mapping_frame': frames['map'] if mode == 'mapping' else ''}],
         remappings=remaps)]
     if sensor['input_type'] == 'livox':
         nodes.append(Node(

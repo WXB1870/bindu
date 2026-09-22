@@ -136,6 +136,8 @@ def main():
     try:
         node = LioScan()
         rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
     finally:
         if node is not None:
             node.destroy_node()
