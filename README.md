@@ -219,6 +219,11 @@ export ROS_DOMAIN_ID=125 ROS_LOCALHOST_ONLY=1
 python3 tests/validate_physics.py --output artifacts/g1-physics-check
 # 另一次独立实验：先重启Isaac，再验证逆解与动态指令流
 python3 tests/validate_physics.py --suite dynamics --output artifacts/g1-physics-dynamics
+# 各批次前均须重启Isaac；下面是独立的验证批次
+python3 tests/validate_physics.py --suite boundaries --output artifacts/g1-physics-boundaries
+python3 tests/validate_physics.py --suite faults --output artifacts/g1-physics-faults
+python3 tests/validate_physics.py --suite soak --soak-seconds 600 \
+  --soak-amplitude .45 --soak-period 12 --output artifacts/g1-physics-soak
 ```
 
 验证器自行启动和收尾同命名空间的G1执行/记录节点，检测19轴实测反馈、五组关节跟踪、取消后实际停稳、直行/圆弧及执行进程失联保护；图形仿真继续保留。 `--suite dynamics`复用Pinocchio/CasADi独立IK工作进程，验证左右臂末端目标到达、不可达目标不下发、20Hz连续笛卡尔目标、100Hz关节目标换向、取消/TTL断流保持及旧租约/越限/错序拒绝。IK种子和非活动关节均来自PhysX反馈；末端误差为实测关节FK在`base_link`中的推算，不是独立视觉或PhysX连杆位姿测量。该批使用合成目标，不含现场头显、Vuer接收或Pi服务；原始目标、执行参考和物理反馈分别记录在输出目录。每个仿真实例只接受首个执行器身份，重新运行验证器或替换执行器前须重启图形仿真。若手动运行能力入口，不要同时运行验证器：
@@ -228,6 +233,10 @@ ros2 launch bindu_runtime g1_sim.launch.py namespace:=/bindu_g1_physics \
   profile:="$PWD/artifacts/g1-physics-model/g1_physics_sim.json" \
   device_backend:=external_simulation navigation_enabled:=false
 ```
+
+`boundaries`增加双臂近奇异小步、突变拒绝、工作空间外扩扫描，以及独立PhysX连杆位姿与关节FK的同源时间对照。`simulation/link_poses`为world帧的PoseArray，固定顺序为base_link、左法兰、右法兰；由物理张量直接测量。`faults`通过隔离ROS中继注入反馈丢失、旧反馈重复、命令丢失/延迟及实例身份变化，检查看门狗保持、旧租约拒绝和故障锁定；身份变化为消息注入，不等于真实进程重启。`soak`默认100Hz运行10分钟，肩部±0.45rad、肘部±0.27rad、周期12秒；逐帧输入、参考和反馈以压缩JSONL保存，另留接纳计数、时间对齐跟踪误差与执行器内存趋势，失败批次也保留。
+
+2026-09-22扩展验证：双臂IK边界与独立连杆位姿8项通过，438个同时间样本最大位置/姿态差8.40e-7m/8.96e-7rad；当前IK位置容差15mm，外扩10mm仍可接纳，30/80mm拒绝。大幅度100Hz流连续600秒、60,000/60,000接纳，实测肩部总摆幅0.9003rad、肘部0.5400rad，跟踪RMS0.00195rad、最大0.01021rad，执行器预热后RSS增长0.004MiB。早期长流约66秒失败，诊断发现第2代GC占用235.67ms并阻塞物理推进；就绪前回收/冻结初始化对象后通过完整10分钟，运行期新对象仍正常GC、退出解冻，原超时阈值不变。此结果不能替代30分钟及更长稳定性验证。故障组6项、117项模块及旧ROS取消/反馈丢失/动作块3项通过；同时修复历史停止失败记录污染恢复后新取消/释放服务响应的问题，受理停止仍不等于实测停稳。
 
 模型生成在忽略入库的`artifacts/g1-physics-model`：恢复同一上游版本的本体视觉/碰撞资产，并保留Apache-2.0许可与来源指纹。该Isaac RC的GLB导入曾只生成空节点，工具改用匹配的上游USD视觉网格；同时按URDF重建关节并校验两侧关节坐标。两只驱动轮及低摩擦支撑为合成几何，尺寸、惯性、增益、初始姿态和120Hz物理步长集中在[physics.json](src/hardware/bindu_description/physics.json)，尚未标定。无质量固定坐标框架使用微小数值质量；自碰撞关闭，未验证手部、抓取接触、相机图像、SLAM或Nav2避障。完整外观和物理设备闭环不等于真机模型验收。 本机RC完整扩展卸载曾崩溃，启动器采用Isaac默认快速退出，先完成Bindu日志和ROS清理；异常路径保留非零返回码。物理步长是积分配置，不代表已达到实时频率。
 

@@ -214,11 +214,24 @@ def main():
     parser.add_argument('--namespace',default='/bindu_g1_physics')
     parser.add_argument('--model',type=Path,default=Path('artifacts/g1-physics-model'))
     parser.add_argument('--output',type=Path,required=True)
-    parser.add_argument('--suite',choices=('basic','dynamics'),default='basic')
+    parser.add_argument('--suite',choices=('basic','dynamics','soak','boundaries','faults'),default='basic')
+    parser.add_argument('--soak-seconds',type=float,default=600.)
+    parser.add_argument('--soak-amplitude',type=float,default=.45,help='Shoulder oscillation amplitude in rad; elbow uses 60 percent')
+    parser.add_argument('--soak-period',type=float,default=12.,help='Oscillation period in seconds')
     args=parser.parse_args();args.output.mkdir(parents=True,exist_ok=False)
     profile=Profile.load(args.model/'g1_physics_sim.json')
     rclpy.init();node=rclpy.create_node('physics_validator');seen={};samples=[];results=[];process=None
+    from collections import deque
+    import gzip
+    raw=gzip.open(args.output/'measurements.jsonl.gz','wt') if args.suite=='soak' else None
+    if raw:samples=deque(maxlen=1000)
     qos=QoSProfile(depth=1,reliability=ReliabilityPolicy.BEST_EFFORT)
+    physical_namespace=args.namespace
+    relay=None
+    if args.suite=='faults':
+        from physics_faults import FaultRelay
+        args.namespace=physical_namespace+'/fault_executor'
+        relay=FaultRelay(node,physical_namespace,args.namespace,args.output)
     def feedback(msg):
         seen['physics']=msg
         samples.append({'stamp':msg.stamp.sec+msg.stamp.nanosec/1e9,'sim_time':msg.simulation_time,
@@ -226,7 +239,8 @@ def main():
             'xy':[msg.base_pose.position.x,msg.base_pose.position.y],
             'z':msg.base_pose.position.z,'v':msg.base_velocity.linear.x,'w':msg.base_velocity.angular.z,
             'code':msg.code})
-    node.create_subscription(SimulationFeedback,args.namespace+'/simulation/feedback',feedback,qos)
+        if raw:raw.write(json.dumps(samples[-1])+'\n')
+    node.create_subscription(SimulationFeedback,physical_namespace+'/simulation/feedback',feedback,qos)
     node.create_subscription(ExecutionState,args.namespace+'/execution/state',lambda m:seen.update(state=m),10)
     lease_client=node.create_client(Lease,args.namespace+'/execution/lease')
     submit=node.create_client(SubmitMotion,args.namespace+'/execution/submit')
@@ -267,6 +281,15 @@ def main():
         assert lease_client.wait_for_service(timeout_sec=15.)
         until(node,lambda:'state' in seen and seen['state'].feedback_stamp.sec>0)
         results.append({'case':'physics_feedback_19_axes','passed':len(seen['physics'].joints.name)==19})
+        if args.suite == 'faults':
+            from physics_faults import fault_checks
+            fault_checks(node,profile,seen,results,command,send,release,drain,submit,control,current,relay)
+        if args.suite == 'boundaries':
+            from physics_boundaries import boundary_checks
+            boundary_checks(node,args,profile,seen,results,command,send,finished,release,drain)
+        if args.suite == 'soak':
+            from physics_stress import soak_checks
+            soak_checks(node,args,profile,seen,results,command,release,drain,control,process)
         if args.suite == 'dynamics':
             dynamic_checks(node, args, profile, seen, samples, results, command, send, finished, release, drain, submit, control)
         if args.suite == 'basic':
@@ -325,10 +348,12 @@ def main():
     finally:
         current[0]=None
         if process:terminate(process)
+        if relay:relay.close()
         log.close();node.destroy_node()
         if rclpy.ok():rclpy.shutdown()
         (args.output/'results.json').write_text(json.dumps(results,indent=2)+'\n')
-        (args.output/'measurements.json').write_text(json.dumps(samples)+'\n')
+        if raw:raw.close()
+        else:(args.output/'measurements.json').write_text(json.dumps(samples)+'\n')
     print(json.dumps(results,indent=2))
     raise SystemExit(not results or not all(r['passed'] for r in results))
 

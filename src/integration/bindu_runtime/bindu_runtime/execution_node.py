@@ -35,7 +35,7 @@ class ExecutionNode(RuntimeNode):
             else:
                 raise Rejected('INVALID_OPERATION')
             reply.ok, reply.code = True, 'OK'
-            if request.operation == 'release' and self.robot_io.stop_failures:
+            if request.operation == 'release' and not self.engine.stopping and self.robot_io.stop_failures:
                 reply.ok, reply.code = False, 'STOP_REQUEST_FAILED'
         except Rejected as exc:
             reply.ok, reply.code = False, str(exc)
@@ -88,7 +88,10 @@ class ExecutionNode(RuntimeNode):
             if request.operation not in ('stop', 'hold'):
                 raise Rejected('INVALID_OPERATION')
             self.engine.halt(self.now())
-            reply.ok = not bool(self.robot_io.stop_failures)
+            # A newly accepted smooth stop has not called the device stop yet.
+            # Previous failed stop attempts must not reject this new request;
+            # eventual success/failure is still reported by execution state.
+            reply.ok = bool(self.engine.stopping) or not bool(self.robot_io.stop_failures)
             reply.code = 'STOP_REQUESTED' if reply.ok else 'STOP_REQUEST_FAILED'
         except Rejected as exc:
             reply.ok, reply.code = False, str(exc)

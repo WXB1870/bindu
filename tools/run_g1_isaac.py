@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Run the provisional G1 PhysX device backend in Isaac Sim 6.0 (GUI by default)."""
 import argparse
+import gc
 import hashlib
 import json
 import math
@@ -221,6 +222,7 @@ def main():
             from bindu_contracts.profile import Profile
             from bindu_hardware.drivers.physics import PhysicsCommandGate
             from bindu_interfaces.msg import SimulationCommand, SimulationFeedback
+            from geometry_msgs.msg import Pose, PoseArray
             from builtin_interfaces.msg import Time
             profile = Profile.load(args.model/'g1_physics_sim.json')
             joint_names = [n for group in profile.groups.values() for n in group]
@@ -247,7 +249,26 @@ def main():
                     state['rejected'] += 1; state['code'] = str(exc)
             subscription = node.create_subscription(SimulationCommand, 'simulation/command', receive, 8)
             publisher = node.create_publisher(SimulationFeedback, 'simulation/feedback', QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT))
+            # Independent PhysX link transforms, not FK reconstructed from q.
+            # PoseArray order is base, left flange, right flange, in world.
+            import omni.physics.tensors as tensors
+            from isaacsim.core.experimental.utils import stage as stage_utils
+            diagnostic_sim = tensors.create_simulation_view('numpy', stage_id=stage_utils.get_stage_id(world.stage))
+            diagnostic_sim.set_subspace_roots('/')
+            diagnostic_body = diagnostic_sim.create_articulation_view(body.prim_path)
+            link_order = ['base_link','left_arm_end_effector_mount_link','right_arm_end_effector_mount_link']
+            link_names = list(diagnostic_body.get_metatype(0).link_names)
+            link_indices = [link_names.index(n) for n in link_order]
+            pose_publisher = node.create_publisher(PoseArray, 'simulation/link_poses', QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT))
+        # Kit's long-lived startup heap took 236 ms to scan in generation 2,
+        # interrupting real feedback beyond the executor's 200 ms deadline.
+        # Collect before accepting control, then exclude that stable heap from
+        # cyclic scans. Runtime allocations still use normal automatic GC.
+        gc.collect()
+        gc.freeze()
         metadata = {'simulator_id': simulator_id, 'dof_names': names, 'max_joint_frame_error': frame_error,
+                    'gc_frozen_startup_objects': gc.get_freeze_count(),
+                    'link_pose_order': link_order if node else [],
                     'gui': not args.headless, 'model': str(args.model), 'simulation_only': True}
         (args.output/'scene.json').write_text(json.dumps(metadata, indent=2)+'\n')
         world.stage.GetRootLayer().Export(str((args.output/'scene.usda').resolve()))
@@ -255,9 +276,21 @@ def main():
         from omni.kit.viewport.utility import get_active_viewport, capture_viewport_to_file
         capture_viewport_to_file(get_active_viewport(), str((args.output/'scene.png').resolve()))
         print('BINDU_G1_PHYSICS_READY', json.dumps(metadata), flush=True)
+        collection_started = {}
+        def collection_timing(phase, info):
+            generation = info['generation']
+            if phase == 'start':
+                collection_started[generation] = time.monotonic()
+            else:
+                elapsed = time.monotonic()-collection_started.pop(generation, time.monotonic())
+                if elapsed > .05:
+                    print('SLOW_GARBAGE_COLLECTION', json.dumps({'wall_time':time.time(),
+                        'duration_ms':elapsed*1000, **info}), flush=True)
+        gc.callbacks.append(collection_timing)
         started = time.monotonic(); step = 0; last_physics_time = world.current_time
         while not quitting[0] and app.is_running() and (args.duration <= 0 or time.monotonic()-started < args.duration):
-            deadline = time.monotonic()+cfg['physics_dt']
+            loop_started = time.monotonic()
+            deadline = loop_started+cfg['physics_dt']
             if world.current_time < last_physics_time:
                 raise RuntimeError('SIM_TIMELINE_RESET_REQUIRES_RESTART')
             if node:
@@ -265,8 +298,10 @@ def main():
                     rclpy.spin_once(node, timeout_sec=0.)
                 for group in gate.expired(now()):
                     hold(group); state['expired'] += 1; state['code'] = 'SIM_COMMAND_TIMEOUT'
+            after_receive = time.monotonic()
             previous_time = world.current_time
             world.step(render=step % 4 == 0)
+            after_step = time.monotonic()
             step += 1
             last_physics_time = world.current_time
             if node and world.current_time > previous_time:
@@ -292,13 +327,35 @@ def main():
                 msg.base_velocity.linear.y = float(-math.sin(yaw)*velocity[0]+math.cos(yaw)*velocity[1])
                 msg.base_velocity.angular.z = float(body.get_angular_velocity()[2])
                 publisher.publish(msg)
+                if step % 6 == 0:
+                    link_poses = PoseArray()
+                    link_poses.header.stamp = msg.stamp; link_poses.header.frame_id = 'world'
+                    transforms = diagnostic_body.get_link_transforms()[0]
+                    for index in link_indices:
+                        values = transforms[index]
+                        pose = Pose()
+                        pose.position.x,pose.position.y,pose.position.z = map(float,values[:3])
+                        pose.orientation.x,pose.orientation.y,pose.orientation.z,pose.orientation.w = map(float,values[3:])
+                        link_poses.poses.append(pose)
+                    pose_publisher.publish(link_poses)
+            if step % 120 == 0:
+                (args.output/'heartbeat.json').write_text(json.dumps({'wall_time':time.time(),
+                    'simulation_time':world.current_time,'playing':world.is_playing(),'steps':step,
+                    'received':state['received'],'rejected':state['rejected'],'code':state['code']})+'\n')
+            if time.monotonic()-loop_started>.05:
+                print('SLOW_SIMULATION_STEP',json.dumps({'wall_time':time.time(),'step':step,
+                    'rendered':(step-1)%4==0,
+                    'receive_ms':(after_receive-loop_started)*1000,'physics_render_ms':(after_step-after_receive)*1000,
+                    'feedback_ms':(time.monotonic()-after_step)*1000,'playing':world.is_playing()}),flush=True)
             time.sleep(max(0., deadline-time.monotonic()))
         (args.output/'run.json').write_text(json.dumps({**state, 'steps': step, 'wall_seconds': time.monotonic()-started}, indent=2)+'\n')
+        gc.callbacks.remove(collection_timing)
     except BaseException:
         import traceback
         traceback.print_exc()
         failed = True
     finally:
+        gc.unfreeze()
         if node:
             node.destroy_node()
             if rclpy.ok(): rclpy.shutdown()
