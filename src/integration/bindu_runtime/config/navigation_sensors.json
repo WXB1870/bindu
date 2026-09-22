@@ -1,0 +1,7 @@
+{
+  "mode": "wheel",
+  "wheel_radius_scale": 1.02,
+  "wheel_separation_scale": 1.01,
+  "range_noise_std": 0.005,
+  "random_seed": 7
+}

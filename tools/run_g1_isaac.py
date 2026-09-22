@@ -176,6 +176,7 @@ def main():
     parser.add_argument('--namespace', default='/bindu_g1_physics')
     parser.add_argument('--navigation-scene', type=Path, help='Optional robot-independent room JSON')
     parser.add_argument('--navigation-robot', type=Path, help='Required with scene: frames, footprint and laser extrinsics')
+    parser.add_argument('--navigation-sensors', type=Path, help='Optional wheel odometry/noise configuration; external SLAM/AMCL supplies map and map->odom')
     parser.add_argument('--headless', action='store_true')
     parser.add_argument('--duration', type=float, default=0., help='Wall seconds after warmup, 0 until window closes')
     parser.add_argument('--output', type=Path, default=ROOT/'artifacts/g1-physics-run')
@@ -200,6 +201,7 @@ def main():
         from isaacsim.core.utils.types import ArticulationAction
         room = json.loads(args.navigation_scene.read_text()) if args.navigation_scene else None
         nav_robot = json.loads(args.navigation_robot.read_text()) if args.navigation_robot else None
+        sensor_cfg = json.loads(args.navigation_sensors.read_text()) if args.navigation_sensors else {'mode':'ideal'}
         if room and not nav_robot: raise ValueError('NAVIGATION_ROBOT_CONFIG_REQUIRED')
         world, body, frame_error = build_scene(args.model, cfg, room)
         sensors = None
@@ -218,6 +220,12 @@ def main():
         joint_names = [n for n in names if not n.startswith('sim_')]
         indices = {n: names.index(n) for n in names}
         wheel_indices = [indices['sim_left_wheel_joint'], indices['sim_right_wheel_joint']]
+        wheel_odometry = None
+        if sensor_cfg['mode']=='wheel':
+            from bindu_hardware.robot_io.odometry import DifferentialOdometry
+            wheel_odometry = DifferentialOdometry(cfg['wheel_radius']*sensor_cfg['wheel_radius_scale'],
+                cfg['wheel_separation']*sensor_cfg['wheel_separation_scale'])
+            wheel_odometry.update(*map(float,body.get_joint_positions()[wheel_indices]),world.current_time)
         if len(joint_names) != 19 or len(names) != 21:
             raise RuntimeError('PHYSICS_DOF_LAYOUT_MISMATCH')
         simulator_id = uuid.uuid4().hex
@@ -250,7 +258,7 @@ def main():
                 from isaac_navigation_scene import NavigationSensors
                 from std_msgs.msg import String
                 from isaacsim.core.utils.viewports import set_camera_view
-                sensors = NavigationSensors(node, world, room, nav_robot, '/G1')
+                sensors = NavigationSensors(node, world, room, nav_robot, '/G1', sensor_cfg)
                 sensors.change(String(data='clear'))
                 set_camera_view(eye=[6.,-7.,6.], target=[1.5,0.,.3])
             def now(): return node.get_clock().now().nanoseconds/1e9
@@ -294,7 +302,7 @@ def main():
                     'gc_frozen_startup_objects': gc.get_freeze_count(),
                     'link_pose_order': link_order if node else [],
                     'navigation_scene': room, 'navigation_robot': nav_robot,
-                    'odometry': 'ideal PhysX world pose' if room else None,
+                    'odometry': sensor_cfg if room else None,
                     'gui': not args.headless, 'model': str(args.model), 'simulation_only': True}
         (args.output/'scene.json').write_text(json.dumps(metadata, indent=2)+'\n')
         world.stage.GetRootLayer().Export(str((args.output/'scene.usda').resolve()))
@@ -367,7 +375,8 @@ def main():
                 msg.base_velocity.angular.z = float(angular[2])
                 publisher.publish(msg)
                 if sensors and step % 4 == 0:
-                    sensors.publish(msg)
+                    odometry = wheel_odometry.update(*map(float,q[wheel_indices]),world.current_time) if wheel_odometry else None
+                    sensors.publish(msg, odometry)
                 if step % 6 == 0:
                     link_poses = PoseArray()
                     link_poses.header.stamp = msg.stamp; link_poses.header.frame_id = 'world'

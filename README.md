@@ -13,7 +13,7 @@
 | 任务与执行 | 已实现模拟任务流程、控制权、在线关节目标、取消与异常处理 |
 | Pi 客户端 | 已实现两种历史 ZMQ 模式、动作映射、时效检查和诊断；已通过模拟服务测试 |
 | 设备适配 | 已实现模拟底盘、关节和灵巧手驱动；真实设备待接入 |
-| 导航 | 已接真实Nav2与Isaac房间物理仿真，分批通过绕障/改道/停止故障检查；理想定位，AMCL/建图未接入 |
+| 导航 | 已接真实Nav2、SLAM Toolbox建图与AMCL地图定位；Isaac中验证地图保存重载、导航和断流停车，未接真机 |
 | 感知、规划 | 已有模拟实现，真实算法待接入 |
 | VR 遥操作与 IK | 已接 v3.4 手柄输入、相对控制和连续 IK；单臂模拟末端/状态可视反馈已通过 ROS/Vuer 验证 |
 | 语音交互 | 已预留模块目录 |
@@ -136,7 +136,7 @@ python3 tests/validate_navigation.py --output artifacts/navigation-check
 - `navigation_backend` 指定后端命名空间，接口为 `navigate_to_pose`、`velocity`、`pose`。速度使用 [`NavigationVelocity`](src/shared/bindu_interfaces/msg/NavigationVelocity.msg)，必须在命令产生时附实际Action目标UUID、来源进程实例、单调序号、源时间及机体frame。定位使用 [`NavigationPose`](src/shared/bindu_interfaces/msg/NavigationPose.msg)，保留测量时间、地图版本与全局frame；后续定位/TF适配不得用接收时间刷新旧数据。
 - **未修改的 Nav2 `/cmd_vel` 不能直接接入本批入口。** 它缺少目标身份，不能由普通转发节点在接收时补当前目标ID。下文的独立物理导航入口通过每目标独立进程、固定发布者GID和一次性UUID绑定完成该桥接；本节协议替身测试仍不包含真实规划。
 - 到点需要后端Action成功、全局位姿误差达标、底盘反馈持续停稳；取消先关速度入口，再停止执行并取消后端。停稳或取消无法确认时明确失败。输入使用best-effort有界队列，Action/执行服务保留可靠通信；丢失输入触发短期有效期和门控超时。
-- 底盘独立速度/加速度参数及停止语义见[执行契约](动作执行契约.md#2-输入模式必须显式选择)。真实底盘、雷达、地图、全局定位与建图尚未接入；动作块适配和手部扩展继续暂缓。
+- 底盘独立速度/加速度参数及停止语义见[执行契约](动作执行契约.md#2-输入模式必须显式选择)。真机底盘/雷达尚未接入；Isaac中的真实导航、建图和定位见下文独立入口。动作块适配和手部扩展继续暂缓。
 
 ## 临时 G1 全身模拟入口
 
@@ -242,7 +242,7 @@ ros2 launch bindu_runtime g1_sim.launch.py namespace:=/bindu_g1_physics \
 
 2026-09-22扩展验证：双臂IK边界与独立连杆位姿8项通过，438个同时间样本最大位置/姿态差8.40e-7m/8.96e-7rad；当前IK位置容差15mm，外扩10mm仍可接纳，30/80mm拒绝。大幅度100Hz流连续600秒、60,000/60,000接纳，实测肩部总摆幅0.9003rad、肘部0.5400rad，跟踪RMS0.00195rad、最大0.01021rad，执行器预热后RSS增长0.004MiB。早期长流约66秒失败，诊断发现第2代GC占用235.67ms并阻塞物理推进；就绪前回收/冻结初始化对象后通过完整10分钟，运行期新对象仍正常GC、退出解冻，原超时阈值不变。此结果不能替代30分钟及更长稳定性验证。故障组6项、117项模块及旧ROS取消/反馈丢失/动作块3项通过；同时修复历史停止失败记录污染恢复后新取消/释放服务响应的问题，受理停止仍不等于实测停稳。
 
-模型生成在忽略入库的`artifacts/g1-physics-model`：恢复同一上游版本的本体视觉/碰撞资产，并保留Apache-2.0许可与来源指纹。该Isaac RC的GLB导入曾只生成空节点，工具改用匹配的上游USD视觉网格；同时按URDF重建关节并校验两侧关节坐标。两只驱动轮及低摩擦支撑为合成几何，尺寸、惯性、增益、初始姿态和120Hz物理步长集中在[physics.json](src/hardware/bindu_description/physics.json)，尚未标定。无质量固定坐标框架使用微小数值质量；自碰撞关闭，未验证手部、抓取接触、相机图像、SLAM或Nav2避障。完整外观和物理设备闭环不等于真机模型验收。 本机RC完整扩展卸载曾崩溃，启动器采用Isaac默认快速退出，先完成Bindu日志和ROS清理；异常路径保留非零返回码。物理步长是积分配置，不代表已达到实时频率。
+模型生成在忽略入库的`artifacts/g1-physics-model`：恢复同一上游版本的本体视觉/碰撞资产，并保留Apache-2.0许可与来源指纹。该Isaac RC的GLB导入曾只生成空节点，工具改用匹配的上游USD视觉网格；同时按URDF重建关节并校验两侧关节坐标。两只驱动轮及低摩擦支撑为合成几何，尺寸、惯性、增益、初始姿态和120Hz物理步长集中在[physics.json](src/hardware/bindu_description/physics.json)，尚未标定。无质量固定坐标框架使用微小数值质量；自碰撞关闭，该基础物理批次未验证手部、抓取接触、相机图像；导航和建图另见下文专项。完整外观和物理设备闭环不等于真机模型验收。 本机RC完整扩展卸载曾崩溃，启动器采用Isaac默认快速退出，先完成Bindu日志和ROS清理；异常路径保留非零返回码。物理步长是积分配置，不代表已达到实时频率。
 
 本批物理验证：117项模块与10项PhysX检查通过；五组关节跟踪最大目标误差0.00050rad，直行0.0837m、圆弧0.0696m/0.1215rad，执行器冻结后实测线速度0.000142m/s。相关运动学回归G1全身9、VR4、Pi14通过；旧ROS首轮15/16、导航17/18，其启动拒绝场景单独复测各通过，启动偶发性尚未解决。以上不代表VR/Pi/导航已经完成物理环境验收。
 
@@ -252,7 +252,7 @@ ros2 launch bindu_runtime g1_sim.launch.py namespace:=/bindu_g1_physics \
 
 `navigation_physics.launch.py`独立装配现有任务、租约执行与记录节点；真实Nav2 1.3.13使用NavFn、Regulated Pure Pursuit与路径失效后重规划的行为树。它不导入G1模型或关节名。本体参数集中在[`navigation_g1_fixture.json`](src/integration/bindu_runtime/config/navigation_g1_fixture.json)，房间和站点分别来自`navigation_room.json`、`navigation_room_sites.json`。替换机器人需提供匹配的URDF/物理设备适配、执行profile、关节姿态、碰撞轮廓、坐标系、雷达外参与速度限制；不能只换网格后沿用旧轮廓和标定。
 
-导航前临时G1以站立、双臂收拢姿态初始化，并检查姿态位置/速度反馈；移动期间持续检查姿态。这里尚未验证从任意姿态起身收臂的动作，也不包含手指驱动或自碰撞检查。房间为可复现的USD几何墙体、桌子与障碍物，机器人复用固定版本开源资产，无需下载额外场景。360线水平雷达直接查询PhysX碰撞；里程计使用理想物理世界位姿，`map→odom`为恒等变换，**没有AMCL、SLAM、定位噪声或漂移**。
+导航前临时G1以站立、双臂收拢姿态初始化，并检查姿态位置/速度反馈；移动期间持续检查姿态。这里尚未验证从任意姿态起身收臂的动作，也不包含手指驱动或自碰撞检查。房间为可复现的USD几何墙体、桌子与障碍物，机器人复用固定版本开源资产，无需下载额外场景。360线水平雷达直接查询PhysX碰撞。本节默认基线使用理想物理里程计、预制地图和恒等`map→odom`；下节的轮式里程计模式关闭这两个预制输出，接入实际建图/定位算法。
 
 在Ubuntu/Jazzy已安装`ros-jazzy-navigation2`和`ros-jazzy-nav2-regulated-pure-pursuit-controller`、完成工作区重建及物理资产准备后：
 
@@ -287,6 +287,43 @@ python3 tests/validate_nav2_physics.py --output artifacts/navigation-room-tests 
 修复了任务停稳判据未读取profile容差、PhysX休眠保留旧底盘速度、生命周期查询丢响应后无限等待的问题；休眠反馈依据PhysX原生状态置零，原始速度保留，不放宽反馈期限。另行复测旧基础物理入口时，GUI/无头均在低位腿关节目标处因速度未停稳超时，**本轮基础物理10项未全部通过，原因未定位**。站立导航成功不能覆盖该姿态下的失败；自碰撞、任意姿态起身、真实传感器/定位仍未验收。
 
 本机依赖隔离解包在`artifacts/nav2-physics-2026-09-22/deps`，未修改系统Nav2安装；机器专用环境见该批`env.sh`，不能直接复制到新机器。原始扫描、物理反馈、动作与命令、路径、会话配置及失败日志均保留在该批目录；数据忽略入库，尚未远端备份。
+
+### Isaac 内的实际建图与地图定位
+
+[`localization.launch.py`](src/integration/bindu_runtime/launch/localization.launch.py)分别装配 **SLAM Toolbox 2.8.5**（在线异步二维建图）和 **Nav2 AMCL 1.3.13**（重载栅格地图后的粒子滤波定位）。建图阶段由SLAM发布地图和`map→odom`；定位阶段由map_server发布已保存地图、AMCL发布`map→odom`。两种模式应互斥运行。算法参数在[`navigation_localization.yaml`](src/integration/bindu_runtime/config/navigation_localization.yaml)，不包含G1关节或模型路径。
+
+Isaac的[`navigation_sensors.json`](src/integration/bindu_runtime/config/navigation_sensors.json)启用实测轮子转角积分，带人为设置的2%轮径、1%轮距误差和5mm标准差的射线距离噪声；这些是测试扰动，尚未按实机标定。此模式不发布预制地图或恒等`map→odom`。物理世界位姿只用于生成传感器射线、独立评估和执行层运动反馈，不提供给SLAM/AMCL作定位输入。轮转角每次采样必须变化小于π；当前实现处理±π回绕。沿用执行层墙上时钟，算法`use_sim_time=false`，不混用`/clock`。
+
+在上一节环境基础上添加`ros-jazzy-slam-toolbox`、`ros-jazzy-nav2-amcl`和`ros-jazzy-nav2-map-server`，重建`bindu_hardware`与`bindu_runtime`。三个终端加载相同ROS、工作区和域环境，依次执行：
+
+```bash
+# 终端1：全新GUI场景，启用轮式里程计和噪声。
+tools/run_g1_isaac.sh --namespace /bindu_navigation \
+  --navigation-scene src/integration/bindu_runtime/config/navigation_room.json \
+  --navigation-robot src/integration/bindu_runtime/config/navigation_g1_fixture.json \
+  --navigation-sensors src/integration/bindu_runtime/config/navigation_sensors.json \
+  --output artifacts/slam-scene
+# 终端2：物理场景READY后，启用扫描新鲜度门控。
+ros2 launch bindu_runtime navigation_physics.launch.py namespace:=/bindu_navigation \
+  profile:="$PWD/artifacts/g1-physics-model/g1_physics_sim.json" \
+  navigation_robot:="$PWD/src/integration/bindu_runtime/config/navigation_g1_fixture.json" \
+  navigation_config:="$PWD/src/integration/bindu_runtime/config/navigation_mapping_sites.json" \
+  identity_bridge:="$PWD/build/nav2-identity/nav2_velocity_identity" \
+  output:="$PWD/artifacts/slam-run" run_id:=slam_room require_scan:=true
+# 终端3：自行启动SLAM，采集扫描/保存地图，再切换AMCL和执行导航检查。
+python3 tests/validate_localization_physics.py \
+  --robot src/integration/bindu_runtime/config/navigation_g1_fixture.json \
+  --sites src/integration/bindu_runtime/config/navigation_mapping_sites.json \
+  --output artifacts/slam-tests
+```
+
+验证器通过公共执行契约发送受控合成遥操作路线，不是自主探索；用SLAM估计位姿引导绕房间一周，保存`room.yaml/room.pgm`与`room_graph.posegraph/.data`。随后从人为偏置的初始位姿启动AMCL，检查往返、前进时雷达断流停车及恢复。`require_scan:=true`防止扫描消失后仅凭轮式TF继续认为定位有效；它停止更新公共定位消息，再由既有定位超时和停止流程收尾，不能把单项超时配置当作总停车延迟。断流可能先触发Nav2的TF_ERROR（102），或先触发公共层NAV_POSE_STALE；验证器只接纳这两种定位失败，另检查断流后的位移与物理停稳。保存地图显式等待最多10秒，算法退出先执行生命周期关闭。
+
+如需单独运行算法，使用`ros2 launch bindu_runtime localization.launch.py namespace:=/bindu_navigation navigation_robot:=绝对配置路径 mode:=mapping`；地图定位改为`mode:=localization map:=已保存地图的绝对YAML路径`并提供初始位姿。建图可用`pose_graph:=已保存图的绝对前缀`恢复；当前配置假定机器人位于原始建图起点，尚未验证任意位置恢复或绑架后全局重定位。不要与完整验证器同时启动第二套算法。
+
+2026-09-22分阶段验证：五个建图航点、位姿图恢复/栅格地图保存、AMCL重载、正常往返及前进断流停车通过。建图定位RMS约31.8mm，AMCL正常往返定位RMS约36.7mm（与独立物理真值同原点、50ms内最近采样比较，未作刚体拟合）；桌边/返回实际到站误差100.6/51.4mm。断流注入时线速度0.062m/s，额外移动75.8mm，约0.622秒后满足150ms窗口的停稳判据。**断流恢复后的近距离回站失败，返回NAV_ACTION_FAILED:105并停稳；完整验证不是全绿。** 123项模块和6项旧导航回归通过。结果、失败批次及数据指纹索引为该批`verification.json`，地图和曲线为`restored-verified-tests/room.yaml`、`mapping_localization.png`。
+
+本机依赖在`artifacts/slam-physics-2026-09-22/deps`隔离解包，环境入口为该批`env.sh`；未修改系统安装，不适用于新机器直接复制。地图、压缩原始扫描/位姿、轨迹、成功与失败批次保存在同目录。传感器为固定高度水平二维射线，不能替代3D雷达/IMU、真实传感器标定或完整碰撞验收；AMCL与Nav2到站成功也不代表精细抓取对位达标。旧低位腿关节停稳回归失败仍待排查。本机曾出现DDS生命周期服务响应超时，导致自动启动失败且需重启算法；失败日志保留，未宣称启动稳定性已解决。验证器等待AMCL处理首帧扫描后才采集收敛结果。
 
 ## Pi 客户端运行入口
 

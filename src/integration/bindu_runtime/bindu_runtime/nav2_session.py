@@ -208,8 +208,14 @@ class Nav2SessionNode(Node):
         self.identity_bridge=Path(self.get_parameter('identity_bridge').value)
         if not self.identity_bridge.is_file():raise ValueError('BUILD_NAV2_IDENTITY_BRIDGE_FIRST')
         self.output=Path(self.get_parameter('output').value);self.output.mkdir(parents=True,exist_ok=True)
+        self.declare_parameter('require_scan',False)
+        self.require_scan=self.get_parameter('require_scan').value;self.scan_stamp=None
         self.group=ReentrantCallbackGroup();self.posture=None;self.busy=False;self.session=None;self.reapers=[];self.prepare_after=0.
         self.create_subscription(ExecutionState,'execution/state',lambda m:setattr(self,'posture',m),1,callback_group=self.group)
+        if self.require_scan:
+            from sensor_msgs.msg import LaserScan
+            self.create_subscription(LaserScan,'navigation/scan',lambda m:setattr(self,'scan_stamp',seconds(m.header.stamp)),
+                QoSProfile(depth=1,reliability=ReliabilityPolicy.BEST_EFFORT),callback_group=self.group)
         self.velocity=self.create_publisher(NavigationVelocity,'navigation/backend/velocity',QoSProfile(depth=8,reliability=ReliabilityPolicy.BEST_EFFORT))
         self.pose=self.create_publisher(NavigationPose,'navigation/backend/pose',QoSProfile(depth=1,reliability=ReliabilityPolicy.BEST_EFFORT))
         from std_msgs.msg import Bool
@@ -242,13 +248,18 @@ class Nav2SessionNode(Node):
 
     def now(self):return self.get_clock().now().nanoseconds/1e9
 
+    def scan_fresh(self):
+        return not self.require_scan or (self.scan_stamp is not None and 0<=self.now()-self.scan_stamp<self.config.pose_timeout)
+
     def pose_fresh(self):
+        if not self.scan_fresh():return False
         try:
             t=self.buffer.lookup_transform(self.config.frame,self.config.base_frame,rclpy.time.Time())
             return 0<=self.now()-seconds(t.header.stamp)<self.config.pose_timeout
         except Exception:return False
 
     def publish_pose(self):
+        if not self.scan_fresh():return
         try:
             t=self.buffer.lookup_transform(self.config.frame,self.config.base_frame,rclpy.time.Time())
             if not 0<=self.now()-seconds(t.header.stamp)<self.config.pose_timeout:return
