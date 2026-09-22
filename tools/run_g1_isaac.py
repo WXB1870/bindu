@@ -16,7 +16,7 @@ import xml.etree.ElementTree as ET
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def build_scene(model, cfg):
+def build_scene(model, cfg, room=None):
     """Keep imported meshes/inertia; author joints explicitly from the pinned URDF.
 
     The local 6.0 RC importer produced split articulation roots and world-parent
@@ -40,6 +40,9 @@ def build_scene(model, cfg):
         import_record.write_text(json.dumps({'urdf_sha256': model_hash})+'\n')
     world = World(stage_units_in_meters=1., physics_dt=cfg['physics_dt'], rendering_dt=cfg['physics_dt'])
     world.scene.add_default_ground_plane()
+    if room:
+        from isaac_navigation_scene import add_room
+        add_room(world, room)
     stage = world.stage
     UsdLux.DomeLight.Define(stage, '/World/Light').CreateIntensityAttr(1000.)
     robot = stage.DefinePrim('/G1', 'Xform')
@@ -171,6 +174,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--model', type=Path, default=ROOT/'artifacts/g1-physics-model')
     parser.add_argument('--namespace', default='/bindu_g1_physics')
+    parser.add_argument('--navigation-scene', type=Path, help='Optional robot-independent room JSON')
+    parser.add_argument('--navigation-robot', type=Path, help='Required with scene: frames, footprint and laser extrinsics')
     parser.add_argument('--headless', action='store_true')
     parser.add_argument('--duration', type=float, default=0., help='Wall seconds after warmup, 0 until window closes')
     parser.add_argument('--output', type=Path, default=ROOT/'artifacts/g1-physics-run')
@@ -193,10 +198,17 @@ def main():
     try:
         import numpy as np
         from isaacsim.core.utils.types import ArticulationAction
-        world, body, frame_error = build_scene(args.model, cfg)
+        room = json.loads(args.navigation_scene.read_text()) if args.navigation_scene else None
+        nav_robot = json.loads(args.navigation_robot.read_text()) if args.navigation_robot else None
+        if room and not nav_robot: raise ValueError('NAVIGATION_ROBOT_CONFIG_REQUIRED')
+        world, body, frame_error = build_scene(args.model, cfg, room)
+        sensors = None
         # Start inside one-sided limits: gravity/solver error at q=0 must not
         # be hidden by clipping measured feedback or relaxing execution limits.
-        initial = np.array([cfg['initial_joint_positions'].get(n, 0.) for n in body.dof_names])
+        initial_positions = dict(cfg['initial_joint_positions'])
+        if nav_robot:
+            initial_positions.update(nav_robot.get('transport_positions', {}))
+        initial = np.array([initial_positions.get(n, 0.) for n in body.dof_names])
         body.set_joint_positions(initial)
         body.apply_action(ArticulationAction(joint_positions=initial))
         for i in range(120):
@@ -223,6 +235,8 @@ def main():
             from bindu_hardware.drivers.physics import PhysicsCommandGate
             from bindu_interfaces.msg import SimulationCommand, SimulationFeedback
             from geometry_msgs.msg import Pose, PoseArray
+            from omni.physx import get_physx_simulation_interface
+            from pxr import PhysicsSchemaTools
             from builtin_interfaces.msg import Time
             profile = Profile.load(args.model/'g1_physics_sim.json')
             joint_names = [n for group in profile.groups.values() for n in group]
@@ -230,7 +244,15 @@ def main():
             # Keep our quit flag authoritative. rclpy's default SIGINT handler
             # can invalidate the context halfway through publishing a sample.
             rclpy.init(signal_handler_options=SignalHandlerOptions.NO)
-            node = rclpy.create_node('isaac_physics', namespace=args.namespace)
+            node = rclpy.create_node('isaac_physics', namespace=args.namespace, cli_args=['--ros-args',
+                '-r', '/tf:='+args.namespace+'/tf', '-r', '/tf_static:='+args.namespace+'/tf_static'])
+            if room:
+                from isaac_navigation_scene import NavigationSensors
+                from std_msgs.msg import String
+                from isaacsim.core.utils.viewports import set_camera_view
+                sensors = NavigationSensors(node, world, room, nav_robot, '/G1')
+                sensors.change(String(data='clear'))
+                set_camera_view(eye=[6.,-7.,6.], target=[1.5,0.,.3])
             def now(): return node.get_clock().now().nanoseconds/1e9
             def receive(command):
                 try:
@@ -255,6 +277,8 @@ def main():
             from isaacsim.core.experimental.utils import stage as stage_utils
             diagnostic_sim = tensors.create_simulation_view('numpy', stage_id=stage_utils.get_stage_id(world.stage))
             diagnostic_sim.set_subspace_roots('/')
+            sleep_stage = stage_utils.get_stage_id(world.stage)
+            sleep_body = PhysicsSchemaTools.sdfPathToInt(body.prim_path)
             diagnostic_body = diagnostic_sim.create_articulation_view(body.prim_path)
             link_order = ['base_link','left_arm_end_effector_mount_link','right_arm_end_effector_mount_link']
             link_names = list(diagnostic_body.get_metatype(0).link_names)
@@ -269,11 +293,14 @@ def main():
         metadata = {'simulator_id': simulator_id, 'dof_names': names, 'max_joint_frame_error': frame_error,
                     'gc_frozen_startup_objects': gc.get_freeze_count(),
                     'link_pose_order': link_order if node else [],
+                    'navigation_scene': room, 'navigation_robot': nav_robot,
+                    'odometry': 'ideal PhysX world pose' if room else None,
                     'gui': not args.headless, 'model': str(args.model), 'simulation_only': True}
         (args.output/'scene.json').write_text(json.dumps(metadata, indent=2)+'\n')
         world.stage.GetRootLayer().Export(str((args.output/'scene.usda').resolve()))
         # Capture the actual viewport, not a generated illustration.
         from omni.kit.viewport.utility import get_active_viewport, capture_viewport_to_file
+        world.step(render=True)
         capture_viewport_to_file(get_active_viewport(), str((args.output/'scene.png').resolve()))
         print('BINDU_G1_PHYSICS_READY', json.dumps(metadata), flush=True)
         collection_started = {}
@@ -323,10 +350,24 @@ def main():
                 msg.base_pose.orientation.y = qy; msg.base_pose.orientation.z = qz
                 yaw = math.atan2(2*(qw*qz+qx*qy), 1-2*(qy*qy+qz*qz))
                 velocity = body.get_linear_velocity()
+                angular = body.get_angular_velocity()
+                sleeping = get_physx_simulation_interface().is_sleeping(sleep_stage, sleep_body)
+                raw_velocity = [float(v) for v in velocity] + [float(v) for v in angular]
+                if state.get('sleeping') != sleeping:
+                    print('PHYSICS_SLEEP_STATE', json.dumps({'wall_time':time.time(),'sleeping':sleeping,
+                        'raw_velocity':raw_velocity,'position':[float(v) for v in position]}), flush=True)
+                state['sleeping'] = sleeping
+                state['raw_base_velocity'] = raw_velocity
+                # PhysX can retain the last solver base velocity while an
+                # articulation sleeps. Sleep status, never command state or
+                # numerical tolerance, is the authority for zero motion.
+                if sleeping: velocity = np.zeros(3); angular = np.zeros(3)
                 msg.base_velocity.linear.x = float(math.cos(yaw)*velocity[0]+math.sin(yaw)*velocity[1])
                 msg.base_velocity.linear.y = float(-math.sin(yaw)*velocity[0]+math.cos(yaw)*velocity[1])
-                msg.base_velocity.angular.z = float(body.get_angular_velocity()[2])
+                msg.base_velocity.angular.z = float(angular[2])
                 publisher.publish(msg)
+                if sensors and step % 4 == 0:
+                    sensors.publish(msg)
                 if step % 6 == 0:
                     link_poses = PoseArray()
                     link_poses.header.stamp = msg.stamp; link_poses.header.frame_id = 'world'
@@ -338,10 +379,13 @@ def main():
                         pose.orientation.x,pose.orientation.y,pose.orientation.z,pose.orientation.w = map(float,values[3:])
                         link_poses.poses.append(pose)
                     pose_publisher.publish(link_poses)
+            if step == 120:
+                capture_viewport_to_file(get_active_viewport(), str((args.output/'scene.png').resolve()))
             if step % 120 == 0:
                 (args.output/'heartbeat.json').write_text(json.dumps({'wall_time':time.time(),
                     'simulation_time':world.current_time,'playing':world.is_playing(),'steps':step,
-                    'received':state['received'],'rejected':state['rejected'],'code':state['code']})+'\n')
+                    'received':state['received'],'rejected':state['rejected'],'code':state['code'],
+                    'sleeping':state.get('sleeping'),'raw_base_velocity':state.get('raw_base_velocity')})+'\n')
             if time.monotonic()-loop_started>.05:
                 print('SLOW_SIMULATION_STEP',json.dumps({'wall_time':time.time(),'step':step,
                     'rendered':(step-1)%4==0,

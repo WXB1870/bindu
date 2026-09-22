@@ -151,3 +151,40 @@ class NavigationGate:
             self.stopped_since = stamp
         # Re-reading a frozen message never advances the evidence interval.
         return stamp-self.stopped_since >= self.config.stop_duration
+
+
+class SessionVelocityFence:
+    """Immutable goal/process binding used by isolated native Nav2 sessions.
+
+    A new process publisher on the same topic fails closed. Neither timestamps
+    nor the goal ID are replaced at reception. This is isolation, not DDS auth.
+    """
+    def __init__(self, goal_id, source_id, started):
+        self.goal_id, self.source_id, self.started = goal_id, source_id, started
+        self.publishers = frozenset()
+        self.closed = False
+        self.sequence = 0
+        self.last_stamp = None
+
+    def bind_publishers(self, publishers):
+        if self.publishers or not publishers or self.closed:
+            raise ValueError('NAV2_PUBLISHER_BINDING_INVALID')
+        self.publishers = frozenset(publishers)
+
+    def accept(self, publisher, stamp, now, timeout):
+        if self.closed:
+            return 'NAV2_SESSION_CLOSED'
+        if publisher not in self.publishers:
+            return 'NAV2_PUBLISHER_CHANGED'
+        if (not finite((stamp, now)) or stamp < self.started or stamp > now or
+                now-stamp >= timeout or (self.last_stamp is not None and stamp <= self.last_stamp)):
+            return 'NAV2_COMMAND_STALE'
+        self.last_stamp = stamp
+        return ''
+
+    def next_sequence(self):
+        self.sequence += 1
+        return self.sequence
+
+    def close(self):
+        self.closed = True

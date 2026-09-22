@@ -186,4 +186,27 @@ class BaseStreamTests(unittest.TestCase):
             self.io.read_feedback(10.02, .01)
 
 
+class SessionFenceTests(unittest.TestCase):
+    def test_retired_goal_and_new_publisher_cannot_refresh_session(self):
+        from bindu_navigation.navigation import SessionVelocityFence
+        f=SessionVelocityFence('goal_A','process_A',10.)
+        f.bind_publishers({b'publisher_A'})
+        self.assertEqual(f.accept(b'publisher_A',10.01,10.02,.3),'')
+        self.assertEqual(f.accept(b'publisher_B',10.02,10.03,.3),'NAV2_PUBLISHER_CHANGED')
+        self.assertEqual(f.last_stamp,10.01)
+        f.close()
+        self.assertEqual(f.accept(b'publisher_A',10.04,10.05,.3),'NAV2_SESSION_CLOSED')
+        self.assertEqual(f.goal_id,'goal_A')
+
+    def test_source_time_not_receipt_time_and_cannot_rebind(self):
+        from bindu_navigation.navigation import SessionVelocityFence
+        f=SessionVelocityFence('goal','process',10.)
+        f.bind_publishers({b'A'})
+        for stamp,now in [(9.99,10.1),(10.4,10.1),(10.1,10.5),(float('nan'),10.1)]:
+            self.assertEqual(f.accept(b'A',stamp,now,.3),'NAV2_COMMAND_STALE')
+        self.assertEqual(f.accept(b'A',10.1,10.2,.3),'')
+        self.assertEqual(f.accept(b'A',10.1,10.2,.3),'NAV2_COMMAND_STALE')
+        with self.assertRaises(ValueError):f.bind_publishers({b'B'})
+
+
 if __name__ == '__main__': unittest.main()

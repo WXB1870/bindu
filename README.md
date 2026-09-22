@@ -13,7 +13,7 @@
 | 任务与执行 | 已实现模拟任务流程、控制权、在线关节目标、取消与异常处理 |
 | Pi 客户端 | 已实现两种历史 ZMQ 模式、动作映射、时效检查和诊断；已通过模拟服务测试 |
 | 设备适配 | 已实现模拟底盘、关节和灵巧手驱动；真实设备待接入 |
-| 导航 | 已实现站点、Nav2 Action 适配与受控速度入口；当前用协议替身验证，真实 Nav2/建图待接入 |
+| 导航 | 已接真实Nav2与Isaac房间物理仿真，分批通过绕障/改道/停止故障检查；理想定位，AMCL/建图未接入 |
 | 感知、规划 | 已有模拟实现，真实算法待接入 |
 | VR 遥操作与 IK | 已接 v3.4 手柄输入、相对控制和连续 IK；单臂模拟末端/状态可视反馈已通过 ROS/Vuer 验证 |
 | 语音交互 | 已预留模块目录 |
@@ -134,7 +134,7 @@ python3 tests/validate_navigation.py --output artifacts/navigation-check
 
 - 站点与门控参数见 [`navigation_sim.json`](src/integration/bindu_runtime/config/navigation_sim.json)，只包含测试地图版本和测试站点；重复站点ID、非法位姿/参数拒绝加载，不能直接换成未经坐标核对的历史航点。
 - `navigation_backend` 指定后端命名空间，接口为 `navigate_to_pose`、`velocity`、`pose`。速度使用 [`NavigationVelocity`](src/shared/bindu_interfaces/msg/NavigationVelocity.msg)，必须在命令产生时附实际Action目标UUID、来源进程实例、单调序号、源时间及机体frame。定位使用 [`NavigationPose`](src/shared/bindu_interfaces/msg/NavigationPose.msg)，保留测量时间、地图版本与全局frame；后续定位/TF适配不得用接收时间刷新旧数据。
-- **未修改的 Nav2 `/cmd_vel` 不能直接接入本批入口。** 它缺少目标身份，不能由普通转发节点在接收时补当前目标ID。真实Nav2命令来源隔离/目标关联及TF定位适配属于下一批；本批未声称已完成该桥接。
+- **未修改的 Nav2 `/cmd_vel` 不能直接接入本批入口。** 它缺少目标身份，不能由普通转发节点在接收时补当前目标ID。下文的独立物理导航入口通过每目标独立进程、固定发布者GID和一次性UUID绑定完成该桥接；本节协议替身测试仍不包含真实规划。
 - 到点需要后端Action成功、全局位姿误差达标、底盘反馈持续停稳；取消先关速度入口，再停止执行并取消后端。停稳或取消无法确认时明确失败。输入使用best-effort有界队列，Action/执行服务保留可靠通信；丢失输入触发短期有效期和门控超时。
 - 底盘独立速度/加速度参数及停止语义见[执行契约](动作执行契约.md#2-输入模式必须显式选择)。真实底盘、雷达、地图、全局定位与建图尚未接入；动作块适配和手部扩展继续暂缓。
 
@@ -247,6 +247,46 @@ ros2 launch bindu_runtime g1_sim.launch.py namespace:=/bindu_g1_physics \
 本批物理验证：117项模块与10项PhysX检查通过；五组关节跟踪最大目标误差0.00050rad，直行0.0837m、圆弧0.0696m/0.1215rad，执行器冻结后实测线速度0.000142m/s。相关运动学回归G1全身9、VR4、Pi14通过；旧ROS首轮15/16、导航17/18，其启动拒绝场景单独复测各通过，启动偶发性尚未解决。以上不代表VR/Pi/导航已经完成物理环境验收。
 
 2026-09-22追加逆解/动态流物理批次：10项检查通过。左右臂末端位移约46mm，到达位置误差0.486/0.512mm；20Hz连续逆解100/100接纳，末端跟踪RMS3.38mm，求解耗时p95为3.08ms；100Hz关节流600/600接纳，实发均频99.99Hz、间隔p95为10.97ms，实测相对参考的关节误差RMS0.00157rad。取消/断流后0.5s保持漂移均小于0.00010rad；不可达、旧租约、越限与错序拒绝通过。这是短时合成目标实验，不代表长期实时性或现场VR体验。
+
+### 真实 Nav2 与 Isaac 房间导航
+
+`navigation_physics.launch.py`独立装配现有任务、租约执行与记录节点；真实Nav2 1.3.13使用NavFn、Regulated Pure Pursuit与路径失效后重规划的行为树。它不导入G1模型或关节名。本体参数集中在[`navigation_g1_fixture.json`](src/integration/bindu_runtime/config/navigation_g1_fixture.json)，房间和站点分别来自`navigation_room.json`、`navigation_room_sites.json`。替换机器人需提供匹配的URDF/物理设备适配、执行profile、关节姿态、碰撞轮廓、坐标系、雷达外参与速度限制；不能只换网格后沿用旧轮廓和标定。
+
+导航前临时G1以站立、双臂收拢姿态初始化，并检查姿态位置/速度反馈；移动期间持续检查姿态。这里尚未验证从任意姿态起身收臂的动作，也不包含手指驱动或自碰撞检查。房间为可复现的USD几何墙体、桌子与障碍物，机器人复用固定版本开源资产，无需下载额外场景。360线水平雷达直接查询PhysX碰撞；里程计使用理想物理世界位姿，`map→odom`为恒等变换，**没有AMCL、SLAM、定位噪声或漂移**。
+
+在Ubuntu/Jazzy已安装`ros-jazzy-navigation2`和`ros-jazzy-nav2-regulated-pure-pursuit-controller`、完成工作区重建及物理资产准备后：
+
+```bash
+source /opt/ros/jazzy/setup.bash
+source install/local_setup.bash
+cmake -S src/capabilities/bindu_navigation/native -B build/nav2-identity
+cmake --build build/nav2-identity -j4
+export ROS_DOMAIN_ID=126 ROS_LOCALHOST_ONLY=1
+export RMW_FASTRTPS_PUBLICATION_MODE=ASYNCHRONOUS
+# 终端1：GUI物理场景；开始独立实验前重启Isaac，避免复用旧执行器身份。
+tools/run_g1_isaac.sh --namespace /bindu_navigation \
+  --navigation-scene src/integration/bindu_runtime/config/navigation_room.json \
+  --navigation-robot src/integration/bindu_runtime/config/navigation_g1_fixture.json \
+  --output artifacts/navigation-room-scene
+# 终端2：加载相同ROS环境与域，等待物理场景READY后启动。
+ros2 launch bindu_runtime navigation_physics.launch.py namespace:=/bindu_navigation \
+  profile:="$PWD/artifacts/g1-physics-model/g1_physics_sim.json" \
+  navigation_robot:="$PWD/src/integration/bindu_runtime/config/navigation_g1_fixture.json" \
+  navigation_config:="$PWD/src/integration/bindu_runtime/config/navigation_room_sites.json" \
+  identity_bridge:="$PWD/build/nav2-identity/nav2_velocity_identity" \
+  output:="$PWD/artifacts/navigation-room-run" run_id:=navigation_room
+# 终端3：同一ROS环境与域。测试结果目录必须是新的。
+python3 tests/validate_nav2_physics.py --output artifacts/navigation-room-tests \
+  --sessions artifacts/navigation-room-run
+```
+
+每个目标消耗独立预热的Nav2进程和命名空间，C++入口逐包校验RMW发布者GID、源时间戳，一次性绑定该次实际Action UUID，退休后不复用进程。未就绪时拒绝目标，准备期间不运动；本版以启动开销换取旧目标隔离。速度仍经公共执行契约，不直接驱动模拟轮子。原生来源/重放/不可重绑检查可用`tests/validate_nav2_identity.py --binary build/nav2-identity/nav2_velocity_identity --output artifacts/nav2-identity-check`单独运行。
+
+2026-09-22分批通过正常往返、取消、动态障碍强制改道、道路堵塞、定位断流、控制器进程退出六类场景；最终改道路径由上侧y≈1.19m切到下侧y≈−1.23m，实际到桌边/返回误差58.0/31.2mm。119项模块、3项原生身份检查与6项旧导航回归通过。结果索引见该批`verification.json`，最终专项为`route-tests/results.json`，轨迹为`trajectory.png`。这是分批证据，不是所有场景一次连续全绿；早期失败均保留。
+
+修复了任务停稳判据未读取profile容差、PhysX休眠保留旧底盘速度、生命周期查询丢响应后无限等待的问题；休眠反馈依据PhysX原生状态置零，原始速度保留，不放宽反馈期限。另行复测旧基础物理入口时，GUI/无头均在低位腿关节目标处因速度未停稳超时，**本轮基础物理10项未全部通过，原因未定位**。站立导航成功不能覆盖该姿态下的失败；自碰撞、任意姿态起身、真实传感器/定位仍未验收。
+
+本机依赖隔离解包在`artifacts/nav2-physics-2026-09-22/deps`，未修改系统Nav2安装；机器专用环境见该批`env.sh`，不能直接复制到新机器。原始扫描、物理反馈、动作与命令、路径、会话配置及失败日志均保留在该批目录；数据忽略入库，尚未远端备份。
 
 ## Pi 客户端运行入口
 

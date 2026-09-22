@@ -1,0 +1,66 @@
+{
+  "description": "Temporary uncalibrated G1 assembly. Replace with the next robot's frames, transport footprint, laser extrinsics and limits; Nav2 code does not depend on this model.",
+  "frames": {
+    "map": "map",
+    "odom": "odom",
+    "base": "base_link",
+    "laser": "navigation_laser"
+  },
+  "footprint": [
+    [
+      -0.48,
+      -0.5
+    ],
+    [
+      0.48,
+      -0.5
+    ],
+    [
+      0.48,
+      0.5
+    ],
+    [
+      -0.48,
+      0.5
+    ]
+  ],
+  "laser": {
+    "xyz": [
+      0.0,
+      0.0,
+      0.65
+    ],
+    "yaw": 0.0,
+    "beams": 360,
+    "rate": 10.0,
+    "min_range": 0.05,
+    "max_range": 10.0
+  },
+  "linear_velocity": 0.28,
+  "angular_velocity": 0.38,
+  "angular_acceleration": 1.0,
+  "position_tolerance": 0.08,
+  "yaw_tolerance": 0.1,
+  "transport_positions": {
+    "leg_joint1": 0.6,
+    "leg_joint2": 1.2,
+    "leg_joint3": 0.6,
+    "left_arm_joint1": 1.231536975556102,
+    "left_arm_joint2": -1.1960193345096892,
+    "left_arm_joint3": -0.6327486523051759,
+    "left_arm_joint4": -2.4988298501849755,
+    "left_arm_joint5": 0.3955966731243484,
+    "left_arm_joint6": -0.810008258389345,
+    "left_arm_joint7": -1.1609153262318255,
+    "right_arm_joint1": -1.2315343523640288,
+    "right_arm_joint2": 1.1960219619155372,
+    "right_arm_joint3": 0.6327443196497647,
+    "right_arm_joint4": 2.498831872585034,
+    "right_arm_joint5": -0.39559126200088823,
+    "right_arm_joint6": 0.81000606412493,
+    "right_arm_joint7": 1.1609184868645375
+  },
+  "transport_position_tolerance": 0.03,
+  "transport_speed_tolerance": 0.03,
+  "transport_motion_speed_tolerance": 0.5
+}
