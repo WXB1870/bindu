@@ -341,7 +341,7 @@ def main():
             previous_time = world.current_time
             world.step(render=step % 4 == 0)
             after_step = time.monotonic()
-            after_feedback_publish = after_sensors = after_step
+            after_feedback_read = after_feedback_publish = after_sensors = after_step
             step += 1
             last_physics_time = world.current_time
             if node and world.current_time > previous_time:
@@ -378,6 +378,7 @@ def main():
                 msg.base_velocity.linear.x = float(math.cos(yaw)*velocity[0]+math.sin(yaw)*velocity[1])
                 msg.base_velocity.linear.y = float(-math.sin(yaw)*velocity[0]+math.cos(yaw)*velocity[1])
                 msg.base_velocity.angular.z = float(angular[2])
+                after_feedback_read = time.monotonic()
                 publisher.publish(msg)
                 after_feedback_publish = time.monotonic()
                 if sensors and sensor_cfg['mode']=='lio':
@@ -409,6 +410,8 @@ def main():
                     'rendered':(step-1)%4==0,
                     'receive_ms':(after_receive-loop_started)*1000,'physics_render_ms':(after_step-after_receive)*1000,
                     'feedback_read_publish_ms':(after_feedback_publish-after_step)*1000,
+                    'feedback_read_ms':(after_feedback_read-after_step)*1000,
+                    'feedback_publish_ms':(after_feedback_publish-after_feedback_read)*1000,
                     'sensors_ms':(after_sensors-after_feedback_publish)*1000,
                     'diagnostics_ms':(time.monotonic()-after_sensors)*1000,
                     'feedback_ms':(time.monotonic()-after_step)*1000,'playing':world.is_playing()}),flush=True)

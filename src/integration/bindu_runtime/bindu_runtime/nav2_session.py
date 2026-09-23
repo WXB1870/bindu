@@ -66,7 +66,10 @@ def parameters(robot, ns, session, bt_file):
             'min_x_velocity_threshold':.001,'min_y_velocity_threshold':.001,'min_theta_velocity_threshold':.001,
             'failure_tolerance':1.,'progress_checker_plugins':['progress_checker'],'goal_checker_plugins':['goal_checker'],
             'controller_plugins':['FollowPath'],
-            'progress_checker':{'plugin':'nav2_controller::SimpleProgressChecker','required_movement_radius':.1,'movement_time_allowance':15.},
+            # RPP may rotate in place before translating. Count measured yaw
+            # progress too; a translation-only checker aborts a moving robot.
+            'progress_checker':{'plugin':'nav2_controller::PoseProgressChecker',
+                'required_movement_radius':.1,'required_movement_angle':.2,'movement_time_allowance':15.},
             'goal_checker':{'plugin':'nav2_controller::SimpleGoalChecker', 'xy_goal_tolerance':robot['position_tolerance'],
                 'yaw_goal_tolerance':robot['yaw_tolerance'],'stateful':True},
             'FollowPath':{'plugin':'nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController',
