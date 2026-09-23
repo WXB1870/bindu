@@ -216,6 +216,9 @@ def main():
     parser.add_argument('--output',type=Path,required=True)
     parser.add_argument('--suite',choices=('basic','dynamics','soak','boundaries','collision','faults','vr'),default='basic')
     parser.add_argument('--side',choices=('left','right'),default='left')
+    parser.add_argument('--vr-stress',action='store_true',help='Fine/noisy, wide, fast, and abrupt-target controller inputs')
+    parser.add_argument('--vr-filter-off',action='store_true',help='Same VR test with input pose filter disabled')
+    parser.add_argument('--vr-tls',action='store_true',help='Use a locally trusted ephemeral test certificate and WSS')
     parser.add_argument('--soak-seconds',type=float,default=600.)
     parser.add_argument('--soak-amplitude',type=float,default=.45,help='Shoulder oscillation amplitude in rad; elbow uses 60 percent')
     parser.add_argument('--soak-period',type=float,default=12.,help='Oscillation period in seconds')
@@ -266,7 +269,12 @@ def main():
         reply=wait(node,submit.call_async(SubmitMotion.Request(command=cmd)))
         assert reply.accepted,reply
     def finished(cmd):
-        until(node,lambda:seen['state'].command_id==cmd.command_id and seen['state'].state in ('SUCCEEDED','FAILED'),seconds=6.)
+        def done():
+            if seen['physics'].code=='SIM_EXECUTOR_CHANGED':
+                raise AssertionError('SIM_EXECUTOR_CHANGED: restart Isaac before a new validator/executor')
+            return seen['state'].command_id==cmd.command_id and seen['state'].state in ('SUCCEEDED','FAILED')
+        until(node,done,
+              seconds=max(6.,cmd.valid_for+profile.stop_timeout+1.))
         assert seen['state'].state=='SUCCEEDED',seen['state'].code
     def drain(seconds):
         end=time.monotonic()+seconds
@@ -283,6 +291,19 @@ def main():
             with socket.socket() as sock:
                 sock.bind(('127.0.0.1',0));args.vr_port=sock.getsockname()[1]
             launch+=['vr_enabled:=true','side:='+args.side,'port:='+str(args.vr_port)]
+            root=Path(__file__).resolve().parents[1]
+            cfg=json.loads((root/f'src/integration/bindu_runtime/config/teleop_g1_{args.side}.json').read_text())
+            cfg['pose_filter']['enabled']=not args.vr_filter_off
+            cfg['kinematics']['collision_model']=str(root/'src/integration/bindu_runtime/config/g1_ik_collision.json')
+            config_path=(args.output/'teleop-config.json').resolve();config_path.write_text(json.dumps(cfg,indent=2))
+            launch+=['teleop_config:='+str(config_path)]
+            if args.vr_tls:
+                cert=(args.output/'test-cert.pem').resolve();key=(args.output/'test-key.pem').resolve()
+                subprocess.run(['openssl','req','-x509','-newkey','rsa:2048','-nodes','-days','1',
+                    '-subj','/CN=localhost','-addext','subjectAltName=IP:127.0.0.1',
+                    '-keyout',str(key),'-out',str(cert)],check=True,stdout=log,stderr=log)
+                key.chmod(0o600)
+                launch+=['cert_file:='+str(cert),'key_file:='+str(key)]
         process=subprocess.Popen(launch,
             stdout=log,stderr=subprocess.STDOUT,start_new_session=True)
         assert lease_client.wait_for_service(timeout_sec=15.)
@@ -290,7 +311,7 @@ def main():
         results.append({'case':'physics_feedback_19_axes','passed':len(seen['physics'].joints.name)==19})
         if args.suite == 'vr':
             from physics_vr import vr_checks
-            vr_checks(node,args,profile,seen,results,command,send,finished,release,drain)
+            vr_checks(node,args,profile,seen,results,command,send,finished,release,drain,samples)
         if args.suite == 'faults':
             from physics_faults import fault_checks
             fault_checks(node,profile,seen,results,command,send,release,drain,submit,control,current,relay)

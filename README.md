@@ -217,6 +217,8 @@ python3 tools/prepare_g1_physics.py
 # 可离线复用该固定提交的上游目录：追加 --source /path/to/galbot_one_golf_description
 export BINDU_INSTALL="$PWD/install"
 export ISAAC_SIM_PATH="$HOME/isaacsim/_build/linux-x86_64/release"
+# 本机 Fast DDS 仿真专用；所有参与终端使用相同设置，仅限制ROS DDS发现/传输到本机，不限制单独的Vuer WebSocket网络
+export FASTRTPS_DEFAULT_PROFILES_FILE="$PWD/tools/fastdds_local_sim.xml"
 tools/run_g1_isaac.sh
 ```
 
@@ -224,6 +226,7 @@ tools/run_g1_isaac.sh
 
 ```bash
 export ROS_DOMAIN_ID=125 ROS_LOCALHOST_ONLY=1
+export FASTRTPS_DEFAULT_PROFILES_FILE="$PWD/tools/fastdds_local_sim.xml"
 python3 tests/validate_physics.py --output artifacts/g1-physics-check
 # 另一次独立实验：先重启Isaac，再验证逆解与动态指令流
 python3 tests/validate_physics.py --suite dynamics --output artifacts/g1-physics-dynamics
@@ -234,6 +237,9 @@ python3 tests/validate_physics.py --suite soak --soak-seconds 600 \
   --soak-amplitude .45 --soak-period 12 --output artifacts/g1-physics-soak
 # 真实Vuer WebSocket接收合成手柄输入；右臂改为 --side right，使用新批次目录
 python3 tests/validate_physics.py --suite vr --side left --output artifacts/g1-physics-vr-left
+# 独立加强批次：重新启动Isaac后，验证TLS、毫米噪声、大范围/快速运动和1米突变
+python3 tests/validate_physics.py --suite vr --vr-stress --vr-tls --output artifacts/g1-vr-stress
+# --vr-filter-off用于另一次独立的滤波关闭对照；--side right验证右臂
 ```
 
 验证器自行启动和收尾同命名空间的G1执行/记录节点，检测19轴实测反馈、五组关节跟踪、取消后实际停稳、直行/圆弧及执行进程失联保护；图形仿真继续保留。 `--suite dynamics`复用Pinocchio/CasADi独立IK工作进程，验证左右臂末端目标到达、不可达目标不下发、20Hz连续笛卡尔目标、100Hz关节目标换向、取消/TTL断流保持及旧租约/越限/错序拒绝。IK种子和非活动关节均来自PhysX反馈；末端误差为实测关节FK在`base_link`中的推算，不是独立视觉或PhysX连杆位姿测量。该批使用合成目标，不含现场头显、Vuer接收或Pi服务；原始目标、执行参考和物理反馈分别记录在输出目录。每个仿真实例只接受首个执行器身份，重新运行验证器或替换执行器前须重启图形仿真。若手动运行能力入口，不要同时运行验证器：
@@ -247,6 +253,12 @@ ros2 launch bindu_runtime g1_sim.launch.py namespace:=/bindu_g1_physics \
 `boundaries`增加双臂近奇异小步、突变拒绝、工作空间外扩扫描，以及独立PhysX连杆位姿与关节FK的同源时间对照。`simulation/link_poses`为world帧的PoseArray，固定顺序为base_link、左法兰、右法兰；由物理张量直接测量。`faults`通过隔离ROS中继注入反馈丢失、旧反馈重复、命令丢失/延迟及实例身份变化，检查看门狗保持、旧租约拒绝和故障锁定；身份变化为消息注入，不等于真实进程重启。`soak`默认100Hz运行10分钟，肩部±0.45rad、肘部±0.27rad、周期12秒；逐帧输入、参考和反馈以压缩JSONL保存，另留接纳计数、时间对齐跟踪误差与执行器内存趋势，失败批次也保留。
 
 `vr`走真实Vuer WebSocket → CONTROLLER_MOVE解码 → ROS VRInput → 独立IK工作进程 → 租约执行器 → PhysX反馈链路。合成双手柄以名义72Hz发送OpenXR列主序矩阵；活动手柄做20秒三维弧线（x/y/z范围约80/80/120mm）及±0.08rad转腕，加入人为设定的0.15mm位置噪声、±2ms间隔抖动和周期25ms发送延迟，并渐变握持/扳机值。测试松手后手柄迁移214mm/转腕0.5rad再握持、取消、缺失手柄位姿和输入静默，检查实际停稳、重接无跳变及恢复输入不自动续跑。准备姿态单独用有限轨迹设置；开始运动前等待Vuer/IK/观察节点就绪及连续5秒新鲜物理采样。扳机只记录，不控制手部。原始WebSocket包、解码/IK事件/接受命令/执行状态、PhysX反馈及观察曲线均保留；这些输入分布不是头显实测数据。本批左右臂各5项检查通过：原始手柄帧4796/4862，接纳目标3162/3175；首个完整弧线的观察跟踪RMS为3.58/3.84mm、最大7.58/8.64mm（10Hz最新目标对实测关节FK，含时间滞后）。214mm手柄迁移后重新握持的首目标关节差为0，松手后保持漂移约3.4e-5rad；追踪无效和断流均停稳、恢复输入不自动续跑。修复了等待物理停稳后继续检查旧VR帧而误报输入超时的问题；117项模块及旧G1离合/断流/无效追踪3项回归通过。深弯肘准备姿态未满足速度停稳、启动期约330ms反馈发布阻塞及Vuer断连收尾异常的失败记录均保留；改用已验证姿态并等待启动采样稳定，不代表这些问题已解决。
+
+2026-09-24加强验证采用弯肘±1.2rad准备姿态，并复用执行层检查，从4秒起按当前反馈选择满足动态限制的准备时长；执行等待时间随轨迹有效期计算。`--vr-stress`加入8秒精细运动、12秒大范围运动（x/y/z约160/160/240mm）、4秒快速往返、1mm高斯位置噪声及1米目标突变。`--vr-tls`生成仅本批使用的自签名测试证书，合成客户端显式信任它并校验127.0.0.1；验证WSS服务路径，不代表现场头显证书已配置。结果目录包含原始输入、IK目标、执行参考、实际关节、代理间距及耗时；受控组的执行参考采用实测非活动关节作为上下文，采样检查不构成连续碰撞证明。
+
+仿真参数已在本体[`physics.json`](src/hardware/bindu_description/physics.json)中调整：启用每次TGS迭代施加外力，改善本机静止关节速度残差；依据[NVIDIA求解器说明](https://docs.omniverse.nvidia.com/kit/docs/omni_physics/107.3/dev_guide/simulation_control/simulation_control.html)进行对照，单独减少速度迭代未解决问题。双臂执行上限采用0.75rad/s、3rad/s²、18rad/s³，生成工具逐轴核对速度不超过URDF；位置/驱动力限制及停稳容差不变。这些是仿真参数，未标定真机；修改后需重新运行模型准备工具，公共执行算法与普通运动学profile未修改。仅回环非阻塞DDS配置已保存为上述可选工具文件，本批显式使用，未改变全局中间件默认。
+
+本轮最终结果：左右臂各11项联合物理检查、基础物理10项（含此前低位停稳）、91项相关模块检查通过，2包重建；新生成profile与验证候选指纹一致。左右大范围跟随峰值16.8／16.4mm，4秒快速段28.6／19.8mm；实际与执行参考的配置代理最小间距约108.3mm（要求20mm，包含静止另一臂），IK中位约6.0ms／P95约7.7ms，接收事件到接纳观察中位22.6／23.0ms、P95约32ms，不含头显采集或接收前网络。两侧各完成追踪无效、输入断流和1米目标突变停车，恢复输入不自动续跑；记录器写入33,578／33,300条、接收后丢弃0。旧近伸直姿态大范围误差53.5mm、原动态限制右臂快速32.3mm及关闭滤波左臂快速39.9mm的失败均保留；滤波开关对照使用相同参数／随机种子脚本但运行调度不同，不能当成严格同时间戳回放或统计显著性结论。完整配置、原始轨迹、图和失败分类见`artifacts/vr-joint-2026-09-24/verification.json`。现场头显／局域网、长时间负载与连续碰撞证明仍未验收；Vuer断连处理仍打印异常，未影响本批停车与记录器收尾，待单独修复。未启动真机。
 
 2026-09-22扩展验证：双臂IK边界与独立连杆位姿8项通过，438个同时间样本最大位置/姿态差8.40e-7m/8.96e-7rad；当前IK位置容差15mm，外扩10mm仍可接纳，30/80mm拒绝。大幅度100Hz流连续600秒、60,000/60,000接纳，实测肩部总摆幅0.9003rad、肘部0.5400rad，跟踪RMS0.00195rad、最大0.01021rad，执行器预热后RSS增长0.004MiB。早期长流约66秒失败，诊断发现第2代GC占用235.67ms并阻塞物理推进；就绪前回收/冻结初始化对象后通过完整10分钟，运行期新对象仍正常GC、退出解冻，原超时阈值不变。此结果不能替代30分钟及更长稳定性验证。故障组6项、117项模块及旧ROS取消/反馈丢失/动作块3项通过；同时修复历史停止失败记录污染恢复后新取消/释放服务响应的问题，受理停止仍不等于实测停稳。
 
@@ -491,7 +503,7 @@ ros2 action send_goal /bindu_sim/teleop/session bindu_interfaces/action/TeleopSe
 
 参数分别位于`pose_filter.position`和`pose_filter.rotation`：`min_cutoff_hz=4`、`derivative_cutoff_hz=1`；`beta`分别为8与2，输入单位分别为米和弧度。这是仿真初值，未按真实头显标定。`pose_filter.enabled=false`关闭；旧配置完全缺少该字段时保留无滤波行为。滤波仅按新接收帧的源时间更新，重复序号不更新，时间回退拒绝；按钮不滤波、原始VR消息及命令有效期不重写。松握、重握建基准、clutch序号变化及输入异常／超时清空滤波状态，旧会话不能自动恢复。
 
-2026-09-24：2包重建、9滤波＋23遥操作＋6 G1模块检查通过；左右ROS及Vuer合成输入共9项分批通过。90Hz合成静止输入的每轴位置RMS从3.02mm降至1.10mm，旋转RMS从0.52°降至0.18°；单次滤波计算中位0.059ms／P95 0.098ms。0.5m/s和0.5rad/s匀速测试的等效滞后分别19.9ms、31.8ms（稳态偏差÷速度），不是实际网络／执行延迟。首轮WebSocket验证器未收到执行状态即读取基准，补首帧等待后两个WebSocket入口通过。Isaac两轮都在VR运动前的准备动作失败，分别为动态限幅拒绝及停稳超时，本批未完成物理滤波链路验收；不归因为滤波或放宽运动／停车阈值。数据、配置、成功与失败均见`artifacts/one-euro-2026-09-24/verification.json`，真实头显仍未联调。
+2026-09-24：2包重建、9滤波＋23遥操作＋6 G1模块检查通过；左右ROS及Vuer合成输入共9项分批通过。90Hz合成静止输入的每轴位置RMS从3.02mm降至1.10mm，旋转RMS从0.52°降至0.18°；单次滤波计算中位0.059ms／P95 0.098ms。0.5m/s和0.5rad/s匀速测试的等效滞后分别19.9ms、31.8ms（稳态偏差÷速度），不是实际网络／执行延迟。首轮WebSocket验证器未收到执行状态即读取基准，补首帧等待后两个WebSocket入口通过。Isaac两轮都在VR运动前的准备动作失败，分别为动态限幅拒绝及停稳超时，该早期批次未完成物理滤波链路验收；后续同日已修正并通过[联合物理验证](#isaac-sim-图形物理仿真)，早期失败未覆盖或删除。数据、配置、成功与失败均见`artifacts/one-euro-2026-09-24/verification.json`，真实头显仍未联调。
 
 本机历史源码核对：旧v3.4的`VRTargetSmoother`是三帧均值＋突变限幅，本次没有将它叠加到One Euro后。直接编译历史`dexbot_interpolation_sim_main.cpp`的标量One Euro，2,000个不等间隔单轴样本与当前位置滤波最大差异5.6e-17；三维速度范数和SO(3)是本次扩展，不能把标量一致性当成全部位姿等价。审查删除了FK改用完整模型后闲置的降维模型，并修正会话碰撞元数据；日志明确保护范围为IK代理几何及离散关节路径。审查后3包重建、48项模块检查通过；G1正常及旧入口通过。接管首轮在动作前出现316ms输入间隔并触发超时，原参数连续三次复测通过；失败保留，尚未确认其根因。
 

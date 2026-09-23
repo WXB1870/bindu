@@ -26,7 +26,8 @@ def assemble(context):
                       parameters=[{'robot_description': model.read_text(), 'publish_frequency': 30.}],
                       remappings=[('/tf', 'tf'), ('/tf_static', 'tf_static')]))
     ns = LaunchConfiguration('namespace')
-    teleop = {**common, 'teleop_config': str(share/f'config/teleop_g1_{side}.json'),
+    teleop = {**common, 'teleop_config': (LaunchConfiguration('teleop_config').perform(context)
+              or str(share/f'config/teleop_g1_{side}.json')),
               'model_root': str(model.parent)}
     enabled = (LaunchConfiguration('teleop_enabled').perform(context).lower() == 'true' or
                LaunchConfiguration('vr_enabled').perform(context).lower() == 'true')
@@ -54,7 +55,7 @@ def generate_launch_description():
     share = Path(get_package_share_directory('bindu_runtime'))
     defaults = {'namespace':'bindu_g1_sim', 'run_id':uuid.uuid4().hex, 'output':'/tmp/bindu-runs',
                 'profile':str(share/'config/g1_provisional_sim.json'), 'device_backend':'kinematic',
-                'teleop_enabled':'false', 'vr_enabled':'false', 'side':'left', 'host':'127.0.0.1',
+                'teleop_enabled':'false', 'teleop_config':'', 'vr_enabled':'false', 'side':'left', 'host':'127.0.0.1',
                 'port':'8012', 'cert_file':'', 'key_file':'', 'pi_enabled':'false',
                 'pi_config':str(share/'config/pi_g1.json'), 'navigation_enabled':'true',
                 'navigation_config':str(share/'config/navigation_sim.json'),

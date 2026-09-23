@@ -4,6 +4,7 @@ import argparse
 import copy
 import hashlib
 import json
+import math
 from pathlib import Path
 import shutil
 import tarfile
@@ -88,6 +89,19 @@ def prepare(source, output, root=ROOT):
     shutil.copyfile(root / 'src/hardware/bindu_description/physics.json', output / 'physics.json')
     profile = json.loads((root / 'src/integration/bindu_runtime/config/g1_provisional_sim.json').read_text())
     profile['name'] = 'g1_physics_sim'
+    # Simulation-only overrides stay with the body configuration. Public
+    # execution math and the provisional kinematic profile remain unchanged.
+    joints = {j.get('name'): j for j in robot.findall('joint')}
+    for group, dynamics in cfg.get('execution_group_dynamics', {}).items():
+        if (group not in profile['groups'] or not dynamics or
+                set(dynamics)-{'velocity','acceleration','jerk'} or
+                any(isinstance(v, bool) or not isinstance(v, (int,float)) or
+                    not math.isfinite(v) or v <= 0 for v in dynamics.values())):
+            raise ValueError('INVALID_PHYSICS_EXECUTION_DYNAMICS')
+        for name in profile['groups'][group]:
+            if dynamics.get('velocity',0.) > float(joints[name].find('limit').get('velocity')):
+                raise ValueError('PHYSICS_VELOCITY_EXCEEDS_URDF: '+name)
+            profile['execution']['joint_dynamics'].setdefault(name, {}).update(dynamics)
     profile['execution']['feedback_tolerances'] = {
         'joint_position': .002, 'joint_velocity': .01,
         'base_linear_velocity': .003, 'base_angular_velocity': .005}

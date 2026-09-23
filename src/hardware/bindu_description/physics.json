@@ -16,6 +16,11 @@
   "joint_damping": 2000.0,
   "solver_position_iterations": 64,
   "solver_velocity_iterations": 16,
+  "external_forces_every_iteration": true,
+  "execution_group_dynamics": {
+    "left_arm": {"velocity": 0.75, "acceleration": 3.0, "jerk": 18.0},
+    "right_arm": {"velocity": 0.75, "acceleration": 3.0, "jerk": 18.0}
+  },
   "wheel_damping": 1000.0,
   "wheel_effort": 100.0,
   "command_timeout": 0.25,

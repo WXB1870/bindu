@@ -44,6 +44,8 @@ def build_scene(model, cfg, room=None):
         from isaac_navigation_scene import add_room
         add_room(world, room)
     stage = world.stage
+    scene_api = PhysxSchema.PhysxSceneAPI.Apply(stage.GetPrimAtPath(world.get_physics_context().prim_path))
+    scene_api.CreateEnableExternalForcesEveryIterationAttr(cfg.get('external_forces_every_iteration', False))
     UsdLux.DomeLight.Define(stage, '/World/Light').CreateIntensityAttr(1000.)
     robot = stage.DefinePrim('/G1', 'Xform')
     robot.GetReferences().AddReference(str(usd))
