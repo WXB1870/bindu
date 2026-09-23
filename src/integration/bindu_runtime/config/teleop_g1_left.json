@@ -60,5 +60,18 @@
     "max_joint_step": 0.25,
     "measured_context": true,
     "collision_model": "g1_ik_collision.json"
+  },
+  "pose_filter": {
+    "enabled": true,
+    "position": {
+      "min_cutoff_hz": 4.0,
+      "beta": 8.0,
+      "derivative_cutoff_hz": 1.0
+    },
+    "rotation": {
+      "min_cutoff_hz": 4.0,
+      "beta": 2.0,
+      "derivative_cutoff_hz": 1.0
+    }
   }
 }

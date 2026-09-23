@@ -58,5 +58,18 @@
     "position_tolerance": 0.015,
     "rotation_tolerance": 0.1,
     "max_joint_step": 0.25
+  },
+  "pose_filter": {
+    "enabled": true,
+    "position": {
+      "min_cutoff_hz": 4.0,
+      "beta": 8.0,
+      "derivative_cutoff_hz": 1.0
+    },
+    "rotation": {
+      "min_cutoff_hz": 4.0,
+      "beta": 2.0,
+      "derivative_cutoff_hz": 1.0
+    }
   }
 }

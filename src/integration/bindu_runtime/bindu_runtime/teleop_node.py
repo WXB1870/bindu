@@ -165,7 +165,10 @@ class TeleopNode(RuntimeNode):
             self.event('TELEOP_STARTED', json.dumps({'session_id':session.identity,
                 'input_source':self.frame.source_id, 'config':self.cfg,
                 'model_sha256':hashlib.sha256(Path(self.cfg['kinematics']['urdf']).read_bytes()).hexdigest(),
-                'collision_checked':False, 'input_timestamp':'receiver_event'}), goal.request.task_id)
+                'collision_checked':'collision' in self.cfg['kinematics'],
+                'collision_scope':('ik_proxy_and_sampled_joint_segment'
+                    if 'collision' in self.cfg['kinematics'] else 'none'),
+                'input_timestamp':'receiver_event'}), goal.request.task_id)
             while True:
                 now = time.monotonic()
                 if goal.is_cancel_requested:

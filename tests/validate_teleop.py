@@ -136,6 +136,8 @@ def run_case(root,output,case,g1=False,side='left'):
             if response.success:break
             rclpy.spin_once(node,timeout_sec=.05)
         assert response and response.success,(response,errors)
+        # IK/display readiness does not guarantee this observer received state.
+        until(node,lambda:seen['state'] is not None and seen['state'].feedback_stamp.sec>0,seconds=5.)
         if case != 'normal':
             # The optional observer must be listening before this test emits
             # lifecycle events. Teleop readiness deliberately doesn't await UI.
@@ -170,6 +172,9 @@ def run_case(root,output,case,g1=False,side='left'):
         assert goal.accepted,'goal rejected'
         future=goal.get_result_async()
         until(node,lambda:any(e.state=='TELEOP_STARTED' for e in seen['events']))
+        metadata=json.loads(next(e.code for e in seen['events'] if e.state=='TELEOP_STARTED'))
+        assert metadata['collision_checked'] == g1, metadata
+        assert metadata['collision_scope'] == ('ik_proxy_and_sampled_joint_segment' if g1 else 'none'), metadata
         # Let the action observe a release before the operator squeezes.
         end=time.monotonic()+.15
         until(node,lambda:time.monotonic()>=end)

@@ -103,6 +103,9 @@ class DisplayFeedbackTests(unittest.TestCase):
 class VRContracts(unittest.TestCase):
     def setUp(self):
         self.cfg = configuration()
+        # These contract/mapping assertions retain the unfiltered legacy mode.
+        # Filter-enabled lifecycle and geometry checks live in test_one_euro.py.
+        self.cfg['pose_filter']['enabled'] = False
         self.names = tuple(self.cfg['kinematics']['joint_names'])
         self.session = TeleopSession(self.cfg, self.names)
         self.frame = VRFrame('connection', 0, 10., 'left', POSE)

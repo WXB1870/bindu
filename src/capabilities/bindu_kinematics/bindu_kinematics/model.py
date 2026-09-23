@@ -18,28 +18,18 @@ class ArmModel:
             raise ValueError('MODEL_DUPLICATE_JOINT')
         if any(n not in self.full.names for n in self.names):
             raise ValueError('MODEL_UNKNOWN_JOINT')
-        reference = pin.neutral(self.full)
         self.context_names = tuple(sorted(n for n in self.full.names[1:] if n not in self.names))
         self.context_default = tuple(config['locked_joints'][n] for n in self.context_names)
         self.context_indices = [self.full.joints[self.full.getJointId(n)].idx_q for n in self.context_names]
         self.full_indices = [self.full.joints[self.full.getJointId(n)].idx_q for n in self.names]
         self.full_data = self.full.createData()
-        locked = []
         for jid in range(1, self.full.njoints):
             joint = self.full.joints[jid]
-            name = self.full.names[jid]
             if joint.nq != 1 or joint.nv != 1:
                 raise ValueError('MODEL_REQUIRES_SCALAR_JOINTS')
-            if name not in self.names:
-                reference[joint.idx_q] = config['locked_joints'][name]
-                locked.append(jid)
-        self.model = pin.buildReducedModel(self.full, locked, reference)
-        self.data = self.model.createData()
-        self.indices = [self.model.joints[self.model.getJointId(n)].idx_q for n in self.names]
-        self.lower = self.model.lowerPositionLimit[self.indices]
-        self.upper = self.model.upperPositionLimit[self.indices]
-        self.frame = self.model.getFrameId(config['ee_link'])
-        if self.frame >= self.model.nframes:
+        self.lower = self.full.lowerPositionLimit[self.full_indices]
+        self.upper = self.full.upperPositionLimit[self.full_indices]
+        if self.full.getFrameId(config['ee_link']) >= self.full.nframes:
             raise ValueError('MODEL_UNKNOWN_FRAME')
 
     def frames(self, values, context, links):

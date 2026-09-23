@@ -64,6 +64,20 @@ class IKCollisionTests(unittest.TestCase):
         self.assertEqual(result.code,'IK_COLLISION_SEED')
         self.assertFalse(result.positions)
 
+    def test_replacement_model_can_warm_up_away_from_colliding_zero(self):
+        from bindu_kinematics.pinocchio_casadi import PinocchioCasadiIK
+        cfg=copy.deepcopy(self.config);cfg['locked_joints']['context']=0.
+        with self.assertRaisesRegex(ValueError,'IK_UNSAFE_WARMUP_SEED'):
+            PinocchioCasadiIK(cfg)
+        cfg['warmup_seed']=[-.5]
+        solver=PinocchioCasadiIK(cfg)
+        result=solver.solve(self.request(-.5,-.6))
+        self.assertTrue(result.success,result)
+        for seed in ([float('nan')], [3.], []):
+            cfg['warmup_seed']=seed
+            with self.assertRaisesRegex(ValueError,'IK_INVALID_WARMUP_SEED'):
+                PinocchioCasadiIK(cfg)
+
     def test_independent_numeric_guard_rejects_bad_solver_output(self):
         from unittest.mock import patch
         with patch.object(self.solver,'_solve',return_value=np.array([-.15])):

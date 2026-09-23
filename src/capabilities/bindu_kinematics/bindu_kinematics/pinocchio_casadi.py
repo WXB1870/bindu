@@ -41,8 +41,15 @@ class PinocchioCasadiIK:
         opti.solver('ipopt', {'print_time': False},
                     {'print_level': 0, 'sb': 'yes', 'max_iter': 60, 'tol': 1e-5,
                      'max_cpu_time': config['solve_timeout']})
-        # Warm the solver before the runtime exposes readiness.
-        seed = np.clip(np.zeros(len(self.arm.names)), self.arm.lower, self.arm.upper)
+        # Numerical warm-up only; no robot command. Zero need not be safe on a
+        # replacement model, so its configuration may supply a feasible posture.
+        seed = np.asarray(config.get('warmup_seed',
+            np.clip(np.zeros(len(self.arm.names)), self.arm.lower, self.arm.upper)), dtype=float)
+        if (seed.shape != (len(self.arm.names),) or not np.isfinite(seed).all() or
+                (seed < self.arm.lower).any() or (seed > self.arm.upper).any()):
+            raise ValueError('IK_INVALID_WARMUP_SEED')
+        if self.collision and not self.collision.safe(seed, self.arm.context_default):
+            raise ValueError('IK_UNSAFE_WARMUP_SEED')
         self._solve(seed, self.arm.fk(seed))
 
     def _solve(self, seed, target, context=None):

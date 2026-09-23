@@ -176,6 +176,8 @@ G1左右IK默认启用[简化自碰撞配置](src/integration/bindu_runtime/conf
 
 CasADi/IPOPT施加间距硬约束，数值Pinocchio FK独立复核当前姿态、解及最大关节间隔0.025rad的线性关节路径采样。当前姿态侵入返回`IK_COLLISION_SEED`，采样路径侵入返回`IK_COLLISION_PATH`，不可解／残差／时效超限仍拒绝出指令。旧v3.4配置未自动启用此几何。这是单臂IK的局部自碰撞保护，不检查其余臂段、手、相机或环境，也不是全局绕障规划；离散路径检查不保证执行器插值、跟踪误差或同时运动的其他部件在整个连续轨迹上无碰撞，直接关节／Pi入口也不经过此IK检查。
 
+IK预热只做数值计算，不发送动作。替换模型若默认零位与碰撞配置冲突，可在`kinematics.warmup_seed`按`joint_names`顺序指定可行关节位置；缺省为限位内零位。非法或碰撞预热姿态分别拒绝为`IK_INVALID_WARMUP_SEED`／`IK_UNSAFE_WARMUP_SEED`，实际请求仍使用反馈关节和身体姿态。
+
 2026-09-23验证：3个受影响包重建，9项碰撞测试（含两臂160组符号／数值几何一致性）、6项G1和23项遥操作模块检查通过；左右ROS正常跟随、松握接管和本体姿态共5项通过；240次连续IK全通过，单次求解中位数7.1ms、P95 8.7ms（非端到端100Hz保证）。Isaac GUI中两臂各6次受约束目标通过，按实际关节反馈计算的最小代理间距为106.4／106.5mm；碰撞拒绝测试未向仿真下发侵入目标。原始证据及失败测试保存在`artifacts/ik-collision-2026-09-23/verification.json`。在已启动同命名空间Isaac桥接的终端，可运行`python tests/validate_physics.py --namespace /bindu_g1_collision --suite collision --output artifacts/ik-collision-check`复测；此入口默认读取`artifacts/g1-physics-model`。
 
 到站导航无需手部/感知服务，默认开启，可用 `navigation_enabled:=false` 关闭。接入满足前述身份与时间契约的导航后端后，可提交：
@@ -482,6 +484,16 @@ ros2 action send_goal /bindu_sim/teleop/session bindu_interfaces/action/TeleopSe
 - [遥操作配置](src/integration/bindu_runtime/config/teleop_v34.json)与[本体配置](src/integration/bindu_runtime/config/huawei_v34_left_sim.json)定义资源、具名关节、时间限制、比例和模型。旧模型只保留运动学/惯性文本，未包含碰撞几何；非活动关节固定在配置值，不能当作当前本体标定。
 - VR 时间戳为输入服务收到事件的时刻，未提供头显采样时间或网络时延估计；轮询不会刷新旧帧时间。输入、模式、IK 残差/耗时、接受目标与实测反馈异步记录，示教图像和完整训练数据集尚未实现。
 - 会话到时表示控制结束，不代表抓取成功。运行层继续拒绝真实设备模式；本批没有连接电机、部署真机服务或承诺 IK 达到 100 Hz。
+
+### VR 位姿 One Euro 滤波
+
+左右G1及v3.4随附配置默认启用`pose_filter`：原始VR输入／按键校验 → OpenXR坐标变换 → One Euro位姿滤波 → 相对目标映射 → IK（G1配置启用简化碰撞约束） → 执行层在线自适应插值。实现位于[`one_euro.py`](src/capabilities/bindu_teleoperation/bindu_teleoperation/vr/one_euro.py)，使用[One Euro的速度自适应截止频率原理](https://gery.casiez.net/1euro/)；位置采用三维速度范数，旋转采用SO(3)最短弧扩展，不逐元素平滑旋转矩阵／欧拉角。
+
+参数分别位于`pose_filter.position`和`pose_filter.rotation`：`min_cutoff_hz=4`、`derivative_cutoff_hz=1`；`beta`分别为8与2，输入单位分别为米和弧度。这是仿真初值，未按真实头显标定。`pose_filter.enabled=false`关闭；旧配置完全缺少该字段时保留无滤波行为。滤波仅按新接收帧的源时间更新，重复序号不更新，时间回退拒绝；按钮不滤波、原始VR消息及命令有效期不重写。松握、重握建基准、clutch序号变化及输入异常／超时清空滤波状态，旧会话不能自动恢复。
+
+2026-09-24：2包重建、9滤波＋23遥操作＋6 G1模块检查通过；左右ROS及Vuer合成输入共9项分批通过。90Hz合成静止输入的每轴位置RMS从3.02mm降至1.10mm，旋转RMS从0.52°降至0.18°；单次滤波计算中位0.059ms／P95 0.098ms。0.5m/s和0.5rad/s匀速测试的等效滞后分别19.9ms、31.8ms（稳态偏差÷速度），不是实际网络／执行延迟。首轮WebSocket验证器未收到执行状态即读取基准，补首帧等待后两个WebSocket入口通过。Isaac两轮都在VR运动前的准备动作失败，分别为动态限幅拒绝及停稳超时，本批未完成物理滤波链路验收；不归因为滤波或放宽运动／停车阈值。数据、配置、成功与失败均见`artifacts/one-euro-2026-09-24/verification.json`，真实头显仍未联调。
+
+本机历史源码核对：旧v3.4的`VRTargetSmoother`是三帧均值＋突变限幅，本次没有将它叠加到One Euro后。直接编译历史`dexbot_interpolation_sim_main.cpp`的标量One Euro，2,000个不等间隔单轴样本与当前位置滤波最大差异5.6e-17；三维速度范数和SO(3)是本次扩展，不能把标量一致性当成全部位姿等价。审查删除了FK改用完整模型后闲置的降维模型，并修正会话碰撞元数据；日志明确保护范围为IK代理几何及离散关节路径。审查后3包重建、48项模块检查通过；G1正常及旧入口通过。接管首轮在动作前出现316ms输入间隔并触发超时，原参数连续三次复测通过；失败保留，尚未确认其根因。
 
 ## 共享执行层验证
 

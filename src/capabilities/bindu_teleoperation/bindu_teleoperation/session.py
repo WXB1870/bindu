@@ -4,6 +4,7 @@ import uuid
 import numpy as np
 from bindu_contracts.teleoperation import IKRequest
 from .vr.mapping import robot_pose, relative_target
+from .vr.one_euro import OneEuroPose
 
 
 class TeleopSession:
@@ -22,8 +23,19 @@ class TeleopSession:
         self.last_result = -float('inf')
         self.frame = None
         self.clutch_seq = 0
+        self.pose_filter = OneEuroPose(config['pose_filter']) if config.get('pose_filter', {}).get('enabled') else None
+        self.filtered_pose = None
 
     def ingest(self, frame, now):
+        try:
+            return self._ingest(frame, now)
+        except ValueError:
+            if self.pose_filter:
+                self.pose_filter.reset()
+            self.filtered_pose = None
+            raise
+
+    def _ingest(self, frame, now):
         if (frame.side != self.cfg['side'] or not frame.source_id or
                 not isinstance(frame.seq, int) or frame.seq < 0 or
                 not math.isfinite(frame.stamp) or not 0 <= now-frame.stamp <= self.cfg['input_max_age']):
@@ -34,12 +46,25 @@ class TeleopSession:
             return False
         if not frame.valid:
             raise ValueError('VR_TRACKING_INVALID')
-        robot_pose(frame.pose)
+        pose = robot_pose(frame.pose)
+        previous_mode = self.mode
         if not all(math.isfinite(x) and 0 <= x <= 1 for x in (frame.grip, frame.trigger)):
             raise ValueError('VR_INVALID_BUTTON')
+        if frame.stop:
+            raise ValueError('VR_STOP')
+        if frame.init:
+            # No verified initial posture exists yet. Never silently move to zero.
+            raise ValueError('VR_INIT_NOT_CONFIGURED')
+        if self.pose_filter and self.frame is not None:
+            if frame.stamp <= self.frame.stamp:
+                raise ValueError('VR_FILTER_TIME_ORDER')
+            if self.mode == 'follow' and frame.stamp-self.frame.stamp > self.cfg['input_max_age']:
+                raise ValueError('VR_INPUT_TIMEOUT')
         if frame.clutch_seq < self.clutch_seq:
             raise ValueError('VR_CLUTCH_UNORDERED')
         if frame.clutch_seq != self.clutch_seq:
+            if self.pose_filter:
+                self.pose_filter.reset()
             self.released, self.pressed_since = True, None
             self.generation += 1
             self.mode = 'idle'
@@ -47,11 +72,6 @@ class TeleopSession:
             self.anchor_pending = False
         self.clutch_seq = frame.clutch_seq
         self.source, self.seq, self.frame = frame.source_id, frame.seq, frame
-        if frame.stop:
-            raise ValueError('VR_STOP')
-        if frame.init:
-            # No verified initial posture exists yet. Never silently move to zero.
-            raise ValueError('VR_INIT_NOT_CONFIGURED')
         if frame.grip < .3:
             self.released, self.pressed_since = True, None
             if self.mode != 'idle':
@@ -65,10 +85,19 @@ class TeleopSession:
             if frame.stamp-self.pressed_since >= self.cfg['engage_seconds'] and self.mode == 'idle':
                 self.mode = 'follow'
                 self.generation += 1
+        if self.pose_filter:
+            if self.mode != 'follow' or previous_mode != self.mode:
+                self.pose_filter.reset()
+            self.filtered_pose = self.pose_filter.update(pose, frame.stamp)
+        else:
+            self.filtered_pose = pose
         return True
 
     def check(self, now):
         if self.frame is None or not 0 <= now-self.frame.stamp <= self.cfg['input_max_age']:
+            if self.pose_filter:
+                self.pose_filter.reset()
+            self.filtered_pose = None
             raise ValueError('VR_INPUT_TIMEOUT')
 
     def request(self, positions, feedback_stamp, now):
@@ -82,7 +111,7 @@ class TeleopSession:
                    if self.cfg['kinematics'].get('measured_context', False) else ())
         if not all(math.isfinite(q) for q in seed+context):
             raise ValueError('TELEOP_INVALID_FEEDBACK')
-        current = tuple(robot_pose(self.frame.pose).ravel())
+        current = tuple(self.filtered_pose.ravel())
         target = ()
         if self.anchor_robot is None:
             self.anchor_input = current
