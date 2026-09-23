@@ -12,6 +12,11 @@ def load_config(path, profile, model_root):
     if group not in profile.groups:
         raise ValueError('TELEOP_UNKNOWN_RESOURCE')
     model = cfg['kinematics']
+    if 'collision_model' in model:
+        collision_path = Path(model['collision_model'])
+        if not collision_path.is_absolute():
+            collision_path = Path(path).parent / collision_path
+        model['collision'] = json.loads(collision_path.read_text())
     if tuple(model['joint_names']) != tuple(profile.groups[group]):
         raise ValueError('TELEOP_MODEL_LAYOUT')
     if model.get('measured_context', False):

@@ -172,6 +172,12 @@ ros2 launch bindu_runtime g1_sim.launch.py pi_enabled:=true
 
 以上是不同启动方式，不应在同一命名空间重复启动。VR 左右臂分别使用 `teleop_g1_left/right.json`；会话资源为 `left_arm` 或 `right_arm`，一次控制一臂。IK 和显示使用当前腿腰、头部及另一臂反馈，优化变量只有所选臂的7轴；非活动关节缺失/非法或求解期间姿态变化时拒绝下发。末端暂用法兰坐标，不包含手爪TCP标定。Pi 的 `pi_g1.json` 显式映射19轴观测，要求动作关联观测与会话，允许同样的两个单臂资源；不表示远端模型已支持该本体，默认端点仍为本地测试地址。
 
+G1左右IK默认启用[简化自碰撞配置](src/integration/bindu_runtime/config/g1_ik_collision.json)：左右`link7`各4个包围球，躯干2个局部轴向包围盒，检查左右link7之间及各自与躯干，共32个几何对。尺寸包住固定版本上游碰撞网格并加1mm几何余量；净间距要求20mm。形状随当前关节反馈变换，链接名／几何／碰撞对都在配置中，求解器不依赖G1名称，替换URDF需同步替换该配置。
+
+CasADi/IPOPT施加间距硬约束，数值Pinocchio FK独立复核当前姿态、解及最大关节间隔0.025rad的线性关节路径采样。当前姿态侵入返回`IK_COLLISION_SEED`，采样路径侵入返回`IK_COLLISION_PATH`，不可解／残差／时效超限仍拒绝出指令。旧v3.4配置未自动启用此几何。这是单臂IK的局部自碰撞保护，不检查其余臂段、手、相机或环境，也不是全局绕障规划；离散路径检查不保证执行器插值、跟踪误差或同时运动的其他部件在整个连续轨迹上无碰撞，直接关节／Pi入口也不经过此IK检查。
+
+2026-09-23验证：3个受影响包重建，9项碰撞测试（含两臂160组符号／数值几何一致性）、6项G1和23项遥操作模块检查通过；左右ROS正常跟随、松握接管和本体姿态共5项通过；240次连续IK全通过，单次求解中位数7.1ms、P95 8.7ms（非端到端100Hz保证）。Isaac GUI中两臂各6次受约束目标通过，按实际关节反馈计算的最小代理间距为106.4／106.5mm；碰撞拒绝测试未向仿真下发侵入目标。原始证据及失败测试保存在`artifacts/ik-collision-2026-09-23/verification.json`。在已启动同命名空间Isaac桥接的终端，可运行`python tests/validate_physics.py --namespace /bindu_g1_collision --suite collision --output artifacts/ik-collision-check`复测；此入口默认读取`artifacts/g1-physics-model`。
+
 到站导航无需手部/感知服务，默认开启，可用 `navigation_enabled:=false` 关闭。接入满足前述身份与时间契约的导航后端后，可提交：
 
 ```bash

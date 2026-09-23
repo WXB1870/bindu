@@ -214,7 +214,7 @@ def main():
     parser.add_argument('--namespace',default='/bindu_g1_physics')
     parser.add_argument('--model',type=Path,default=Path('artifacts/g1-physics-model'))
     parser.add_argument('--output',type=Path,required=True)
-    parser.add_argument('--suite',choices=('basic','dynamics','soak','boundaries','faults','vr'),default='basic')
+    parser.add_argument('--suite',choices=('basic','dynamics','soak','boundaries','collision','faults','vr'),default='basic')
     parser.add_argument('--side',choices=('left','right'),default='left')
     parser.add_argument('--soak-seconds',type=float,default=600.)
     parser.add_argument('--soak-amplitude',type=float,default=.45,help='Shoulder oscillation amplitude in rad; elbow uses 60 percent')
@@ -297,6 +297,9 @@ def main():
         if args.suite == 'boundaries':
             from physics_boundaries import boundary_checks
             boundary_checks(node,args,profile,seen,results,command,send,finished,release,drain)
+        if args.suite == 'collision':
+            from physics_boundaries import collision_checks
+            collision_checks(node,args,profile,seen,results,command,send,finished,release,drain)
         if args.suite == 'soak':
             from physics_stress import soak_checks
             soak_checks(node,args,profile,seen,results,command,release,drain,control,process)

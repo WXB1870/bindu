@@ -1,0 +1,245 @@
+{
+  "description": "Simulation-only conservative bounds of upstream galbot_one_golf_description 2d496b053f0d4e9e2688f59fac66022f447226be link7 and torso collision meshes, +1mm geometric padding. Does not cover other arm links, hands, cameras or environment. Centres and box axes are local to each configured URDF link.",
+  "margin": 0.02,
+  "joint_sample_step": 0.025,
+  "shapes": {
+    "left_0": {
+      "type": "sphere",
+      "link": "left_arm_link7",
+      "center": [
+        -0.09613300114870071,
+        1.862645149230957e-09,
+        0.0
+      ],
+      "radius": 0.035336646967685174
+    },
+    "left_1": {
+      "type": "sphere",
+      "link": "left_arm_link7",
+      "center": [
+        -0.06609199941158295,
+        1.862645149230957e-09,
+        -1.862645149230957e-09
+      ],
+      "radius": 0.041820069888123174
+    },
+    "left_2": {
+      "type": "sphere",
+      "link": "left_arm_link7",
+      "center": [
+        0.0,
+        0.0,
+        0.046614497900009155
+      ],
+      "radius": 0.03352641077496012
+    },
+    "left_3": {
+      "type": "sphere",
+      "link": "left_arm_link7",
+      "center": [
+        -0.034365369006991386,
+        0.0,
+        0.04719480313360691
+      ],
+      "radius": 0.047055293958366995
+    },
+    "right_0": {
+      "type": "sphere",
+      "link": "right_arm_link7",
+      "center": [
+        -0.09613300114870071,
+        -1.862645149230957e-09,
+        0.0
+      ],
+      "radius": 0.035336646967685174
+    },
+    "right_1": {
+      "type": "sphere",
+      "link": "right_arm_link7",
+      "center": [
+        -0.06609199941158295,
+        -1.862645149230957e-09,
+        -1.862645149230957e-09
+      ],
+      "radius": 0.041820069888123174
+    },
+    "right_2": {
+      "type": "sphere",
+      "link": "right_arm_link7",
+      "center": [
+        0.0,
+        0.0,
+        0.046614497900009155
+      ],
+      "radius": 0.03352641077496012
+    },
+    "right_3": {
+      "type": "sphere",
+      "link": "right_arm_link7",
+      "center": [
+        -0.034365369006991386,
+        0.0,
+        0.04719480313360691
+      ],
+      "radius": 0.047055293958366995
+    },
+    "torso_0": {
+      "type": "box",
+      "link": "torso_base_link",
+      "center": [
+        0.0,
+        0.07870632037520409,
+        -0.0077680982649326324
+      ],
+      "half_extents": [
+        0.1439334580898285,
+        0.20380945673584938,
+        0.13248972019553185
+      ]
+    },
+    "torso_1": {
+      "type": "box",
+      "link": "torso_base_link",
+      "center": [
+        0.0,
+        0.32963433861732483,
+        0.0
+      ],
+      "half_extents": [
+        0.04757900333404541,
+        0.06948323345184326,
+        0.04757900333404541
+      ]
+    }
+  },
+  "pairs": [
+    [
+      "left_0",
+      "right_0"
+    ],
+    [
+      "left_0",
+      "right_1"
+    ],
+    [
+      "left_0",
+      "right_2"
+    ],
+    [
+      "left_0",
+      "right_3"
+    ],
+    [
+      "left_0",
+      "torso_0"
+    ],
+    [
+      "left_0",
+      "torso_1"
+    ],
+    [
+      "left_1",
+      "right_0"
+    ],
+    [
+      "left_1",
+      "right_1"
+    ],
+    [
+      "left_1",
+      "right_2"
+    ],
+    [
+      "left_1",
+      "right_3"
+    ],
+    [
+      "left_1",
+      "torso_0"
+    ],
+    [
+      "left_1",
+      "torso_1"
+    ],
+    [
+      "left_2",
+      "right_0"
+    ],
+    [
+      "left_2",
+      "right_1"
+    ],
+    [
+      "left_2",
+      "right_2"
+    ],
+    [
+      "left_2",
+      "right_3"
+    ],
+    [
+      "left_2",
+      "torso_0"
+    ],
+    [
+      "left_2",
+      "torso_1"
+    ],
+    [
+      "left_3",
+      "right_0"
+    ],
+    [
+      "left_3",
+      "right_1"
+    ],
+    [
+      "left_3",
+      "right_2"
+    ],
+    [
+      "left_3",
+      "right_3"
+    ],
+    [
+      "left_3",
+      "torso_0"
+    ],
+    [
+      "left_3",
+      "torso_1"
+    ],
+    [
+      "right_0",
+      "torso_0"
+    ],
+    [
+      "right_0",
+      "torso_1"
+    ],
+    [
+      "right_1",
+      "torso_0"
+    ],
+    [
+      "right_1",
+      "torso_1"
+    ],
+    [
+      "right_2",
+      "torso_0"
+    ],
+    [
+      "right_2",
+      "torso_1"
+    ],
+    [
+      "right_3",
+      "torso_0"
+    ],
+    [
+      "right_3",
+      "torso_1"
+    ]
+  ]
+}

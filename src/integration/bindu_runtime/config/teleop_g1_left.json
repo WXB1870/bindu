@@ -58,6 +58,7 @@
     "position_tolerance": 0.015,
     "rotation_tolerance": 0.1,
     "max_joint_step": 0.25,
-    "measured_context": true
+    "measured_context": true,
+    "collision_model": "g1_ik_collision.json"
   }
 }

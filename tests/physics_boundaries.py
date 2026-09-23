@@ -25,6 +25,46 @@ def matrix(pose):
     return out
 
 
+def collision_checks(node,args,profile,seen,results,command,send,finished,release,drain):
+    """Safe IK steps in PhysX; score configured proxies from measured joints."""
+    root=Path(__file__).resolve().parents[1]
+    evidence=[]
+    for side in ('left','right'):
+        solver=PinocchioCasadiIK(load_config(root/f'src/integration/bindu_runtime/config/teleop_g1_{side}.json',
+            profile,root/'src/hardware/bindu_description/urdf')['kinematics'])
+        arm=solver.arm
+        def values():
+            m=dict(zip(seen['physics'].joints.name,seen['physics'].joints.position))
+            return np.array([m[n] for n in arm.names]),tuple(m[n] for n in arm.context_names)
+        measured=[]
+        def observe(msg):
+            m=dict(zip(msg.joints.name,msg.joints.position))
+            d=solver.collision.clearances([m[n] for n in arm.names],[m[n] for n in arm.context_names])
+            measured.append({'stamp':msg.stamp.sec+msg.stamp.nanosec/1e9,'clearance_m':min(d.values())})
+        sub=node.create_subscription(SimulationFeedback,args.namespace+'/simulation/feedback',observe,
+            QoSProfile(depth=10,reliability=ReliabilityPolicy.BEST_EFFORT))
+        try:
+            start,ctx=values()
+            for delta in (.04,.08,.12,.08,.04,0.):
+                seed,context=values();guide=start.copy();guide[0]+=delta if side=='left' else -delta
+                target=arm.fk(guide,context);now=node.get_clock().now().nanoseconds/1e9
+                req=IKRequest(side,1,now,now+.2,arm.names,tuple(seed),tuple(target.ravel()),context)
+                solved=solver.solve(req);assert solved.success,solved.code
+                cmd=command(side+'_arm','finite_trajectory');cmd.joint_names=list(arm.names)
+                cmd.points=[JointTrajectoryPoint(positions=list(solved.positions),time_from_start=Duration(sec=1))]
+                send(cmd);finished(cmd);release();drain(.1)
+                evidence.append({'side':side,'seed':list(seed),'context':list(context),'target':list(req.target),
+                    'positions':list(solved.positions),'solve_s':solved.elapsed,'clearance_m':min(solver.collision.clearances(solved.positions,context).values())})
+            assert measured and min(x['clearance_m'] for x in measured)>=solver.collision.margin
+            results.append({'case':side+'_collision_guarded_ik_physics','passed':True,'steps':6,
+                'samples':len(measured),'minimum_measured_proxy_clearance_m':min(x['clearance_m'] for x in measured),
+                'geometry_source':'Pinocchio FK of measured PhysX joints; configured link7/torso proxies'})
+        finally:
+            node.destroy_subscription(sub)
+            (args.output/(side+'-collision-clearance.json')).write_text(json.dumps(measured))
+            (args.output/'collision-ik.json').write_text(json.dumps(evidence))
+
+
 def boundary_checks(node,args,profile,seen,results,command,send,finished,release,drain):
     root=Path(__file__).resolve().parents[1]
     solvers={side:PinocchioCasadiIK(load_config(root/f'src/integration/bindu_runtime/config/teleop_g1_{side}.json',

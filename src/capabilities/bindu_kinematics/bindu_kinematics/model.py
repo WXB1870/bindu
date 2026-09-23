@@ -1,4 +1,4 @@
-"""Named, fixed-base single-arm model. No geometry/collision claim is made.
+"""Named, fixed-base arm and context FK, independent of collision geometry.
 
 The numeric FK is Pinocchio. The CasADi graph is built from the same URDF chain
 because binary Pinocchio distributions need not provide pinocchio.casadi.
@@ -42,22 +42,28 @@ class ArmModel:
         if self.frame >= self.model.nframes:
             raise ValueError('MODEL_UNKNOWN_FRAME')
 
-    def fk(self, values, context=None):
+    def frames(self, values, context, links):
         q = self.pin.neutral(self.full)
         q[self.full_indices] = values
         q[self.context_indices] = self.context_default if context is None else context
         self.pin.framesForwardKinematics(self.full, self.full_data, q)
-        return self.full_data.oMf[self.full.getFrameId(self.cfg['ee_link'])].homogeneous @ self.offset
+        return {link: self.full_data.oMf[self.full.getFrameId(link)].homogeneous.copy() for link in links}
 
-    def symbolic_fk(self, parameterize_context=False):
+    def fk(self, values, context=None):
+        return self.frames(values, context, [self.cfg['ee_link']])[self.cfg['ee_link']] @ self.offset
+
+    def symbolic_fk(self, parameterize_context=False, link=None):
         import casadi as ca
         root = ET.parse(self.cfg['urdf']).getroot()
         by_child = {j.find('child').get('link'): j for j in root.findall('joint')}
-        chain, link = [], self.cfg['ee_link']
-        while link in by_child:
-            j = by_child[link]
+        frame = link or self.cfg['ee_link']
+        if self.full.getFrameId(frame) >= self.full.nframes:
+            raise ValueError('MODEL_UNKNOWN_FRAME')
+        chain, current = [], frame
+        while current in by_child:
+            j = by_child[current]
             chain.append(j)
-            link = j.find('parent').get('link')
+            current = j.find('parent').get('link')
         q = ca.SX.sym('q', len(self.names))
         context = ca.SX.sym('context', len(self.context_names))
         transform = ca.SX.eye(4)
@@ -86,5 +92,5 @@ class ArmModel:
             else:
                 raise ValueError('MODEL_UNSUPPORTED_JOINT')
             transform = transform @ motion
-        result = transform @ ca.DM(self.offset)
+        result = transform if link is not None else transform @ ca.DM(self.offset)
         return (q, context, result) if parameterize_context else (q, result)

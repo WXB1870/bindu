@@ -1,18 +1,22 @@
 """Continuous bounded IK adapted from v3.4 EEKinematicsTool.
 
-Uses last measured/accepted pose as seed, joint bounds and continuity cost.
-Residuals are verified with independent numeric FK; failure has no command.
+Uses measured seed/context, joint bounds, continuity cost and optional configured
+self-collision constraints. Numeric FK verifies results; failure has no command.
 """
 import time
 import numpy as np
 from bindu_contracts.teleoperation import IKResult
 from .model import ArmModel
+from .collision import CollisionModel
 
 
 class PinocchioCasadiIK:
     def __init__(self, config):
         import casadi as ca
         self.cfg, self.arm = config, ArmModel(config)
+        self.collision = CollisionModel(self.arm, config['collision']) if 'collision' in config else None
+        if self.collision and not config.get('measured_context', False):
+            raise ValueError('IK_COLLISION_REQUIRES_MEASURED_CONTEXT')
         q, context, transform = self.arm.symbolic_fk(parameterize_context=True)
         self.context_fk = ca.Function('fk_context', [q, context], [transform])
         self.symbolic_fk = ca.Function('fk', [q], [self.context_fk(q, self.arm.context_default)])
@@ -31,6 +35,9 @@ class PinocchioCasadiIK:
                 config['smooth_weight']*ca.sumsqr(self.q-self.seed))
         opti.minimize(loss)
         opti.subject_to(opti.bounded(self.arm.lower, self.q, self.arm.upper))
+        if self.collision:
+            # Small numerical buffer; numeric FK still enforces the full margin.
+            opti.subject_to(self.collision.symbolic(self.q, self.context) >= 1e-6)
         opti.solver('ipopt', {'print_time': False},
                     {'print_level': 0, 'sb': 'yes', 'max_iter': 60, 'tol': 1e-5,
                      'max_cpu_time': config['solve_timeout']})
@@ -63,6 +70,8 @@ class PinocchioCasadiIK:
                     not np.allclose(target[:3, :3].T @ target[:3, :3], np.eye(3), atol=1e-3) or
                     not np.isclose(np.linalg.det(target[:3, :3]), 1., atol=1e-3)):
                 raise ValueError('IK_INVALID_TARGET')
+            if self.collision and not self.collision.safe(seed, context):
+                raise ValueError('IK_COLLISION_SEED')
             q = self._solve(seed, target, context) if request.target else seed
             actual = self.arm.fk(q, context)
             pe = float(np.linalg.norm(actual[:3, 3]-target[:3, 3]))
@@ -74,6 +83,8 @@ class PinocchioCasadiIK:
                 raise ValueError('IK_RESIDUAL')
             if np.max(np.abs(q-seed)) > self.cfg['max_joint_step']:
                 raise ValueError('IK_DISCONTINUITY')
+            if self.collision and not self.collision.segment_safe(seed, q, context):
+                raise ValueError('IK_COLLISION_PATH')
             elapsed = time.monotonic()-start
             if elapsed > self.cfg['solve_timeout']:
                 raise ValueError('IK_TIMEOUT')
