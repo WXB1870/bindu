@@ -4,6 +4,7 @@ No direct VRInput or joint stream is published by the operator peer. Only the
 explicit initial bent-arm fixture uses the motion service before VR takes over.
 """
 import gzip
+from collections import deque
 import json
 import math
 import threading
@@ -52,7 +53,7 @@ class ControllerPeer:
                     else:ws=connect(f'ws://127.0.0.1:{self.args.vr_port}/',open_timeout=1)
                 except OSError:self.stop.wait(.1)
             if ws is None:raise RuntimeError('Vuer websocket not available')
-            previous=None;deadline=time.monotonic()
+            previous=None;deadline=time.monotonic();pending=deque()
             with ws:
                 while not self.stop.is_set():
                     state=self.control.copy();now=time.monotonic()
@@ -70,11 +71,16 @@ class ControllerPeer:
                             other:neutral.ravel(order='F').tolist(),self.args.side+'State':buttons,
                             other+'State':dict(buttons,squeezeValue=0.,triggerValue=0.)}
                         event={'etype':'CONTROLLER_MOVE','key':'motionControllers','value':value}
-                        tx=time.time();ws.send(packb(event,use_bin_type=True));self.sent+=1
-                        if previous is not None:self.intervals.append(now-previous)
-                        previous=now
-                        log.write(json.dumps({'tx_stamp':tx,'sequence':self.sent,'event':event})+'\n')
+                        pending.append((now+self.args.vr_network_delay, {'capture_stamp':time.time(),'event':event,
+                            'motion_elapsed_s':None if state['motion_start'] is None else now-state['motion_start'],
+                            'motion_period_s':state['duration'],'motion_scale':state['scale']}))
                     else:previous=None
+                    while pending and pending[0][0]<=time.monotonic():
+                        _,packet=pending.popleft();tx=time.time();sent_at=time.monotonic()
+                        ws.send(packb(packet['event'],use_bin_type=True));self.sent+=1
+                        if previous is not None:self.intervals.append(sent_at-previous)
+                        previous=sent_at
+                        log.write(json.dumps(dict(packet,tx_stamp=tx,sequence=self.sent))+'\n')
                     for _ in range(3):
                         try:
                             packet=repr(unpackb(ws.recv(timeout=.0001),raw=False))
@@ -249,7 +255,8 @@ def vr_checks(node,args,profile,seen,results,command,send,finished,release,drain
             'measured_joint_range_rad':ranges,'vuer_feedback_packets_received':True,'wire_format':'v3.4 CONTROLLER_MOVE / column-major OpenXR',
             'input_origin':'synthetic hand poses; real Vuer WebSocket receiver, no headset',
             'nominal_rate_hz':72,'translation_noise_std_m':.001 if args.vr_stress else .00015,
-            'interval_jitter_seconds':.002,'tls':args.vr_tls,'pose_filter_enabled':not args.vr_filter_off})
+            'interval_jitter_seconds':.002,'tls':args.vr_tls,'pose_filter_enabled':not args.vr_filter_off,
+            'extra_network_delay_s':args.vr_network_delay})
     finally:
         if active_goal is not None:
             try:

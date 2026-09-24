@@ -219,10 +219,14 @@ def main():
     parser.add_argument('--vr-stress',action='store_true',help='Fine/noisy, wide, fast, and abrupt-target controller inputs')
     parser.add_argument('--vr-filter-off',action='store_true',help='Same VR test with input pose filter disabled')
     parser.add_argument('--vr-tls',action='store_true',help='Use a locally trusted ephemeral test certificate and WSS')
+    parser.add_argument('--vr-network-delay',type=float,default=0.,help='Extra synthetic one-way network delay in seconds (0..1)')
     parser.add_argument('--soak-seconds',type=float,default=600.)
     parser.add_argument('--soak-amplitude',type=float,default=.45,help='Shoulder oscillation amplitude in rad; elbow uses 60 percent')
     parser.add_argument('--soak-period',type=float,default=12.,help='Oscillation period in seconds')
-    args=parser.parse_args();args.output.mkdir(parents=True,exist_ok=False)
+    args=parser.parse_args()
+    if not math.isfinite(args.vr_network_delay) or not 0 <= args.vr_network_delay <= 1:
+        parser.error('--vr-network-delay must be finite and between 0 and 1 seconds')
+    args.output.mkdir(parents=True,exist_ok=False)
     profile=Profile.load(args.model/'g1_physics_sim.json')
     rclpy.init();node=rclpy.create_node('physics_validator');seen={};samples=[];results=[];process=None
     from collections import deque

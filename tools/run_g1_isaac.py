@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Run the provisional G1 PhysX device backend in Isaac Sim 6.0 (GUI by default)."""
 import argparse
+from collections import deque
 import gc
 import hashlib
 import json
@@ -183,7 +184,10 @@ def main():
     parser.add_argument('--duration', type=float, default=0., help='Wall seconds after warmup, 0 until window closes')
     parser.add_argument('--output', type=Path, default=ROOT/'artifacts/g1-physics-run')
     parser.add_argument('--no-ros', action='store_true', help='View the stationary model without the control bridge')
+    parser.add_argument('--command-delay', type=float, default=0., help='Extra simulated command delivery delay in seconds (0..1)')
     args = parser.parse_args()
+    if not math.isfinite(args.command_delay) or not 0 <= args.command_delay <= 1:
+        parser.error('--command-delay must be finite and between 0 and 1 seconds')
     args.model = args.model.resolve(); args.output.mkdir(parents=True, exist_ok=True)
     cfg = json.loads((args.model/'physics.json').read_text())
     from isaacsim import SimulationApp
@@ -283,7 +287,11 @@ def main():
                     state['received'] += 1; state['code'] = 'OK'
                 except ValueError as exc:
                     state['rejected'] += 1; state['code'] = str(exc)
-            subscription = node.create_subscription(SimulationCommand, 'simulation/command', receive, 8)
+            pending_commands = deque()
+            def enqueue(command):
+                pending_commands.append((time.monotonic()+args.command_delay, command))
+            subscription = node.create_subscription(SimulationCommand, 'simulation/command',
+                enqueue if args.command_delay else receive, 8)
             publisher = node.create_publisher(SimulationFeedback, 'simulation/feedback', QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT))
             # Independent PhysX link transforms, not FK reconstructed from q.
             # PoseArray order is base, left flange, right flange, in world.
@@ -309,6 +317,7 @@ def main():
                     'link_pose_order': link_order if node else [],
                     'navigation_scene': room, 'navigation_robot': nav_robot,
                     'odometry': sensor_cfg if room else None,
+                    'command_delay_s': args.command_delay,
                     'gui': not args.headless, 'model': str(args.model), 'simulation_only': True}
         (args.output/'scene.json').write_text(json.dumps(metadata, indent=2)+'\n')
         world.stage.GetRootLayer().Export(str((args.output/'scene.usda').resolve()))
@@ -337,6 +346,10 @@ def main():
             if node:
                 for _ in range(8):
                     rclpy.spin_once(node, timeout_sec=0.)
+                while pending_commands and pending_commands[0][0] <= time.monotonic():
+                    # Validate original timestamps on delivery, including hold;
+                    # the local watchdog remains immediate and independent.
+                    receive(pending_commands.popleft()[1])
                 for group in gate.expired(now()):
                     hold(group); state['expired'] += 1; state['code'] = 'SIM_COMMAND_TIMEOUT'
             after_receive = time.monotonic()
