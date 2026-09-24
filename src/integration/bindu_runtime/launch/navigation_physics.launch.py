@@ -9,7 +9,7 @@ from launch_ros.parameter_descriptions import ParameterValue
 def generate_launch_description():
     args=[DeclareLaunchArgument(k) for k in ('namespace','profile','navigation_robot','navigation_config','output','run_id','identity_bridge')]
     args.append(DeclareLaunchArgument('require_scan',default_value='false'))
-    args.append(DeclareLaunchArgument('recording_mode',default_value='normal'))
+    args.append(DeclareLaunchArgument('recording_mode',default_value='compact'))
     common={k:LaunchConfiguration(k) for k in ('profile','run_id')}
     nodes=[]
     for name,extra in [('execution',{'device_backend':'external_simulation'}),

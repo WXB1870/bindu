@@ -287,7 +287,7 @@ def main():
     try:
         until(node,lambda:'physics' in seen and seen['physics'].ready,seconds=20.)
         assert seen['physics'].profile_hash==profile.digest
-        launch=['ros2','launch','bindu_runtime','g1_sim.launch.py','namespace:='+args.namespace,
+        launch=['ros2','launch','bindu_runtime','g1_sim.launch.py','recording_mode:=normal','namespace:='+args.namespace,
             'profile:='+str((args.model/'g1_physics_sim.json').resolve()),'device_backend:=external_simulation',
             'navigation_enabled:=false','output:='+str((args.output/'episodes').resolve())]
         if args.suite=='vr':

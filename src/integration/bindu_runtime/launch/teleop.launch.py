@@ -15,7 +15,7 @@ def generate_launch_description():
     defaults = {'profile': str(share/'config/huawei_v34_left_sim.json'),
                 'teleop_config': str(share/'config/teleop_v34.json'),
                 'namespace': 'bindu_sim', 'run_id': uuid.uuid4().hex,
-                'output': '/tmp/bindu-runs', 'recording_mode': 'normal', 'vr_enabled': 'false',
+                'output': '/tmp/bindu-runs', 'recording_mode': 'compact', 'vr_enabled': 'false',
                 'host': '127.0.0.1', 'port': '8012', 'side': 'left',
                 'cert_file': '', 'key_file': ''}
     args = [DeclareLaunchArgument(k, default_value=v) for k, v in defaults.items()]

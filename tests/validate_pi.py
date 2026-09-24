@@ -42,11 +42,12 @@ def run_case(root,output,name,mode='pubsub',fault='',correlate=False,launch=Fals
     seen={'state':None,'health':None,'accepted':[],'events':[],'observations':0}
     publish_enabled=[not startup]
     def start(key,command):
+        if key=='recorder':command+=['-p','recording_mode:=normal']
         log=(folder/(key+'.log')).open('w');handles.append(log)
         processes[key]=subprocess.Popen(command,stdout=log,stderr=subprocess.STDOUT,start_new_session=True)
     try:
         if launch:
-            start('launch',['ros2','launch','bindu_runtime','g1_sim.launch.py' if g1 else 'skeleton.launch.py','namespace:='+namespace,
+            start('launch',['ros2','launch','bindu_runtime','g1_sim.launch.py' if g1 else 'skeleton.launch.py','recording_mode:=normal','namespace:='+namespace,
                   'run_id:='+run,'output:='+str(output/'episodes'),'pi_enabled:=true','pi_config:='+str(config)])
         else:
             for executable in ('execution','recorder','pi_client'):

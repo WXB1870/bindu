@@ -42,7 +42,7 @@ def run_case(root,output,case,g1=False):
         if case=='false_yaw_success':
             config['sites'][0].update(x=0.,y=0.,yaw=.5)
         cfg=folder/'navigation.json';cfg.write_text(json.dumps(config))
-        start('launch',['ros2','launch','bindu_runtime','g1_sim.launch.py' if g1 else 'skeleton.launch.py','namespace:='+ns,'run_id:='+run,
+        start('launch',['ros2','launch','bindu_runtime','g1_sim.launch.py' if g1 else 'skeleton.launch.py','recording_mode:=normal','namespace:='+ns,'run_id:='+run,
             'output:='+str(output/'episodes'),'navigation_config:='+str(cfg)]+
             ([] if g1 else ['navigation_provider:=bindu_runtime.navigation:Nav2Navigation']))
         start('peer',[sys.executable,str(root/'tests/navigation_peer.py'),'--ros-args','-r','__ns:='+ns,

@@ -45,7 +45,7 @@ def run(output):
                for name,kind in [('lease',Lease),('submit',SubmitMotion),('sim_fault',InjectFault),('control',ControlExecution)]}
     results = []
     log = (output/'launch.log').open('w')
-    process = subprocess.Popen(['ros2','launch','bindu_runtime','g1_sim.launch.py','namespace:='+ns,
+    process = subprocess.Popen(['ros2','launch','bindu_runtime','g1_sim.launch.py','recording_mode:=normal','namespace:='+ns,
                                 'output:='+str(output/'episodes')], stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
     try:
         for client in clients.values(): assert client.wait_for_service(timeout_sec=15)

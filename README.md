@@ -80,7 +80,7 @@ source install/setup.bash
 
 ```bash
 export ROS_DOMAIN_ID=116 ROS_LOCALHOST_ONLY=1
-ros2 launch bindu_runtime skeleton.launch.py
+ros2 launch bindu_runtime skeleton.launch.py recording_mode:=normal
 ```
 
 另开一个终端，进入同一工作区并提交模拟取物任务：
@@ -97,10 +97,10 @@ ros2 action send_goal /bindu_sim/tasks/fetch_drink bindu_interfaces/action/Fetch
 
 ## 日志记录级别
 
-运行入口统一支持 `recording_mode:=normal|compact|off`，默认 `normal`，启动时选择。例如：
+运行入口统一支持 `recording_mode:=normal|compact|off`，默认 `compact`（简洁）。当前开发阶段显式使用 `normal`（正常），各验证脚本已显式设置；日志级别专项测试除外。开发启动示例：
 
 ```bash
-ros2 launch bindu_runtime g1_sim.launch.py recording_mode:=compact
+ros2 launch bindu_runtime g1_sim.launch.py recording_mode:=normal
 ```
 
 | 级别 | 内容 |
@@ -171,7 +171,7 @@ python3 tests/validate_navigation.py --output artifacts/navigation-check
 角度单位为rad。位置限位逐轴取自原URDF，保留左右臂不对称范围；速度上限暂取原值与0.5 rad/s的较小值，加速度/jerk的2 rad/s²、12 rad/s³为模拟执行配置，不能作实机参数。额外腿腰轴`leg_joint4/5`固定在零位；手爪与轮子子树省略，底盘由差速模拟驱动负责，手臂保留法兰安装坐标。模型只保留运动学/惯性，不含视觉网格或碰撞几何；三轴腿腰映射是临时近似，尚未做实机标定。
 
 ```bash
-ros2 launch bindu_runtime g1_sim.launch.py
+ros2 launch bindu_runtime g1_sim.launch.py recording_mode:=normal
 python3 tests/validate_g1.py --output artifacts/g1-check
 ```
 
@@ -181,11 +181,11 @@ G1 能力统一从同一入口选择（需要重建工作区以生成新增的 `
 
 ```bash
 # 左臂 VR/IK 与显示；右臂改为 side:=right。头显连接另需 host/TLS 配置。
-ros2 launch bindu_runtime g1_sim.launch.py vr_enabled:=true side:=left
+ros2 launch bindu_runtime g1_sim.launch.py recording_mode:=normal vr_enabled:=true side:=left
 # 已有 VRInput 源时，仅启用 IK 与显示。
-ros2 launch bindu_runtime g1_sim.launch.py teleop_enabled:=true side:=left
+ros2 launch bindu_runtime g1_sim.launch.py recording_mode:=normal teleop_enabled:=true side:=left
 # Pi 客户端；另需配置服务端点并提供三路 RGB 与全身关节观测。
-ros2 launch bindu_runtime g1_sim.launch.py pi_enabled:=true
+ros2 launch bindu_runtime g1_sim.launch.py recording_mode:=normal pi_enabled:=true
 ```
 
 以上是不同启动方式，不应在同一命名空间重复启动。VR 左右臂分别使用 `teleop_g1_left/right.json`；会话资源为 `left_arm` 或 `right_arm`，一次控制一臂。IK 和显示使用当前腿腰、头部及另一臂反馈，优化变量只有所选臂的7轴；非活动关节缺失/非法或求解期间姿态变化时拒绝下发。末端暂用法兰坐标，不包含手爪TCP标定。Pi 的 `pi_g1.json` 显式映射19轴观测，要求动作关联观测与会话，允许同样的两个单臂资源；不表示远端模型已支持该本体，默认端点仍为本地测试地址。
@@ -264,7 +264,7 @@ python3 tests/validate_physics.py --suite vr --vr-stress --vr-tls --output artif
 验证器自行启动和收尾同命名空间的G1执行/记录节点，检测19轴实测反馈、五组关节跟踪、取消后实际停稳、直行/圆弧及执行进程失联保护；图形仿真继续保留。 `--suite dynamics`复用Pinocchio/CasADi独立IK工作进程，验证左右臂末端目标到达、不可达目标不下发、20Hz连续笛卡尔目标、100Hz关节目标换向、取消/TTL断流保持及旧租约/越限/错序拒绝。IK种子和非活动关节均来自PhysX反馈；末端误差为实测关节FK在`base_link`中的推算，不是独立视觉或PhysX连杆位姿测量。该批使用合成目标，不含现场头显、Vuer接收或Pi服务；原始目标、执行参考和物理反馈分别记录在输出目录。每个仿真实例只接受首个执行器身份，重新运行验证器或替换执行器前须重启图形仿真。若手动运行能力入口，不要同时运行验证器：
 
 ```bash
-ros2 launch bindu_runtime g1_sim.launch.py namespace:=/bindu_g1_physics \
+ros2 launch bindu_runtime g1_sim.launch.py recording_mode:=normal namespace:=/bindu_g1_physics \
   profile:="$PWD/artifacts/g1-physics-model/g1_physics_sim.json" \
   device_backend:=external_simulation navigation_enabled:=false
 ```
@@ -310,7 +310,7 @@ tools/run_g1_isaac.sh --namespace /bindu_navigation \
   --navigation-robot src/integration/bindu_runtime/config/navigation_g1_fixture.json \
   --output artifacts/navigation-room-scene
 # 终端2：加载相同ROS环境与域，等待物理场景READY后启动。
-ros2 launch bindu_runtime navigation_physics.launch.py namespace:=/bindu_navigation \
+ros2 launch bindu_runtime navigation_physics.launch.py recording_mode:=normal namespace:=/bindu_navigation \
   profile:="$PWD/artifacts/g1-physics-model/g1_physics_sim.json" \
   navigation_robot:="$PWD/src/integration/bindu_runtime/config/navigation_g1_fixture.json" \
   navigation_config:="$PWD/src/integration/bindu_runtime/config/navigation_room_sites.json" \
@@ -345,7 +345,7 @@ tools/run_g1_isaac.sh --namespace /bindu_navigation \
   --navigation-sensors src/integration/bindu_runtime/config/navigation_sensors.json \
   --output artifacts/slam-scene
 # 终端2：物理场景READY后，启用扫描新鲜度门控。
-ros2 launch bindu_runtime navigation_physics.launch.py namespace:=/bindu_navigation \
+ros2 launch bindu_runtime navigation_physics.launch.py recording_mode:=normal namespace:=/bindu_navigation \
   profile:="$PWD/artifacts/g1-physics-model/g1_physics_sim.json" \
   navigation_robot:="$PWD/src/integration/bindu_runtime/config/navigation_g1_fixture.json" \
   navigation_config:="$PWD/src/integration/bindu_runtime/config/navigation_mapping_sites.json" \
@@ -390,7 +390,7 @@ python3 -m pip install --target artifacts/lio-python -r tools/requirements-navig
 启动示例中的传感器配置是**合成测试fixture**，零外参不是实机标定，也不是现有Isaac二维射线输入的适配：
 
 ```bash
-ros2 launch bindu_runtime lio.launch.py namespace:=/bindu_lio_test \
+ros2 launch bindu_runtime lio.launch.py recording_mode:=normal namespace:=/bindu_lio_test \
   sensor_config:="$PWD/src/integration/bindu_runtime/config/navigation_lio_fixture.json" \
   mode:=mapping save_map:="$PWD/artifacts/lio-room.pcd"
 # 有输入并完成建图后，另一个终端保存；不会覆盖已有PCD
@@ -455,7 +455,7 @@ FAST-LIO断流锁定后要求显式重启，故新测试在确认停车后重启
 手工联调时，先配置服务端点、关节映射及观测输入，再启动客户端：
 
 ```bash
-ros2 launch bindu_runtime skeleton.launch.py pi_enabled:=true
+ros2 launch bindu_runtime skeleton.launch.py recording_mode:=normal pi_enabled:=true
 ```
 
 在同一 ROS 域、已加载工作区的另一终端中查询就绪状态并发起会话：
@@ -491,7 +491,7 @@ python3 tests/validate_teleop.py --output artifacts/teleop-check
 连接头显时，使用本机有效的 TLS 证书和私钥路径，并让头显能访问输入服务地址。证书不随代码分发；默认仅监听 `127.0.0.1`，下面显式开启局域网输入：
 
 ```bash
-ros2 launch bindu_runtime teleop.launch.py vr_enabled:=true host:=0.0.0.0 \
+ros2 launch bindu_runtime teleop.launch.py recording_mode:=normal vr_enabled:=true host:=0.0.0.0 \
   cert_file:=/绝对路径/cert.pem key_file:=/绝对路径/key.pem
 ```
 

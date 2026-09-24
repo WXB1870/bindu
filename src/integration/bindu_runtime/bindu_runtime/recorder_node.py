@@ -10,7 +10,7 @@ class RecorderNode(RuntimeNode):
     def __init__(self):
         super().__init__('recorder')
         self.declare_parameter('output', '/tmp/bindu-runs')
-        self.declare_parameter('recording_mode', 'normal')
+        self.declare_parameter('recording_mode', 'compact')
         mode = self.get_parameter('recording_mode').value
         self.writer = AsyncRecorder(Path(self.get_parameter('output').value) / self.run_id,
                                     {'schema_version':1, 'run_id':self.run_id, 'simulated':True,

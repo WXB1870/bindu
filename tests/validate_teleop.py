@@ -79,6 +79,7 @@ def run_case(root,output,case,g1=False,side='left'):
     with socket.socket() as sock:
         sock.bind(('127.0.0.1',0));port=sock.getsockname()[1]
     def start(key,cmd):
+        if key=='recorder':cmd+=['-p','recording_mode:=normal']
         log=(folder/(key+'.log')).open('w');handles.append(log)
         processes[key]=subprocess.Popen(cmd,stdout=log,stderr=subprocess.STDOUT,start_new_session=True)
     try:
@@ -87,7 +88,7 @@ def run_case(root,output,case,g1=False,side='left'):
                  '-p','model_root:='+str(root/'src/hardware/bindu_description/urdf')] if g1 else []
         launched = case in ('normal', 'websocket_launch')
         if launched:
-            start('launch',['ros2','launch','bindu_runtime','g1_sim.launch.py' if g1 else 'teleop.launch.py','namespace:='+namespace,
+            start('launch',['ros2','launch','bindu_runtime','g1_sim.launch.py' if g1 else 'teleop.launch.py','recording_mode:=normal','namespace:='+namespace,
                             'run_id:='+run,'output:='+str(output/'episodes')]+(['teleop_enabled:=true','side:='+side] if g1 else [])+
                             (['vr_enabled:=true','port:='+str(port)] if case=='websocket_launch' else []))
         for executable in (() if launched else ('execution','recorder','teleop','teleop_display')):

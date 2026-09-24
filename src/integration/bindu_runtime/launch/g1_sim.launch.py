@@ -53,7 +53,7 @@ def assemble(context):
 
 def generate_launch_description():
     share = Path(get_package_share_directory('bindu_runtime'))
-    defaults = {'namespace':'bindu_g1_sim', 'run_id':uuid.uuid4().hex, 'output':'/tmp/bindu-runs', 'recording_mode':'normal',
+    defaults = {'namespace':'bindu_g1_sim', 'run_id':uuid.uuid4().hex, 'output':'/tmp/bindu-runs', 'recording_mode':'compact',
                 'profile':str(share/'config/g1_provisional_sim.json'), 'device_backend':'kinematic',
                 'teleop_enabled':'false', 'teleop_config':'', 'vr_enabled':'false', 'side':'left', 'host':'127.0.0.1',
                 'port':'8012', 'cert_file':'', 'key_file':'', 'pi_enabled':'false',

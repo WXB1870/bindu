@@ -8,7 +8,7 @@ from threading import Thread
 
 class AsyncRecorder:
     """Bounded nonblocking ingress; disk I/O occurs only in the writer thread."""
-    def __init__(self, directory, manifest, capacity=4096, *, mode='normal'):
+    def __init__(self, directory, manifest, capacity=4096, *, mode='compact'):
         if mode not in ('normal', 'compact', 'off'):
             raise ValueError('INVALID_RECORDING_MODE')
         self.mode = mode

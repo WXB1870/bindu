@@ -149,7 +149,7 @@ class Contracts(unittest.TestCase):
         self.assertEqual(s.held_object,'drink')
 
     def test_recording(self):
-        w=AsyncRecorder(self.path/'run',{'simulated':True})
+        w=AsyncRecorder(self.path/'run',{'simulated':True},mode='normal')
         for i in range(100): self.assertTrue(w.submit({'n':i}))
         w.close()
         summary=json.loads((self.path/'run/summary.json').read_text())
@@ -159,7 +159,8 @@ class Contracts(unittest.TestCase):
             self.assertEqual([json.loads(line) for line in stream], [{'n':i} for i in range(100)])
 
     def test_recorder_compact_preserves_commands_and_faults(self):
-        w=AsyncRecorder(self.path/'compact',{},mode='compact')
+        w=AsyncRecorder(self.path/'compact',{})
+        self.assertEqual(w.mode,'compact')
         for i in range(100):
             for kind,data in [('feedback',{'state':'RUNNING','code':'OK'}),('vr_input',{'valid':True}),
                               ('reference',{'command_id':str(i)}),

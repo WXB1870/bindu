@@ -19,7 +19,7 @@ def generate_launch_description():
         'run_id': uuid.uuid4().hex,
         'namespace': 'bindu_sim',
         'output': '/tmp/bindu-runs',
-        'recording_mode': 'normal',
+        'recording_mode': 'compact',
         'planner_provider': 'bindu_planning.simulated:PlannerStrategy',
         'chunk_provider': 'bindu_vla.simulated:ChunkStrategy',
         'navigation_config': str(Path(get_package_share_directory('bindu_runtime'))/'config/navigation_sim.json'),
