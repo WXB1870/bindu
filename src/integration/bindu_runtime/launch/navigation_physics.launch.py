@@ -9,10 +9,11 @@ from launch_ros.parameter_descriptions import ParameterValue
 def generate_launch_description():
     args=[DeclareLaunchArgument(k) for k in ('namespace','profile','navigation_robot','navigation_config','output','run_id','identity_bridge')]
     args.append(DeclareLaunchArgument('require_scan',default_value='false'))
+    args.append(DeclareLaunchArgument('recording_mode',default_value='normal'))
     common={k:LaunchConfiguration(k) for k in ('profile','run_id')}
     nodes=[]
     for name,extra in [('execution',{'device_backend':'external_simulation'}),
-                       ('recorder',{'output':LaunchConfiguration('output')}),
+                       ('recorder',{'output':LaunchConfiguration('output'), 'recording_mode':ParameterValue(LaunchConfiguration('recording_mode'),value_type=str)}),
                        ('task',{'navigation_provider':'bindu_runtime.navigation:Nav2Navigation',
                                 'navigation_config':LaunchConfiguration('navigation_config')})]:
         nodes.append(Node(package='bindu_runtime',executable=name,namespace=LaunchConfiguration('namespace'),

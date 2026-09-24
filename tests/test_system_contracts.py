@@ -1,4 +1,5 @@
 import json
+import gzip
 import tempfile
 import unittest
 from dataclasses import replace
@@ -154,6 +155,40 @@ class Contracts(unittest.TestCase):
         summary=json.loads((self.path/'run/summary.json').read_text())
         self.assertTrue(summary['writer_complete'])
         self.assertEqual(summary['written'],100)
+        with gzip.open(self.path/'run/episode.jsonl.gz','rt') as stream:
+            self.assertEqual([json.loads(line) for line in stream], [{'n':i} for i in range(100)])
+
+    def test_recorder_compact_preserves_commands_and_faults(self):
+        w=AsyncRecorder(self.path/'compact',{},mode='compact')
+        for i in range(100):
+            for kind,data in [('feedback',{'state':'RUNNING','code':'OK'}),('vr_input',{'valid':True}),
+                              ('reference',{'command_id':str(i)}),
+                              ('event',{'state':'TELEOP_IK_RESULT','code':'{"code":"OK"}'})]:
+                w.submit({'kind':kind,'received_at':i*.01,'data':data})
+        w.submit({'kind':'feedback','received_at':.995,'data':{'state':'FAILED','code':'STOP_FAILED'}})
+        w.submit({'kind':'event','received_at':.995,'data':{'state':'TELEOP_IK_RESULT','code':'{"code":"IK_RESIDUAL"}'}})
+        w.close()
+        with gzip.open(self.path/'compact/episode.jsonl.gz','rt') as stream:
+            records=[json.loads(line) for line in stream]
+        self.assertEqual(sum(r['kind']=='reference' for r in records),100)
+        self.assertLess(sum(r['kind']=='vr_input' for r in records),12)
+        self.assertGreater(sum(r['kind']=='vr_input' for r in records),8)
+        self.assertTrue(any(r['data'].get('code')=='STOP_FAILED' for r in records))
+        self.assertEqual([r['data']['code'] for r in records if r['kind']=='event'],['{"code":"IK_RESIDUAL"}'])
+        summary=json.loads((self.path/'compact/summary.json').read_text())
+        self.assertEqual(summary['written']+summary['sampled_out'],402)
+        self.assertTrue(summary['writer_complete']);self.assertEqual(summary['dropped'],0)
+
+    def test_recorder_off_has_no_files_or_worker(self):
+        w=AsyncRecorder(self.path/'off',{},mode='off')
+        self.assertTrue(w.submit({'n':1}));w.close()
+        self.assertIsNone(w.worker);self.assertFalse(w.directory.exists())
+        self.assertEqual(w.queue.qsize(),0);self.assertEqual(w.written,0)
+
+    def test_recorder_rejects_unknown_mode(self):
+        with self.assertRaisesRegex(ValueError,'INVALID_RECORDING_MODE'):
+            AsyncRecorder(self.path/'bad',{},mode='quite')
+        self.assertFalse((self.path/'bad').exists())
 
     def test_recorder_bounded(self):
         with patch('bindu_recording.recorder.Thread.start'):

@@ -6,6 +6,7 @@ from launch.actions import DeclareLaunchArgument
 from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 from ament_index_python.packages import get_package_share_directory
 from bindu_runtime.device_assembly import DEFAULT_DRIVERS
 
@@ -18,6 +19,7 @@ def generate_launch_description():
         'run_id': uuid.uuid4().hex,
         'namespace': 'bindu_sim',
         'output': '/tmp/bindu-runs',
+        'recording_mode': 'normal',
         'planner_provider': 'bindu_planning.simulated:PlannerStrategy',
         'chunk_provider': 'bindu_vla.simulated:ChunkStrategy',
         'navigation_config': str(Path(get_package_share_directory('bindu_runtime'))/'config/navigation_sim.json'),
@@ -30,11 +32,11 @@ def generate_launch_description():
     }
     args = [DeclareLaunchArgument(key, default_value=value) for key, value in defaults.items()]
     common = {key: LaunchConfiguration(key) for key in ('profile', 'run_id')}
-    extra = {'execution': tuple(DEFAULT_DRIVERS), 'recorder': ('output',),
+    extra = {'execution': tuple(DEFAULT_DRIVERS), 'recorder': ('output','recording_mode'),
              'task': ('planner_provider', 'chunk_provider', 'navigation_provider', 'navigation_config', 'navigation_backend'), 'perception': ('perception_provider',)}
     nodes = []
     for name, keys in extra.items():
-        parameters = {**common, **{key: LaunchConfiguration(key) for key in keys}}
+        parameters = {**common, **{key: ParameterValue(LaunchConfiguration(key),value_type=str) if key=='recording_mode' else LaunchConfiguration(key) for key in keys}}
         nodes.append(Node(
             package=LaunchConfiguration('perception_package') if name=='perception' else 'bindu_runtime',
             executable=LaunchConfiguration('perception_executable') if name=='perception' else name,

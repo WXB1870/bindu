@@ -5,6 +5,7 @@ import hashlib
 import platform
 import sys
 import json
+import gzip
 import os
 from pathlib import Path
 import signal
@@ -46,7 +47,7 @@ def terminate(p):
             p.wait(timeout=3)
 
 
-def scenario(root, output, case, strategy='planner', profile='wheel_sim', fault='', cancel=False, launch=False):
+def scenario(root, output, case, strategy='planner', profile='wheel_sim', fault='', cancel=False, launch=False, recording_mode='normal'):
     run=case+'_'+uuid.uuid4().hex[:8]
     ns='/bindu_test_'+uuid.uuid4().hex[:8]
     logs=output/'processes'/run
@@ -62,13 +63,14 @@ def scenario(root, output, case, strategy='planner', profile='wheel_sim', fault=
         if launch:
             log=(logs/'launch.log').open('w'); handles.append(log)
             processes['task']=subprocess.Popen(['ros2','launch','bindu_runtime','skeleton.launch.py',
-                'namespace:='+ns, 'run_id:='+run,'output:='+str(output/'episodes')],
+                'namespace:='+ns, 'run_id:='+run,'output:='+str(output/'episodes'),'recording_mode:='+recording_mode],
                 stdout=log,stderr=subprocess.STDOUT,start_new_session=True)
         for name in (() if launch else ('execution','perception','recorder','task')):
             log=(logs/(name+'.log')).open('w'); handles.append(log)
             cmd=['ros2','run','bindu_runtime',name,'--ros-args','-r','__ns:='+ns,
                  '-p','profile:='+str(root/'src/integration/bindu_runtime/config'/f'{profile}.json'),
                  '-p','run_id:='+run,'-p','output:='+str(output/'episodes')]
+            if name=='recorder':cmd+=['-p','recording_mode:='+json.dumps(recording_mode)]
             processes[name]=subprocess.Popen(cmd,stdout=log,stderr=subprocess.STDOUT,start_new_session=True)
         action=ActionClient(node,FetchDrink,ns+'/tasks/fetch_drink')
         assert action.wait_for_server(timeout_sec=15),'no task server'
@@ -131,10 +133,15 @@ def scenario(root, output, case, strategy='planner', profile='wheel_sim', fault=
         node.destroy_node()
         for h in handles: h.close()
     episode=output/'episodes'/run
-    if fault!='recorder_loss':
+    if recording_mode=='off':
+        assert not episode.exists(),'off mode must not create episode files'
+        assert seen['health'].ready and seen['health'].written==0 and seen['health'].dropped==0
+        result['recorder']={'recording_mode':'off','files_created':False}
+    elif fault!='recorder_loss':
         summary=json.loads((episode/'summary.json').read_text())
         assert summary['writer_complete'] and summary['dropped']==0,summary
-        records=[json.loads(line) for line in (episode/'episode.jsonl').read_text().splitlines()]
+        with gzip.open(episode/'episode.jsonl.gz','rt') as stream:
+            records=[json.loads(line) for line in stream]
         kinds={r['kind'] for r in records}
         assert {'event','feedback','reference'}<=kinds,kinds
         assert any(r['kind']=='event' and r['data']['state'].startswith('TASK_') for r in records)
@@ -301,6 +308,8 @@ def main():
     cases.append(('online_targets',{}))
     cases.append(('timed_chunks',{}))
     cases.append(('launch_entry',dict(launch=True)))
+    cases.append(('recording_compact',dict(launch=True,recording_mode='compact')))
+    cases.append(('recording_off',dict(launch=True,recording_mode='off')))
     if args.case:
         cases=[item for item in cases if item[0] in args.case]
         assert cases, 'unknown case'

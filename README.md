@@ -95,6 +95,24 @@ ros2 action send_goal /bindu_sim/tasks/fetch_drink bindu_interfaces/action/Fetch
 
 `strategy` 支持 `planner` 和 `chunk` 两种模拟策略。一次成功任务后，模拟场景保留持物状态；新的独立实验需重启模拟系统。以上流程不连接真实机器人。
 
+## 日志记录级别
+
+运行入口统一支持 `recording_mode:=normal|compact|off`，默认 `normal`，启动时选择。例如：
+
+```bash
+ros2 launch bindu_runtime g1_sim.launch.py recording_mode:=compact
+```
+
+| 级别 | 内容 |
+|---|---|
+| 正常 `normal` | 保留全部收到的指令、执行参考／实际反馈、VR 输入与诊断事件 |
+| 简洁 `compact` | 保留全部已接纳指令及关键／异常事件；轨迹和 VR 输入约 10 Hz，状态变化额外保留；省略重复接纳、替换及成功 IK 诊断 |
+| 无 `off` | 不订阅记录数据、不启动写入线程、不创建 episode 文件；按用户显式配置允许控制继续运行 |
+
+正常和简洁都保存为 `episode.jsonl.gz`，JSON 结构不变；读取时用 `gzip.open(path, 'rt')`。压缩与磁盘 I/O 在记录器后台线程完成，最多每0.5秒刷新一次；正常退出收尾，异常退出可能损失尚未刷出的数据。`manifest.json`注明级别和数据文件；`summary.json`将主动采样省略的`sampled_out`与意外丢弃的`dropped`分开统计。简洁模式不用于分析高频抖动或完整VR输入回放，`writer_complete`仅表示所选内容成功保存，不代表所有发布消息都已收到。
+
+`off`时健康消息`ready`表示所选关闭模式已就绪，不代表正在采集数据。此设置只控制结构化记录器；ROS自身控制台日志、验证器原始包／测量数据以及地图等专项产物独立保存。已有实验数据不自动删除，也不自动录制视频／图像。
+
 ## 测试
 
 在已加载 ROS 与工作区环境的终端执行；测试输出目录应为新的实验批次。
