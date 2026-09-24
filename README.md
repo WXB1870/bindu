@@ -251,6 +251,10 @@ python3 tests/validate_physics.py --suite dynamics --output artifacts/g1-physics
 # 各批次前均须重启Isaac；下面是独立的验证批次
 python3 tests/validate_physics.py --suite boundaries --output artifacts/g1-physics-boundaries
 python3 tests/validate_physics.py --suite faults --output artifacts/g1-physics-faults
+# 独立批次：自行启动／重启Isaac GUI，只终止本验证器创建的进程。
+# 沿用上面的ISAAC_SIM_PATH、BINDU_INSTALL和ROS_DOMAIN_ID；该命名空间不能已有模拟器。
+python3 tests/validate_physics.py --suite recovery --namespace /bindu_g1_recovery \
+  --keep-simulator --output artifacts/g1-physics-recovery
 python3 tests/validate_physics.py --suite soak --soak-seconds 600 \
   --soak-amplitude .45 --soak-period 12 --output artifacts/g1-physics-soak
 # 真实Vuer WebSocket接收合成手柄输入；右臂改为 --side right，使用新批次目录
@@ -269,7 +273,9 @@ ros2 launch bindu_runtime g1_sim.launch.py recording_mode:=normal namespace:=/bi
   device_backend:=external_simulation navigation_enabled:=false
 ```
 
-`boundaries`增加双臂近奇异小步、突变拒绝、工作空间外扩扫描，以及独立PhysX连杆位姿与关节FK的同源时间对照。`simulation/link_poses`为world帧的PoseArray，固定顺序为base_link、左法兰、右法兰；由物理张量直接测量。`faults`通过隔离ROS中继注入反馈丢失、旧反馈重复、命令丢失/延迟及实例身份变化，检查看门狗保持、旧租约拒绝和故障锁定；身份变化为消息注入，不等于真实进程重启。`soak`默认100Hz运行10分钟，肩部±0.45rad、肘部±0.27rad、周期12秒；逐帧输入、参考和反馈以压缩JSONL保存，另留接纳计数、时间对齐跟踪误差与执行器内存趋势，失败批次也保留。
+`boundaries`增加双臂近奇异小步、突变拒绝、工作空间外扩扫描，以及独立PhysX连杆位姿与关节FK的同源时间对照。`simulation/link_poses`为world帧的PoseArray，固定顺序为base_link、左法兰、右法兰；由物理张量直接测量。`faults`通过隔离ROS中继注入反馈丢失、旧反馈重复、命令丢失/延迟及实例身份变化，检查看门狗保持、旧租约拒绝和故障锁定；身份变化为消息注入，不等于真实进程重启。`soak`默认100Hz运行10分钟，肩部±0.45rad、肘部±0.27rad、周期12秒；先用有限轨迹把测试轴移入留有摆幅余量的区间，再保存逐帧输入、参考和反馈的压缩JSONL、接纳计数、时间对齐跟踪误差与执行器内存趋势，失败批次也保留。
+
+`recovery`复用故障中继，并两轮实际SIGKILL执行节点／Isaac进程后重启，检查本地看门狗、重连不自动运动、旧租约／旧实例命令拒绝，以及显式重建控制后的新命令到达。当前仿真桥绑定首个执行器身份，执行器单独重启不能接管，须重启双方；这不是已实现真机重新使能协议。Isaac重启会重新加载场景，进程消失期间没有物理演化，不把这段实验当作真机断电制动证明。`--keep-simulator`只在全部检查通过后保留最后GUI，并写入`simulator-process.json`；省略则关闭。中继断流是应用层传输故障注入，不改变主机网卡或验证实际Wi-Fi。真实Vuer连接的断开／重连可另运行`python3 tests/validate_teleop.py --g1 --cases websocket_disconnect --output artifacts/g1-vr-reconnect`，检查断线结束、重连保持和显式新会话重新握持；使用模拟关节与合成手柄输入。
 
 `vr`走真实Vuer WebSocket → CONTROLLER_MOVE解码 → ROS VRInput → 独立IK工作进程 → 租约执行器 → PhysX反馈链路。合成双手柄以名义72Hz发送OpenXR列主序矩阵；活动手柄做20秒三维弧线（x/y/z范围约80/80/120mm）及±0.08rad转腕，加入人为设定的0.15mm位置噪声、±2ms间隔抖动和周期25ms发送延迟，并渐变握持/扳机值。测试松手后手柄迁移214mm/转腕0.5rad再握持、取消、缺失手柄位姿和输入静默，检查实际停稳、重接无跳变及恢复输入不自动续跑。准备姿态单独用有限轨迹设置；开始运动前等待Vuer/IK/观察节点就绪及连续5秒新鲜物理采样。扳机只记录，不控制手部。原始WebSocket包、解码/IK事件/接受命令/执行状态、PhysX反馈及观察曲线均保留；这些输入分布不是头显实测数据。本批左右臂各5项检查通过：原始手柄帧4796/4862，接纳目标3162/3175；首个完整弧线的观察跟踪RMS为3.58/3.84mm、最大7.58/8.64mm（10Hz最新目标对实测关节FK，含时间滞后）。214mm手柄迁移后重新握持的首目标关节差为0，松手后保持漂移约3.4e-5rad；追踪无效和断流均停稳、恢复输入不自动续跑。修复了等待物理停稳后继续检查旧VR帧而误报输入超时的问题；117项模块及旧G1离合/断流/无效追踪3项回归通过。深弯肘准备姿态未满足速度停稳、启动期约330ms反馈发布阻塞及Vuer断连收尾异常的失败记录均保留；改用已验证姿态并等待启动采样稳定，不代表这些问题已解决。
 

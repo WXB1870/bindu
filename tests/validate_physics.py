@@ -214,7 +214,8 @@ def main():
     parser.add_argument('--namespace',default='/bindu_g1_physics')
     parser.add_argument('--model',type=Path,default=Path('artifacts/g1-physics-model'))
     parser.add_argument('--output',type=Path,required=True)
-    parser.add_argument('--suite',choices=('basic','dynamics','soak','boundaries','collision','faults','vr'),default='basic')
+    parser.add_argument('--suite',choices=('basic','dynamics','soak','boundaries','collision','faults','recovery','vr'),default='basic')
+    parser.add_argument('--keep-simulator',action='store_true',help='Keep the final recovery GUI open after validation')
     parser.add_argument('--side',choices=('left','right'),default='left')
     parser.add_argument('--vr-stress',action='store_true',help='Fine/noisy, wide, fast, and abrupt-target controller inputs')
     parser.add_argument('--vr-filter-off',action='store_true',help='Same VR test with input pose filter disabled')
@@ -231,12 +232,12 @@ def main():
     rclpy.init();node=rclpy.create_node('physics_validator');seen={};samples=[];results=[];process=None
     from collections import deque
     import gzip
-    raw=gzip.open(args.output/'measurements.jsonl.gz','wt') if args.suite=='soak' else None
+    raw=gzip.open(args.output/'measurements.jsonl.gz','wt') if args.suite in ('soak','recovery') else None
     if raw:samples=deque(maxlen=1000)
     qos=QoSProfile(depth=1,reliability=ReliabilityPolicy.BEST_EFFORT)
     physical_namespace=args.namespace
     relay=None
-    if args.suite=='faults':
+    if args.suite in ('faults','recovery'):
         from physics_faults import FaultRelay
         args.namespace=physical_namespace+'/fault_executor'
         relay=FaultRelay(node,physical_namespace,args.namespace,args.output)
@@ -284,8 +285,39 @@ def main():
         end=time.monotonic()+seconds
         until(node,lambda:time.monotonic()>=end,seconds=seconds+1.)
     log=(args.output/'launch.log').open('w')
+    simulator=None;scene_logs=[];scene_generation=0
+    def restart_physics(crash=False):
+        nonlocal simulator,scene_generation
+        if simulator:
+            if crash and simulator.poll() is None:
+                import os,signal
+                os.killpg(simulator.pid,signal.SIGKILL)
+                simulator.wait(timeout=10.)
+            else:terminate(simulator)
+        if crash:return
+        scene_generation+=1
+        root=Path(__file__).resolve().parents[1]
+        scene_log=(args.output/f'scene-{scene_generation}.log').open('w');scene_logs.append(scene_log)
+        # The validator owns these processes; never find/kill arbitrary Isaac instances.
+        simulator=subprocess.Popen([str(root/'tools/run_g1_isaac.sh'),
+            '--namespace',physical_namespace,'--model',str(args.model.resolve()),
+            '--navigation-scene',str(root/'src/integration/bindu_runtime/config/navigation_room.json'),
+            '--navigation-robot',str(root/'src/integration/bindu_runtime/config/navigation_g1_fixture.json'),
+            '--output',str((args.output/f'scene-{scene_generation}').resolve())],
+            stdout=scene_log,stderr=subprocess.STDOUT,start_new_session=True)
+    def restart_executor():
+        nonlocal process
+        current[0]=None
+        if process:terminate(process)
+        process=subprocess.Popen(launch,stdout=log,stderr=subprocess.STDOUT,start_new_session=True)
+        return process
     try:
-        until(node,lambda:'physics' in seen and seen['physics'].ready,seconds=20.)
+        if args.suite=='recovery':restart_physics()
+        def physics_ready():
+            if simulator and simulator.poll() is not None:
+                raise RuntimeError('OWNED_SIMULATOR_EXITED:'+str(simulator.returncode))
+            return 'physics' in seen and seen['physics'].ready
+        until(node,physics_ready,seconds=90. if args.suite=='recovery' else 20.)
         assert seen['physics'].profile_hash==profile.digest
         launch=['ros2','launch','bindu_runtime','g1_sim.launch.py','recording_mode:=normal','namespace:='+args.namespace,
             'profile:='+str((args.model/'g1_physics_sim.json').resolve()),'device_backend:=external_simulation',
@@ -319,6 +351,11 @@ def main():
         if args.suite == 'faults':
             from physics_faults import fault_checks
             fault_checks(node,profile,seen,results,command,send,release,drain,submit,control,current,relay)
+        if args.suite == 'recovery':
+            from physics_faults import fault_checks,recovery_checks
+            fault_checks(node,profile,seen,results,command,send,release,drain,submit,control,current,relay)
+            recovery_checks(node,profile,seen,results,command,send,finished,release,drain,submit,
+                current,relay,restart_executor,restart_physics)
         if args.suite == 'boundaries':
             from physics_boundaries import boundary_checks
             boundary_checks(node,args,profile,seen,results,command,send,finished,release,drain)
@@ -327,6 +364,19 @@ def main():
             collision_checks(node,args,profile,seen,results,command,send,finished,release,drain)
         if args.suite == 'soak':
             from physics_stress import soak_checks
+            # A transport pose can lie close to a joint limit. Move the two
+            # exercised axes into a feasible oscillation range before streaming.
+            cmd=command('left_arm','finite_trajectory');cmd.joint_names=profile.groups['left_arm']
+            values=dict(zip(seen['physics'].joints.name,seen['physics'].joints.position))
+            target=[values[n] for n in cmd.joint_names]
+            for index,excursion in ((0,args.soak_amplitude),(3,args.soak_amplitude*.6)):
+                low,high=profile.limits[cmd.joint_names[index]]
+                assert high-low>2*(excursion+.03),'SOAK_EXCURSION_EXCEEDS_RANGE'
+                target[index]=min(high-excursion-.03,max(low+excursion+.03,target[index]))
+            cmd.valid_for=8.
+            cmd.points=[JointTrajectoryPoint(positions=target,time_from_start=Duration(sec=6))]
+            send(cmd);finished(cmd);release();drain(.3)
+            results.append({'case':'soak_preparation_arrival','passed':True})
             soak_checks(node,args,profile,seen,results,command,release,drain,control,process)
         if args.suite == 'dynamics':
             dynamic_checks(node, args, profile, seen, samples, results, command, send, finished, release, drain, submit, control)
@@ -386,6 +436,12 @@ def main():
     finally:
         current[0]=None
         if process:terminate(process)
+        if simulator:
+            if args.keep_simulator and results and all(r['passed'] for r in results):
+                (args.output/'simulator-process.json').write_text(json.dumps({'pid':simulator.pid,
+                    'namespace':physical_namespace,'scene_generation':scene_generation})+'\n')
+            else:terminate(simulator)
+        for scene_log in scene_logs:scene_log.close()
         if relay:relay.close()
         log.close();node.destroy_node()
         if rclpy.ok():rclpy.shutdown()

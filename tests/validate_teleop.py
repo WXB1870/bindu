@@ -201,6 +201,9 @@ def run_case(root,output,case,g1=False,side='left'):
             assert 'targetPose' not in repr(stale) and 'measuredPose' not in repr(stale)
         elif case=='cancel':
             assert wait(node,goal.cancel_goal_async()).goals_canceling
+        elif case=='websocket_disconnect':
+            stopped.set();peer.join(timeout=3)
+            assert not peer.is_alive(),'websocket peer did not disconnect'
         elif case=='disconnect':control['enabled']=False
         elif case=='invalid':control['valid']=False
         elif case=='reconnect':control['source']='new-connection'
@@ -241,6 +244,7 @@ def run_case(root,output,case,g1=False,side='left'):
         else:
             assert response.status==6 and not result.success,result
             expected={'disconnect':('VR_INPUT_TIMEOUT','COMMAND_TIMEOUT'),
+                      'websocket_disconnect':('VR_INPUT_TIMEOUT','COMMAND_TIMEOUT'),
                       'invalid':('VR_TRACKING_INVALID',),'reconnect':('VR_CONNECTION_CHANGED',),
                       'unreachable':('IK_RESIDUAL','IK_DISCONTINUITY','IK_SOLVER_FAILED','IK_TIMEOUT'),
                       'recorder_loss':('RECORDER_UNAVAILABLE',)}[case]
@@ -265,6 +269,7 @@ def run_case(root,output,case,g1=False,side='left'):
         for command in seen['accepted']:
             assert command.resource_group==group and command.joint_names==joint_names
             assert command.observation_id==command.command_id
+        recovery=None
         if case.startswith('websocket'):
             assert any('teleopFeedback' in repr(p) and 'teleopStatus' in repr(p)
                        for p in control.get('display_packets',[])), 'no rendered Vuer display'
@@ -275,18 +280,44 @@ def run_case(root,output,case,g1=False,side='left'):
             stopped.set();peer.join(timeout=3)
             assert not peer.is_alive()
             stopped.clear()
-            control['grip']=0.
+            control['grip']=1. if case=='websocket_disconnect' else 0.
             peer=threading.Thread(target=websocket_peer,args=(port,control,stopped,errors),daemon=True)
             peer.start()
             until(node,lambda:seen['inputs'][-1].source_id!=previous_source,seconds=5.)
             assert not errors,errors
+            if case=='websocket_disconnect':
+                count=len(seen['accepted'])
+                held=dict(zip(seen['state'].joints.name,seen['state'].joints.position))
+                end=time.monotonic()+.5
+                until(node,lambda:time.monotonic()>=end)
+                assert len(seen['accepted'])==count,'reconnection automatically resumed motion'
+                drift=max(abs(q-held[n]) for n,q in zip(seen['state'].joints.name,seen['state'].joints.position))
+                assert drift<.003,drift
+                control['grip']=0.
+                new_goal=wait(node,client.send_goal_async(TeleopSession.Goal(
+                    task_id=run+'_recovered',resource_group=group,duration=2.)))
+                assert new_goal.accepted,'explicit recovery session rejected'
+                new_future=new_goal.get_result_async()
+                until(node,lambda:any(e.state=='TELEOP_STARTED' and e.task_id==run+'_recovered' for e in seen['events']))
+                end=time.monotonic()+.15
+                until(node,lambda:time.monotonic()>=end)
+                control['grip']=1.
+                until(node,lambda:len(seen['accepted'])>=count+5,seconds=5.)
+                first=seen['accepted'][count]
+                jump=max(abs(q-held[n]) for n,q in zip(first.joint_names,first.positions))
+                assert jump<.005,('recovery_anchor_jump',jump)
+                recovered=wait(node,new_future,seconds=8.)
+                assert recovered.status==4 and recovered.result.success,recovered.result
+                recovery={'new_source':True,'no_automatic_resume':True,'hold_drift_rad':drift,
+                          'anchor_jump_rad':jump,'code':recovered.result.code,
+                          'accepted':recovered.result.accepted_commands}
         # Stop recorder cleanly before inspecting its durable output.
         if case!='recorder_loss':
             terminate(processes['launch' if launched else 'recorder'])
             summary=json.loads((output/'episodes'/run/'summary.json').read_text())
             assert summary['writer_complete'],summary
         return {'case':case,'passed':True,'code':result.code,'accepted':result.accepted_commands,
-                'readiness_query_timeouts':readiness_timeouts,
+                'readiness_query_timeouts':readiness_timeouts,'recovery':recovery,
                 'simulated_devices':True,'input':'synthetic_vuer_websocket' if case.startswith('websocket') else 'synthetic_ros'}
     finally:
         stopped.set()
@@ -309,7 +340,7 @@ def run_case(root,output,case,g1=False,side='left'):
 def main():
     parser=argparse.ArgumentParser()
     parser.add_argument('--output',type=Path,required=True)
-    parser.add_argument('--cases',nargs='+',default=['normal','websocket','websocket_launch','clutch','cancel','disconnect','invalid','reconnect','unreachable','recorder_loss','websocket_display_loss'])
+    parser.add_argument('--cases',nargs='+',default=['normal','websocket','websocket_launch','clutch','cancel','disconnect','websocket_disconnect','invalid','reconnect','unreachable','recorder_loss','websocket_display_loss'])
     parser.add_argument('--g1',action='store_true');parser.add_argument('--side',choices=['left','right'],default='left')
     args=parser.parse_args();args.output.mkdir(parents=True,exist_ok=False)
     root=Path(__file__).resolve().parents[1]

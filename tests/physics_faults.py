@@ -1,6 +1,9 @@
 """Bounded ROS fault injection between an owned executor and local PhysX."""
 from copy import deepcopy
 import json
+import os
+import signal
+import time
 import uuid
 from bindu_interfaces.msg import SimulationFeedback, SimulationCommand
 from bindu_interfaces.srv import SubmitMotion, ControlExecution
@@ -53,7 +56,10 @@ def fault_checks(node,profile,seen,results,command,send,release,drain,submit,con
         send(cmd);drain(.6);return cmd
 
     def hold_sample():
-        drain(.6);before=list(seen['physics'].joints.position);drain(.4)
+        drain(.6);before=list(seen['physics'].joints.position);sequence=seen['physics'].sequence;drain(.4)
+        measurement=seen['physics']
+        age=node.get_clock().now().nanoseconds/1e9-measurement.stamp.sec-measurement.stamp.nanosec/1e9
+        assert measurement.sequence>sequence and 0<=age<.2,('stale_physical_evidence',age)
         drift=max(abs(a-b) for a,b in zip(before,seen['physics'].joints.position))
         speed=max(map(abs,seen['physics'].joints.velocity))
         assert drift<.003 and speed<.02,(drift,speed)
@@ -111,3 +117,119 @@ def fault_checks(node,profile,seen,results,command,send,release,drain,submit,con
     results.append({'case':'changed_simulator_identity_latched','passed':True,'rejection_code':reply.code,
         'injection':'ROS simulator_id substitution; no process restart'})
     current[0]=None
+
+
+def recovery_checks(node,profile,seen,results,command,send,finished,release,drain,submit,
+                    current,relay,restart_executor,restart_physics):
+    """Actually kill owned processes. Recovery is explicit, never auto-replay.
+
+    A new executor is deliberately unable to take over an already bound PhysX
+    bridge. Reset both sides to rebind; a real hardware re-arm protocol is not
+    implemented by this simulation acceptance test.
+    """
+    from physics_stress import process_memory
+
+    def fresh_physics(previous_id=None):
+        def ready():
+            msg=seen['physics']
+            age=node.get_clock().now().nanoseconds/1e9-msg.stamp.sec-msg.stamp.nanosec/1e9
+            return msg.ready and 0<=age<.2 and (previous_id is None or msg.simulator_id!=previous_id)
+        until(node,ready,seconds=90.)
+        drain(.5)
+
+    def stopped():
+        fresh_physics()
+        drain(.7)
+        start=deepcopy(seen['physics']);drain(.5);end=seen['physics']
+        age=node.get_clock().now().nanoseconds/1e9-end.stamp.sec-end.stamp.nanosec/1e9
+        drift=max(abs(a-b) for a,b in zip(start.joints.position,end.joints.position))
+        speed=max(map(abs,end.joints.velocity))
+        assert end.simulator_id==start.simulator_id and end.sequence>start.sequence and 0<=age<.2
+        assert drift<.003 and speed<.02,(drift,speed)
+        return {'hold_drift_rad':drift,'max_speed_rad_s':speed}
+
+    def restart_control():
+        previous=seen['state'].instance_id
+        process=restart_executor()
+        until(node,lambda:seen['state'].instance_id!=previous and seen['state'].feedback_stamp.sec>0,seconds=20.)
+        drain(.4)
+        return process
+
+    def moving():
+        cmd=command('left_arm','finite_trajectory');cmd.joint_names=profile.groups['left_arm']
+        msg=seen['physics'];values=dict(zip(msg.joints.name,msg.joints.position))
+        target=[values[n] for n in cmd.joint_names]
+        low,high=profile.limits[cmd.joint_names[0]]
+        target[0]+=.25 if target[0]<(low+high)/2 else -.25
+        cmd.points=[JointTrajectoryPoint(positions=target,time_from_start=Duration(sec=3))]
+        send(cmd);drain(.6)
+        assert seen['state'].state=='RUNNING',seen['state'].code
+        return cmd
+
+    def old_lease_rejected(cmd):
+        replay=deepcopy(cmd);replay.command_id=uuid.uuid4().hex;replay.stamp=node.get_clock().now().to_msg()
+        reply=wait(node,submit.call_async(SubmitMotion.Request(command=replay)))
+        assert not reply.accepted and reply.code=='INVALID_LEASE',reply
+        return reply.code
+
+    # The preceding identity-injection test latched the old transport. A new
+    # physics process and executor provide a clean explicitly re-armed baseline.
+    previous=seen['physics'].simulator_id
+    restart_physics();fresh_physics(previous)
+    process=restart_control()
+    for cycle in range(2):
+        cmd=moving();identity=seen['physics'].simulator_id
+        memory=process_memory(process.pid)
+        assert 'execution' in memory,('owned_executor_not_found',memory)
+        killed_pid=memory['execution']['pid'];started=time.monotonic()
+        os.kill(killed_pid,signal.SIGKILL)
+        current[0]=None
+        until(node,lambda:seen['physics'].code=='SIM_COMMAND_TIMEOUT',seconds=2.)
+        watchdog=time.monotonic()-started
+        hold=stopped()
+        old_instance=seen['state'].instance_id
+        process=restart_control()
+        assert seen['state'].instance_id!=old_instance
+        old_code=old_lease_rejected(cmd)
+        hold_after_restart=stopped()
+        # New upper-layer commands cannot silently rebind the physical bridge.
+        probe=command('left_arm','joint_target');probe.joint_names=cmd.joint_names
+        values=dict(zip(seen['physics'].joints.name,seen['physics'].joints.position))
+        probe.positions=[values[n] for n in probe.joint_names];probe.positions[0]+=.1
+        probe.valid_for=.25;send(probe)
+        until(node,lambda:seen['physics'].code=='SIM_EXECUTOR_CHANGED',seconds=2.)
+        blocked=stopped();current[0]=None
+        results.append({'case':'executor_crash_restart_no_auto_resume','cycle':cycle,'passed':True,
+            'killed_pid':killed_pid,'watchdog_observed_s':watchdog,'old_lease_code':old_code,
+            'rebind_code':'SIM_EXECUTOR_CHANGED','simulator_id':identity,
+            'after_loss':hold,'after_restart':hold_after_restart,'blocked_new_sender':blocked})
+
+        previous=seen['physics'].simulator_id
+        restart_physics();fresh_physics(previous)
+        process=restart_control()
+        recovery=moving();finished(recovery);release();drain(.3)
+        results.append({'case':'explicit_full_restart_new_command_succeeds','cycle':cycle,'passed':True,
+                        'command_id':recovery.command_id,**stopped()})
+
+        cmd=moving();packet=deepcopy(relay.last_command)
+        identity=seen['physics'].simulator_id;started=time.monotonic()
+        restart_physics(crash=True);current[0]=None
+        until(node,lambda:seen['state'].command_id==cmd.command_id and seen['state'].state=='FAILED',seconds=3.)
+        loss_code=seen['state'].code;loss_time=time.monotonic()-started
+        restart_physics();fresh_physics(identity)
+        hold=stopped()
+        old_code=old_lease_rejected(cmd)
+        # Old simulator-targeted packets must remain invalid after a real reboot.
+        relay.command_pub.publish(packet)
+        until(node,lambda:seen['physics'].code=='SIM_ID_OR_PROFILE_MISMATCH',seconds=2.)
+        blocked=stopped()
+        results.append({'case':'simulator_crash_restart_old_commands_rejected','cycle':cycle,'passed':True,
+            'failure_code':loss_code,'failure_observed_s':loss_time,
+            'old_simulator_id':identity,'new_simulator_id':seen['physics'].simulator_id,
+            'old_lease_code':old_code,'packet_code':'SIM_ID_OR_PROFILE_MISMATCH',
+            'after_restart':hold,'after_replay':blocked,
+            'limitation':'Simulator resets scene on restart; no physical coast-down exists while process is absent'})
+        process=restart_control()
+        recovery=moving();finished(recovery);release();drain(.3)
+        results.append({'case':'simulator_restart_explicit_control_recovery','cycle':cycle,'passed':True,
+                        'command_id':recovery.command_id,**stopped()})
