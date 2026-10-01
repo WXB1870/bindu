@@ -1,7 +1,8 @@
 <?xml version="1.0"?>
 <!-- Derived from GalaxyGeneralRobotics/galbot_one_golf_description
      commit 2d496b053f0d4e9e2688f59fac66022f447226be; Apache-2.0, see ../LICENSE.
-     Bindu modifications: leg_joint4/5 fixed at zero; wheels and grippers omitted;
+     Bindu modifications: leg_joint5 fixed at zero; provisional waist yaw leg_joint4 enabled;
+     wheels and grippers omitted;
      visual/collision meshes removed. Kinematics only, not calibrated hardware.
      Regenerate with tools/derive_g1_model.py; do not hand-edit. -->
 <robot name="bindu_g1_provisional">
@@ -65,10 +66,12 @@
       <inertia ixx="0.03451013" ixy="8.33e-06" ixz="2.101e-05" iyy="0.03294961" iyz="0.00043489" izz="0.01161759" />
     </inertial>
   </link>
-  <joint name="leg_joint4" type="fixed">
+  <joint name="leg_joint4" type="revolute">
     <origin rpy="-1.5707963267948966 -1.5707963267948966 0" xyz="0 0.224 0" />
     <parent link="leg_link3" />
     <child link="leg_link4" />
+    <axis xyz="0 0 1" />
+    <limit effort="30" lower="-1.5906" upper="1.5906" velocity="1" />
   </joint>
   <link name="leg_link5">
     <inertial>

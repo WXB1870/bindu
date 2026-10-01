@@ -45,6 +45,7 @@
     "leg_joint1": 0.6,
     "leg_joint2": 1.2,
     "leg_joint3": 0.6,
+    "leg_joint4": 0.0,
     "left_arm_joint1": 1.231536975556102,
     "left_arm_joint2": -1.1960193345096892,
     "left_arm_joint3": -0.6327486523051759,

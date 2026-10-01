@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Derive the provisional 19-axis kinematic model from a pinned upstream URDF."""
+"""Derive the provisional 20-axis kinematic model from a pinned upstream URDF."""
 import argparse
 import hashlib
 import json
@@ -8,7 +8,7 @@ import xml.etree.ElementTree as ET
 
 REVISION = '2d496b053f0d4e9e2688f59fac66022f447226be'
 SOURCE_SHA256 = '8e7722191495d8b96ca8d64cc5dff918fb9cd673c74b70728641856d757e3b48'
-GROUPS = {'leg': ['leg_joint1', 'leg_joint2'], 'waist': ['leg_joint3'],
+GROUPS = {'leg': ['leg_joint1', 'leg_joint2'], 'waist': ['leg_joint3', 'leg_joint4'],
           'head': ['head_joint1', 'head_joint2'],
           **{side+'_arm': [side+'_arm_joint'+str(i) for i in range(1, 8)]
              for side in ('left', 'right')}}
@@ -34,7 +34,7 @@ def derive(source, root):
     for joint in list(robot.findall('joint')):
         if joint.find('child').get('link') in removed or joint.find('parent').get('link') in removed:
             robot.remove(joint)
-        elif joint.get('name') in ('leg_joint4', 'leg_joint5'):
+        elif joint.get('name') == 'leg_joint5':
             joint.set('type', 'fixed')  # Preserve the upstream zero-pose transform.
             for child in list(joint):
                 if child.tag in ('axis', 'limit', 'dynamics'):
@@ -55,7 +55,8 @@ def derive(source, root):
     ET.indent(robot, space='  ')
     notice = ('<?xml version="1.0"?>\n<!-- Derived from GalaxyGeneralRobotics/galbot_one_golf_description\n'
               f'     commit {REVISION}; Apache-2.0, see ../LICENSE.\n'
-              '     Bindu modifications: leg_joint4/5 fixed at zero; wheels and grippers omitted;\n'
+              '     Bindu modifications: leg_joint5 fixed at zero; provisional waist yaw leg_joint4 enabled;\n'
+              '     wheels and grippers omitted;\n'
               '     visual/collision meshes removed. Kinematics only, not calibrated hardware.\n'
               '     Regenerate with tools/derive_g1_model.py; do not hand-edit. -->\n')
     out.write_text(notice+ET.tostring(robot, encoding='unicode')+'\n')

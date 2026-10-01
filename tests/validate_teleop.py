@@ -24,6 +24,7 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy
 from bindu_interfaces.action import TeleopSession
 from bindu_interfaces.msg import VRInput, ExecutionState, MotionCommand, RuntimeEvent
 from bindu_interfaces.srv import Lease, SubmitMotion
+from bindu_contracts.profile import Profile
 from trajectory_msgs.msg import JointTrajectoryPoint
 from builtin_interfaces.msg import Duration
 from bindu_runtime.common import stamp
@@ -148,10 +149,11 @@ def run_case(root,output,case,g1=False,side='left'):
             assert g1
             lease_client=node.create_client(Lease,namespace+'/execution/lease')
             submit=node.create_client(SubmitMotion,namespace+'/execution/submit')
-            for body_group,target in [('leg',[.05,.1]),('waist',[.05])]:
+            body_groups=Profile.load(profile).groups
+            for body_group,target in [('leg',[.05,.1]),('waist',[.05,.03])]:
                 lease=wait(node,lease_client.call_async(Lease.Request(operation='acquire',owner='posture',resources=[body_group])))
                 assert lease.ok
-                names=['leg_joint1','leg_joint2'] if body_group=='leg' else ['leg_joint3']
+                names=body_groups[body_group]
                 cmd=MotionCommand(schema_version=1,command_id=uuid.uuid4().hex,lease_id=lease.lease_id,epoch=lease.epoch,
                     profile_hash=seen['state'].profile_hash,task_id=run,mode='finite_trajectory',resource_group=body_group,
                     stamp=node.get_clock().now().to_msg(),valid_for=1.8,joint_names=names,

@@ -10,7 +10,7 @@
   "support_radius": 0.03,
   "support_x": [-0.22, 0.26],
   "spawn_z": 0.035,
-  "initial_joint_positions": {"leg_joint1": 0.025, "leg_joint2": 0.025, "leg_joint3": 0.025},
+  "initial_joint_positions": {"leg_joint1": 0.025, "leg_joint2": 0.025, "leg_joint3": 0.025, "leg_joint4": 0.0},
   "physics_dt": 0.008333333333333333,
   "joint_stiffness": 100000.0,
   "joint_damping": 2000.0,

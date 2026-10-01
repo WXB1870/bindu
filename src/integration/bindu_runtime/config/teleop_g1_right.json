@@ -51,7 +51,8 @@
       "left_arm_joint7": 0.0,
       "leg_joint1": 0.0,
       "leg_joint2": 0.0,
-      "leg_joint3": 0.0
+      "leg_joint3": 0.0,
+      "leg_joint4": 0.0
     },
     "smooth_weight": 0.8,
     "solve_timeout": 0.12,

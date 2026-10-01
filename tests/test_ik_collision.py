@@ -156,8 +156,12 @@ class G1CollisionTests(unittest.TestCase):
     def test_measured_opposite_link7_collision_is_rejected(self):
         solver=self.solvers['left']
         q=(2.4803724595,1.5487593744,.8725818179,1.6338667652,-1.3640071698,.0661232515,-.3207135739)
-        context=(-1.4410515695,.4031352377,.7814389628,.6146689157,.5475669094,-1.9782159672,
-                 -.2130727599,2.1278334169,2.408514338,-1.4959198753,-.2191208669,-.4324825628)
+        previous_context=(-1.4410515695,.4031352377,.7814389628,.6146689157,.5475669094,-1.9782159672,
+                          -.2130727599,2.1278334169,2.408514338,-1.4959198753,-.2191208669,-.4324825628)
+        previous_names=(name for name in solver.arm.context_names if name!='leg_joint4')
+        values=dict(zip(previous_names,previous_context))
+        self.assertEqual(len(values),len(previous_context))
+        context=tuple(values.get(name,0.) for name in solver.arm.context_names)
         self.assertLess(solver.collision.clearances(q,context)['left_3 / right_1'],0)
         result=solver.solve(IKRequest('arms',1,10.,10.2,solver.arm.names,q,context=context))
         self.assertEqual(result.code,'IK_COLLISION_SEED')

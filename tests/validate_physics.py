@@ -344,7 +344,7 @@ def main():
             stdout=log,stderr=subprocess.STDOUT,start_new_session=True)
         assert lease_client.wait_for_service(timeout_sec=15.)
         until(node,lambda:'state' in seen and seen['state'].feedback_stamp.sec>0)
-        results.append({'case':'physics_feedback_19_axes','passed':len(seen['physics'].joints.name)==19})
+        results.append({'case':'physics_feedback_20_axes','passed':len(seen['physics'].joints.name)==20})
         if args.suite == 'vr':
             from physics_vr import vr_checks
             vr_checks(node,args,profile,seen,results,command,send,finished,release,drain,samples)

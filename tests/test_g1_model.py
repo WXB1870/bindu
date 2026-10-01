@@ -15,19 +15,19 @@ PROFILE = ROOT/'src/integration/bindu_runtime/config/g1_provisional_sim.json'
 
 
 class G1ModelTests(unittest.TestCase):
-    def test_profile_matches_all_19_urdf_axes_and_limits(self):
+    def test_profile_matches_all_20_urdf_axes_and_limits(self):
         p = Profile.load(PROFILE)
         root = ET.parse(URDF).getroot()
         joints = {j.get('name'): j for j in root.findall('joint') if j.get('type') != 'fixed'}
-        self.assertEqual(len(joints), 19)
+        self.assertEqual(len(joints), 20)
         self.assertEqual(set(joints), set(p.limits))
-        self.assertEqual([len(p.groups[k]) for k in ('leg', 'waist', 'head', 'left_arm', 'right_arm')], [2,1,2,7,7])
+        self.assertEqual([len(p.groups[k]) for k in ('leg', 'waist', 'head', 'left_arm', 'right_arm')], [2,2,2,7,7])
         for name, joint in joints.items():
             limit = joint.find('limit')
             self.assertEqual(p.limits[name], [float(limit.get(k)) for k in ('lower', 'upper')])
             self.assertLessEqual(p.speed(name), float(limit.get('velocity')))
-        for name in ('leg_joint4', 'leg_joint5'):
-            self.assertEqual(root.find(f"joint[@name='{name}']").get('type'), 'fixed')
+        self.assertEqual(root.find("joint[@name='leg_joint4']").get('type'), 'revolute')
+        self.assertEqual(root.find("joint[@name='leg_joint5']").get('type'), 'fixed')
         self.assertFalse(any('gripper' in n or 'wheel' in n for n in joints))
         self.assertFalse(root.findall('.//mesh'))
 
@@ -111,6 +111,20 @@ class G1KinematicsTests(unittest.TestCase):
         except ImportError:
             raise unittest.SkipTest('Pinocchio/CasADi required for model FK validation')
 
+    def test_waist_joint4_rotates_torso_about_base_vertical(self):
+        import numpy as np
+        import pinocchio as pin
+        model = pin.buildModelFromUrdf(str(URDF))
+        data = model.createData()
+        q = pin.neutral(model)
+        torso = model.getFrameId('torso_base_link')
+        pin.framesForwardKinematics(model, data, q)
+        initial = data.oMf[torso].rotation.copy()
+        q[model.joints[model.getJointId('leg_joint4')].idx_q] = .1
+        pin.framesForwardKinematics(model, data, q)
+        rotation = pin.log3(data.oMf[torso].rotation @ initial.T)
+        np.testing.assert_allclose(rotation, [0., 0., .1], atol=1e-5)
+
     def test_both_arm_fk_with_nonzero_leg_waist_and_opposite_arm(self):
         import numpy as np
         import casadi as ca
@@ -118,7 +132,7 @@ class G1KinematicsTests(unittest.TestCase):
         from bindu_kinematics.model import ArmModel
         p = Profile.load(PROFILE)
         full = pin.buildModelFromUrdf(str(URDF))
-        self.assertEqual(full.nq, 19)
+        self.assertEqual(full.nq, 20)
         values = {name: .2*lo+.8*hi for name,(lo,hi) in p.limits.items()}
         for side in ('left', 'right'):
             names = p.groups[side+'_arm']
@@ -148,7 +162,7 @@ class G1KinematicsTests(unittest.TestCase):
             cfg = load_config(ROOT/f'src/integration/bindu_runtime/config/teleop_g1_{side}.json', profile, URDF.parent)
             solver = PinocchioCasadiIK(cfg['kinematics'])
             body = dict(solver.arm.cfg['locked_joints'])
-            body.update(leg_joint1=.1, leg_joint2=.2, leg_joint3=.1)
+            body.update(leg_joint1=.1, leg_joint2=.2, leg_joint3=.1, leg_joint4=.15)
             context = tuple(body[n] for n in solver.arm.context_names)
             q = np.zeros(7)
             pose = solver.arm.fk(q, context)

@@ -51,8 +51,8 @@ def run(output):
         for client in clients.values(): assert client.wait_for_service(timeout_sec=15)
         until(node, lambda:seen['joints'] and seen['health'] and seen['health'].ready and
               'base_link' in seen['tf'] and 'leg_link5' in seen['static'], seconds=15)
-        assert len(seen['joints'].name) == 19
-        results.append({'case':'description_and_19_joint_feedback','passed':True})
+        assert len(seen['joints'].name) == 20
+        results.append({'case':'description_and_20_joint_feedback','passed':True})
         for group,names in profile.groups.items():
             before = dict(zip(seen['state'].joints.name, seen['state'].joints.position))
             lease = wait(node, clients['lease'].call_async(Lease.Request(operation='acquire', owner='g1_test', resources=[group])))
@@ -68,7 +68,7 @@ def run(output):
             assert all(abs(v-(.04 if n in names else before[n]))<1e-5 for n,v in positions.items())
             assert wait(node, clients['lease'].call_async(Lease.Request(operation='release', lease_id=lease.lease_id, epoch=lease.epoch))).ok
             results.append({'case':group+'_execution_isolation','passed':True})
-        frames = ('left_arm_link7','right_arm_link7','head_link2','leg_link3')
+        frames = ('left_arm_link7','right_arm_link7','head_link2','leg_link3','leg_link4')
         barrier = seconds(seen['state'].feedback_stamp)
         until(node, lambda:all(n in seen['tf'] and seconds(seen['tf'][n].header.stamp)>=barrier and
                               sample_key(seen['tf'][n].header.stamp) in joint_samples for n in frames))

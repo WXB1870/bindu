@@ -232,7 +232,7 @@ def main():
             wheel_odometry = DifferentialOdometry(cfg['wheel_radius']*sensor_cfg['wheel_radius_scale'],
                 cfg['wheel_separation']*sensor_cfg['wheel_separation_scale'])
             wheel_odometry.update(*map(float,body.get_joint_positions()[wheel_indices]),world.current_time)
-        if len(joint_names) != 19 or len(names) != 21:
+        if len(joint_names) != 20 or len(names) != 22:
             raise RuntimeError('PHYSICS_DOF_LAYOUT_MISMATCH')
         simulator_id = uuid.uuid4().hex
         def hold(group):
