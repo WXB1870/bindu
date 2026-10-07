@@ -169,10 +169,12 @@ class BimanualToolNode(RuntimeNode):
                 s=self.state
                 if s and ('EMERGENCY_STOP' in s.code or s.code == 'STOP_FEEDBACK_TIMEOUT'):
                     return False
+                velocities=dict(zip(s.joints.name,s.joints.velocity)) if s else {}
                 if (s and not s.stop_failures and seconds(s.feedback_stamp)>=requested and
                         0 <= self.now()-seconds(s.feedback_stamp)<self.cfg['feedback_max_age'] and
                         not s.reference.name and
-                        all(abs(v)<.01 for n,v in zip(s.joints.name,s.joints.velocity) if n in self.names) and
+                        all(n in velocities and math.isfinite(velocities[n]) and
+                            abs(velocities[n])<.01 for n in self.names) and
                         (not release or not s.lease_active)):
                     return True
                 await self.pause()

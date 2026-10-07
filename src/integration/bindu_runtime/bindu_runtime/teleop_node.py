@@ -41,9 +41,10 @@ class TeleopNode(RuntimeNode):
         # The paired receiver publishes left then right in one callback. A
         # depth-one queue can retain only the second side before dispatch.
         self.create_subscription(VRInput, 'teleop/vr/input', self.on_frame, 5)
-        self.create_subscription(TeleopModeState, 'teleop/mode_state',
-            lambda m:setattr(self,'mode_state',m), QoSProfile(depth=1,
-                reliability=ReliabilityPolicy.RELIABLE,durability=DurabilityPolicy.TRANSIENT_LOCAL))
+        if self.require_mode_selection:
+            self.create_subscription(TeleopModeState, 'teleop/mode_state',
+                lambda m:setattr(self,'mode_state',m), QoSProfile(depth=1,
+                    reliability=ReliabilityPolicy.RELIABLE,durability=DurabilityPolicy.TRANSIENT_LOCAL))
         self.create_subscription(ExecutionState, 'execution/state', lambda m: setattr(self, 'state', m), 1)
         self.create_subscription(RecorderHealth, 'recorder/health', self.on_health, 5)
         self.create_timer(.005, self.poll_worker)
@@ -77,7 +78,7 @@ class TeleopNode(RuntimeNode):
     def check(self):
         now = self.now()
         mode = self.mode_state
-        if self.require_mode_selection or mode is not None:
+        if self.require_mode_selection:
             if (mode is None or mode.profile_hash != self.profile.digest or mode.phase != 'READY' or
                     mode.mode != 'single_arm' or mode.side != self.cfg['side'] or
                     not 0 <= now-seconds(mode.stamp) < MODE_STATE_MAX_AGE):
@@ -93,7 +94,7 @@ class TeleopNode(RuntimeNode):
             raise RuntimeError('RECORDER_UNAVAILABLE')
         if self.frame is None or not 0 <= now-self.frame.stamp <= self.cfg['input_max_age']:
             raise RuntimeError('VR_INPUT_TIMEOUT')
-        if mode is not None and self.frame.stamp <= seconds(mode.changed_at):
+        if self.require_mode_selection and self.frame.stamp <= seconds(mode.changed_at):
             raise RuntimeError('VR_INPUT_BEFORE_MODE_SELECTION')
 
     def readiness_error(self):

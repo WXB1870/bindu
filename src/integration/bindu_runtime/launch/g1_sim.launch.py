@@ -37,11 +37,11 @@ def assemble(context):
         for name in ('teleop', 'teleop_display'):
             nodes.append(Node(package='bindu_runtime', executable=name, namespace=ns,
                               output='screen', parameters=[{**teleop,
-                                  **({'require_mode_selection':True} if name == 'teleop' else {})}]))
-        nodes.append(Node(package='bindu_runtime', executable='teleop_mode', namespace=ns,
-                          output='screen', parameters=[{**common,'initial_side':side,
-                              'supported_sides':[side], 'require_single_worker':True}]))
+                                  **({'require_mode_selection': True} if name == 'teleop' and bimanual else {})}]))
     if bimanual:
+        nodes.append(Node(package='bindu_runtime', executable='teleop_mode', namespace=ns,
+                          output='screen', parameters=[{**common, 'initial_side': side,
+                              'supported_sides': [side], 'require_single_worker': True}]))
         nodes.append(Node(package='bindu_runtime', executable='teleop_tool', namespace=ns,
                           output='screen', parameters=[{**common,
                               'tool_config':LaunchConfiguration('bimanual_config'),

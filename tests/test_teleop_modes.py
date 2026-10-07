@@ -1,4 +1,5 @@
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace as S
 import numpy as np
@@ -47,6 +48,27 @@ class ModeTests(unittest.TestCase):
         self.m.begin('single_arm','left',2,11.2)
         self.m.fail('STOP_UNCONFIRMED',11.3)
         self.assertEqual((self.m.mode,self.m.phase,self.m.generation),('','SAFE',3))
+
+    def test_mode_switch_rejects_stop_and_init_frames(self):
+        for flag in ('stop', 'init'):
+            with self.subTest(flag=flag):
+                self.frames['left'] = replace(self.frames['left'], **{flag: True})
+                self.assertEqual(self.ready(), 'VR_RELEASE_REQUIRED')
+                self.frames['left'] = replace(self.frames['left'], **{flag: False})
+
+    def test_mode_switch_uses_session_pair_geometry_and_timing(self):
+        right = self.frames['right']
+        self.frames['right'] = replace(right, stamp=11.07)
+        self.assertEqual(self.ready(), 'VR_PAIR_MISMATCH')
+        self.frames['right'] = right
+        pose = np.asarray(right.pose).reshape(4, 4).copy()
+        pose[:3, :3] = np.diag([1., -1., -1.])
+        self.frames['right'] = replace(right, pose=tuple(pose.ravel()))
+        self.assertEqual(self.ready(), 'VR_ORIENTATION_DEGENERATE')
+
+    def test_mode_switch_rejects_nonfinite_grip(self):
+        self.frames['right'] = replace(self.frames['right'], grip=float('nan'))
+        self.assertEqual(self.ready(), 'VR_RELEASE_REQUIRED')
 
 
 class BimanualSessionTests(unittest.TestCase):

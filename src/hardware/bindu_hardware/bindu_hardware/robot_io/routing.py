@@ -1,5 +1,5 @@
 class CommandRouter:
-    """Preflight disjoint groups, then send one reference epoch to their adapters."""
+    """Route complete named groups; stop all adapters after a partial write."""
     def __init__(self, profile, joint_drivers, base_driver):
         if set(joint_drivers) != set(profile.groups):
             raise ValueError('DRIVER_GROUP_LAYOUT')
@@ -8,7 +8,7 @@ class CommandRouter:
         self.reference = {j: 0. for names in profile.groups.values() for j in names}
 
     def write_joints(self, target):
-        selected = [(g, names) for g, names in self.groups.items() if set(names) <= set(target)]
+        selected = [(g, names) for g, names in self.groups.items() if names and set(names) <= set(target)]
         if not selected or set(target) != {j for _, names in selected for j in names}:
             raise RuntimeError('JOINT_ROUTE_MISMATCH')
         try:

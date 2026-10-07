@@ -1,6 +1,7 @@
 """Manual teleoperation mode fencing; no ROS or robot-specific resource names."""
 import math
-import numpy as np
+from .bimanual_session import BimanualSession
+from .vr.mapping import pose_matrix
 
 
 class ModeSelection:
@@ -46,22 +47,28 @@ class ModeSelection:
         selected = []
         for key in sides:
             frame = frames.get(key)
-            if (frame is None or not frame.valid or not frame.source_id or
+            if (frame is None or not frame.valid or frame.stop or frame.init or
+                    not frame.source_id or not math.isfinite(frame.grip) or
                     frame.stamp < self.changed_at or not 0 <= now-frame.stamp <= self.input_age or
                     frame.grip >= .3):
                 return 'VR_RELEASE_REQUIRED'
             selected.append(frame)
         if len(selected) == 2:
-            if selected[0].source_id != selected[1].source_id or selected[0].seq != selected[1].seq:
+            if (selected[0].source_id != selected[1].source_id or
+                    selected[0].seq != selected[1].seq or
+                    abs(selected[0].stamp-selected[1].stamp) > .02):
                 return 'VR_PAIR_MISMATCH'
             try:
-                from .vr.mapping import robot_pose
-                a,b = (robot_pose(f.pose) for f in selected)
-                separation = np.linalg.norm(a[:3,3]-b[:3,3])
+                BimanualSession.paired_pose(*selected)
+            except ValueError as exc:
+                if str(exc) in ('VR_GRASP_GEOMETRY', 'VR_ORIENTATION_DEGENERATE'):
+                    return str(exc)
+                return 'VR_TRACKING_INVALID'
+        else:
+            try:
+                pose_matrix(selected[0].pose)
             except ValueError:
                 return 'VR_TRACKING_INVALID'
-            if not .05 <= separation <= 1.2:
-                return 'VR_GRASP_GEOMETRY'
         return ''
 
     def finish(self, now):

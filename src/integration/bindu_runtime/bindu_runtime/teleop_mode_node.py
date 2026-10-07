@@ -27,6 +27,7 @@ class TeleopModeNode(RuntimeNode):
             raise ValueError('INVALID_SUPPORTED_SIDES')
         self.state = self.health = None
         self.frames = {}
+        self.paired_frames = {}
         self.busy = False
         group = ReentrantCallbackGroup()
         self.tool_client = self.create_client(Trigger, 'teleop/tool_ready', callback_group=group)
@@ -48,8 +49,15 @@ class TeleopModeNode(RuntimeNode):
             self.health = msg
 
     def on_frame(self,msg):
+        if msg.side not in ('left','right'):
+            return
         self.frames[msg.side] = VRFrame(msg.source_id,msg.seq,seconds(msg.stamp),msg.side,
             tuple(msg.pose),msg.grip,msg.trigger,msg.init,msg.stop,msg.valid,msg.clutch_seq)
+        left,right=self.frames.get('left'),self.frames.get('right')
+        if (left and right and left.source_id==right.source_id and left.seq==right.seq and
+                abs(left.stamp-right.stamp)<=.02):
+            # Keep the last complete receiver event while the next side arrives.
+            self.paired_frames={'left':left,'right':right}
 
     def publish(self):
         m = self.selection
@@ -93,7 +101,8 @@ class TeleopModeNode(RuntimeNode):
                         stop_failures=s.stop_failures,feedback_stamp=seconds(s.feedback_stamp),joints=s.joints)
                     health = None if self.health is None else SimpleNamespace(
                         ready=self.health.ready,stamp=seconds(self.health.stamp))
-                    reason = self.selection.ready(view,health,self.frames,self.now(),
+                    frames = (self.paired_frames if goal.request.mode=='bimanual_tool' else self.frames)
+                    reason = self.selection.ready(view,health,frames,self.now(),
                                                    tuple(self.profile.groups))
                     if not reason and not target_ready:
                         client = (self.tool_client if goal.request.mode == 'bimanual_tool'
@@ -117,6 +126,13 @@ class TeleopModeNode(RuntimeNode):
                     if not reason:
                         self.selection.finish(self.now())
                         self.publish()
+                        break
+                    if (reason == 'BIMANUAL_GRASP_GEOMETRY' or
+                            reason.startswith(('BIMANUAL_WORKER_FAILED',
+                                               'BIMANUAL_WORKER_TIMEOUT',
+                                               'BIMANUAL_WORKER_EXITED'))):
+                        # A static grasp mismatch or failed solver needs a new
+                        # explicit selection after the cause is corrected.
                         break
                     await self.pause()
                 else:

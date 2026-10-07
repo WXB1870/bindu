@@ -6,12 +6,14 @@ import os
 import shutil
 import signal
 import subprocess
+import threading
 import time
 import uuid
 from pathlib import Path
 import numpy as np
 import rclpy
 from rclpy.action import ActionClient
+from rclpy.executors import SingleThreadedExecutor
 from std_srvs.srv import Trigger
 from bindu_interfaces.action import SelectTeleopMode, TeleopSession
 from bindu_interfaces.msg import VRInput, ExecutionState, RecorderHealth, MotionCommand, TeleopModeState, RuntimeEvent, SimulationFeedback
@@ -108,8 +110,13 @@ def main():
                                           start_new_session=True))
     rclpy.init()
     node=rclpy.create_node('bimanual_verifier_'+uuid.uuid4().hex[:8])
+    source=rclpy.create_node('bimanual_source_'+uuid.uuid4().hex[:8])
+    source_executor=SingleThreadedExecutor()
+    source_executor.add_node(source)
+    source_thread=None
     state={'execution':None,'mode':None,'accepted':[],'events':[],'physics':None,'trace':[]}
     control={'grip':0.,'delta':0.,'enabled':True,'seq':0}
+    source_timing={'last':None,'max_gap_s':0.}
     try:
         if physics_model:
             log=(output/'isaac.log').open('w');logs.append(log)
@@ -147,10 +154,14 @@ def main():
             lambda m:state['accepted'].append(m),100)
         node.create_subscription(RuntimeEvent,ns+'/events',
             lambda m:state['events'].append((m.component,m.state,m.code)),100)
-        vr=node.create_publisher(VRInput,ns+'/teleop/vr/input',10)
-        health=node.create_publisher(RecorderHealth,ns+'/recorder/health',10)
+        vr=source.create_publisher(VRInput,ns+'/teleop/vr/input',10)
+        health=source.create_publisher(RecorderHealth,ns+'/recorder/health',10)
         def publish():
-            now=node.get_clock().now().to_msg()
+            tick=time.monotonic()
+            if source_timing['last'] is not None:
+                source_timing['max_gap_s']=max(source_timing['max_gap_s'],tick-source_timing['last'])
+            source_timing['last']=tick
+            now=source.get_clock().now().to_msg()
             health.publish(RecorderHealth(stamp=now,run_id=run,ready=True))
             if not control['enabled']: return
             control['seq']+=1
@@ -158,7 +169,9 @@ def main():
                 pose=np.eye(4);pose[0,3]=x+control['delta']
                 vr.publish(VRInput(stamp=now,source_id='synthetic_pair',seq=control['seq'],
                     side=side,pose=pose.ravel().tolist(),grip=control['grip'],valid=True))
-        node.create_timer(.02,publish)
+        source.create_timer(.02,publish)
+        source_thread=threading.Thread(target=source_executor.spin,daemon=True)
+        source_thread.start()
         selector=ActionClient(node,SelectTeleopMode,ns+'/teleop/select_mode')
         tool=ActionClient(node,TeleopSession,ns+'/teleop/tool_session')
         assert selector.wait_for_server(timeout_sec=20.)
@@ -294,6 +307,12 @@ def main():
     finally:
         (output/'trace.json').write_text(json.dumps(state['trace'])+'\n')
         (output/'events.json').write_text(json.dumps(state['events'])+'\n')
+        (output/'source_stats.json').write_text(json.dumps({
+            'published_pairs':control['seq'],
+            'max_publish_gap_s':source_timing['max_gap_s']})+'\n')
+        source_executor.shutdown(timeout_sec=3.)
+        if source_thread: source_thread.join(timeout=3.)
+        source.destroy_node()
         node.destroy_node();rclpy.shutdown()
         for process in processes:
             if process.poll() is None: os.killpg(process.pid,signal.SIGINT)

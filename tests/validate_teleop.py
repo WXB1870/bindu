@@ -90,7 +90,7 @@ def run_case(root,output,case,g1=False,side='left'):
         launched = case in ('normal', 'websocket_launch')
         if launched:
             start('launch',['ros2','launch','bindu_runtime','g1_sim.launch.py' if g1 else 'teleop.launch.py','recording_mode:=normal','namespace:='+namespace,
-                            'run_id:='+run,'output:='+str(output/'episodes')]+(['teleop_enabled:=true','side:='+side] if g1 else [])+
+                            'run_id:='+run,'output:='+str(output/'episodes')]+(['teleop_enabled:=true','navigation_enabled:=false','side:='+side] if g1 else [])+
                             (['vr_enabled:=true','port:='+str(port)] if case=='websocket_launch' else []))
         for executable in (() if launched else ('execution','recorder','teleop','teleop_display')):
             start(executable,['ros2','run','bindu_runtime',executable,'--ros-args','-r','__ns:='+namespace,
