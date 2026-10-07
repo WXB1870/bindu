@@ -7,6 +7,7 @@ from pathlib import Path
 from ament_index_python.packages import get_package_share_directory
 from rclpy.action import ActionServer, GoalResponse, CancelResponse
 from rclpy.callback_groups import ReentrantCallbackGroup
+from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
 from rclpy.task import Future
 from std_srvs.srv import Trigger
 from bindu_contracts.teleoperation import VRFrame
@@ -14,9 +15,9 @@ from bindu_teleoperation.config import load_config
 from bindu_teleoperation.session import TeleopSession
 from bindu_kinematics.worker import KinematicsWorker
 from bindu_interfaces.action import TeleopSession as TeleopAction
-from bindu_interfaces.msg import VRInput, ExecutionState, RecorderHealth, MotionCommand
+from bindu_interfaces.msg import VRInput, ExecutionState, RecorderHealth, MotionCommand, TeleopModeState
 from bindu_interfaces.srv import Lease, SubmitMotion, ControlExecution
-from .common import RuntimeNode, seconds, stamp, spin
+from .common import MODE_STATE_MAX_AGE, RuntimeNode, seconds, stamp, spin
 
 
 class TeleopNode(RuntimeNode):
@@ -24,21 +25,30 @@ class TeleopNode(RuntimeNode):
         super().__init__('teleop')
         self.declare_parameter('teleop_config', str(Path(get_package_share_directory('bindu_runtime'))/'config/teleop_v34.json'))
         self.declare_parameter('model_root', str(Path(get_package_share_directory('bindu_kinematics'))/'models'))
+        self.declare_parameter('require_mode_selection', False)
+        self.require_mode_selection = self.get_parameter('require_mode_selection').value
         self.cfg = load_config(self.get_parameter('teleop_config').value, self.profile,
                                self.get_parameter('model_root').value)
         self.worker = KinematicsWorker(self.cfg['kinematics'])
         self.worker_error = ''
         self.solution = self.frame = self.state = self.health = None
+        self.mode_state = None
         self.busy = False
         group = ReentrantCallbackGroup()
         self.lease_client = self.create_client(Lease, 'execution/lease', callback_group=group)
         self.submit_client = self.create_client(SubmitMotion, 'execution/submit', callback_group=group)
         self.control_client = self.create_client(ControlExecution, 'execution/control', callback_group=group)
-        self.create_subscription(VRInput, 'teleop/vr/input', self.on_frame, 1)
+        # The paired receiver publishes left then right in one callback. A
+        # depth-one queue can retain only the second side before dispatch.
+        self.create_subscription(VRInput, 'teleop/vr/input', self.on_frame, 5)
+        self.create_subscription(TeleopModeState, 'teleop/mode_state',
+            lambda m:setattr(self,'mode_state',m), QoSProfile(depth=1,
+                reliability=ReliabilityPolicy.RELIABLE,durability=DurabilityPolicy.TRANSIENT_LOCAL))
         self.create_subscription(ExecutionState, 'execution/state', lambda m: setattr(self, 'state', m), 1)
         self.create_subscription(RecorderHealth, 'recorder/health', self.on_health, 5)
         self.create_timer(.005, self.poll_worker)
         self.create_service(Trigger, 'teleop/ready', self.ready)
+        self.create_service(Trigger, 'teleop/worker_ready', self.worker_ready)
         self.server = ActionServer(self, TeleopAction, 'teleop/session', execute_callback=self.execute,
                                   goal_callback=self.goal, cancel_callback=lambda _: CancelResponse.ACCEPT,
                                   callback_group=group)
@@ -48,6 +58,8 @@ class TeleopNode(RuntimeNode):
             self.health = msg
 
     def on_frame(self, msg):
+        if msg.side != self.cfg['side']:
+            return
         self.frame = VRFrame(msg.source_id, msg.seq, seconds(msg.stamp), msg.side, tuple(msg.pose),
                              msg.grip, msg.trigger, msg.init, msg.stop, msg.valid, msg.clutch_seq)
 
@@ -64,6 +76,12 @@ class TeleopNode(RuntimeNode):
 
     def check(self):
         now = self.now()
+        mode = self.mode_state
+        if self.require_mode_selection or mode is not None:
+            if (mode is None or mode.profile_hash != self.profile.digest or mode.phase != 'READY' or
+                    mode.mode != 'single_arm' or mode.side != self.cfg['side'] or
+                    not 0 <= now-seconds(mode.stamp) < MODE_STATE_MAX_AGE):
+                raise RuntimeError('TELEOP_MODE_NOT_SELECTED')
         if self.worker_error:
             raise RuntimeError(self.worker_error)
         if not self.worker.ready:
@@ -75,6 +93,8 @@ class TeleopNode(RuntimeNode):
             raise RuntimeError('RECORDER_UNAVAILABLE')
         if self.frame is None or not 0 <= now-self.frame.stamp <= self.cfg['input_max_age']:
             raise RuntimeError('VR_INPUT_TIMEOUT')
+        if mode is not None and self.frame.stamp <= seconds(mode.changed_at):
+            raise RuntimeError('VR_INPUT_BEFORE_MODE_SELECTION')
 
     def readiness_error(self):
         try:
@@ -92,6 +112,11 @@ class TeleopNode(RuntimeNode):
     def ready(self, request, reply):
         reason = self.readiness_error()
         reply.success, reply.message = not bool(reason), reason or 'TELEOP_READY'
+        return reply
+
+    def worker_ready(self, request, reply):
+        reason = self.worker_error or ('' if self.worker.ready else 'IK_NOT_READY')
+        reply.success, reply.message = not bool(reason), reason or 'IK_READY'
         return reply
 
     def goal(self, request):
@@ -158,6 +183,16 @@ class TeleopNode(RuntimeNode):
                 owner=session.identity, resources=[goal.request.resource_group])))
             if not lease.ok or lease.profile_hash != self.profile.digest:
                 raise RuntimeError(lease.code if not lease.ok else 'PROFILE_MISMATCH')
+            # Wait boundedly for a fresh post-lease sample before first motion.
+            startup_deadline = time.monotonic()+.7
+            while True:
+                try:
+                    self.check()
+                    break
+                except RuntimeError:
+                    if time.monotonic() >= startup_deadline:
+                        raise
+                    await self.pause()
             started = time.monotonic()
             next_renewal = started
             pending_at = renewal_at = 0.
@@ -255,6 +290,15 @@ class TeleopNode(RuntimeNode):
             result.code = 'CANCELED' if canceled else 'TELEOP_SESSION_COMPLETE'
         except (RuntimeError, ValueError, KeyError) as exc:
             result.code = str(exc)
+            if result.code == 'TELEOP_MODE_NOT_SELECTED':
+                mode = self.mode_state
+                self.event('TELEOP_MODE_DIAGNOSTIC', json.dumps({
+                    'mode': mode.mode if mode else '',
+                    'phase': mode.phase if mode else '',
+                    'side': mode.side if mode else '',
+                    'generation': mode.generation if mode else None,
+                    'age': self.now()-seconds(mode.stamp) if mode else None}),
+                    goal.request.task_id)
         finally:
             if lease is not None and lease.ok:
                 stopped = await self.stop(lease, release=True)

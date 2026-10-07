@@ -25,6 +25,7 @@ class Motion:
     velocities: Tuple[Tuple[float, ...], ...] = ()
     accelerations: Tuple[Tuple[float, ...], ...] = ()
     expected_revision: int = 0  # 0 disables the check; chunks require a current revision.
+    resource_groups: Tuple[str, ...] = ()  # Schema 2: one timeline across disjoint groups.
 
 
 @dataclass

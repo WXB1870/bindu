@@ -55,7 +55,7 @@ class Executor:
         self.tick(now)
         if self.lease_id or self.stopping:
             raise Rejected('BUSY')
-        if not owner or not 0 < ttl <= 5 or not groups:
+        if not owner or not 0 < ttl <= 5 or not groups or len(groups) != len(set(groups)):
             raise Rejected('INVALID_LEASE')
         if any(g not in set(self.profile.groups) | {'base'} for g in groups):
             raise Rejected('UNSUPPORTED_RESOURCE')
@@ -177,12 +177,20 @@ class Executor:
         if (m.expected_revision and m.expected_revision != self.revision) or (
                 m.mode == 'joint_reference_segment' and not m.expected_revision):
             raise Rejected('STALE_REVISION')
-        if m.schema_version != 1 or m.profile_hash != self.profile.digest:
+        if m.schema_version not in (1, 2) or m.profile_hash != self.profile.digest:
             raise Rejected('SCHEMA_OR_PROFILE_MISMATCH')
         if not m.command_id or not m.task_id or m.command_id in self.results:
             raise Rejected('DUPLICATE_OR_EMPTY_ID')
-        if m.group not in self.groups:
-            raise Rejected('RESOURCE_NOT_OWNED')
+        if m.schema_version == 1:
+            if m.resource_groups or m.group not in self.groups:
+                raise Rejected('RESOURCE_NOT_OWNED')
+            command_groups = (m.group,)
+        else:
+            command_groups = m.resource_groups
+            if (m.mode == 'base_velocity' or m.group or len(command_groups) < 2 or
+                    len(set(command_groups)) != len(command_groups) or
+                    not set(command_groups).issubset(self.groups)):
+                raise Rejected('RESOURCE_NOT_OWNED')
         if not all(math.isfinite(x) for x in (m.stamp, m.valid_for, m.duration)):
             raise Rejected('INVALID_TIME')
         if not (0 < m.valid_for <= 10) or m.stamp > now + .05 or m.stamp < self.last_stamp or now >= m.stamp + m.valid_for:
@@ -190,7 +198,7 @@ class Executor:
         if now - self.feedback.stamp > .2:
             raise Rejected('FEEDBACK_STALE')
         if m.mode == 'base_velocity':
-            if m.group != 'base' or 'base_velocity' not in self.profile.capabilities:
+            if command_groups != ('base',) or 'base_velocity' not in self.profile.capabilities:
                 raise Rejected('UNSUPPORTED_CAPABILITY')
             if m.names or m.positions or m.points or m.offsets or m.velocities or m.accelerations or not 0 < m.duration < m.valid_for:
                 raise Rejected('INVALID_BASE_COMMAND')
@@ -198,13 +206,14 @@ class Executor:
                     for axis, x in zip(("linear", "angular"), m.velocity)):
                 raise Rejected('BASE_LIMIT')
         elif m.mode in ('joint_target', 'finite_trajectory', 'joint_reference_segment'):
-            if m.group not in self.profile.groups or 'joint_position' not in self.profile.capabilities:
+            if (any(g not in self.profile.groups for g in command_groups) or
+                    'joint_position' not in self.profile.capabilities):
                 raise Rejected('UNSUPPORTED_CAPABILITY')
             if (m.velocity != (0., 0.) or m.duration or
                     (m.mode == 'joint_target' and (m.points or m.offsets or m.velocities or m.accelerations)) or
                     (m.mode != 'joint_target' and m.positions)):
                 raise Rejected('MIXED_COMMAND_PAYLOAD')
-            if tuple(self.profile.groups.get(m.group, ())) != m.names:
+            if tuple(j for g in command_groups for j in self.profile.groups[g]) != m.names:
                 raise Rejected('JOINT_LAYOUT_MISMATCH')
             values = (m.positions,) if m.mode == 'joint_target' else m.points
             if not values:
@@ -319,8 +328,10 @@ class Executor:
                 self.reference_names = ()
         except ValueError:
             self.halt(now, 'REFERENCE_GENERATION_FAILED', revoke=True, emergency=True)
-        except RuntimeError:
-            self.halt(now, 'DEVICE_COMMAND_REJECTED', revoke=True, emergency=True)
+        except RuntimeError as exc:
+            self.halt(now, 'DEVICE_COMMAND_REJECTED'+
+                      (':'+str(exc) if str(exc).startswith('PARTIAL_WRITE:') else ''),
+                      revoke=True, emergency=True)
 
     def tick_stop(self, now):
         motion, code = self.stopping
@@ -334,8 +345,10 @@ class Executor:
                 self.halt(now, 'STOP_FEEDBACK_TIMEOUT', revoke=True, emergency=True)
         except ValueError:
             self.halt(now, 'REFERENCE_GENERATION_FAILED', revoke=True, emergency=True)
-        except RuntimeError:
-            self.halt(now, 'DEVICE_COMMAND_REJECTED', revoke=True, emergency=True)
+        except RuntimeError as exc:
+            self.halt(now, 'DEVICE_COMMAND_REJECTED'+
+                      (':'+str(exc) if str(exc).startswith('PARTIAL_WRITE:') else ''),
+                      revoke=True, emergency=True)
 
     def references_arrived(self):
         targets = dict(self.held_references)

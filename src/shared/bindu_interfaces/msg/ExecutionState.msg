@@ -17,5 +17,8 @@ string[] feedback_sources
 builtin_interfaces/Time[] source_stamps
 string[] stop_failures
 uint64 revision
+bool lease_active
+uint64 lease_epoch
+string[] lease_resources
 float64[] reference_accelerations
 float64[] reference_jerks

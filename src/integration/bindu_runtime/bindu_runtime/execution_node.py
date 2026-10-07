@@ -57,7 +57,7 @@ class ExecutionNode(RuntimeNode):
                    (msg.velocity.linear.x, msg.velocity.angular.z), msg.duration, msg.schema_version,
                    tuple(tuple(p.velocities) for p in msg.points) if any(p.velocities for p in msg.points) else (),
                    tuple(tuple(p.accelerations) for p in msg.points) if any(p.accelerations for p in msg.points) else (),
-                   msg.expected_revision)
+                   msg.expected_revision, tuple(msg.resource_groups))
         self.engine.submit(m, self.now())
         self.accepted_pub.publish(msg)
         return max(m.stamp, self.engine.last_tick)
@@ -129,6 +129,9 @@ class ExecutionNode(RuntimeNode):
                                for j,q in fb.positions.items()]
         msg.base_velocity.linear.x, msg.base_velocity.angular.z = fb.base_velocity
         msg.revision = self.engine.revision
+        msg.lease_active = bool(self.engine.lease_id)
+        msg.lease_epoch = self.engine.epoch
+        msg.lease_resources = list(self.engine.groups) if self.engine.lease_id else []
         if self.engine.reference:
             values = dict(zip(self.engine.reference_names, zip(self.engine.reference.v,
                           self.engine.reference.a, self.engine.reference.j)))

@@ -7,6 +7,8 @@ string lease_id
 uint64 epoch
 string mode
 string resource_group
+# Schema 2 joint commands: ordered, disjoint profile groups. Empty for schema 1.
+string[] resource_groups
 builtin_interfaces/Time stamp
 float64 valid_for
 string[] joint_names

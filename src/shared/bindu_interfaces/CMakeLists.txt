@@ -24,7 +24,9 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/NavigationVelocity.msg"
   "msg/NavigationPose.msg"
   "msg/VRInput.msg"
+  "msg/TeleopModeState.msg"
   "action/TeleopSession.action"
+  "action/SelectTeleopMode.action"
   "action/FetchDrink.action"
   "action/NavigateToSite.action"
   DEPENDENCIES builtin_interfaces geometry_msgs trajectory_msgs sensor_msgs)

@@ -10,6 +10,10 @@ from .common import RuntimeNode, seconds, spin
 class DescriptionNode(RuntimeNode):
     def __init__(self):
         super().__init__('description_state')
+        self.declare_parameter('base_frame', 'base_link')
+        self.base_frame = self.get_parameter('base_frame').value
+        if not self.base_frame or self.base_frame.startswith('/'):
+            raise ValueError('DESCRIPTION_INVALID_BASE_FRAME')
         self.joints = self.create_publisher(JointState, 'joint_states', 1)
         self.tf = TransformBroadcaster(self)
         self.last_joint_stamp = self.last_base_stamp = -1.
@@ -37,7 +41,7 @@ class DescriptionNode(RuntimeNode):
         transform = TransformStamped()
         transform.header.stamp = sources['base']
         transform.header.frame_id = 'odom'
-        transform.child_frame_id = 'base_link'
+        transform.child_frame_id = self.base_frame
         transform.transform.translation.x = state.base_x
         transform.transform.translation.y = state.base_y
         transform.transform.rotation.z = math.sin(state.base_yaw/2)

@@ -1,0 +1,72 @@
+import unittest
+from pathlib import Path
+from types import SimpleNamespace as S
+import numpy as np
+from bindu_contracts.profile import Profile
+from bindu_contracts.teleoperation import VRFrame
+from bindu_teleoperation.modes import ModeSelection
+from bindu_teleoperation.bimanual_session import BimanualSession
+
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+class ModeTests(unittest.TestCase):
+    def setUp(self):
+        self.profile = Profile.load(ROOT/'src/integration/bindu_runtime/config/g1_provisional_sim.json')
+        self.m = ModeSelection(self.profile,'left',10.)
+        self.m.begin('bimanual_tool','',1,11.)
+        names = [n for group in self.profile.groups.values() for n in group]
+        self.state = S(profile_hash=self.profile.digest,lease_active=False,state='IDLE',
+                       reference=S(name=[]),stop_failures=[],feedback_stamp=11.1,
+                       joints=S(name=names,velocity=[0.]*len(names)))
+        self.health = S(ready=True,stamp=11.1)
+        left=np.eye(4);right=np.eye(4);right[0,3]=.3
+        self.frames = {side:VRFrame('source',1,11.1,side,tuple(pose.ravel()),grip=0.)
+                       for side,pose in (('left',left),('right',right))}
+
+    def ready(self):
+        return self.m.ready(self.state,self.health,self.frames,11.15,tuple(self.profile.groups))
+
+    def test_switch_requires_quiescence_and_fresh_paired_release(self):
+        self.assertEqual(self.ready(),'')
+        self.state.lease_active=True
+        self.assertEqual(self.ready(),'EXECUTION_NOT_QUIESCENT')
+        self.state.lease_active=False
+        self.frames['right']=VRFrame('source',2,11.1,'right',self.frames['right'].pose,grip=0.)
+        self.assertEqual(self.ready(),'VR_PAIR_MISMATCH')
+        self.frames['right']=VRFrame('source',1,11.1,'right',self.frames['right'].pose,grip=1.)
+        self.assertEqual(self.ready(),'VR_RELEASE_REQUIRED')
+
+    def test_generation_fences_old_requests_and_failure_is_safe(self):
+        self.assertEqual(self.ready(),'')
+        self.m.finish(11.15)
+        self.assertEqual((self.m.mode,self.m.phase,self.m.generation),('bimanual_tool','READY',2))
+        with self.assertRaisesRegex(ValueError,'STALE_MODE_GENERATION'):
+            self.m.begin('single_arm','left',1,11.2)
+        self.m.begin('single_arm','left',2,11.2)
+        self.m.fail('STOP_UNCONFIRMED',11.3)
+        self.assertEqual((self.m.mode,self.m.phase,self.m.generation),('','SAFE',3))
+
+
+class BimanualSessionTests(unittest.TestCase):
+    def test_two_hand_release_engage_and_new_anchor(self):
+        cfg={'input_max_age':.25,'engage_seconds':.2,'position_scale':1.,'operator_yaw_rad':0.}
+        session=BimanualSession(cfg,2,10.)
+        left=np.eye(4);right=np.eye(4);right[0,3]=.3
+        def frames(seq,when,grip,offset=0.):
+            a=left.copy();b=right.copy();a[0,3]+=offset;b[0,3]+=offset
+            return (VRFrame('source',seq,when,'left',tuple(a.ravel()),grip=grip),
+                    VRFrame('source',seq,when,'right',tuple(b.ravel()),grip=grip))
+        session.ingest(*frames(1,10.1,0.),10.1)
+        session.ingest(*frames(2,10.2,1.),10.2)
+        session.ingest(*frames(3,10.41,1.),10.41)
+        self.assertEqual(session.mode,'follow')
+        session.capture(np.eye(4))
+        session.ingest(*frames(4,10.42,1.,.01),10.42)
+        self.assertAlmostEqual(float(np.linalg.norm(session.target[:3,3])),.01)
+        session.ingest(*frames(5,10.43,0.),10.43)
+        self.assertEqual(session.mode,'idle')
+        self.assertIsNone(session.target)
+        with self.assertRaisesRegex(ValueError,'VR_PAIR_INVALID'):
+            session.ingest(*frames(6,10.44,1.)[:1],frames(5,10.44,1.)[1],10.44)

@@ -1,0 +1,11 @@
+string mode
+string side
+uint64 expected_generation
+float64 timeout
+---
+bool success
+string code
+uint64 generation
+---
+string phase
+string code

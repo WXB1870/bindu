@@ -1,0 +1,46 @@
+{
+  "simulation_only": true,
+  "collision_scope": "empty_scene_only",
+  "urdf": "snowbot_control.urdf",
+  "resource_groups": [
+    "waist",
+    "left_arm",
+    "right_arm"
+  ],
+  "left_frame": "arm_l_ft_sensor",
+  "right_frame": "arm_r_ft_sensor",
+  "left_to_tool": [
+    1,
+    0,
+    0,
+    0,
+    0,
+    1,
+    0,
+    -0.239,
+    0,
+    0,
+    1,
+    0,
+    0,
+    0,
+    0,
+    1
+  ],
+  "flange_distance_range": [
+    0.45,
+    0.55
+  ],
+  "input_max_age": 0.25,
+  "feedback_max_age": 0.2,
+  "command_max_age": 0.4,
+  "engage_seconds": 1.0,
+  "position_scale": 1.0,
+  "operator_yaw_rad": 0.0,
+  "sample_period": 0.01,
+  "relative_gain": 2.0,
+  "max_relative_error": 0.03,
+  "max_linear_speed": 0.04,
+  "max_angular_speed": 0.12,
+  "solve_timeout_us": 30000
+}

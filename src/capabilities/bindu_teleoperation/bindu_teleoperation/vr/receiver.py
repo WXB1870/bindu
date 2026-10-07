@@ -69,8 +69,8 @@ def _serve(config, output, feedback):
         owner = None
         identity = ''
         seq = 0
-        clutch_seq = 0
-        previous_grip = 0.
+        clutch_seq = {'left': 0, 'right': 0}
+        previous_grip = {'left': 0., 'right': 0.}
         stop_latched = False
         latest_display = None
         display_received = float('-inf')
@@ -79,19 +79,26 @@ def _serve(config, output, feedback):
             nonlocal owner, identity, seq, clutch_seq, previous_grip, stop_latched
             if owner is None or owner.CURRENT_WS_ID not in app.ws:
                 owner, identity = session, uuid.uuid4().hex
-                clutch_seq, previous_grip, stop_latched = 0, 0., False
+                clutch_seq = {'left': 0, 'right': 0}
+                previous_grip = {'left': 0., 'right': 0.}
+                stop_latched = False
             if owner is not session:
                 return  # A second browser must not interleave commands.
             seq += 1
             now = time.time()
-            frame = decode_controller(event.value, config['side'], identity, seq, now)
-            if frame.valid:
-                if frame.grip < .3 and previous_grip >= .3:
-                    clutch_seq += 1
-                previous_grip = frame.grip
-                stop_latched = stop_latched or frame.stop
-            frame = replace(frame, clutch_seq=clutch_seq, stop=stop_latched)
-            _latest_put(output, ('frame', frame))
+            sides = ('left', 'right') if config['side'] == 'both' else (config['side'],)
+            frames = [decode_controller(event.value, side, identity, seq, now) for side in sides]
+            stop_latched = stop_latched or any(frame.stop for frame in frames)
+            paired = []
+            for frame in frames:
+                side = frame.side
+                if frame.valid:
+                    if frame.grip < .3 and previous_grip[side] >= .3:
+                        clutch_seq[side] += 1
+                    previous_grip[side] = frame.grip
+                paired.append(replace(frame, clutch_seq=clutch_seq[side], stop=stop_latched))
+            # A single queue item keeps the two sides from separate event epochs together.
+            _latest_put(output, ('frame', tuple(paired) if len(paired) == 2 else paired[0]))
 
         async def display(session):
             nonlocal owner, latest_display, display_received

@@ -1,5 +1,5 @@
 class CommandRouter:
-    """Route one group's command; never split a command into partial writes."""
+    """Preflight disjoint groups, then send one reference epoch to their adapters."""
     def __init__(self, profile, joint_drivers, base_driver):
         if set(joint_drivers) != set(profile.groups):
             raise ValueError('DRIVER_GROUP_LAYOUT')
@@ -8,10 +8,20 @@ class CommandRouter:
         self.reference = {j: 0. for names in profile.groups.values() for j in names}
 
     def write_joints(self, target):
-        group = next((g for g, names in self.groups.items() if set(names) == set(target)), None)
-        if group is None:
+        selected = [(g, names) for g, names in self.groups.items() if set(names) <= set(target)]
+        if not selected or set(target) != {j for _, names in selected for j in names}:
             raise RuntimeError('JOINT_ROUTE_MISMATCH')
-        self.joints[group].write_positions(target)
+        try:
+            for group, names in selected:
+                self.joints[group].write_positions({j: target[j] for j in names})
+        except RuntimeError as exc:
+            if len(selected) == 1:
+                raise
+            # A backend can accept its packet before another rejects. Stop all
+            # endpoints and leave the higher-level executor to revoke the lease.
+            failures = self.request_stop()
+            raise RuntimeError('PARTIAL_WRITE:'+group+':'+str(exc)+
+                               (':STOP_FAILED:'+','.join(failures) if failures else '')) from exc
         self.reference.update(target)  # Update only after the adapter accepts.
 
     def write_base(self, velocity):

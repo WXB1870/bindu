@@ -15,12 +15,14 @@ class VRInputNode(RuntimeNode):
         for key, value in defaults.items():
             self.declare_parameter(key, value)
         cfg = {key: self.get_parameter(key).value for key in defaults}
-        if cfg['side'] not in ('left', 'right'):
+        if cfg['side'] not in ('left', 'right', 'both'):
             raise ValueError('VR_INVALID_SIDE')
         cfg['cert_file'] = cfg['cert_file'] or None
         cfg['key_file'] = cfg['key_file'] or None
         self.receiver = VuerReceiver(cfg)
-        self.publisher = self.create_publisher(VRInput, 'teleop/vr/input', 1)
+        # Both sides share one receiver event; retain both messages until DDS
+        # delivers the pair to mode, single-arm and bimanual subscribers.
+        self.publisher = self.create_publisher(VRInput, 'teleop/vr/input', 5)
         self.timer = self.create_timer(.005, self.poll)
         self.create_subscription(String, 'teleop/display', self.on_display,
                                  QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT))
@@ -44,13 +46,14 @@ class VRInputNode(RuntimeNode):
             return
         if frame is None:
             return
-        age = time.time()-frame.stamp
-        if age < 0 or age > 1.:
-            return
-        self.publisher.publish(VRInput(stamp=stamp(self.now()-age), source_id=frame.source_id,
-            seq=frame.seq, side=frame.side, pose=list(frame.pose) if frame.valid else [0.]*16,
-            grip=frame.grip, trigger=frame.trigger, init=frame.init, stop=frame.stop,
-            valid=frame.valid, clutch_seq=frame.clutch_seq))
+        for item in frame if isinstance(frame, tuple) else (frame,):
+            age = time.time()-item.stamp
+            if age < 0 or age > 1.:
+                continue
+            self.publisher.publish(VRInput(stamp=stamp(self.now()-age), source_id=item.source_id,
+                seq=item.seq, side=item.side, pose=list(item.pose) if item.valid else [0.]*16,
+                grip=item.grip, trigger=item.trigger, init=item.init, stop=item.stop,
+                valid=item.valid, clutch_seq=item.clutch_seq))
 
     def destroy_node(self):
         self.receiver.close()

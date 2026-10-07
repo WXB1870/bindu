@@ -217,11 +217,35 @@ class Contracts(unittest.TestCase):
         self.assertEqual(self.drivers['arm'].target, {'a': 0., 'b': 0.})
         self.assertEqual(self.base.velocity, (0., 0.))
 
-    def test_route_rejects_mixed_device_write(self):
+    def test_route_rejects_incomplete_mixed_device_write(self):
         with self.assertRaisesRegex(RuntimeError, 'JOINT_ROUTE_MISMATCH'):
             self.io.write_joints({'a': .2, 'f': .2})
         self.assertEqual(self.drivers['arm'].target['a'], 0.)
         self.assertEqual(self.drivers['hand'].target['f'], 0.)
+
+    def test_multi_resource_single_timeline_and_partial_failure(self):
+        target = replace(self.m, mode='joint_target', schema_version=2, group='',
+                         resource_groups=('arm', 'hand'), names=('a', 'b', 'f'),
+                         positions=(.3, .2, .1), points=(), offsets=())
+        self.e.submit(target, 10.)
+        self.e.tick(10.01)
+        self.assertGreater(self.drivers['arm'].target['a'], 0.)
+        self.assertGreater(self.drivers['hand'].target['f'], 0.)
+        with self.assertRaisesRegex(Rejected, 'JOINT_LAYOUT_MISMATCH'):
+            self.e.submit(replace(target, command_id='bad', names=('f', 'a', 'b')), 10.01)
+        self.drivers['hand'].inject_fault('reject')
+        self.e.tick(10.02)
+        self.assertIn('PARTIAL_WRITE:hand', self.e.results['cmd'].code)
+        self.assertFalse(self.e.lease_id)
+        self.assertEqual(self.drivers['arm'].target, self.drivers['arm'].positions)
+        self.assertFalse(self.io.reference_positions)
+
+    def test_multi_resource_rejects_duplicate_and_unowned_groups(self):
+        target = replace(self.m, schema_version=2, group='', resource_groups=('arm','arm'))
+        with self.assertRaisesRegex(Rejected, 'RESOURCE_NOT_OWNED'):
+            self.e.submit(target, 10.)
+        with self.assertRaisesRegex(Rejected, 'RESOURCE_NOT_OWNED'):
+            self.e.submit(replace(target, resource_groups=('arm','missing')), 10.)
 
     def test_one_stale_device_cannot_be_hidden(self):
         self.io.read_feedback(10., .01)

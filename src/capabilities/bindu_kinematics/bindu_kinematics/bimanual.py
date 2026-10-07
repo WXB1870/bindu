@@ -1,0 +1,132 @@
+"""Optional native rigid-tool QP with named, model-derived joint layout."""
+import ctypes as c
+import math
+from pathlib import Path
+import numpy as np
+from ament_index_python.packages import get_package_prefix
+
+
+class BimanualQP:
+    def __init__(self, config, profile):
+        self.cfg = config
+        self.groups = tuple(config['resource_groups'])
+        if (len(self.groups) not in (2,3) or len(set(self.groups)) != len(self.groups) or
+                any(group not in profile.groups for group in self.groups)):
+            raise ValueError('BIMANUAL_RESOURCE_LAYOUT')
+        self.names = tuple(name for group in self.groups for name in profile.groups[group])
+        if not all(math.isfinite(float(v)) and float(v) > 0 for v in
+                   (config['sample_period'], config['max_relative_error'],
+                    config['max_linear_speed'], config['max_angular_speed'])):
+            raise ValueError('BIMANUAL_INVALID_LIMIT')
+        path = Path(config.get('library') or Path(get_package_prefix('bindu_bimanual_qp')) /
+                    'lib/libbindu_bimanual_qp.so')
+        self.lib = lib = c.CDLL(str(path))
+        p, i, d = c.c_void_p, c.c_int, c.c_double
+        string = c.c_char_p
+        array = c.POINTER(d)
+        for name, args, result in (
+            ('bq_create', [string]*6, p), ('bq_destroy', [p], None),
+            ('bq_nq', [p], i), ('bq_nactive', [p], i), ('bq_nmodel', [p], i),
+            ('bq_model_name', [p,i], string), ('bq_active_name', [p,i], string),
+            ('bq_error', [p], string), ('bq_limits', [p,array,array,array], None),
+            ('bq_set_speed_limits', [p,array,i], i),
+            ('bq_capture', [p,array,i,array,d,d,d,d], i),
+            ('bq_solve', [p,array,i,array,d,array,array], i),
+            ('bq_tool_pose', [p,array,i,array], i),
+            ('bq_flange_distance', [p,array,i], d)):
+            fn = getattr(lib, name)
+            fn.argtypes, fn.restype = args, result
+        def encoded(value): return str(value).encode()
+        shared = profile.groups[self.groups[0]] if len(self.groups) == 3 else ()
+        left = profile.groups[self.groups[-2]]
+        right = profile.groups[self.groups[-1]]
+        self.handle = lib.bq_create(encoded(config['urdf']), encoded(config['left_frame']),
+            encoded(config['right_frame']), encoded(','.join(shared)),
+            encoded(','.join(left)), encoded(','.join(right)))
+        if not self.handle:
+            raise ValueError('BIMANUAL_MODEL_INVALID')
+        self.nq = lib.bq_nq(self.handle)
+        self.model_names = tuple(lib.bq_model_name(self.handle,k).decode()
+                                 for k in range(lib.bq_nmodel(self.handle)))
+        active = tuple(lib.bq_active_name(self.handle,k).decode()
+                       for k in range(lib.bq_nactive(self.handle)))
+        if active != self.names or self.nq != len(self.model_names):
+            self.close()
+            raise ValueError('BIMANUAL_MODEL_LAYOUT')
+        lower = np.empty(len(active)); upper = np.empty(len(active)); speed = np.empty(len(active))
+        lib.bq_limits(self.handle, lower.ctypes.data_as(array), upper.ctypes.data_as(array),
+                      speed.ctypes.data_as(array))
+        for n, lo, hi, v in zip(active, lower, upper, speed):
+            plo, phi = profile.limits[n]
+            if (plo < lo-1e-6 or phi > hi+1e-6 or
+                    profile.speed(n) > v+1e-6):
+                self.close()
+                raise ValueError('BIMANUAL_PROFILE_EXCEEDS_MODEL:'+n)
+        configured_speed = np.asarray([profile.speed(n) for n in active],dtype=np.float64)
+        if not lib.bq_set_speed_limits(self.handle, self._ptr(configured_speed),len(active)):
+            error=self._error()
+            self.close()
+            raise ValueError('BIMANUAL_SPEED_CONFIG:'+error)
+        self.tool = np.asarray(config['left_to_tool'], dtype=np.float64).reshape(4,4)
+        if (not np.isfinite(self.tool).all() or not np.allclose(self.tool[3], [0,0,0,1]) or
+                not np.allclose(self.tool[:3,:3].T @ self.tool[:3,:3], np.eye(3), atol=1e-5) or
+                np.linalg.det(self.tool[:3,:3]) < .999):
+            self.close()
+            raise ValueError('BIMANUAL_TOOL_TRANSFORM')
+        self.limits = profile.limits
+        self.speed = {n: min(profile.speed(n), float(v)) for n,v in zip(active,speed)}
+
+    def close(self):
+        if getattr(self, 'handle', None):
+            self.lib.bq_destroy(self.handle)
+            self.handle = None
+
+    def __del__(self):
+        self.close()
+
+    def _q(self, feedback):
+        try:
+            q = np.asarray([feedback[n] for n in self.model_names], dtype=np.float64)
+        except KeyError as exc:
+            raise ValueError('BIMANUAL_FEEDBACK_LAYOUT') from exc
+        if not np.isfinite(q).all():
+            raise ValueError('BIMANUAL_FEEDBACK_NONFINITE')
+        return q
+
+    @staticmethod
+    def _ptr(values):
+        return values.ctypes.data_as(c.POINTER(c.c_double))
+
+    def _error(self):
+        return self.lib.bq_error(self.handle).decode()
+
+    def capture(self, feedback):
+        q = self._q(feedback)
+        distance = self.lib.bq_flange_distance(self.handle, self._ptr(q), self.nq)
+        low, high = self.cfg['flange_distance_range']
+        if not low <= distance <= high:
+            raise ValueError('BIMANUAL_GRASP_GEOMETRY')
+        if not self.lib.bq_capture(self.handle, self._ptr(q), self.nq, self._ptr(self.tool),
+                float(self.cfg['relative_gain']), float(self.cfg['max_relative_error']),
+                float(self.cfg['max_linear_speed']), float(self.cfg['max_angular_speed'])):
+            raise ValueError('BIMANUAL_CAPTURE:'+self._error())
+        out = np.empty((4,4), dtype=np.float64)
+        if not self.lib.bq_tool_pose(self.handle, self._ptr(q), self.nq, self._ptr(out)):
+            raise ValueError('BIMANUAL_TOOL_POSE:'+self._error())
+        return out
+
+    def solve(self, feedback, target):
+        q = self._q(feedback)
+        target = np.ascontiguousarray(target, dtype=np.float64).reshape(4,4)
+        out = np.empty(len(self.names), dtype=np.float64)
+        metrics = np.empty(3, dtype=np.float64)
+        if not self.lib.bq_solve(self.handle, self._ptr(q), self.nq, self._ptr(target),
+                float(self.cfg['sample_period']), self._ptr(out), self._ptr(metrics)):
+            raise ValueError('BIMANUAL_QP:'+self._error())
+        if metrics[0] > float(self.cfg['solve_timeout_us']):
+            raise ValueError('BIMANUAL_QP_TIMEOUT')
+        for name, old, new in zip(self.names, (feedback[n] for n in self.names), out):
+            lo, hi = self.limits[name]
+            if not lo <= new <= hi or abs(new-old) > self.speed[name]*self.cfg['sample_period']+1e-6:
+                raise ValueError('BIMANUAL_POSITION_LIMIT:'+name)
+        return tuple(float(v) for v in out), tuple(float(v) for v in metrics)

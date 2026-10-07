@@ -12,6 +12,10 @@ from bindu_interfaces.msg import RuntimeEvent
 
 EVENT_QOS = QoSProfile(depth=512, reliability=ReliabilityPolicy.RELIABLE,
                        durability=DurabilityPolicy.VOLATILE)
+# The mode authority publishes every 50 ms. Its heartbeat may cross a few
+# scheduling periods without changing authority; joint feedback has its own
+# tighter freshness check in each session.
+MODE_STATE_MAX_AGE = .5
 
 
 def seconds(stamp):

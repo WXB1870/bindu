@@ -1,0 +1,21 @@
+{
+  "description": "Two inward-facing flanges 0.50 m apart along a sloped handle; the left flange is about 0.171 m above the right, and the two +X flange-normal visual lines overlap in the ready pose.",
+  "joint_positions_rad": {
+    "leg_joint3": 0.2197208090500019,
+    "leg_joint4": 0.04319830260851053,
+    "left_arm_joint1": -0.30330438967301754,
+    "left_arm_joint2": -0.2850619963040331,
+    "left_arm_joint3": 0.7525053479205469,
+    "left_arm_joint4": -1.9673164985889031,
+    "left_arm_joint5": 1.558839477048887,
+    "left_arm_joint6": -0.630509660713578,
+    "left_arm_joint7": -0.7771207571959278,
+    "right_arm_joint1": -0.6160527870020016,
+    "right_arm_joint2": 0.5638868005745356,
+    "right_arm_joint3": -0.19636294426387293,
+    "right_arm_joint4": 1.6451453640855418,
+    "right_arm_joint5": 1.5792679134033232,
+    "right_arm_joint6": -0.35049777662174564,
+    "right_arm_joint7": -1.2372614325416909
+  }
+}

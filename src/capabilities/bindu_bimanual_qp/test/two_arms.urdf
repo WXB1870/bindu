@@ -1,0 +1,40 @@
+<?xml version="1.0"?>
+<robot name="test_dual_arm">
+  <link name="base_link"/>
+  <link name="waist_link"/>
+  <joint name="waist_joint" type="revolute"><parent link="base_link"/><child link="waist_link"/><axis xyz="0 1 0"/><limit lower="-1.2" upper="1.2" velocity="0.5" effort="20"/></joint>
+  <link name="left_shoulder"/>
+  <joint name="left_mount" type="fixed"><parent link="waist_link"/><child link="left_shoulder"/><origin xyz="0 0.35 0.5"/></joint>
+  <link name="left_link_1"/>
+  <joint name="left_joint_1" type="revolute"><parent link="left_shoulder"/><child link="left_link_1"/><origin xyz="0 0 0"/><axis xyz="0 0 1"/><limit lower="-2.5" upper="2.5" velocity="2.0" effort="20"/></joint>
+  <link name="left_link_2"/>
+  <joint name="left_joint_2" type="revolute"><parent link="left_link_1"/><child link="left_link_2"/><origin xyz="0.16 0 0"/><axis xyz="0 1 0"/><limit lower="-2.5" upper="2.5" velocity="2.0" effort="20"/></joint>
+  <link name="left_link_3"/>
+  <joint name="left_joint_3" type="revolute"><parent link="left_link_2"/><child link="left_link_3"/><origin xyz="0.16 0 0"/><axis xyz="1 0 0"/><limit lower="-2.5" upper="2.5" velocity="2.0" effort="20"/></joint>
+  <link name="left_link_4"/>
+  <joint name="left_joint_4" type="revolute"><parent link="left_link_3"/><child link="left_link_4"/><origin xyz="0.16 0 0"/><axis xyz="0 1 0"/><limit lower="-2.5" upper="2.5" velocity="2.0" effort="20"/></joint>
+  <link name="left_link_5"/>
+  <joint name="left_joint_5" type="revolute"><parent link="left_link_4"/><child link="left_link_5"/><origin xyz="0.16 0 0"/><axis xyz="1 0 0"/><limit lower="-2.5" upper="2.5" velocity="2.0" effort="20"/></joint>
+  <link name="left_link_6"/>
+  <joint name="left_joint_6" type="revolute"><parent link="left_link_5"/><child link="left_link_6"/><origin xyz="0.16 0 0"/><axis xyz="0 0 1"/><limit lower="-2.5" upper="2.5" velocity="2.0" effort="20"/></joint>
+  <link name="left_ee"/>
+  <joint name="left_wrist" type="fixed"><parent link="left_link_6"/><child link="left_ee"/><origin xyz="0.16 0 0"/></joint>
+  <link name="right_shoulder"/>
+  <joint name="right_mount" type="fixed"><parent link="waist_link"/><child link="right_shoulder"/><origin xyz="0 -0.35 0.5"/></joint>
+  <link name="right_link_1"/>
+  <joint name="right_joint_1" type="revolute"><parent link="right_shoulder"/><child link="right_link_1"/><origin xyz="0 0 0"/><axis xyz="0 0 1"/><limit lower="-2.5" upper="2.5" velocity="2.0" effort="20"/></joint>
+  <link name="right_link_2"/>
+  <joint name="right_joint_2" type="revolute"><parent link="right_link_1"/><child link="right_link_2"/><origin xyz="0.16 0 0"/><axis xyz="0 1 0"/><limit lower="-2.5" upper="2.5" velocity="2.0" effort="20"/></joint>
+  <link name="right_link_3"/>
+  <joint name="right_joint_3" type="revolute"><parent link="right_link_2"/><child link="right_link_3"/><origin xyz="0.16 0 0"/><axis xyz="1 0 0"/><limit lower="-2.5" upper="2.5" velocity="2.0" effort="20"/></joint>
+  <link name="right_link_4"/>
+  <joint name="right_joint_4" type="revolute"><parent link="right_link_3"/><child link="right_link_4"/><origin xyz="0.16 0 0"/><axis xyz="0 1 0"/><limit lower="-2.5" upper="2.5" velocity="2.0" effort="20"/></joint>
+  <link name="right_link_5"/>
+  <joint name="right_joint_5" type="revolute"><parent link="right_link_4"/><child link="right_link_5"/><origin xyz="0.16 0 0"/><axis xyz="1 0 0"/><limit lower="-2.5" upper="2.5" velocity="2.0" effort="20"/></joint>
+  <link name="right_link_6"/>
+  <joint name="right_joint_6" type="revolute"><parent link="right_link_5"/><child link="right_link_6"/><origin xyz="0.16 0 0"/><axis xyz="0 0 1"/><limit lower="-2.5" upper="2.5" velocity="2.0" effort="20"/></joint>
+  <link name="right_ee"/>
+  <joint name="right_wrist" type="fixed"><parent link="right_link_6"/><child link="right_ee"/><origin xyz="0.16 0 0"/></joint>
+  <link name="tool_frame"/>
+  <joint name="tool_mount" type="fixed"><parent link="left_ee"/><child link="tool_frame"/><origin xyz="0.12 -0.35 0"/></joint>
+</robot>

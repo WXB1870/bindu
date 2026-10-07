@@ -30,13 +30,24 @@ def assemble(context):
     teleop = {**common, 'teleop_config': (LaunchConfiguration('teleop_config').perform(context)
               or str(share/f'config/teleop_g1_{side}.json')),
               'model_root': str(model.parent)}
+    bimanual = LaunchConfiguration('bimanual_enabled').perform(context).lower() == 'true'
     enabled = (LaunchConfiguration('teleop_enabled').perform(context).lower() == 'true' or
-               LaunchConfiguration('vr_enabled').perform(context).lower() == 'true')
+               LaunchConfiguration('vr_enabled').perform(context).lower() == 'true' or bimanual)
     if enabled:
         for name in ('teleop', 'teleop_display'):
             nodes.append(Node(package='bindu_runtime', executable=name, namespace=ns,
-                              output='screen', parameters=[teleop]))
-    vr = {k:ParameterValue(LaunchConfiguration(k), value_type=str) for k in ('host','side','cert_file','key_file')}
+                              output='screen', parameters=[{**teleop,
+                                  **({'require_mode_selection':True} if name == 'teleop' else {})}]))
+        nodes.append(Node(package='bindu_runtime', executable='teleop_mode', namespace=ns,
+                          output='screen', parameters=[{**common,'initial_side':side,
+                              'supported_sides':[side], 'require_single_worker':True}]))
+    if bimanual:
+        nodes.append(Node(package='bindu_runtime', executable='teleop_tool', namespace=ns,
+                          output='screen', parameters=[{**common,
+                              'tool_config':LaunchConfiguration('bimanual_config'),
+                              'model_root':str(model.parent)}]))
+    vr = {k:ParameterValue(LaunchConfiguration(k), value_type=str) for k in ('host','cert_file','key_file')}
+    vr['side'] = 'both' if bimanual else side
     vr['port'] = ParameterValue(LaunchConfiguration('port'), value_type=int)
     nodes.append(Node(package='bindu_runtime', executable='vr_input', namespace=ns, output='screen',
                       condition=IfCondition(LaunchConfiguration('vr_enabled')), parameters=[{**common, **vr}]))
@@ -55,7 +66,9 @@ def generate_launch_description():
     share = Path(get_package_share_directory('bindu_runtime'))
     defaults = {'namespace':'bindu_g1_sim', 'run_id':uuid.uuid4().hex, 'output':'/tmp/bindu-runs', 'recording_mode':'compact',
                 'profile':str(share/'config/g1_provisional_sim.json'), 'device_backend':'kinematic',
-                'teleop_enabled':'false', 'teleop_config':'', 'vr_enabled':'false', 'side':'left', 'host':'127.0.0.1',
+                'teleop_enabled':'false', 'teleop_config':'', 'vr_enabled':'false', 'bimanual_enabled':'false',
+                'bimanual_config':str(share/'config/bimanual_g1_sim.json'),
+                'side':'left', 'host':'127.0.0.1',
                 'port':'8012', 'cert_file':'', 'key_file':'', 'pi_enabled':'false',
                 'pi_config':str(share/'config/pi_g1.json'), 'navigation_enabled':'true',
                 'navigation_config':str(share/'config/navigation_sim.json'),
