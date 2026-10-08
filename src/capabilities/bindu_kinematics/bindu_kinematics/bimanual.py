@@ -9,6 +9,7 @@ from ament_index_python.packages import get_package_prefix
 class BimanualQP:
     def __init__(self, config, profile):
         self.cfg = config
+        self.captured = False
         self.groups = tuple(config['resource_groups'])
         if (len(self.groups) not in (2,3) or len(set(self.groups)) != len(self.groups) or
                 any(group not in profile.groups for group in self.groups)):
@@ -33,7 +34,7 @@ class BimanualQP:
             ('bq_capture', [p,array,i,array,d,d,d,d], i),
             ('bq_solve', [p,array,i,array,d,array,array], i),
             ('bq_tool_pose', [p,array,i,array], i),
-            ('bq_flange_distance', [p,array,i], d)):
+            ('bq_relative_pose', [p,array,i,array], i)):
             fn = getattr(lib, name)
             fn.argtypes, fn.restype = args, result
         def encoded(value): return str(value).encode()
@@ -67,16 +68,25 @@ class BimanualQP:
             error=self._error()
             self.close()
             raise ValueError('BIMANUAL_SPEED_CONFIG:'+error)
-        self.tool = np.asarray(config['left_to_tool'], dtype=np.float64).reshape(4,4)
-        if (not np.isfinite(self.tool).all() or not np.allclose(self.tool[3], [0,0,0,1]) or
-                not np.allclose(self.tool[:3,:3].T @ self.tool[:3,:3], np.eye(3), atol=1e-5) or
-                np.linalg.det(self.tool[:3,:3]) < .999):
+        try:
+            self.tool = self._transform(config['left_to_tool'])
+            self.expected_relative = None
+            if 'right_to_tool' in config:
+                right_tool = self._transform(config['right_to_tool'])
+                self.expected_relative = self.tool @ np.linalg.inv(right_tool)
+                self.grasp_position_tolerance = float(config['grasp_position_tolerance_m'])
+                self.grasp_rotation_tolerance = float(config['grasp_rotation_tolerance_rad'])
+                if not all(math.isfinite(v) and v > 0 for v in
+                           (self.grasp_position_tolerance, self.grasp_rotation_tolerance)):
+                    raise ValueError('BIMANUAL_GRASP_TOLERANCE')
+        except (KeyError, TypeError, ValueError):
             self.close()
-            raise ValueError('BIMANUAL_TOOL_TRANSFORM')
+            raise
         self.limits = profile.limits
         self.speed = {n: min(profile.speed(n), float(v)) for n,v in zip(active,speed)}
 
     def close(self):
+        self.captured = False
         if getattr(self, 'handle', None):
             self.lib.bq_destroy(self.handle)
             self.handle = None
@@ -100,12 +110,32 @@ class BimanualQP:
     def _error(self):
         return self.lib.bq_error(self.handle).decode()
 
+    @staticmethod
+    def _transform(values):
+        transform = np.asarray(values, dtype=np.float64).reshape(4,4)
+        rotation = transform[:3,:3]
+        if (not np.isfinite(transform).all() or not np.allclose(transform[3], [0,0,0,1]) or
+                not np.allclose(rotation.T @ rotation, np.eye(3), atol=1e-5) or
+                np.linalg.det(rotation) < .999):
+            raise ValueError('BIMANUAL_TOOL_TRANSFORM')
+        return transform
+
     def capture(self, feedback):
+        self.captured = False
         q = self._q(feedback)
-        distance = self.lib.bq_flange_distance(self.handle, self._ptr(q), self.nq)
+        measured = np.empty((4,4), dtype=np.float64)
+        if not self.lib.bq_relative_pose(self.handle, self._ptr(q), self.nq, self._ptr(measured)):
+            raise ValueError('BIMANUAL_GRASP_POSE:'+self._error())
+        distance = float(np.linalg.norm(measured[:3,3]))
         low, high = self.cfg['flange_distance_range']
         if not low <= distance <= high:
             raise ValueError('BIMANUAL_GRASP_GEOMETRY')
+        if self.expected_relative is not None:
+            error = np.linalg.inv(self.expected_relative) @ measured
+            angle = math.acos(float(np.clip((np.trace(error[:3,:3])-1.)/2., -1., 1.)))
+            if (np.linalg.norm(error[:3,3]) > self.grasp_position_tolerance or
+                    angle > self.grasp_rotation_tolerance):
+                raise ValueError('BIMANUAL_GRASP_POSE')
         if not self.lib.bq_capture(self.handle, self._ptr(q), self.nq, self._ptr(self.tool),
                 float(self.cfg['relative_gain']), float(self.cfg['max_relative_error']),
                 float(self.cfg['max_linear_speed']), float(self.cfg['max_angular_speed'])):
@@ -113,9 +143,12 @@ class BimanualQP:
         out = np.empty((4,4), dtype=np.float64)
         if not self.lib.bq_tool_pose(self.handle, self._ptr(q), self.nq, self._ptr(out)):
             raise ValueError('BIMANUAL_TOOL_POSE:'+self._error())
+        self.captured = True
         return out
 
     def solve(self, feedback, target):
+        if not self.captured:
+            raise ValueError('BIMANUAL_NOT_CAPTURED')
         q = self._q(feedback)
         target = np.ascontiguousarray(target, dtype=np.float64).reshape(4,4)
         out = np.empty(len(self.names), dtype=np.float64)

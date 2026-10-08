@@ -1,0 +1,314 @@
+{
+  "simulation_only": true,
+  "collision_scope": "empty_scene_only",
+  "urdf": "snowbot_control.urdf",
+  "resource_groups": [
+    "waist",
+    "left_arm",
+    "right_arm"
+  ],
+  "left_frame": "arm_l_ft_sensor",
+  "right_frame": "arm_r_ft_sensor",
+  "left_to_tool": [
+    0.0,
+    -1.0,
+    0.0,
+    0.075,
+    0.7660444431189781,
+    0.0,
+    0.6427876096865393,
+    0.0,
+    -0.6427876096865393,
+    0.0,
+    0.7660444431189779,
+    -0.95,
+    0.0,
+    0.0,
+    0.0,
+    1.0
+  ],
+  "flange_distance_range": [
+    0.35,
+    0.4
+  ],
+  "input_max_age": 0.25,
+  "feedback_max_age": 0.2,
+  "command_max_age": 0.4,
+  "engage_seconds": 1.0,
+  "position_scale": 1.0,
+  "operator_yaw_rad": 0.0,
+  "sample_period": 0.01,
+  "relative_gain": 2.0,
+  "max_relative_error": 0.03,
+  "max_linear_speed": 0.08,
+  "max_angular_speed": 0.12,
+  "solve_timeout_us": 30000,
+  "demo": {
+    "description": "Simulation fixture: both hands grasp one inclined shovel shaft; not a measured tool calibration.",
+    "display_urdf": "snowbot_display.urdf",
+    "profile": "snowbot_sim.json",
+    "initial_positions_rad": {
+      "body_joint_1": -0.04592942976068936,
+      "body_joint_2": 0.1063840098049493,
+      "arm_l_joint_1": -0.2302070409381193,
+      "arm_l_joint_2": 0.4266481919611451,
+      "arm_l_joint_3": 0.7390012702897869,
+      "arm_l_joint_4": -0.5939141346720326,
+      "arm_l_joint_5": -0.1410389831664322,
+      "arm_l_joint_6": 0.2799818075809196,
+      "arm_l_joint_7": -1.1491700904280504,
+      "arm_l_joint_8": 0.0,
+      "arm_r_joint_1": 0.09602999673638227,
+      "arm_r_joint_2": -0.442734688130808,
+      "arm_r_joint_3": -0.35661227288639596,
+      "arm_r_joint_4": -0.24554161252940182,
+      "arm_r_joint_5": -0.22183346797376594,
+      "arm_r_joint_6": -0.8384955640605535,
+      "arm_r_joint_7": 0.4724007584823945,
+      "arm_r_joint_8": 0.0,
+      "head_joint_1": 0.0,
+      "head_joint_2": 0.0
+    },
+    "grip_offset_m": [
+      0.075,
+      0,
+      0
+    ],
+    "shaft_axis_in_tool": [
+      -0.6427876096865394,
+      0,
+      0.766044443118978
+    ],
+    "shaft_from_left_grip_m": [
+      -0.95,
+      0.15
+    ],
+    "shaft_radius_m": 0.018,
+    "pan_size_m": [
+      0.3,
+      0.4,
+      0.1
+    ],
+    "pan_center_m": [
+      0.13,
+      0,
+      0.04
+    ],
+    "keyframes": [
+      {
+        "t": 0,
+        "phase": "准备",
+        "translation_m": [
+          0.0,
+          -0.0,
+          0.0
+        ],
+        "yaw_pitch_rad": [
+          0.0,
+          0.0
+        ]
+      },
+      {
+        "t": 1,
+        "phase": "铲入",
+        "translation_m": [
+          0.0,
+          -0.0,
+          0.0
+        ],
+        "yaw_pitch_rad": [
+          0.0,
+          0.0
+        ]
+      },
+      {
+        "t": 7,
+        "phase": "铲入",
+        "translation_m": [
+          0.1385640868417202,
+          -0.07999996148574214,
+          2.388449980017526e-09
+        ],
+        "yaw_pitch_rad": [
+          0.0,
+          0.0
+        ]
+      },
+      {
+        "t": 8,
+        "phase": "抬铲",
+        "translation_m": [
+          0.1385640868417202,
+          -0.07999996148574214,
+          2.388449980017526e-09
+        ],
+        "yaw_pitch_rad": [
+          0.0,
+          0.0
+        ]
+      },
+      {
+        "t": 28,
+        "phase": "保持",
+        "translation_m": [
+          0.05196153256564507,
+          -0.0299999855571533,
+          8.956687425065724e-10
+        ],
+        "yaw_pitch_rad": [
+          0.0,
+          -0.7853981633974483
+        ]
+      },
+      {
+        "t": 30,
+        "phase": "侧向扬起",
+        "translation_m": [
+          0.05196153256564507,
+          -0.0299999855571533,
+          8.956687425065724e-10
+        ],
+        "yaw_pitch_rad": [
+          0.0,
+          -0.7853981633974483
+        ]
+      },
+      {
+        "t": 38,
+        "phase": "保持",
+        "translation_m": [
+          0.05196153256564507,
+          -0.0299999855571533,
+          8.956687425065724e-10
+        ],
+        "yaw_pitch_rad": [
+          -0.3490658503988659,
+          -0.7853981633974483
+        ]
+      },
+      {
+        "t": 40,
+        "phase": "回位",
+        "translation_m": [
+          0.05196153256564507,
+          -0.0299999855571533,
+          8.956687425065724e-10
+        ],
+        "yaw_pitch_rad": [
+          -0.3490658503988659,
+          -0.7853981633974483
+        ]
+      },
+      {
+        "t": 62,
+        "phase": "回位",
+        "translation_m": [
+          0.0,
+          -0.0,
+          0.0
+        ],
+        "yaw_pitch_rad": [
+          0.0,
+          0.0
+        ]
+      },
+      {
+        "t": 65,
+        "phase": "完成",
+        "translation_m": [
+          0.0,
+          -0.0,
+          0.0
+        ],
+        "yaw_pitch_rad": [
+          0.0,
+          0.0
+        ]
+      }
+    ],
+    "shaft_contact_links": [
+      "arm_l_link_7",
+      "arm_l_link_8",
+      "arm_r_link_7",
+      "arm_r_link_8"
+    ],
+    "acceptance": {
+      "push_seconds": 8,
+      "min_push_m": 0.15,
+      "min_lift_m": 0.6,
+      "max_return_error_m": 0.002,
+      "max_return_angle_rad": 0.002,
+      "max_grip_error_m": 0.001,
+      "min_joint_margin_rad": 0.15,
+      "required_joint_excursion_rad": {
+        "body_joint_1": 0.05,
+        "body_joint_2": 0.1
+      },
+      "min_ground_clearance_m": 0.003,
+      "max_ready_clearance_m": 0.015
+    },
+    "sample_hz": 20,
+    "pivot_in_tool_m": [
+      -0.6106482292022124,
+      0.0,
+      0.7277422209630292
+    ],
+    "selected_design": {
+      "shaft_length_m": 1.1,
+      "grip_spacing_m": 0.34,
+      "azimuth_deg": -30,
+      "ready_elevation_deg": 50,
+      "lift_deg": 45,
+      "outward_swing_deg": 20
+    },
+    "design_search": {
+      "shaft_lengths_m": [
+        0.95,
+        1.05,
+        1.1,
+        1.15
+      ],
+      "grip_spacings_m": [
+        0.3,
+        0.34,
+        0.38,
+        0.42
+      ],
+      "azimuths_deg": [
+        0,
+        -30,
+        -45
+      ],
+      "rear_overhang_m": 0.15,
+      "ready_elevation_deg": 50,
+      "rear_grip_x_m": 0.68,
+      "rear_grip_side_offset_m": 0.08,
+      "blade_start_height_m": 0.015,
+      "push_m": 0.16,
+      "retract_m": 0.1,
+      "lift_deg": 55,
+      "outward_swing_deg": 20,
+      "ik_limit_margin_rad": 0.08
+    }
+  },
+  "right_to_tool": [
+    0.0,
+    1.0,
+    0.0,
+    0.075,
+    -0.7660444431189781,
+    0.0,
+    -0.6427876096865393,
+    0.0,
+    -0.6427876096865393,
+    0.0,
+    0.7660444431189779,
+    -0.61,
+    0.0,
+    0.0,
+    0.0,
+    1.0
+  ],
+  "grasp_position_tolerance_m": 0.005,
+  "grasp_rotation_tolerance_rad": 0.02
+}

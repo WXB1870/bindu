@@ -151,11 +151,13 @@ int bq_tool_pose(void *ptr, const double *q, int n, double *out) {
   try { update(h,q,n); matrix(h->kin->toolPose(),out); h->error.clear(); return 1; }
   catch (const std::exception &e) { h->error = e.what(); return 0; }
 }
-double bq_flange_distance(void *ptr, const double *q, int n) {
+int bq_relative_pose(void *ptr, const double *q, int n, double *out) {
   auto *h = static_cast<Handle *>(ptr);
   try {
     update(h,q,n);
-    return (h->robot->leftPose().translation()-h->robot->rightPose().translation()).norm();
-  } catch (const std::exception &e) { h->error = e.what(); return -1.; }
+    matrix(h->robot->leftPose().actInv(h->robot->rightPose()),out);
+    h->error.clear();
+    return 1;
+  } catch (const std::exception &e) { h->error = e.what(); return 0; }
 }
 }  // extern "C"

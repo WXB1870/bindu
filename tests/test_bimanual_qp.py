@@ -96,3 +96,35 @@ class NativeBimanual(unittest.TestCase):
             self.assertTrue(all(change>1e-5 for change in waist_changes))
         finally:
             solver.close()
+
+    def test_shovel_grasp_checks_orientation_and_invalidates_failed_capture(self):
+        config=json.loads((ROOT/'src/integration/bindu_runtime/config/bimanual_snowbot_shovel.json').read_text())
+        config['urdf']=str(ROOT/'src/hardware/bindu_description/urdf/snowbot_control.urdf')
+        profile=Profile.load(ROOT/'src/integration/bindu_runtime/config/snowbot_sim.json')
+        solver=BimanualQP(config,profile)
+        self.addCleanup(solver.close)
+        ready=dict(config['demo']['initial_positions_rad'])
+        tool=solver.capture(ready)
+        bad=dict(ready)
+        bad['arm_r_joint_7']+=.1
+        # The hands are still within the distance gate, but cannot hold this
+        # rigid shaft in its configured orientation.
+        with self.assertRaisesRegex(ValueError,'BIMANUAL_GRASP_POSE'):
+            solver.capture(bad)
+        with self.assertRaisesRegex(ValueError,'BIMANUAL_NOT_CAPTURED'):
+            solver.solve(ready,tool)
+        solver.capture(ready)
+        _,metrics=solver.solve(ready,tool)
+        self.assertLess(metrics[1],1e-6)
+
+    def test_shovel_grasp_rejects_inconsistent_second_attachment(self):
+        config=json.loads((ROOT/'src/integration/bindu_runtime/config/bimanual_snowbot_shovel.json').read_text())
+        config['urdf']=str(ROOT/'src/hardware/bindu_description/urdf/snowbot_control.urdf')
+        profile=Profile.load(ROOT/'src/integration/bindu_runtime/config/snowbot_sim.json')
+        attachment=np.array(config['right_to_tool']).reshape(4,4)
+        attachment[0,3]+=.02
+        config['right_to_tool']=attachment.ravel().tolist()
+        solver=BimanualQP(config,profile)
+        self.addCleanup(solver.close)
+        with self.assertRaisesRegex(ValueError,'BIMANUAL_GRASP_POSE'):
+            solver.capture(config['demo']['initial_positions_rad'])
