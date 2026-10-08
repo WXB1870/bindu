@@ -1,0 +1,69 @@
+#ifndef BINDU_BIMANUAL_QP_C_API_H
+#define BINDU_BIMANUAL_QP_C_API_H
+
+#include <stdint.h>
+
+#define BQ_ABI_VERSION 1u
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* Stable C layout, independent of the internal C++ Config. SI units; rotations
+ * in radians. Initialize with bq_config_defaults before overriding fields. */
+typedef struct bq_config {
+  uint32_t abi_version;
+  uint32_t struct_size;
+  double tool_gain;
+  double relative_gain;
+  double posture_gain;
+  double posture_weight;
+  double shared_target_weight;
+  double shared_target_gain;
+  double regularization;
+  double max_linear_speed;
+  double max_angular_speed;
+  double max_relative_error;
+  double limit_margin;
+  double damper_gain;
+  double equality_tolerance;
+} bq_config;
+
+uint32_t bq_abi_version(void);
+int bq_config_defaults(bq_config *config, uint32_t size);
+void *bq_create(const char *urdf, const char *left_frame, const char *right_frame,
+                const char *shared, const char *left, const char *right);
+void bq_destroy(void *handle);
+/* Counts return 0, names return NULL for invalid inputs. Status functions return
+ * 1 on success, 0 on failure. Error/name strings remain owned by the handle.
+ * Handles must be live or NULL; arbitrary/destroyed pointers are not supported. */
+int bq_nq(void *handle);
+int bq_nactive(void *handle);
+int bq_nmodel(void *handle);
+const char *bq_model_name(void *handle, int index);
+const char *bq_active_name(void *handle, int index);
+const char *bq_error(void *handle);
+int bq_limits(void *handle, double *lower, double *upper, double *velocity, int n);
+/* Configuration may only tighten model limits and must precede capture. */
+int bq_set_limits(void *handle, const double *lower, const double *upper,
+                  const double *velocity, int n);
+/* q follows model-name order; all poses are row-major 4x4 SE(3) matrices. */
+int bq_capture(void *handle, const double *q, int nq, const double *left_to_tool,
+               const bq_config *config);
+/* NULL,0 clears the optional shared-joint posture objective. */
+int bq_shared_targets(void *handle, const double *targets, int n);
+/* reference/out follow active-name order. reference is the last accepted
+ * command (capture feedback for the first step), never an unaccepted result.
+ * dt is the elapsed reference sampling interval, 0 < dt <= 0.1 s. The caller
+ * owns acceptance/time/reset state. Kinematics always use measured q.
+ * metrics has 3 doubles: QP solve microseconds, relative error, recovery scale.
+ * Outputs are only valid on success; no C function sends device commands. */
+int bq_solve(void *handle, const double *q, int nq, const double *reference, int n,
+             const double *target, double dt, double *out, double *metrics);
+int bq_tool_pose(void *handle, const double *q, int nq, double *out);
+int bq_relative_pose(void *handle, const double *q, int nq, double *out);
+
+#ifdef __cplusplus
+}
+#endif
+#endif

@@ -10,7 +10,7 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
 from rclpy.task import Future
 from std_srvs.srv import Trigger
 from bindu_contracts.teleoperation import VRFrame
-from bindu_teleoperation.bimanual_session import BimanualSession
+from bindu_teleoperation.bimanual_session import BimanualSession, AcceptedReference
 from bindu_kinematics.bimanual_worker import BimanualWorker
 from bindu_interfaces.action import TeleopSession as TeleopAction
 from bindu_interfaces.msg import VRInput, ExecutionState, RecorderHealth, MotionCommand, TeleopModeState
@@ -192,6 +192,7 @@ class BimanualToolNode(RuntimeNode):
     async def execute(self,goal):
         mode=self.mode_state
         session=BimanualSession(self.cfg,mode.generation,seconds(mode.changed_at))
+        reference=AcceptedReference(self.cfg.get('max_integration_interval',.1))
         result=TeleopAction.Result(simulated=True)
         lease=pending=renewal=None
         accepted=0
@@ -201,6 +202,10 @@ class BimanualToolNode(RuntimeNode):
         awaiting=''
         work_seq=-1
         work_stamp=0.
+        work_sampled_at=0.
+        work_positions=None
+        work_dt=None
+        pending_reference=None
         last_mode='idle'
         self.worker_result=None
         self.preflight_status=''
@@ -245,6 +250,8 @@ class BimanualToolNode(RuntimeNode):
                     if pending.done():
                         reply=pending.result()
                         if not reply.accepted: raise RuntimeError(reply.code)
+                        reference.accept(*pending_reference)
+                        pending_reference=None
                         accepted+=1
                         pending=None
                     elif now-pending_at>.7: raise RuntimeError('BIMANUAL_SUBMIT_TIMEOUT')
@@ -268,6 +275,8 @@ class BimanualToolNode(RuntimeNode):
                             raise RuntimeError('BIMANUAL_HOLD_UNCONFIRMED')
                         self.worker_result=None
                         awaiting=''
+                        reference.reset()
+                        pending_reference=None
                     last_mode=session.mode
                     self.event('BIMANUAL_CLUTCH',session.mode,goal.request.task_id)
                 s=self.state
@@ -280,11 +289,16 @@ class BimanualToolNode(RuntimeNode):
                         if kind=='error': raise RuntimeError(value)
                         if awaiting=='capture':
                             session.capture(value)
+                            reference.capture(work_positions,work_sampled_at)
                             self.event('BIMANUAL_CAPTURED',json.dumps({'tool_pose':value.tolist(),
                                 'input_stamp':session.stamp}),goal.request.task_id)
                         else:
-                            if (session.seq == work_seq and
-                                    work_stamp >= self.now()-self.cfg['command_max_age'] and pending is None):
+                            # A newer VR frame does not invalidate a bounded,
+                            # same-grasp solve. Clutch/mode changes clear awaiting.
+                            # Discarded results never advance the accepted reference.
+                            if (work_stamp >= self.now()-self.cfg['command_max_age'] and pending is None):
+                                if not 0 <= self.now()-work_sampled_at <= reference.max_interval:
+                                    raise RuntimeError('BIMANUAL_RESULT_STALE')
                                 positions,metrics=value
                                 command=MotionCommand(schema_version=2,
                                     command_id=session.identity+'_'+str(token),
@@ -294,19 +308,26 @@ class BimanualToolNode(RuntimeNode):
                                     stamp=stamp(work_stamp),valid_for=self.cfg['command_max_age'],
                                     joint_names=list(self.names),positions=list(positions))
                                 pending=self.submit_client.call_async(SubmitMotion.Request(command=command))
+                                pending_reference=(positions,work_sampled_at)
                                 pending_at=now
                                 self.event('BIMANUAL_QP_RESULT',json.dumps({'solve_us':metrics[0],
                                     'relative_error':metrics[1],'recovery_scale':metrics[2],
-                                    'input_stamp':work_stamp}),goal.request.task_id,command.command_id)
+                                    'input_stamp':work_stamp,'integration_dt':work_dt}),
+                                    goal.request.task_id,command.command_id)
                         awaiting=''
                 if (session.mode=='follow' and not self.worker.busy and not awaiting and
                         pending is None and (session.seq != work_seq or session.anchor_tool is None)):
                     measured=dict(zip(s.joints.name,s.joints.position))
                     worker_token+=1
                     operation='capture' if session.anchor_tool is None else 'solve'
-                    if self.worker.submit(operation,worker_token,measured,session.target):
+                    sampled_at=self.now()
+                    baseline,dt=reference.step(sampled_at) if operation=='solve' else (None,None)
+                    if self.worker.submit(operation,worker_token,measured,session.target,
+                                          reference=baseline,dt=dt):
                         awaiting=operation
                         work_seq,work_stamp=session.seq,session.stamp
+                        work_sampled_at,work_dt=sampled_at,dt
+                        work_positions=tuple(measured[n] for n in self.names)
                 goal.publish_feedback(TeleopAction.Feedback(session_id=session.identity,
                     mode=session.mode,accepted_commands=accepted))
                 await self.pause()

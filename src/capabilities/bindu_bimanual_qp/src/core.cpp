@@ -105,6 +105,15 @@ void RobotModel::setVelocityLimits(const Eigen::VectorXd &limits) {
   velocity_ = limits;
 }
 
+void RobotModel::setPositionLimits(const Eigen::VectorXd &lower, const Eigen::VectorXd &upper) {
+  if (lower.size() != variables() || upper.size() != variables() ||
+      !lower.allFinite() || !upper.allFinite() || (lower.array() >= upper.array()).any() ||
+      (lower.array() < lower_.array()).any() || (upper.array() > upper_.array()).any())
+    throw std::invalid_argument("invalid configured position limits");
+  lower_ = lower;
+  upper_ = upper;
+}
+
 const pinocchio::SE3 &RobotModel::leftPose() const { return data_.oMf[left_frame_]; }
 const pinocchio::SE3 &RobotModel::rightPose() const { return data_.oMf[right_frame_]; }
 const pinocchio::SE3 &RobotModel::urdfToolPose() const { return data_.oMf[tool_frame_]; }
@@ -199,17 +208,23 @@ QpController::QpController(RobotModel &robot, RigidToolKinematics &kin, Config c
   requirePositive(config_.damper_gain, "damper_gain");
   requirePositive(config_.equality_tolerance, "equality_tolerance");
   requirePositive(config_.shared_target_gain, "shared_target_gain");
+  requirePositive(config_.regularization, "regularization");
+  for (double value : {config_.posture_gain, config_.posture_weight,
+                       config_.shared_target_weight, config_.limit_margin}) {
+    if (!std::isfinite(value) || value < 0.)
+      throw std::invalid_argument("invalid QP weights or limit margin");
+  }
   if (shared_count_ < 0 || shared_count_ > robot.variables() ||
-      config_.posture_gain < 0 || config_.posture_weight < 0 ||
-      !std::isfinite(config_.shared_target_weight) || config_.shared_target_weight < 0 ||
-      config_.regularization <= 0 || config_.limit_margin < 0)
-    throw std::invalid_argument("invalid QP weights or limit margin");
+      (2. * config_.limit_margin >= (robot.upperLimits()-robot.lowerLimits()).array()).any())
+    throw std::invalid_argument("invalid shared joint count or limit margin");
   shared_targets_ = nominal_.head(shared_count_);
   reset();
 }
 
 void QpController::setSharedTargets(const Eigen::VectorXd &targets) {
-  if (targets.size() != shared_count_ || !targets.allFinite())
+  if (targets.size() != shared_count_ || !targets.allFinite() ||
+      (targets.array() < robot_.lowerLimits().head(shared_count_).array()).any() ||
+      (targets.array() > robot_.upperLimits().head(shared_count_).array()).any())
     throw std::invalid_argument("invalid shared joint targets");
   shared_targets_ = targets;
   have_shared_targets_ = true;
@@ -227,10 +242,15 @@ void QpController::reset() {
   fresh_start_ = true;
 }
 
-SolveResult QpController::solve(const pinocchio::SE3 &desired_tool) {
+SolveResult QpController::solve(const pinocchio::SE3 &desired_tool, double dt,
+                                const Eigen::VectorXd &reference) {
   SolveResult out;
   out.velocity = Eigen::VectorXd::Zero(robot_.variables());
   if (!kin_.captured()) { out.reason = "grasp not captured"; return out; }
+  if (!std::isfinite(dt) || dt <= 0. || dt > .1 ||
+      reference.size() != robot_.variables() || !reference.allFinite()) {
+    out.reason = "invalid reference or timestep"; return out;
+  }
   if (!desired_tool.translation().allFinite() || !desired_tool.rotation().allFinite()) {
     out.reason = "invalid tool target"; return out;
   }
@@ -266,10 +286,21 @@ SolveResult QpController::solve(const pinocchio::SE3 &desired_tool) {
   Eigen::VectorXd lower(n), upper(n);
   for (int i = 0; i < n; ++i) {
     const double vmax = robot_.velocityLimits()[i];
-    lower[i] = std::max(-vmax, config_.damper_gain *
-        (robot_.lowerLimits()[i] + config_.limit_margin - q[i]));
-    upper[i] = std::min(vmax, config_.damper_gain *
-        (robot_.upperLimits()[i] - config_.limit_margin - q[i]));
+    const double lo = robot_.lowerLimits()[i], hi = robot_.upperLimits()[i];
+    if (q[i] < lo-position_roundoff || q[i] > hi+position_roundoff ||
+        reference[i] < lo-position_roundoff || reference[i] > hi+position_roundoff) {
+      out.reason = "joint position outside hard limits"; return out;
+    }
+    const double ref = std::clamp(reference[i], lo, hi);
+    // Soft margin prohibits outward motion, but never forces inward motion.
+    // Check both measured and accepted reference positions. The dt bounds
+    // prevent the integrated reference crossing a hard limit even for large dt.
+    lower[i] = std::max({-vmax, (lo-ref)/dt,
+        std::min(0., config_.damper_gain * (lo+config_.limit_margin-q[i])),
+        std::min(0., config_.damper_gain * (lo+config_.limit_margin-ref))});
+    upper[i] = std::min({vmax, (hi-ref)/dt,
+        std::max(0., config_.damper_gain * (hi-config_.limit_margin-q[i])),
+        std::max(0., config_.damper_gain * (hi-config_.limit_margin-ref))});
     if (lower[i] > upper[i]) { out.reason = "joint bounds infeasible"; return out; }
   }
   if (!h.allFinite() || !g.allFinite() || !a.allFinite() || !b.allFinite() ||
@@ -300,11 +331,15 @@ SolveResult QpController::solve(const pinocchio::SE3 &desired_tool) {
     out.solve_time_us += qp_->results.info.solve_time;
     out.qp_status = static_cast<int>(qp_->results.info.status);
     if (qp_->results.info.status != proxsuite::proxqp::QPSolverOutput::PROXQP_SOLVED ||
-        !qp_->results.x.allFinite()) {
+        !qp_->results.x.allFinite() ||
+        (qp_->results.x.array() < lower.array()-config_.equality_tolerance).any() ||
+        (qp_->results.x.array() > upper.array()+config_.equality_tolerance).any()) {
       reset();
       continue;
     }
-    const Eigen::VectorXd candidate = qp_->results.x;
+    // Remove solver roundoff at box boundaries, then recheck the closure
+    // equality. Never independently clip the final position after validation.
+    const Eigen::VectorXd candidate = qp_->results.x.cwiseMax(lower).cwiseMin(upper);
     if ((a * candidate - b).lpNorm<Eigen::Infinity>() > config_.equality_tolerance ||
         (candidate.array() < lower.array() - config_.equality_tolerance).any() ||
         (candidate.array() > upper.array() + config_.equality_tolerance).any()) {

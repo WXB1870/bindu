@@ -114,7 +114,8 @@ def main():
     source_executor=SingleThreadedExecutor()
     source_executor.add_node(source)
     source_thread=None
-    state={'execution':None,'mode':None,'accepted':[],'events':[],'physics':None,'trace':[]}
+    state={'execution':None,'mode':None,'accepted':[],'events':[],'physics':None,'trace':[],
+           'tool_feedback':None}
     control={'grip':0.,'delta':0.,'enabled':True,'seq':0}
     source_timing={'last':None,'max_gap_s':0.}
     try:
@@ -203,13 +204,17 @@ def main():
         goal=None
         for _ in range(15):
             goal=wait(node,tool.send_goal_async(TeleopSession.Goal(task_id=run,
-                resource_group='bimanual_tool',duration=8.)))
+                resource_group='bimanual_tool',duration=8.),
+                feedback_callback=lambda msg:state.update(tool_feedback=msg.feedback.mode)))
             if goal.accepted: break
             prior_seq=control['seq']
             until(node,lambda:control['seq']>=prior_seq+2)
         assert goal.accepted,('tool goal rejected',state['events'][-10:],
             (state['execution'].state,state['execution'].code) if state['execution'] else None)
         goal_result=goal.get_result_async()
+        # Goal acceptance precedes execute/lease acquisition. Keep released
+        # input until the actual session has ingested it and reports idle.
+        until(node,lambda:state['tool_feedback']=='idle')
         control['grip']=1.
         try: until(node,lambda:len(state['accepted'])>=3,6.)
         except RuntimeError:

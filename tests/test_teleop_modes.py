@@ -6,10 +6,37 @@ import numpy as np
 from bindu_contracts.profile import Profile
 from bindu_contracts.teleoperation import VRFrame
 from bindu_teleoperation.modes import ModeSelection
-from bindu_teleoperation.bimanual_session import BimanualSession
+from bindu_teleoperation.bimanual_session import BimanualSession, AcceptedReference
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+class AcceptedReferenceTests(unittest.TestCase):
+    def test_only_acceptance_advances_reference_and_elapsed_time(self):
+        ref = AcceptedReference()
+        ref.capture([.1, .2], 10.)
+        self.assertEqual(ref.step(10.02)[0], (.1, .2))
+        # A discarded or rejected proposal requires no state rollback.
+        self.assertAlmostEqual(ref.step(10.04)[1], .04)
+        ref.accept([.11, .21], 10.04)
+        self.assertEqual(ref.step(10.06)[0], (.11, .21))
+        self.assertAlmostEqual(ref.step(10.06)[1], .02)
+        with self.assertRaisesRegex(ValueError, 'INTERVAL'):
+            ref.accept([9., 9.], 10.02)
+        self.assertEqual(ref.positions, (.11, .21))
+
+    def test_clutch_reset_long_gap_and_clock_reversal_require_capture(self):
+        ref = AcceptedReference()
+        ref.capture([0.], 1.)
+        for when in (1., .99, 1.101, float('nan')):
+            with self.subTest(when=when), self.assertRaisesRegex(ValueError, 'INTERVAL'):
+                ref.step(when)
+        ref.reset()
+        with self.assertRaisesRegex(ValueError, 'NOT_CAPTURED'):
+            ref.step(1.02)
+        ref.capture([.5], 2.)
+        self.assertEqual(ref.step(2.02)[0], (.5,))
 
 
 class ModeTests(unittest.TestCase):

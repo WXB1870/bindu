@@ -5,6 +5,45 @@ import numpy as np
 from .vr.mapping import robot_pose, relative_target
 
 
+class AcceptedReference:
+    """Accepted position/time only; rejected or discarded proposals do not advance it.
+
+    Times use the same control clock at capture/solve sampling, not VR event time
+    or service reply time. Long gaps and clock rollback require a new capture.
+    """
+    def __init__(self, max_interval=.1):
+        self.max_interval = float(max_interval)
+        if not math.isfinite(self.max_interval) or not 0 < self.max_interval <= .1:
+            raise ValueError('BIMANUAL_INTEGRATION_INTERVAL_CONFIG')
+        self.reset()
+
+    def reset(self):
+        self.positions = None
+        self.sampled_at = None
+
+    def capture(self, positions, sampled_at):
+        self.reset()
+        positions = tuple(float(v) for v in positions)
+        if not positions or not all(math.isfinite(v) for v in (*positions, sampled_at)):
+            raise ValueError('BIMANUAL_REFERENCE_INVALID')
+        self.positions, self.sampled_at = positions, sampled_at
+
+    def step(self, sampled_at):
+        if self.positions is None:
+            raise ValueError('BIMANUAL_REFERENCE_NOT_CAPTURED')
+        dt = sampled_at-self.sampled_at
+        if not math.isfinite(dt) or not 0 < dt <= self.max_interval:
+            raise ValueError('BIMANUAL_INTEGRATION_INTERVAL')
+        return self.positions, dt
+
+    def accept(self, positions, sampled_at):
+        self.step(sampled_at)
+        positions = tuple(float(v) for v in positions)
+        if len(positions) != len(self.positions) or not all(math.isfinite(v) for v in positions):
+            raise ValueError('BIMANUAL_REFERENCE_INVALID')
+        self.positions, self.sampled_at = positions, sampled_at
+
+
 class BimanualSession:
     def __init__(self, config, generation, selected_at):
         self.cfg = config

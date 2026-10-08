@@ -181,7 +181,9 @@ def generate(config_path, description, output):
         for step in range(round(keys[-1]['t']/dt)+1):
             seconds = step*dt
             desired = target_at(keys, home, pivot, seconds)
-            positions, metrics = solver.solve(q, desired)
+            # Offline ideal tracking: every proposal is accepted at fixed dt.
+            positions, metrics = solver.solve(q, desired,
+                reference=[q[n] for n in solver.names], dt=dt)
             speed = max(abs(v-q[n])/dt for n, v in zip(solver.names, positions))
             max_speed, max_solve = max(max_speed, speed), max(max_solve, metrics[0])
             max_relative = max(max_relative, metrics[1])

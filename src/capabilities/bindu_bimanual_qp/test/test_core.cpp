@@ -1,4 +1,5 @@
 #include "dual_arm_tool_qp/core.hpp"
+#include "bindu_bimanual_qp/c_api.h"
 
 #include <gtest/gtest.h>
 #include <pinocchio/spatial/explog.hpp>
@@ -6,9 +7,36 @@
 #include <algorithm>
 #include <cmath>
 #include <memory>
+#include <limits>
 #include <vector>
 
 namespace datq = dual_arm_tool_qp;
+
+TEST(CAbi, NullHandlesAndConfigLayoutFailWithoutCrashing) {
+  EXPECT_EQ(bq_abi_version(), BQ_ABI_VERSION);
+  bq_config config{};
+  EXPECT_EQ(bq_config_defaults(&config, sizeof(config)-1), 0);
+  EXPECT_EQ(bq_config_defaults(nullptr, sizeof(config)), 0);
+  ASSERT_EQ(bq_config_defaults(&config, sizeof(config)), 1);
+  EXPECT_EQ(config.struct_size, sizeof(config));
+  EXPECT_EQ(config.abi_version, BQ_ABI_VERSION);
+  EXPECT_DOUBLE_EQ(config.tool_gain, datq::Config{}.tool_gain);
+  EXPECT_EQ(bq_nq(nullptr), 0);
+  EXPECT_EQ(bq_nactive(nullptr), 0);
+  EXPECT_EQ(bq_nmodel(nullptr), 0);
+  EXPECT_EQ(bq_model_name(nullptr, 0), nullptr);
+  EXPECT_EQ(bq_active_name(nullptr, 0), nullptr);
+  EXPECT_STREQ(bq_error(nullptr), "null QP handle");
+  EXPECT_EQ(bq_limits(nullptr, nullptr, nullptr, nullptr, 0), 0);
+  EXPECT_EQ(bq_set_limits(nullptr, nullptr, nullptr, nullptr, 0), 0);
+  EXPECT_EQ(bq_capture(nullptr, nullptr, 0, nullptr, &config), 0);
+  EXPECT_EQ(bq_shared_targets(nullptr, nullptr, 0), 0);
+  EXPECT_EQ(bq_solve(nullptr, nullptr, 0, nullptr, 0, nullptr, .01, nullptr, nullptr), 0);
+  EXPECT_EQ(bq_tool_pose(nullptr, nullptr, 0, nullptr), 0);
+  EXPECT_EQ(bq_relative_pose(nullptr, nullptr, 0, nullptr), 0);
+  EXPECT_EQ(bq_create(nullptr, nullptr, nullptr, nullptr, nullptr, nullptr), nullptr);
+  bq_destroy(nullptr);
+}
 
 class CoreTest : public ::testing::Test {
 protected:
@@ -86,12 +114,12 @@ TEST_F(CoreTest, QpTracksToolAndKeepsRigidGrasp) {
   Eigen::Matrix<double, 6, 1> twist;
   twist << 0.01, -0.01, 0.006, 0.02, -0.01, 0.015;
   const auto desired = kin_->toolPose() * pinocchio::exp6(twist);
-  const auto result = controller.solve(desired);
+  const auto result = controller.solve(desired, 0.005, robot_->activePositions());
   ASSERT_TRUE(result.ok) << result.reason;
   EXPECT_GT(result.velocity.norm(), 1e-5);
   EXPECT_LT((kin_->relativeErrorJacobian() * result.velocity).norm(), 5e-4);
   EXPECT_LE(result.velocity.cwiseAbs().maxCoeff(), 2.0001);
-  const auto next = controller.solve(desired);
+  const auto next = controller.solve(desired, 0.005, robot_->activePositions());
   EXPECT_TRUE(next.ok) << next.reason;
 }
 
@@ -102,9 +130,67 @@ TEST_F(CoreTest, LargeGraspErrorStops) {
   auto q = robot_->positions();
   q[robot_->qIndex("right_joint_1")] += 0.2;
   robot_->update(q);
-  const auto result = controller.solve(kin_->toolPose());
+  const auto result = controller.solve(kin_->toolPose(), 0.01, robot_->activePositions());
   EXPECT_FALSE(result.ok);
   EXPECT_EQ(result.velocity.norm(), 0.0);
+}
+
+TEST_F(CoreTest, HoldingInBothMarginsWorksBelowOldForcedRecoverySpeed) {
+  robot_->setVelocityLimits(Eigen::VectorXd::Constant(robot_->variables(), .02));
+  for (const bool at_upper : {false, true}) {
+    for (double inset : {-1e-12, 0., .02}) {
+      auto q = robot_->positions();
+      q[robot_->qIndex("left_joint_1")] = at_upper ? robot_->upperLimits()[0]-inset
+                                                        : robot_->lowerLimits()[0]+inset;
+      robot_->update(q);
+      kin_->capture();
+      datq::QpController controller(*robot_, *kin_, {}, robot_->activePositions());
+      const auto result = controller.solve(kin_->toolPose(), .1, robot_->activePositions());
+      ASSERT_TRUE(result.ok) << result.reason;
+      EXPECT_LT(result.velocity.norm(), 1e-7);
+    }
+  }
+}
+
+TEST_F(CoreTest, ReferenceLimitsAndLargeTimestepPreserveBoundsAndClosure) {
+  auto reference = robot_->activePositions();
+  reference[0] = robot_->lowerLimits()[0];
+  reference[1] = robot_->upperLimits()[1];
+  datq::Config config;
+  config.damper_gain = 100.;
+  datq::QpController controller(*robot_, *kin_, config, robot_->activePositions());
+  auto target = kin_->toolPose();
+  target.translation()[0] += .1;
+  const auto result = controller.solve(target, .1, reference);
+  ASSERT_TRUE(result.ok) << result.reason;
+  EXPECT_GE(result.velocity[0], 0.);
+  EXPECT_LE(result.velocity[1], 0.);
+  const Eigen::VectorXd integrated = reference + .1*result.velocity;
+  EXPECT_TRUE((integrated.array() >= robot_->lowerLimits().array()).all());
+  EXPECT_TRUE((integrated.array() <= robot_->upperLimits().array()).all());
+  EXPECT_LT((kin_->relativeErrorJacobian()*result.velocity).norm(), 5e-4);
+}
+
+TEST_F(CoreTest, HardViolationAndInvalidTimestepFailClosed) {
+  datq::QpController controller(*robot_, *kin_, {}, robot_->activePositions());
+  auto reference = robot_->activePositions();
+  reference[0] = robot_->lowerLimits()[0]-.001;
+  auto result = controller.solve(kin_->toolPose(), .01, reference);
+  EXPECT_FALSE(result.ok);
+  EXPECT_EQ(result.reason, "joint position outside hard limits");
+  EXPECT_EQ(result.velocity.norm(), 0.);
+  for (double dt : {0., -.01, .101, std::numeric_limits<double>::quiet_NaN()}) {
+    result = controller.solve(kin_->toolPose(), dt, robot_->activePositions());
+    EXPECT_FALSE(result.ok);
+    EXPECT_EQ(result.velocity.norm(), 0.);
+  }
+  auto q = robot_->positions();
+  q[robot_->qIndex("left_joint_1")] = robot_->lowerLimits()[0]-.001;
+  robot_->update(q);
+  kin_->capture();
+  result = controller.solve(kin_->toolPose(), .01, robot_->activePositions());
+  EXPECT_FALSE(result.ok);
+  EXPECT_EQ(result.reason, "joint position outside hard limits");
 }
 
 TEST_F(CoreTest, SharedWaistMovesToolWithoutChangingRelativeGrasp) {
@@ -139,7 +225,7 @@ TEST_F(CoreTest, SharedWaistMovesToolWithoutChangingRelativeGrasp) {
   Eigen::Matrix<double, 6, 1> offset = Eigen::Matrix<double, 6, 1>::Zero();
   offset[0] = 0.08;
   offset[4] = 0.08;
-  const auto result = controller.solve(kin.toolPose() * pinocchio::exp6(offset));
+  const auto result = controller.solve(kin.toolPose() * pinocchio::exp6(offset), 0.01, robot.activePositions());
   ASSERT_TRUE(result.ok) << result.reason;
   EXPECT_GT(std::abs(result.velocity[0]), 1e-4);
   EXPECT_LT((kin.relativeErrorJacobian() * result.velocity).norm(), 5e-4);
@@ -164,12 +250,12 @@ TEST_F(CoreTest, SharedWaistTargetMovesWaistWhileHoldingToolAndGrasp) {
   Eigen::VectorXd target(1);
   target[0] = 0.35;
   controller.setSharedTargets(target);
-  const auto result = controller.solve(goal);
+  const auto result = controller.solve(goal, 0.01, robot.activePositions());
   ASSERT_TRUE(result.ok) << result.reason;
   EXPECT_GT(result.velocity[0], 0.05);
   EXPECT_LT((kin.relativeErrorJacobian() * result.velocity).norm(), 5e-4);
   controller.clearSharedTargets();
-  const auto stopped = controller.solve(goal);
+  const auto stopped = controller.solve(goal, 0.01, robot.activePositions());
   ASSERT_TRUE(stopped.ok) << stopped.reason;
   EXPECT_LT(std::abs(stopped.velocity[0]), std::abs(result.velocity[0]) * 0.5);
 }
@@ -180,11 +266,11 @@ TEST_F(CoreTest, ReenabledControllerSolvesNewToolTarget) {
   const auto initial = kin_->toolPose();
   const auto small = initial * pinocchio::exp6(
       (Eigen::Matrix<double, 6, 1>() << 0.015, 0.0, 0.0, 0.0, 0.0, 0.01).finished());
-  ASSERT_TRUE(controller.solve(small).ok);
+  ASSERT_TRUE(controller.solve(small, 0.01, robot_->activePositions()).ok);
   controller.reset();
   const auto larger = initial * pinocchio::exp6(
       (Eigen::Matrix<double, 6, 1>() << 0.08, 0.0, 0.0, 0.0, 0.0, 0.02).finished());
-  const auto result = controller.solve(larger);
+  const auto result = controller.solve(larger, 0.01, robot_->activePositions());
   ASSERT_TRUE(result.ok) << result.reason;
   EXPECT_GT(result.velocity.norm(), 1e-5);
 }
@@ -197,7 +283,7 @@ TEST_F(CoreTest, ClosureRecoverySlowsWhenFullCorrectionExceedsVelocityBounds) {
   config.max_relative_error = 1.0;
   config.relative_gain = 100.0;
   datq::QpController controller(*robot_, *kin_, config, robot_->activePositions());
-  const auto result = controller.solve(kin_->toolPose());
+  const auto result = controller.solve(kin_->toolPose(), 0.01, robot_->activePositions());
   ASSERT_TRUE(result.ok) << result.reason;
   EXPECT_LT(result.relative_gain_scale, 1.0);
   EXPECT_LT((kin_->relativeErrorJacobian() * result.velocity +
@@ -223,7 +309,7 @@ TEST_F(CoreTest, RepeatedQpStepsMoveToolWithoutOpeningGrasp) {
   const double initial_error = pinocchio::log6(kin_->toolPose().actInv(desired)).toVector().norm();
   double max_grasp_error = 0.0;
   for (int step = 0; step < 100; ++step) {
-    const auto result = controller.solve(desired);
+    const auto result = controller.solve(desired, 0.005, robot_->activePositions());
     ASSERT_TRUE(result.ok) << "step " << step << ": " << result.reason;
     auto q = robot_->positions();
     for (int i = 0; i < robot_->variables(); ++i)

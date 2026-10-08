@@ -14,6 +14,10 @@
 
 namespace dual_arm_tool_qp {
 
+// Matches the shared executor's numerical position tolerance; not a physical
+// tracking allowance. Measured kinematics retain their original values.
+constexpr double position_roundoff = 1e-9;
+
 struct Config {
   double tool_gain{2.0};
   double relative_gain{2.0};
@@ -66,6 +70,7 @@ public:
   const Eigen::VectorXd &upperLimits() const { return upper_; }
   const Eigen::VectorXd &velocityLimits() const { return velocity_; }
   void setVelocityLimits(const Eigen::VectorXd &limits);
+  void setPositionLimits(const Eigen::VectorXd &lower, const Eigen::VectorXd &upper);
   std::pair<Eigen::VectorXd, Eigen::VectorXd> getJointPositionLimits() const {
     return {lower_, upper_};
   }
@@ -115,7 +120,8 @@ public:
   void reset();
   void setSharedTargets(const Eigen::VectorXd &targets);
   void clearSharedTargets();
-  SolveResult solve(const pinocchio::SE3 &desired_tool);
+  SolveResult solve(const pinocchio::SE3 &desired_tool, double dt,
+                    const Eigen::VectorXd &reference);
   const Config &config() const { return config_; }
 
 private:
