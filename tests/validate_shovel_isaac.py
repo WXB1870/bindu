@@ -18,7 +18,7 @@ import xml.etree.ElementTree as ET
 def verify(motion_path, output):
     import numpy as np
     from scipy.spatial.transform import Rotation
-    from pxr import Usd, UsdPhysics
+    from pxr import Gf, PhysicsSchemaTools, Usd, UsdPhysics
     from isaacsim.core.api import World
     from isaacsim.core.prims import SingleArticulation, SingleRigidPrim
     from isaacsim.core.utils.extensions import enable_extension
@@ -26,10 +26,21 @@ def verify(motion_path, output):
 
     motion = json.loads(motion_path.read_text())
     source = Path(motion['display_urdf'])
-    if motion['schema'] != 1 or hashlib.sha256(source.read_bytes()).hexdigest() != motion['display_sha256']:
+    if motion['schema'] != 2 or hashlib.sha256(source.read_bytes()).hexdigest() != motion['display_sha256']:
         raise ValueError('MOTION_MODEL_IDENTITY')
+    if not motion.get('source_sha256'):
+        raise ValueError('MISSING_SOURCE_FINGERPRINTS')
+    for path, digest in motion['source_sha256'].items():
+        if hashlib.sha256(Path(path).read_bytes()).hexdigest() != digest:
+            raise ValueError('MOTION_SOURCE_IDENTITY:'+path)
     if not motion['samples']:
         raise ValueError('EMPTY_MOTION')
+    times = np.array([sample['t'] for sample in motion['samples']])
+    fps = motion['recipe']['sample_hz']
+    duration = motion['recipe']['keyframes'][-1]['t']
+    if (not np.isfinite(times).all() or not np.isfinite([fps,duration]).all() or fps <= 0 or
+            len(times) != round(duration*fps)+1 or not np.allclose(times,np.arange(len(times))/fps)):
+        raise ValueError('INVALID_MOTION_TIMELINE')
     tree = ET.parse(source)
     package = source.parent.parent
     for mesh in tree.findall('.//mesh'):
@@ -61,6 +72,12 @@ def verify(motion_path, output):
     body = world.scene.add(SingleArticulation(str(links[root].GetPath()), name='robot'))
     flanges = {name: world.scene.add(SingleRigidPrim(str(links[name].GetPath()), name=name))
                for name in frames}
+    ground_z = float(motion['recipe']['ground']['z_in_base_m'])
+    if not np.isfinite(ground_z):
+        raise ValueError('NONFINITE_GROUND')
+    # Procedural plane: no network/default-environment asset dependency.
+    PhysicsSchemaTools.addGroundPlane(world.stage, '/World/Ground', 'Z', 5.,
+                                      Gf.Vec3f(0.,0.,ground_z), Gf.Vec3f(.5,.5,.5))
     world.get_physics_context().set_gravity(0.)
     world.reset()
     names = body.dof_names
@@ -70,6 +87,13 @@ def verify(motion_path, output):
     right_in_tool = np.r_[motion['recipe']['right_grip_in_tool_m'], 1.]
     if not all(np.isfinite(value).all() for value in (left_to_tool, grip_offset, right_in_tool)):
         raise ValueError('NONFINITE_TOOL_GEOMETRY')
+    pan = np.array(motion['recipe']['pan_center_m'])
+    half = np.array(motion['recipe']['pan_size_m'])/2
+    if not np.isfinite(np.r_[pan,half]).all() or min(half) <= 0:
+        raise ValueError('INVALID_PAN_GEOMETRY')
+    corners = np.array([np.r_[pan+half*np.array([x,y,z]),1.] for x in (-1,1) for y in (-1,1) for z in (-1,1)])
+    min_clearance, ready_clearance = float('inf'), None
+    flange_start, max_flange_motion = None, 0.
     for index, sample in enumerate(motion['samples']):
         if set(sample['q']) != set(names):
             raise ValueError('ISAAC_JOINT_LAYOUT')
@@ -101,6 +125,12 @@ def verify(motion_path, output):
             angle = Rotation.from_matrix(expected[:3, :3].T @ pose[:3, :3]).magnitude()
             maximum['flange_rotation_rad'] = max(maximum['flange_rotation_rad'], float(angle))
         actual_tool = actual[frames[0]] @ left_to_tool
+        clearance = float((corners @ actual_tool.T)[:,2].min())-ground_z
+        min_clearance = min(min_clearance, clearance)
+        if index == 0:
+            ready_clearance = clearance
+            flange_start = actual[frames[0]][:3,3].copy()
+        max_flange_motion = max(max_flange_motion, float(np.linalg.norm(actual[frames[0]][:3,3]-flange_start)))
         error = (actual[frames[1]] @ grip_offset - actual_tool @ right_in_tool)[:3]
         maximum['right_grip_m'] = max(maximum['right_grip_m'], float(np.linalg.norm(error)))
         if index % 100 == 0:
@@ -108,7 +138,13 @@ def verify(motion_path, output):
     if (maximum['joint_rad'] > .002 or maximum['flange_translation_m'] > .002 or
             maximum['flange_rotation_rad'] > .005 or maximum['right_grip_m'] > .002):
         raise ValueError('ISAAC_POSE_PROPAGATION:'+json.dumps(maximum))
-    result = {'status': 'passed', 'samples': len(motion['samples']), 'maximum_errors': maximum,
+    gate = motion['recipe']['acceptance']
+    if (min_clearance < gate['min_ground_clearance_m'] or ready_clearance > gate['max_ready_clearance_m'] or
+            max_flange_motion < .01):
+        raise ValueError('ISAAC_GROUND_OR_LINK_MOTION')
+    result = {'ground_z_in_base_m': ground_z, 'min_pan_ground_clearance_m': min_clearance,
+              'ready_pan_ground_clearance_m': ready_clearance, 'max_flange_motion_m': max_flange_motion,
+              'status': 'passed', 'samples': len(motion['samples']), 'maximum_errors': maximum,
               'motion_sha256': hashlib.sha256(motion_path.read_bytes()).hexdigest(),
               'motion': str(motion_path), 'mode': 'zero-gravity joint-position kinematic replay'}
     (output/'validation.json').write_text(json.dumps(result, indent=2)+'\n')

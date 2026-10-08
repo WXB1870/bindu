@@ -99,6 +99,50 @@ class ModeTests(unittest.TestCase):
 
 
 class BimanualSessionTests(unittest.TestCase):
+    def test_historical_clutch_counter_does_not_bypass_initial_release(self):
+        cfg = dict(input_max_age=.25, engage_seconds=.2, position_scale=1., operator_yaw_rad=0.)
+        session = BimanualSession(cfg, 2, 10.)
+        for seq, when in ((1,10.1),(2,10.4)):
+            frames=[]
+            for side,x in (('left',0.),('right',.3)):
+                pose=np.eye(4);pose[0,3]=x
+                frames.append(VRFrame('source',seq,when,side,tuple(pose.ravel()),
+                                      grip=1.,clutch_seq=8))
+            session.ingest(*frames,when)
+            self.assertEqual(session.mode,'idle')
+            self.assertFalse(session.released)
+        with self.assertRaisesRegex(ValueError,'BIMANUAL_NOT_ENGAGED'):
+            session.capture(np.eye(4))
+
+    def test_coalesced_release_from_either_hand_requires_new_capture(self):
+        cfg = dict(input_max_age=.25, engage_seconds=.2, position_scale=1., operator_yaw_rad=0.)
+        for released_side in ('left', 'right'):
+            with self.subTest(side=released_side):
+                session = BimanualSession(cfg, 2, 10.)
+                def frames(seq, when, grip, offset=0., clutch=0):
+                    result=[]
+                    for side, x in (('left', 0.), ('right', .3)):
+                        pose=np.eye(4); pose[0,3]=x+offset
+                        result.append(VRFrame('source',seq,when,side,tuple(pose.ravel()),
+                            grip=grip,clutch_seq=clutch if side==released_side else 0))
+                    return result
+                for seq, when, grip in ((1,10.1,0.),(2,10.2,1.),(3,10.41,1.)):
+                    session.ingest(*frames(seq,when,grip),when)
+                session.capture(np.eye(4))
+                session.ingest(*frames(5,10.43,1.,.2,1),10.43)
+                self.assertEqual(session.mode,'idle')
+                self.assertIsNone(session.target)
+                self.assertIsNone(session.anchor_tool)
+                with self.assertRaisesRegex(ValueError,'BIMANUAL_NOT_ENGAGED'):
+                    session.capture(np.eye(4))
+                session.ingest(*frames(6,10.64,1.,.2,1),10.64)
+                self.assertEqual(session.mode,'follow')
+                self.assertIsNone(session.target)
+                session.capture(np.eye(4))
+                np.testing.assert_allclose(session.target,np.eye(4),atol=1e-12)
+                with self.assertRaisesRegex(ValueError,'VR_CLUTCH_UNORDERED'):
+                    session.ingest(*frames(7,10.65,1.,.2,0),10.65)
+
     def test_two_hand_release_engage_and_new_anchor(self):
         cfg={'input_max_age':.25,'engage_seconds':.2,'position_scale':1.,'operator_yaw_rad':0.}
         session=BimanualSession(cfg,2,10.)

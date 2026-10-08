@@ -59,6 +59,7 @@ class BimanualSession:
         self.current_input = None
         self.stamp = 0.
         self.target = None
+        self.clutch_seq = None
 
     @staticmethod
     def paired_pose(left, right):
@@ -89,6 +90,21 @@ class BimanualSession:
             raise ValueError('VR_CONNECTION_CHANGED')
         if left.seq <= self.seq:
             return False
+        clutch_seq = (left.clutch_seq, right.clutch_seq)
+        if (any(not isinstance(value, int) or value < 0 for value in clutch_seq) or
+                self.clutch_seq is not None and
+                any(value < previous for value, previous in zip(clutch_seq, self.clutch_seq))):
+            raise ValueError('VR_CLUTCH_UNORDERED')
+        # A nonzero counter on the first frame is historical, not a new release.
+        if self.clutch_seq is not None and clutch_seq != self.clutch_seq:
+            # The receiver can coalesce a brief release into the next pressed
+            # frame. Enter idle even when both current grip values are high;
+            # the runtime then holds and discards its pending worker result.
+            self.released = True
+            self.pressed_since = None
+            self.mode = 'idle'
+            self.anchor_input = self.anchor_tool = self.target = None
+        self.clutch_seq = clutch_seq
         pose=self.paired_pose(left,right)
         self.current_input=pose
         self.source,self.seq,self.stamp=left.source_id,left.seq,max(left.stamp,right.stamp)

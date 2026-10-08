@@ -46,6 +46,10 @@ def main():
                         help='Require mode switch to fail closed on an incompatible tool grasp')
     parser.add_argument('--switch-while-active',action='store_true',
                         help='Exercise active single-arm to bimanual mode preemption')
+    parser.add_argument('--coalesced-release',action='store_true',
+                        help='Drop the released frame but preserve its clutch generation')
+    parser.add_argument('--drop-tool-input',action='store_true',
+                        help='Require tool input loss to stop all controlled joints and release ownership')
     args=parser.parse_args()
     if args.snowbot and args.g1_model: parser.error('choose one robot fixture')
     if args.expect_geometry_rejection and not args.snowbot:
@@ -116,7 +120,7 @@ def main():
     source_thread=None
     state={'execution':None,'mode':None,'accepted':[],'events':[],'physics':None,'trace':[],
            'tool_feedback':None}
-    control={'grip':0.,'delta':0.,'enabled':True,'seq':0}
+    control={'grip':0.,'delta':0.,'enabled':True,'seq':0,'left_clutch_seq':0}
     source_timing={'last':None,'max_gap_s':0.}
     try:
         if physics_model:
@@ -169,7 +173,8 @@ def main():
             for side,x in (('left',0.),('right',.3)):
                 pose=np.eye(4);pose[0,3]=x+control['delta']
                 vr.publish(VRInput(stamp=now,source_id='synthetic_pair',seq=control['seq'],
-                    side=side,pose=pose.ravel().tolist(),grip=control['grip'],valid=True))
+                    side=side,pose=pose.ravel().tolist(),grip=control['grip'],valid=True,
+                    clutch_seq=control['left_clutch_seq'] if side=='left' else 0))
         source.create_timer(.02,publish)
         source_thread=threading.Thread(target=source_executor.spin,daemon=True)
         source_thread.start()
@@ -204,7 +209,7 @@ def main():
         goal=None
         for _ in range(15):
             goal=wait(node,tool.send_goal_async(TeleopSession.Goal(task_id=run,
-                resource_group='bimanual_tool',duration=8.),
+                resource_group='bimanual_tool',duration=16. if args.coalesced_release else 8.),
                 feedback_callback=lambda msg:state.update(tool_feedback=msg.feedback.mode)))
             if goal.accepted: break
             prior_seq=control['seq']
@@ -229,14 +234,32 @@ def main():
                    and len(c.joint_names)==command_count for c in commands),commands
         assert any(max(abs(a-b) for a,b in zip(c.positions,commands[count-1].positions))>1e-5
                    for c in commands[count:]),'no arm response'
-        assert wait(node,goal.cancel_goal_async()).goals_canceling
+        reclutch_checked=False
+        if args.coalesced_release:
+            event_start=len(state['events'])
+            control.update(delta=control['delta']+.2, left_clutch_seq=control['left_clutch_seq']+1)
+            # Both current grips remain pressed; no released frame is sent.
+            until(node,lambda:any(e[1:] == ('BIMANUAL_CLUTCH','idle')
+                                 for e in state['events'][event_start:]),3.)
+            until(node,lambda:state['execution'] and not state['execution'].reference.name,3.)
+            until(node,lambda:any(e[1]=='BIMANUAL_CAPTURED'
+                                 for e in state['events'][event_start:]),4.)
+            count_after_capture=len(state['accepted'])
+            until(node,lambda:len(state['accepted'])>=count_after_capture+2,4.)
+            reclutch_checked=True
+        if args.drop_tool_input:
+            control['enabled']=False
+        else:
+            assert wait(node,goal.cancel_goal_async()).goals_canceling
         ended=wait(node,goal_result,8.).result
-        assert ended.code=='CANCELED' and ended.accepted_commands>=3,(
+        expected_end='VR_PAIR_TIMEOUT' if args.drop_tool_input else 'CANCELED'
+        assert ended.code==expected_end and ended.accepted_commands>=3,(
             ended,state['events'][-10:],state['trace'][-10:],
             (state['execution'].state,state['execution'].code) if state['execution'] else None)
         until(node,lambda:state['execution'] and not state['execution'].lease_active and
               not state['execution'].reference.name,6.)
         control['grip']=0.
+        control['enabled']=True
         switched=wait(node,selector.send_goal_async(SelectTeleopMode.Goal(
             mode='single_arm',side='left',expected_generation=2,timeout=6.)))
         assert switched.accepted
@@ -306,6 +329,8 @@ def main():
                 'backend':'PhysX' if physics_model else 'kinematic',
                 'robot':'snowbot' if args.snowbot else ('g1' if physics_model else 'two_arm_fixture'),
                 'single_arm_accepted':single_accepted,
+                'coalesced_release_checked':reclutch_checked,
+                'tool_input_loss_checked':args.drop_tool_input,
                 'active_switch_generation':active_switch_generation}
         (output/'result.json').write_text(json.dumps(result,indent=2)+'\n')
         print(json.dumps(result))

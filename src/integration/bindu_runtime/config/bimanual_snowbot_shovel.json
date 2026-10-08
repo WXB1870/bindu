@@ -17,11 +17,11 @@
     0.7660444431189781,
     0.0,
     0.6427876096865393,
-    0.0,
+    1.4492932291302092e-16,
     -0.6427876096865393,
     0.0,
     0.7660444431189779,
-    -0.95,
+    -1.1999999999999997,
     0.0,
     0.0,
     0.0,
@@ -52,23 +52,23 @@
     "display_urdf": "snowbot_display.urdf",
     "profile": "snowbot_sim.json",
     "initial_positions_rad": {
-      "body_joint_1": -0.04592942976068936,
-      "body_joint_2": 0.1063840098049493,
-      "arm_l_joint_1": -0.2302070409381193,
-      "arm_l_joint_2": 0.4266481919611451,
-      "arm_l_joint_3": 0.7390012702897869,
-      "arm_l_joint_4": -0.5939141346720326,
-      "arm_l_joint_5": -0.1410389831664322,
-      "arm_l_joint_6": 0.2799818075809196,
-      "arm_l_joint_7": -1.1491700904280504,
+      "body_joint_1": -0.047681652444448795,
+      "body_joint_2": 0.13189727109022392,
+      "arm_l_joint_1": -0.23314441173041553,
+      "arm_l_joint_2": 0.43199977081828234,
+      "arm_l_joint_3": 0.7423459869242591,
+      "arm_l_joint_4": -0.5943241156217517,
+      "arm_l_joint_5": -0.12387128262196374,
+      "arm_l_joint_6": 0.2983705326487139,
+      "arm_l_joint_7": -1.1448639091281856,
       "arm_l_joint_8": 0.0,
-      "arm_r_joint_1": 0.09602999673638227,
-      "arm_r_joint_2": -0.442734688130808,
-      "arm_r_joint_3": -0.35661227288639596,
-      "arm_r_joint_4": -0.24554161252940182,
-      "arm_r_joint_5": -0.22183346797376594,
-      "arm_r_joint_6": -0.8384955640605535,
-      "arm_r_joint_7": 0.4724007584823945,
+      "arm_r_joint_1": 0.11352988787298249,
+      "arm_r_joint_2": -0.4403829782139701,
+      "arm_r_joint_3": -0.35958244914823373,
+      "arm_r_joint_4": -0.2594171919140367,
+      "arm_r_joint_5": -0.23732231572574405,
+      "arm_r_joint_6": -0.8571404432728874,
+      "arm_r_joint_7": 0.45663550287269683,
       "arm_r_joint_8": 0.0,
       "head_joint_1": 0.0,
       "head_joint_2": 0.0
@@ -84,7 +84,7 @@
       0.766044443118978
     ],
     "shaft_from_left_grip_m": [
-      -0.95,
+      -1.2,
       0.15
     ],
     "shaft_radius_m": 0.018,
@@ -101,7 +101,7 @@
     "keyframes": [
       {
         "t": 0,
-        "phase": "准备",
+        "phase": "\u51c6\u5907",
         "translation_m": [
           0.0,
           -0.0,
@@ -114,7 +114,7 @@
       },
       {
         "t": 1,
-        "phase": "铲入",
+        "phase": "\u94f2\u5165",
         "translation_m": [
           0.0,
           -0.0,
@@ -127,11 +127,11 @@
       },
       {
         "t": 7,
-        "phase": "铲入",
+        "phase": "\u94f2\u5165",
         "translation_m": [
-          0.1385640868417202,
-          -0.07999996148574214,
-          2.388449980017526e-09
+          0.13856406460551018,
+          -0.07999999999999999,
+          0.0
         ],
         "yaw_pitch_rad": [
           0.0,
@@ -140,11 +140,11 @@
       },
       {
         "t": 8,
-        "phase": "抬铲",
+        "phase": "\u62ac\u94f2",
         "translation_m": [
-          0.1385640868417202,
-          -0.07999996148574214,
-          2.388449980017526e-09
+          0.13856406460551018,
+          -0.07999999999999999,
+          0.0
         ],
         "yaw_pitch_rad": [
           0.0,
@@ -152,12 +152,12 @@
         ]
       },
       {
-        "t": 28,
-        "phase": "保持",
+        "t": 32,
+        "phase": "\u4fdd\u6301",
         "translation_m": [
-          0.05196153256564507,
-          -0.0299999855571533,
-          8.956687425065724e-10
+          0.05196152422706632,
+          -0.029999999999999995,
+          0.0
         ],
         "yaw_pitch_rad": [
           0.0,
@@ -165,12 +165,12 @@
         ]
       },
       {
-        "t": 30,
-        "phase": "侧向扬起",
+        "t": 34,
+        "phase": "\u4fa7\u5411\u626c\u8d77",
         "translation_m": [
-          0.05196153256564507,
-          -0.0299999855571533,
-          8.956687425065724e-10
+          0.05196152422706632,
+          -0.029999999999999995,
+          0.0
         ],
         "yaw_pitch_rad": [
           0.0,
@@ -178,12 +178,12 @@
         ]
       },
       {
-        "t": 38,
-        "phase": "保持",
+        "t": 44,
+        "phase": "\u4fdd\u6301",
         "translation_m": [
-          0.05196153256564507,
-          -0.0299999855571533,
-          8.956687425065724e-10
+          0.05196152422706632,
+          -0.029999999999999995,
+          0.0
         ],
         "yaw_pitch_rad": [
           -0.3490658503988659,
@@ -191,12 +191,12 @@
         ]
       },
       {
-        "t": 40,
-        "phase": "回位",
+        "t": 46,
+        "phase": "\u56de\u4f4d",
         "translation_m": [
-          0.05196153256564507,
-          -0.0299999855571533,
-          8.956687425065724e-10
+          0.05196152422706632,
+          -0.029999999999999995,
+          0.0
         ],
         "yaw_pitch_rad": [
           -0.3490658503988659,
@@ -204,8 +204,8 @@
         ]
       },
       {
-        "t": 62,
-        "phase": "回位",
+        "t": 72,
+        "phase": "\u56de\u4f4d",
         "translation_m": [
           0.0,
           -0.0,
@@ -217,8 +217,8 @@
         ]
       },
       {
-        "t": 65,
-        "phase": "完成",
+        "t": 75,
+        "phase": "\u5b8c\u6210",
         "translation_m": [
           0.0,
           -0.0,
@@ -229,12 +229,6 @@
           0.0
         ]
       }
-    ],
-    "shaft_contact_links": [
-      "arm_l_link_7",
-      "arm_l_link_8",
-      "arm_r_link_7",
-      "arm_r_link_8"
     ],
     "acceptance": {
       "push_seconds": 8,
@@ -249,16 +243,26 @@
         "body_joint_2": 0.1
       },
       "min_ground_clearance_m": 0.003,
-      "max_ready_clearance_m": 0.015
+      "max_ready_clearance_m": 0.015,
+      "min_tool_robot_clearance_m": 0.02,
+      "lift_seconds": 34,
+      "swing_seconds": 46,
+      "max_phase_angle_error_rad": 0.01,
+      "posture_limits_rad": {
+        "body_joint_2": [
+          -0.6,
+          0.6
+        ]
+      }
     },
     "sample_hz": 20,
     "pivot_in_tool_m": [
-      -0.6106482292022124,
+      -0.7713451316238472,
       0.0,
-      0.7277422209630292
+      0.9192533317427736
     ],
     "selected_design": {
-      "shaft_length_m": 1.1,
+      "shaft_length_m": 1.35,
       "grip_spacing_m": 0.34,
       "azimuth_deg": -30,
       "ready_elevation_deg": 50,
@@ -267,13 +271,13 @@
     },
     "design_search": {
       "shaft_lengths_m": [
-        0.95,
-        1.05,
         1.1,
-        1.15
+        1.2,
+        1.3,
+        1.35,
+        1.4
       ],
       "grip_spacings_m": [
-        0.3,
         0.34,
         0.38,
         0.42
@@ -287,12 +291,58 @@
       "ready_elevation_deg": 50,
       "rear_grip_x_m": 0.68,
       "rear_grip_side_offset_m": 0.08,
-      "blade_start_height_m": 0.015,
       "push_m": 0.16,
       "retract_m": 0.1,
       "lift_deg": 55,
       "outward_swing_deg": 20,
-      "ik_limit_margin_rad": 0.08
+      "ik_limit_margin_rad": 0.08,
+      "blade_start_clearance_m": 0.015
+    },
+    "ground": {
+      "z_in_base_m": -0.1999982893466955,
+      "support_links": [
+        "car_wheel_fr_link",
+        "car_wheel_fl_link",
+        "car_wheel_br_link",
+        "car_wheel_bl_link"
+      ],
+      "support_tolerance_m": 0.002
+    },
+    "empty_mesh_proxies": {
+      "head_link_1": {
+        "size_m": [
+          0.29,
+          0.3,
+          0.23
+        ],
+        "center_m": [
+          0.007,
+          0.0,
+          0.095
+        ]
+      }
+    },
+    "shaft_contacts": {
+      "arm_l_link_7": {
+        "grip": "left",
+        "center_m": 0.0,
+        "half_length_m": 0.1
+      },
+      "arm_l_link_8": {
+        "grip": "left",
+        "center_m": 0.0,
+        "half_length_m": 0.1
+      },
+      "arm_r_link_7": {
+        "grip": "right",
+        "center_m": -0.34,
+        "half_length_m": 0.1
+      },
+      "arm_r_link_8": {
+        "grip": "right",
+        "center_m": -0.34,
+        "half_length_m": 0.1
+      }
     }
   },
   "right_to_tool": [
@@ -307,7 +357,7 @@
     -0.6427876096865393,
     0.0,
     0.7660444431189779,
-    -0.61,
+    -0.8599999999999999,
     0.0,
     0.0,
     0.0,

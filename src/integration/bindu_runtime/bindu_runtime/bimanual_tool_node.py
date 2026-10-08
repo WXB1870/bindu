@@ -5,7 +5,7 @@ import time
 from pathlib import Path
 from ament_index_python.packages import get_package_share_directory
 from rclpy.action import ActionServer, GoalResponse, CancelResponse
-from rclpy.callback_groups import ReentrantCallbackGroup
+from rclpy.callback_groups import ReentrantCallbackGroup, MutuallyExclusiveCallbackGroup
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
 from rclpy.task import Future
 from std_srvs.srv import Trigger
@@ -49,7 +49,10 @@ class BimanualToolNode(RuntimeNode):
         self.lease_client=self.create_client(Lease,'execution/lease',callback_group=group)
         self.submit_client=self.create_client(SubmitMotion,'execution/submit',callback_group=group)
         self.control_client=self.create_client(ControlExecution,'execution/control',callback_group=group)
-        self.create_subscription(VRInput,'teleop/vr/input',self.on_frame,5)
+        # Keep paired input ordered without sharing the worker/state timer lock.
+        # Otherwise one hand can starve while the other keeps arriving.
+        self.create_subscription(VRInput,'teleop/vr/input',self.on_frame,5,
+                                 callback_group=MutuallyExclusiveCallbackGroup())
         self.create_subscription(ExecutionState,'execution/state',lambda m:setattr(self,'state',m),1)
         self.create_subscription(RecorderHealth,'recorder/health',self.on_health,5)
         self.create_subscription(TeleopModeState,'teleop/mode_state',

@@ -17,11 +17,12 @@ from scipy.optimize import least_squares
 from scipy.spatial.transform import Rotation
 
 from bindu_contracts.profile import Profile
-from plan_shovel_motion import ROOT, collision_check
+from plan_shovel_motion import ROOT, collision_check, validate_recipe
 
 
 def search(config_path, description):
     config = json.loads(config_path.read_text())
+    validate_recipe(config)
     recipe = config['demo']
     settings = recipe['design_search']
     profile = Profile.load(config_path.parent/recipe['profile'])
@@ -59,7 +60,7 @@ def search(config_path, description):
             relative.append(transform)
         anchor = np.array([settings['rear_grip_x_m'],
                            np.sign(azimuth)*settings['rear_grip_side_offset_m'],
-                           settings['blade_start_height_m']+rear[2]])
+                           recipe['ground']['z_in_base_m']+settings['blade_start_clearance_m']+rear[2]])
         forward = Rotation.from_euler('z', np.deg2rad(azimuth)).as_matrix() @ np.array([1., 0., 0.])
         seed = np.clip(q0[indices], lower, upper)
         samples = []
@@ -92,9 +93,14 @@ def search(config_path, description):
                                                     for n, v in zip(names, solved.x))})
         shape = dict(recipe, shaft_axis_in_tool=axis.tolist(), left_grip_in_tool_m=rear.tolist(),
                      shaft_from_left_grip_m=[-(length-settings['rear_overhang_m']), settings['rear_overhang_m']])
+        shape['shaft_contacts'] = {name:dict(value, center_m=-spacing if value['grip']=='right' else 0.)
+                                  for name,value in recipe['shaft_contacts'].items()}
         geometry = collision_check(description/recipe['display_urdf'], samples, shape, collect_failures=True)
         row = {'shaft_length_m': length, 'grip_spacing_m': spacing, 'azimuth_deg': azimuth,
                'ik_ok': all(s['ik_residual'] < .002 for s in samples),
+               'posture_ok': all(s['joint_margin_rad'] >= recipe['acceptance']['min_joint_margin_rad'] and
+                                 all(low <= s['q'][n] <= high for n,(low,high) in
+                                     recipe['acceptance']['posture_limits_rad'].items()) for s in samples),
                'min_joint_margin_deg': np.rad2deg(min(s['joint_margin_rad'] for s in samples)),
                'lift_m': samples[-1]['tool'][2][3]-samples[0]['tool'][2][3],
                # Ideal vertical point-load statics; it is not a grip-force rating.
@@ -108,7 +114,7 @@ def search(config_path, description):
                 np.rad2deg(max(s['q'][name] for s in samples))]
         candidates.append(row)
         print(json.dumps({k: v for k, v in row.items() if k not in ('samples', 'geometry')})+
-              f" collisions={geometry['intersections']}", flush=True)
+              f" geometry_violations={geometry['violations']}", flush=True)
     return {'config_sha256': hashlib.sha256(config_path.read_bytes()).hexdigest(),
             'scope': 'sampled task poses; discrete CAD self/tool intersection; no payload or contact validation',
             'design_search': settings, 'selected_design': recipe['selected_design'], 'candidates': candidates}
