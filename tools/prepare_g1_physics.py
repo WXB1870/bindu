@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""Restore pinned G1 body geometry and add an explicitly provisional differential base."""
+"""Generate local G1 physics assets from the control model and pinned upstream geometry.
+
+The output defaults to artifacts/g1-physics-model/ (ignored by Git). It contains
+g1_physics.urdf, meshes/, upstream_usd/, the simulation profile and provenance.
+The differential wheels/supports are provisional simulation fixtures. Regenerate
+after changing g1_provisional.urdf, its profile or physics.json.
+"""
 import argparse
 import copy
 import hashlib
@@ -115,7 +121,8 @@ def prepare(source, output, root=ROOT):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--source', type=Path, help='Existing pinned upstream repository')
-    parser.add_argument('--output', type=Path, default=ROOT / 'artifacts/g1-physics-model')
+    parser.add_argument('--output', type=Path, default=ROOT / 'artifacts/g1-physics-model',
+                        help='Generated asset directory (default: artifacts/g1-physics-model)')
     args = parser.parse_args()
     source = args.source
     if source is None:
