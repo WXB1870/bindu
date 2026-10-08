@@ -10,14 +10,14 @@
   "left_frame": "arm_l_ft_sensor",
   "right_frame": "arm_r_ft_sensor",
   "left_to_tool": [
-    0.0,
-    -1.0,
-    0.0,
-    0.075,
-    0.7660444431189781,
-    0.0,
-    0.6427876096865393,
-    1.4492932291302092e-16,
+    0.761790085656489,
+    0.1052449297774336,
+    0.6392177799088683,
+    0.07500000000000011,
+    -0.08062229362245008,
+    0.9944463307570415,
+    -0.06765013684326422,
+    -1.3800715164505893e-17,
     -0.6427876096865393,
     0.0,
     0.7660444431189779,
@@ -44,31 +44,31 @@
   "worker_startup_timeout": 30.0,
   "relative_gain": 2.0,
   "max_relative_error": 0.03,
-  "max_linear_speed": 0.08,
-  "max_angular_speed": 0.12,
+  "max_linear_speed": 0.24,
+  "max_angular_speed": 0.36,
   "solve_timeout_us": 30000,
   "demo": {
-    "description": "Simulation fixture: both hands grasp one inclined shovel shaft; not a measured tool calibration.",
+    "description": "Simulation fixture: shaft parallel to chassis front edge in top view, head to robot right; raised, moved over right-front bin and rolled to dump. Grips are not calibrated.",
     "display_urdf": "snowbot_display.urdf",
     "profile": "snowbot_sim.json",
     "initial_positions_rad": {
-      "body_joint_1": -0.047681652444448795,
-      "body_joint_2": 0.13189727109022392,
-      "arm_l_joint_1": -0.23314441173041553,
-      "arm_l_joint_2": 0.43199977081828234,
-      "arm_l_joint_3": 0.7423459869242591,
-      "arm_l_joint_4": -0.5943241156217517,
-      "arm_l_joint_5": -0.12387128262196374,
-      "arm_l_joint_6": 0.2983705326487139,
-      "arm_l_joint_7": -1.1448639091281856,
+      "body_joint_1": 0.12279875965405346,
+      "body_joint_2": 0.07901770571818609,
+      "arm_l_joint_1": 0.030611304821655156,
+      "arm_l_joint_2": 0.29608333018086624,
+      "arm_l_joint_3": 0.4001786155404521,
+      "arm_l_joint_4": -0.4245322121986432,
+      "arm_l_joint_5": -0.8770806861472568,
+      "arm_l_joint_6": 0.07439377849108435,
+      "arm_l_joint_7": -1.058328933639902,
       "arm_l_joint_8": 0.0,
-      "arm_r_joint_1": 0.11352988787298249,
-      "arm_r_joint_2": -0.4403829782139701,
-      "arm_r_joint_3": -0.35958244914823373,
-      "arm_r_joint_4": -0.2594171919140367,
-      "arm_r_joint_5": -0.23732231572574405,
-      "arm_r_joint_6": -0.8571404432728874,
-      "arm_r_joint_7": 0.45663550287269683,
+      "arm_r_joint_1": -0.01709348601044077,
+      "arm_r_joint_2": -0.5985894911582649,
+      "arm_r_joint_3": -0.39096305298423917,
+      "arm_r_joint_4": 0.32303928144606353,
+      "arm_r_joint_5": -0.09018933272367552,
+      "arm_r_joint_6": 0.361819084283364,
+      "arm_r_joint_7": 1.4100002767578907,
       "arm_r_joint_8": 0.0,
       "head_joint_1": 0.0,
       "head_joint_2": 0.0
@@ -100,138 +100,290 @@
     ],
     "keyframes": [
       {
-        "t": 0,
-        "phase": "\u51c6\u5907",
+        "t": 0.0,
+        "phase": "准备",
         "translation_m": [
           0.0,
           -0.0,
           0.0
         ],
         "yaw_pitch_rad": [
-          0.0,
+          -0.0,
           0.0
-        ]
+        ],
+        "shared_targets_rad": {
+          "body_joint_1": 0.12279891279492326,
+          "body_joint_2": 0.07901831328465227
+        }
       },
       {
-        "t": 1,
-        "phase": "\u94f2\u5165",
+        "t": 0.35,
+        "phase": "铲入",
         "translation_m": [
           0.0,
           -0.0,
           0.0
         ],
         "yaw_pitch_rad": [
-          0.0,
+          -0.0,
           0.0
-        ]
+        ],
+        "shared_targets_rad": {
+          "body_joint_1": 0.12279891279492326,
+          "body_joint_2": 0.07901831328465227
+        }
       },
       {
-        "t": 7,
-        "phase": "\u94f2\u5165",
+        "t": 2.35,
+        "phase": "铲入",
         "translation_m": [
-          0.13856406460551018,
-          -0.07999999999999999,
+          0.0,
+          -0.16,
           0.0
         ],
         "yaw_pitch_rad": [
-          0.0,
+          -0.0,
           0.0
-        ]
+        ],
+        "shared_targets_rad": {
+          "body_joint_1": 0.007809044033555938,
+          "body_joint_2": 0.19175988015859555
+        }
       },
       {
-        "t": 8,
-        "phase": "\u62ac\u94f2",
+        "t": 2.65,
+        "phase": "抬铲",
         "translation_m": [
-          0.13856406460551018,
-          -0.07999999999999999,
+          0.0,
+          -0.16,
           0.0
         ],
         "yaw_pitch_rad": [
-          0.0,
+          -0.0,
           0.0
-        ]
+        ],
+        "shared_targets_rad": {
+          "body_joint_1": 0.007809044033555938,
+          "body_joint_2": 0.19175988015859555
+        }
       },
       {
-        "t": 32,
-        "phase": "\u4fdd\u6301",
+        "t": 10.65,
+        "phase": "保持",
         "translation_m": [
-          0.05196152422706632,
-          -0.029999999999999995,
+          0.0,
+          -0.06,
           0.0
         ],
         "yaw_pitch_rad": [
-          0.0,
+          -0.0,
           -0.7853981633974483
-        ]
+        ],
+        "shared_targets_rad": {
+          "body_joint_1": 0.13010357934569697,
+          "body_joint_2": 0.3071304804422056
+        }
       },
       {
-        "t": 34,
-        "phase": "\u4fa7\u5411\u626c\u8d77",
+        "t": 11.35,
+        "phase": "转送箱口",
         "translation_m": [
-          0.05196152422706632,
-          -0.029999999999999995,
-          0.0
-        ],
-        "yaw_pitch_rad": [
           0.0,
-          -0.7853981633974483
-        ]
-      },
-      {
-        "t": 44,
-        "phase": "\u4fdd\u6301",
-        "translation_m": [
-          0.05196152422706632,
-          -0.029999999999999995,
+          -0.06,
           0.0
         ],
         "yaw_pitch_rad": [
-          -0.3490658503988659,
+          -0.0,
           -0.7853981633974483
-        ]
+        ],
+        "shared_targets_rad": {
+          "body_joint_1": 0.13010357934569697,
+          "body_joint_2": 0.3071304804422056
+        }
       },
       {
-        "t": 46,
-        "phase": "\u56de\u4f4d",
+        "t": 16.65,
+        "phase": "保持",
         "translation_m": [
-          0.05196152422706632,
-          -0.029999999999999995,
+          0.0,
+          -0.06,
           0.0
         ],
         "yaw_pitch_rad": [
-          -0.3490658503988659,
+          0.6108652381980153,
           -0.7853981633974483
-        ]
+        ],
+        "shaft_roll_rad": -0.0,
+        "shared_targets_rad": {
+          "body_joint_1": 0.05758010467360585,
+          "body_joint_2": 0.5899999999999994
+        }
       },
       {
-        "t": 72,
-        "phase": "\u56de\u4f4d",
+        "t": 17.35,
+        "phase": "翻铲倒雪",
+        "translation_m": [
+          0.0,
+          -0.06,
+          0.0
+        ],
+        "yaw_pitch_rad": [
+          0.6108652381980153,
+          -0.7853981633974483
+        ],
+        "shaft_roll_rad": -0.0,
+        "shared_targets_rad": {
+          "body_joint_1": 0.05758010467360585,
+          "body_joint_2": 0.5899999999999994
+        }
+      },
+      {
+        "t": 29.35,
+        "phase": "倒雪保持",
+        "translation_m": [
+          0.0,
+          -0.06,
+          0.0
+        ],
+        "yaw_pitch_rad": [
+          0.6108652381980153,
+          -0.7853981633974483
+        ],
+        "shaft_roll_rad": -2.0943951023931953,
+        "shared_targets_rad": {
+          "body_joint_1": -0.2393902784057141,
+          "body_joint_2": 0.460416067089621
+        }
+      },
+      {
+        "t": 30.65,
+        "phase": "扶正铲头",
+        "translation_m": [
+          0.0,
+          -0.06,
+          0.0
+        ],
+        "yaw_pitch_rad": [
+          0.6108652381980153,
+          -0.7853981633974483
+        ],
+        "shaft_roll_rad": -2.0943951023931953,
+        "shared_targets_rad": {
+          "body_joint_1": -0.2393902784057141,
+          "body_joint_2": 0.460416067089621
+        }
+      },
+      {
+        "t": 42.65,
+        "phase": "保持",
+        "translation_m": [
+          0.0,
+          -0.06,
+          0.0
+        ],
+        "yaw_pitch_rad": [
+          0.6108652381980153,
+          -0.7853981633974483
+        ],
+        "shaft_roll_rad": -0.0,
+        "shared_targets_rad": {
+          "body_joint_1": 0.05758010467360585,
+          "body_joint_2": 0.5899999999999994
+        }
+      },
+      {
+        "t": 43.35,
+        "phase": "转回侧方",
+        "translation_m": [
+          0.0,
+          -0.06,
+          0.0
+        ],
+        "yaw_pitch_rad": [
+          0.6108652381980153,
+          -0.7853981633974483
+        ],
+        "shaft_roll_rad": -0.0,
+        "shared_targets_rad": {
+          "body_joint_1": 0.05758010467360585,
+          "body_joint_2": 0.5899999999999994
+        }
+      },
+      {
+        "t": 48.65,
+        "phase": "保持",
+        "translation_m": [
+          0.0,
+          -0.06,
+          0.0
+        ],
+        "yaw_pitch_rad": [
+          -0.0,
+          -0.7853981633974483
+        ],
+        "shaft_roll_rad": -0.0,
+        "shared_targets_rad": {
+          "body_joint_1": 0.13010357934569697,
+          "body_joint_2": 0.3071304804422056
+        }
+      },
+      {
+        "t": 49.35,
+        "phase": "下放回位",
+        "translation_m": [
+          0.0,
+          -0.06,
+          0.0
+        ],
+        "yaw_pitch_rad": [
+          -0.0,
+          -0.7853981633974483
+        ],
+        "shaft_roll_rad": -0.0,
+        "shared_targets_rad": {
+          "body_joint_1": 0.13010357934569697,
+          "body_joint_2": 0.3071304804422056
+        }
+      },
+      {
+        "t": 57.35,
+        "phase": "保持",
         "translation_m": [
           0.0,
           -0.0,
           0.0
         ],
         "yaw_pitch_rad": [
-          0.0,
+          -0.0,
           0.0
-        ]
+        ],
+        "shaft_roll_rad": -0.0,
+        "shared_targets_rad": {
+          "body_joint_1": 0.12279891279492326,
+          "body_joint_2": 0.07901831328465227
+        }
       },
       {
-        "t": 75,
-        "phase": "\u5b8c\u6210",
+        "t": 58.35,
+        "phase": "完成",
         "translation_m": [
           0.0,
           -0.0,
           0.0
         ],
         "yaw_pitch_rad": [
-          0.0,
+          -0.0,
           0.0
-        ]
+        ],
+        "shaft_roll_rad": -0.0,
+        "shared_targets_rad": {
+          "body_joint_1": 0.12279891279492326,
+          "body_joint_2": 0.07901831328465227
+        }
       }
     ],
     "acceptance": {
-      "push_seconds": 8,
+      "push_seconds": 2.65,
       "min_push_m": 0.15,
       "min_lift_m": 0.6,
       "max_return_error_m": 0.002,
@@ -245,8 +397,8 @@
       "min_ground_clearance_m": 0.003,
       "max_ready_clearance_m": 0.015,
       "min_tool_robot_clearance_m": 0.02,
-      "lift_seconds": 34,
-      "swing_seconds": 46,
+      "lift_seconds": 11.35,
+      "swing_seconds": 17.35,
       "max_phase_angle_error_rad": 0.01,
       "posture_limits_rad": {
         "body_joint_2": [
@@ -264,10 +416,11 @@
     "selected_design": {
       "shaft_length_m": 1.35,
       "grip_spacing_m": 0.34,
-      "azimuth_deg": -30,
+      "azimuth_deg": -90,
       "ready_elevation_deg": 50,
       "lift_deg": 45,
-      "outward_swing_deg": 20
+      "outward_swing_deg": -35,
+      "dump_roll_deg": -120
     },
     "design_search": {
       "shaft_lengths_m": [
@@ -285,16 +438,17 @@
       "azimuths_deg": [
         0,
         -30,
-        -45
+        -45,
+        -90
       ],
       "rear_overhang_m": 0.15,
       "ready_elevation_deg": 50,
-      "rear_grip_x_m": 0.68,
-      "rear_grip_side_offset_m": 0.08,
+      "rear_grip_x_m": 0.78,
+      "rear_grip_side_offset_m": -0.1,
       "push_m": 0.16,
       "retract_m": 0.1,
       "lift_deg": 55,
-      "outward_swing_deg": 20,
+      "outward_swing_deg": -35,
       "ik_limit_margin_rad": 0.08,
       "blade_start_clearance_m": 0.015
     },
@@ -343,16 +497,51 @@
         "center_m": -0.34,
         "half_length_m": 0.1
       }
-    }
+    },
+    "receiving_bin": {
+      "description": "Provisional right-side receiving box; replace with measured dimensions before use.",
+      "center_xy_m": [
+        1.5,
+        -1.01
+      ],
+      "inner_size_xy_m": [
+        0.64,
+        0.64
+      ],
+      "height_m": 0.45,
+      "wall_thickness_m": 0.02,
+      "bottom_z_m": -0.1999982893466955,
+      "min_clearance_m": 0.02
+    },
+    "dump": {
+      "hold_seconds": [
+        29.35,
+        30.65
+      ],
+      "transfer_seconds": [
+        17.35,
+        42.65
+      ],
+      "mouth_margin_m": 0.04,
+      "min_rim_clearance_m": 0.05,
+      "min_pan_tilt_deg": 100.0
+    },
+    "timing_note": "Motion durations reduced to one third (rounded to 50 ms grid); viewer plays at 1x.",
+    "planning_limits": {
+      "max_speed": 0.75,
+      "max_acceleration": 9.0,
+      "max_jerk": 162.0
+    },
+    "joint_filter_sigma_s": 0.06
   },
   "right_to_tool": [
-    0.0,
-    1.0,
-    0.0,
-    0.075,
-    -0.7660444431189781,
-    0.0,
-    -0.6427876096865393,
+    -0.7180654330047566,
+    -0.34834108704019817,
+    -0.6025284399954449,
+    0.07500000000000002,
+    0.26684475403716806,
+    -0.9373678504619479,
+    0.2239093346941797,
     0.0,
     -0.6427876096865393,
     0.0,
@@ -364,5 +553,11 @@
     1.0
   ],
   "grasp_position_tolerance_m": 0.005,
-  "grasp_rotation_tolerance_rad": 0.02
+  "grasp_rotation_tolerance_rad": 0.02,
+  "tool_gain": 6.0,
+  "posture_gain": 0.3,
+  "shared_target_weight": 0.2,
+  "shared_target_gain": 6.0,
+  "limit_margin": 0.15,
+  "damper_gain": 2.0
 }

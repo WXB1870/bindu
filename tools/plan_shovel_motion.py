@@ -3,9 +3,11 @@
 
 The recipe owns robot names, ready posture, grasp and motion. This tool does not
 publish commands. Positions are metres/radians in the fixed URDF base frame.
-Rotation is world yaw followed by local pitch; the rear grip is the pivot.
+Rotation is world yaw, local pitch, then roll about the shaft. The rear grip
+is the pivot. Optional offline joint smoothing is validated after filtering.
 """
 import argparse
+from dataclasses import replace
 import hashlib
 import json
 from pathlib import Path
@@ -18,6 +20,7 @@ from scipy.spatial.transform import Rotation
 
 from bindu_contracts.profile import Profile
 from bindu_kinematics.bimanual import BimanualQP
+from shovel_geometry import bin_boxes, check_dump
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -48,7 +51,22 @@ def validate_recipe(config):
         expected = -design['grip_spacing_m'] if value['grip']=='right' else 0.
         if value['grip'] not in ('left','right') or not np.isclose(value['center_m'], expected):
             raise ValueError('SHOVEL_CONTACT_MISMATCH')
+    if 'planning_limits' in recipe:
+        limits = recipe['planning_limits']
+        if (config.get('simulation_only') is not True or
+                set(limits) != {'max_speed','max_acceleration','max_jerk'} or
+                any(not isinstance(v,(int,float)) or v <= 0 for v in limits.values())):
+            raise ValueError('INVALID_SHOVEL_PLANNING_LIMITS')
+    bin_boxes(recipe)
     keys, gate = recipe['keyframes'], recipe['acceptance']
+    if 'dump' in recipe:
+        if 'receiving_bin' not in recipe or not np.isclose(recipe['receiving_bin']['bottom_z_m'], recipe['ground']['z_in_base_m']):
+            raise ValueError('INVALID_RECEIVING_BIN_GROUND')
+        start, end = recipe['dump']['hold_seconds']
+        for seconds in (start, end):
+            matches = [k for k in keys if k['t'] == seconds]
+            if len(matches) != 1 or not np.isclose(matches[0].get('shaft_roll_rad', 0.), np.deg2rad(design['dump_roll_deg'])):
+                raise ValueError('SHOVEL_DUMP_KEYFRAME_MISMATCH')
     expected = ((gate['lift_seconds'], [0., -np.deg2rad(design['lift_deg'])]),
                 (gate['swing_seconds'], [-np.deg2rad(design['outward_swing_deg']), -np.deg2rad(design['lift_deg'])]))
     for seconds, angles in expected:
@@ -57,7 +75,7 @@ def validate_recipe(config):
             raise ValueError('SHOVEL_KEYFRAME_DESIGN_MISMATCH')
 
 
-def target_at(keyframes, home, pivot, seconds):
+def target_at(keyframes, home, pivot, seconds, shaft_axis=None):
     for first, last in zip(keyframes, keyframes[1:]):
         if seconds <= last['t']:
             u = np.clip((seconds-first['t'])/(last['t']-first['t']), 0., 1.)
@@ -67,6 +85,11 @@ def target_at(keyframes, home, pivot, seconds):
             target = home.copy()
             target[:3, :3] = (Rotation.from_euler('z', angles[0]).as_matrix() @
                               home[:3, :3] @ Rotation.from_euler('y', angles[1]).as_matrix())
+            roll = (1-blend)*first.get('shaft_roll_rad', 0.) + blend*last.get('shaft_roll_rad', 0.)
+            if roll:
+                if shaft_axis is None:
+                    raise ValueError('MISSING_SHAFT_ROLL_AXIS')
+                target[:3, :3] = target[:3, :3] @ Rotation.from_rotvec(np.asarray(shaft_axis)*roll).as_matrix()
             anchor = home[:3, 3] + home[:3, :3] @ pivot
             target[:3, 3] = anchor + xyz - target[:3, :3] @ pivot
             return target
@@ -183,6 +206,14 @@ def collision_check(urdf, samples, recipe, collect_failures=False):
                            np.array(recipe['left_grip_in_tool_m'])+shaft_axis*(a+b)/2)
                           for a, b in spans]
     pan = fcl.Box(*recipe['pan_size_m'])
+    bin_parts = [(name, fcl.Box(*size), fcl.Transform3s(np.eye(3), np.array(center)))
+                 for name, size, center in bin_boxes(recipe)]
+    bin_limit = recipe.get('receiving_bin', {}).get('min_clearance_m', .02)
+    if not np.isfinite(bin_limit) or bin_limit <= 0:
+        raise ValueError('INVALID_BIN_CLEARANCE')
+    full_shaft = fcl.Capsule(radius, ends[1]-ends[0])
+    shaft_center = np.array(recipe['left_grip_in_tool_m'])+shaft_axis*sum(ends)/2
+    bin_minimum, bin_worst = float('inf'), None
     # AABB distance is a conservative lower bound. Skip an exact mesh query
     # only when it cannot violate the gate or reduce the recorded global minimum.
     bounds = {}
@@ -246,6 +277,26 @@ def collision_check(urdf, samples, recipe, collect_failures=False):
                     worst = {'part': part, 'link': name, 't': sample['t']}
                 if distance < clearance_limit and failure is None:
                     failure = f'{part}_CLEARANCE: {name} distance={distance:.6g}'
+        # No grip exemptions apply to the receiving bin. Check every body mesh,
+        # the full shaft and the pan against its four walls and floor.
+        scene_parts = [(name,obj.geometry,fcl.Transform3s(place.rotation,place.translation))
+                       for name,obj,place in zip(names,geometry.geometryObjects,geometry_data.oMg)]
+        scene_parts += [('PAN',pan,pan_pose), ('SHAFT',full_shaft,
+                        fcl.Transform3s(tool[:3,:3] @ rotation,tool[:3,3]+tool[:3,:3] @ shaft_center))]
+        for wall,box,box_pose in bin_parts:
+            c1,h1 = world_bounds(box,box_pose.getRotation(),box_pose.getTranslation())
+            for name,shape,pose in scene_parts:
+                c2,h2 = world_bounds(shape,pose.getRotation(),pose.getTranslation())
+                bound = np.linalg.norm(np.maximum(np.abs(c1-c2)-h1-h2,0.))-1e-9
+                if bound >= max(bin_limit,bin_minimum):
+                    continue
+                distance = float(fcl.distance(shape,pose,box,box_pose,distance_request,fcl.DistanceResult()))
+                if not np.isfinite(distance):
+                    raise ValueError('NONFINITE_BIN_DISTANCE')
+                if distance < bin_minimum:
+                    bin_minimum,bin_worst = distance, {'wall':wall,'part':name,'t':sample['t']}
+                if distance < bin_limit and failure is None:
+                    failure = f'BIN_CLEARANCE: {wall} / {name} distance={distance:.6g}'
         if sample_index % 1000 == 0:
             print('GEOMETRY_CHECK', sample_index, sample['t'], minimum, flush=True)
         if failure:
@@ -257,6 +308,7 @@ def collision_check(urdf, samples, recipe, collect_failures=False):
             'empty_mesh_proxies': proxies, 'support_heights_m': support_heights,
             'min_tool_robot_clearance_m': minimum, 'closest_tool_robot_pair': worst,
             'exact_distance_queries': exact_queries, 'aabb_bounded_queries': bounded_queries,
+            'min_bin_clearance_m': bin_minimum if bin_parts else None, 'closest_bin_pair': bin_worst,
             'source_sha256': asset_hashes, 'violations': len(failures), 'failures': failures}
 
 
@@ -265,6 +317,8 @@ def generate(config_path, description, output):
     validate_recipe(config)
     recipe = dict(config['demo'])
     profile = Profile.load(config_path.parent/recipe['profile'])
+    if 'planning_limits' in recipe:
+        profile = replace(profile, **recipe['planning_limits'])
     config['urdf'] = str(description/config['urdf'])
     display = description/recipe['display_urdf']
     dt, fps = config['sample_period'], recipe['sample_hz']
@@ -284,6 +338,7 @@ def generate(config_path, description, output):
     solver = BimanualQP(config, profile)
     source_paths = (config_path, Path(config['urdf']), display,
                     config_path.parent/recipe['profile'], Path(__file__).resolve(),
+                    Path(__import__('shovel_geometry').__file__).resolve(),
                     Path(__import__('bindu_kinematics.bimanual', fromlist=['__file__']).__file__),
                     Path(solver.lib._name))
     sources = {str(path): hashlib.sha256(path.read_bytes()).hexdigest() for path in source_paths}
@@ -294,6 +349,8 @@ def generate(config_path, description, output):
         if any(not profile.limits[n][0] <= value <= profile.limits[n][1] for n, value in q.items()):
             raise ValueError('READY_POSE_JOINT_LIMIT')
         home = solver.capture(q)
+        if abs(np.arctan2(home[1,0],home[0,0])-np.deg2rad(recipe['selected_design']['azimuth_deg'])) > .001:
+            raise ValueError('READY_AZIMUTH_MISMATCH')
         pivot = np.array(recipe['pivot_in_tool_m'])
         index = {n: model.joints[model.getJointId(n)].idx_q for n in q}
         left_to_tool = np.array(config['left_to_tool']).reshape(4, 4)
@@ -306,14 +363,44 @@ def generate(config_path, description, output):
         initial_positions = np.array([q[n] for n in solver.names])
         history = [initial_positions.copy() for _ in range(3)]
         max_acceleration, max_jerk = 0., 0.
+        raw_positions = []
         for step in range(round(keys[-1]['t']/dt)+1):
             seconds = step*dt
-            desired = target_at(keys, home, pivot, seconds)
-            positions, metrics = solver.solve(q, desired,
-                reference=[q[n] for n in solver.names], dt=dt)
+            desired = target_at(keys, home, pivot, seconds, recipe['shaft_axis_in_tool'])
+            if 'shared_targets_rad' in keys[0]:
+                first,last = next((a,b) for a,b in zip(keys,keys[1:]) if seconds <= b['t'])
+                u = np.clip((seconds-first['t'])/(last['t']-first['t']),0.,1.)
+                blend = u**3*(10.-15.*u+6.*u*u)
+                solver.set_shared_targets({n:(1-blend)*first['shared_targets_rad'][n]+blend*last['shared_targets_rad'][n]
+                                           for n in solver.shared_names})
+            try:
+                positions, metrics = solver.solve(q, desired,
+                    reference=[q[n] for n in solver.names], dt=dt)
+            except ValueError as exc:
+                raise ValueError(f'{exc} t={seconds:.3f}') from exc
+            q.update(zip(solver.names, positions))
+            raw_positions.append(positions)
+            max_solve = max(max_solve, metrics[0])
+        from scipy.ndimage import gaussian_filter1d
+        raw_positions = np.asarray(raw_positions)
+        sigma = float(recipe.get('joint_filter_sigma_s', 0.))
+        if not np.isfinite(sigma) or sigma < 0:
+            raise ValueError('INVALID_SHOVEL_JOINT_FILTER')
+        planned_positions = gaussian_filter1d(raw_positions, sigma/dt, axis=0, mode='nearest', truncate=4.) if sigma else raw_positions
+        raw_velocity = np.diff(np.vstack((initial_positions,raw_positions)),axis=0)/dt
+        raw_acceleration = np.diff(np.vstack((np.zeros_like(initial_positions),raw_velocity)),axis=0)/dt
+        raw_jerk = np.diff(np.vstack((np.zeros_like(initial_positions),raw_acceleration)),axis=0)/dt
+        raw_peaks = dict(speed_rad_s=float(np.abs(raw_velocity).max()), acceleration_rad_s2=float(np.abs(raw_acceleration).max()), jerk_rad_s3=float(np.abs(raw_jerk).max()))
+        q = dict(recipe['initial_positions_rad'])
+        expected_relative = (BimanualQP._transform(config['left_to_tool']) @
+                             np.linalg.inv(BimanualQP._transform(config['right_to_tool'])))
+        for step, positions in enumerate(planned_positions):
+            seconds = step*dt
+            desired = target_at(keys, home, pivot, seconds, recipe['shaft_axis_in_tool'])
             speed = max(abs(v-q[n])/dt for n, v in zip(solver.names, positions))
-            max_speed, max_solve = max(max_speed, speed), max(max_solve, metrics[0])
-            max_relative = max(max_relative, metrics[1])
+            max_speed = max(max_speed, speed)
+            if any(abs(v-q[n])/dt > profile.speed(n)+1e-6 for n,v in zip(solver.names,positions)):
+                raise ValueError('SHOVEL_SPEED_LIMIT')
             q.update(zip(solver.names, positions))
             margin = min(min(q[n]-profile.limits[n][0], profile.limits[n][1]-q[n])
                          for n in solver.names)
@@ -325,17 +412,22 @@ def generate(config_path, description, output):
                 acceleration = np.abs(np.diff(history, n=2, axis=0)[-1]/dt**2)
                 max_acceleration = max(max_acceleration, float(np.max(acceleration)))
                 if any(v > profile.acceleration(n)+1e-6 for n, v in zip(solver.names, acceleration)):
-                    raise ValueError('SHOVEL_ACCELERATION_LIMIT')
+                    raise ValueError(f'SHOVEL_ACCELERATION_LIMIT t={seconds:.3f} max={acceleration.max():.6g}')
             if len(history) == 4:
                 jerk = np.abs(np.diff(history, n=3, axis=0)[-1]/dt**3)
                 max_jerk = max(max_jerk, float(np.max(jerk)))
                 if any(v > profile.jerk(n)+1e-6 for n, v in zip(solver.names, jerk)):
-                    raise ValueError('SHOVEL_JERK_LIMIT')
+                    raise ValueError(f'SHOVEL_JERK_LIMIT t={seconds:.3f} max={jerk.max():.6g} joint={solver.names[int(np.argmax(jerk))]} margin={min_margin:.5f} speed={speed:.5f}')
             state = pin.neutral(model)
             for name, value in q.items():
                 state[index[name]] = value
             pin.framesForwardKinematics(model, data, state)
             poses = [data.oMf[i].homogeneous.copy() for i in ids]
+            actual_relative = np.linalg.inv(poses[0]) @ poses[1]
+            relative_error = pin.log6(pin.SE3(np.linalg.inv(expected_relative) @ actual_relative)).vector
+            max_relative = max(max_relative, float(np.linalg.norm(relative_error)))
+            if max_relative > config['max_relative_error']:
+                raise ValueError('SHOVEL_FILTERED_CLOSURE')
             tool = poses[0] @ left_to_tool
             grips = [(np.linalg.inv(tool) @ pose @ grip_offset)[:3] for pose in poses]
             if start_grips is None:
@@ -402,7 +494,11 @@ def generate(config_path, description, output):
         if (abs(lift_angle-np.deg2rad(design['lift_deg'])) > gate['max_phase_angle_error_rad'] or
                 abs(swing_angle-np.deg2rad(design['outward_swing_deg'])) > gate['max_phase_angle_error_rad']):
             raise ValueError('SHOVEL_PHASE_ANGLE_FAILED')
-        validation = {'status': 'passed', 'control_steps': round(keys[-1]['t']/dt)+1,
+        dump_result = check_dump(dense_samples, recipe)
+        validation = {'ready_shaft_axis_base': (home[:3,:3] @ axis).tolist(),
+                      'ready_grips_base_m': [(home @ np.r_[g,1.])[:3].tolist() for g in start_grips],
+                      'duration_s': keys[-1]['t'], 'planning_limits': recipe.get('planning_limits'),
+                      'raw_qp_peaks': raw_peaks, 'joint_filter_sigma_s': sigma, 'dump': dump_result, 'status': 'passed', 'control_steps': round(keys[-1]['t']/dt)+1,
                       'samples': len(samples), 'push_m': push, 'lift_m': lift,
                       'lift_angle_deg': float(np.rad2deg(lift_angle)),
                       'outward_swing_deg': float(np.rad2deg(swing_angle)),

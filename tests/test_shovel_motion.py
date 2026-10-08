@@ -10,7 +10,9 @@ import pinocchio as pin
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT/'tools'))
-from plan_shovel_motion import collision_check, validate_recipe
+from plan_shovel_motion import collision_check, validate_recipe, target_at
+from shovel_geometry import bin_boxes, check_dump
+from scipy.spatial.transform import Rotation
 
 
 class ShovelGeometryTests(unittest.TestCase):
@@ -75,6 +77,68 @@ class ShovelGeometryTests(unittest.TestCase):
         sample['q']['body_joint_1'] = float('nan')
         with self.assertRaisesRegex(ValueError,'NONFINITE_COLLISION_SAMPLE'):
             collision_check(self.urdf,[sample],self.recipe)
+
+
+    def test_receiving_bin_is_open_but_walls_are_checked(self):
+        recipe = copy.deepcopy(self.recipe)
+        recipe['receiving_bin'] = {'center_xy_m':[10.,10.], 'inner_size_xy_m':[.7,.6],
+            'height_m':.45, 'wall_thickness_m':.02, 'bottom_z_m':recipe['ground']['z_in_base_m'],
+            'min_clearance_m':.02}
+        self.assertEqual(len(bin_boxes(recipe)),5)
+        result = collision_check(self.urdf,[self.sample],recipe)
+        self.assertGreater(result['min_bin_clearance_m'],1.)
+        tool = np.array(self.sample['tool'])
+        center = (tool @ np.r_[recipe['pan_center_m'],1.])[:3]
+        recipe['receiving_bin']['center_xy_m'] = [float(center[0]-.36),float(center[1])]
+        with self.assertRaisesRegex(ValueError,'BIN_CLEARANCE'):
+            collision_check(self.urdf,[self.sample],recipe)
+
+    def test_dump_requires_inversion_containment_and_complete_hold(self):
+        recipe = copy.deepcopy(self.recipe)
+        recipe['receiving_bin'] = {'center_xy_m':[0.,0.], 'inner_size_xy_m':[.8,.8],
+            'height_m':.4,'wall_thickness_m':.02,'bottom_z_m':0.,'min_clearance_m':.02}
+        recipe['dump'] = {'hold_seconds':[.5,1.5],'transfer_seconds':[0.,2.],
+            'mouth_margin_m':.04,'min_rim_clearance_m':.05,'min_pan_tilt_deg':100.}
+        tool = np.eye(4)
+        tool[:3,:3] = Rotation.from_euler('x',120,degrees=True).as_matrix()
+        tool[:3,3] = np.array([0.,0.,.9])-tool[:3,:3] @ np.array(recipe['pan_center_m'])
+        samples = [{'t':t,'tool':tool.tolist()} for t in (0.,.5,1.,1.5,2.)]
+        result = check_dump(samples,recipe)
+        self.assertAlmostEqual(result['min_pan_tilt_deg'],120.)
+        with self.assertRaisesRegex(ValueError,'MISSING_DUMP_SAMPLES'):
+            check_dump(samples[1:],recipe)
+        for field,reason in [('upright','DUMP_PAN_NOT_INVERTED'),('outside','DUMP_MISSES_BIN'),
+                             ('low','DUMP_RIM_CLEARANCE'),('nan','NONFINITE_DUMP_POSE')]:
+            bad = copy.deepcopy(samples)
+            for sample in bad:
+                tf = np.array(sample['tool'])
+                if field == 'upright': tf[:3,:3]=np.eye(3)
+                if field == 'outside': tf[0,3]+=1.
+                if field == 'low': tf[2,3]-=.6
+                if field == 'nan': tf[0,3]=float('nan')
+                sample['tool']=tf.tolist()
+            with self.subTest(field=field), self.assertRaisesRegex(ValueError,reason):
+                check_dump(bad,recipe)
+
+    def test_shaft_roll_preserves_both_grip_points(self):
+        axis=np.array(self.recipe['shaft_axis_in_tool'])
+        pivot=np.array(self.recipe['pivot_in_tool_m'])
+        keys=[{'t':0.,'translation_m':[0.,0.,0.],'yaw_pitch_rad':[0.,0.],'shaft_roll_rad':0.},
+              {'t':1.,'translation_m':[0.,0.,0.],'yaw_pitch_rad':[0.,0.],'shaft_roll_rad':2.}]
+        for t in np.linspace(0,1,11):
+            tf=target_at(keys,np.eye(4),pivot,t,axis)
+            for point in (pivot,pivot-.34*axis):
+                np.testing.assert_allclose((tf @ np.r_[point,1.])[:3],point,atol=1e-10)
+
+    def test_planning_limit_override_is_simulation_only(self):
+        config=copy.deepcopy(self.config)
+        config['simulation_only']=False
+        with self.assertRaisesRegex(ValueError,'INVALID_SHOVEL_PLANNING_LIMITS'):
+            validate_recipe(config)
+        config=copy.deepcopy(self.config)
+        config['demo']['planning_limits']['max_speed']=-1
+        with self.assertRaisesRegex(ValueError,'INVALID_SHOVEL_PLANNING_LIMITS'):
+            validate_recipe(config)
 
 
 if __name__ == '__main__':

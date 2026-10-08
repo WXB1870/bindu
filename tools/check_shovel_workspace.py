@@ -52,8 +52,12 @@ def search(config_path, description):
         rear = axis*(length-settings['rear_overhang_m'])
         front = rear-axis*spacing
         relative = []
-        for point, sign in ((rear, -1), (front, 1)):
-            approach = np.array([0., sign, 0.])
+        for point, side in ((rear, 'left'), (front, 'right')):
+            # Keep the configured hand approach when comparing new dimensions.
+            # Replacing it by opposite palms would compare a different grasp.
+            approach = np.linalg.inv(np.array(config[side+'_to_tool']).reshape(4,4))[:3,0]
+            approach = approach-axis*np.dot(approach,axis)
+            approach /= np.linalg.norm(approach)
             transform = np.eye(4)
             transform[:3, :3] = np.column_stack((approach, np.cross(axis, approach), axis))
             transform[:3, 3] = point-transform[:3, :3] @ np.array(recipe['grip_offset_m'])
@@ -116,7 +120,7 @@ def search(config_path, description):
         print(json.dumps({k: v for k, v in row.items() if k not in ('samples', 'geometry')})+
               f" geometry_violations={geometry['violations']}", flush=True)
     return {'config_sha256': hashlib.sha256(config_path.read_bytes()).hexdigest(),
-            'scope': 'sampled task poses; discrete CAD self/tool intersection; no payload or contact validation',
+            'scope': 'sampled push/lift/swing only; excludes dump roll and continuous trajectory; no payload/contact validation',
             'design_search': settings, 'selected_design': recipe['selected_design'], 'candidates': candidates}
 
 
