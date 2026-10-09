@@ -6,7 +6,7 @@ import numpy as np
 from bindu_contracts.profile import Profile
 from bindu_contracts.teleoperation import VRFrame, ToolPoseFrame
 from bindu_teleoperation.modes import ModeSelection
-from bindu_teleoperation.bimanual_session import BimanualSession, ToolPoseSession, AcceptedReference
+from bindu_teleoperation.bimanual_session import BimanualSession, ToolPoseSession, AcceptedReference, ToolPause
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -287,3 +287,37 @@ class ToolPoseInputTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'CONNECTION_CHANGED'):
             self.session.ingest(replace(f,source_id='another',seq=2),.1)
         self.assertFalse(self.session.ingest(f,.1))
+
+
+class ToolPauseTests(unittest.TestCase):
+    def test_resume_requires_stop_and_post_resume_input(self):
+        p=ToolPause()
+        p.request(True,1.)
+        self.assertFalse(p.accepts(2.))
+        with self.assertRaisesRegex(ValueError,'NOT_CONFIRMED'):
+            p.request(False,2.)
+        p.confirm_stopped()
+        p.request(True,2.1)  # Repeated held pause must not initiate another stop.
+        self.assertEqual(p.phase,'paused')
+        p.request(False,3.)
+        for stamp in (2.9,3.,float('nan')):
+            self.assertFalse(p.accepts(stamp))
+        self.assertTrue(p.accepts(3.01))
+        p.request(True,3.02)
+        self.assertFalse(p.accepts(3.03))
+
+    def test_feedback_keeps_pause_and_distinguishes_virtual_grasp(self):
+        from bindu_teleoperation.feedback import ToolFeedback
+        f=ToolFeedback(dict(input_max_age=.25,feedback_max_age=.2,command_max_age=.4,input_frame='base'))
+        f.event('BIMANUAL_STARTED','{}','test',1.)
+        f.event('BIMANUAL_CAPTURED','{"grasp_mode":"rigid"}','test',1.1)
+        f.event('BIMANUAL_QP_RESULT','{"target":'+str(np.eye(4).ravel().tolist())+',"input_stamp":1.2}', 'test',1.2)
+        f.event('BIMANUAL_PAUSED','STOP_CONFIRMED','test',1.3)
+        view=f.snapshot(3.,list(np.eye(4).ravel()),3.,1.2,False)
+        self.assertEqual(view['mode'],'PAUSED')
+        self.assertEqual(view['reason'],'STOP_CONFIRMED')
+        self.assertIsNone(view['target'])
+        self.assertIsNone(view['physical_gripper_confirmed'])
+        self.assertEqual(view['grasp_applied'],'rigid')
+        stale=f.snapshot(4.,None,3.,1.2,False)
+        self.assertEqual(stale['reason'],'BIMANUAL_FEEDBACK_STALE')

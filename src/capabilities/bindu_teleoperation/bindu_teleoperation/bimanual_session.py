@@ -221,3 +221,32 @@ class ToolPoseSession:
             raise ValueError('TOOL_NOT_ENGAGED')
         self.anchor_tool = np.asarray(tool_pose, dtype=float).reshape(4,4)
         self.target = self.current_input.copy()
+
+
+class ToolPause:
+    """Explicit pause is latched; resume needs confirmed stop and a new input."""
+    def __init__(self):
+        self.phase = 'follow'
+        self.resume_after = float('-inf')
+
+    def request(self, paused, now):
+        if type(paused) is not bool or not math.isfinite(now):
+            raise ValueError('TOOL_PAUSE_INVALID')
+        if paused:
+            if self.phase != 'paused':
+                self.phase = 'pausing'
+        elif self.phase == 'paused':
+            self.phase = 'waiting_input'
+            self.resume_after = now
+        else:
+            raise ValueError('TOOL_PAUSE_NOT_CONFIRMED')
+
+    def confirm_stopped(self):
+        if self.phase != 'pausing':
+            raise ValueError('TOOL_PAUSE_NOT_REQUESTED')
+        self.phase = 'paused'
+
+    def accepts(self, stamp):
+        if self.phase == 'waiting_input' and math.isfinite(stamp) and stamp > self.resume_after:
+            self.phase = 'follow'
+        return self.phase == 'follow'

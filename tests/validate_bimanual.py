@@ -15,7 +15,8 @@ import numpy as np
 import rclpy
 from rclpy.action import ActionClient
 from rclpy.executors import SingleThreadedExecutor
-from std_srvs.srv import Trigger
+from std_srvs.srv import Trigger, SetBool
+from std_msgs.msg import String
 from bindu_interfaces.action import SelectTeleopMode, TeleopSession
 from bindu_interfaces.msg import VRInput, ToolPoseInput, ExecutionState, RecorderHealth, MotionCommand, TeleopModeState, RuntimeEvent, SimulationFeedback
 from rclpy.qos import QoSProfile, ReliabilityPolicy
@@ -88,7 +89,11 @@ def main():
                         help='Require tool input loss to stop all controlled joints and release ownership')
     parser.add_argument('--tool-pose-input',action='store_true',help='Exercise absolute mapped tool pose and tight state')
     parser.add_argument('--shovel-cycle',action='store_true',help='Complete shovel input stream over the production ROS path')
+    parser.add_argument('--pause-resume',action='store_true',help='Pause moving tool, drop input while held, then resume on fresh input')
+    parser.add_argument('--tool-display',action='store_true',help='Verify the independent tool observer against execution feedback')
     args=parser.parse_args()
+    if args.pause_resume and args.shovel_cycle: parser.error('pause-resume uses the short motion fixture')
+    if args.tool_display and not args.tool_pose_input: parser.error('tool display check requires --tool-pose-input')
     if args.tool_pose_input and not args.axial_grasp: parser.error('tool input requires --axial-grasp')
     if args.tool_pose_input and (args.websocket_input or args.coalesced_release):
         parser.error('mapped tool input does not use VR WebSocket/clutch fixtures')
@@ -167,7 +172,7 @@ def main():
     source_thread=None
     peer=None; peer_stop=threading.Event(); peer_errors=[]
     state={'execution':None,'mode':None,'accepted':[],'events':[],'physics':None,'trace':[],
-           'tool_feedback':None}
+           'tool_feedback':None,'display':None,'display_modes':[]}
     control={'grip':0.,'trigger':0.,'delta':0.,'enabled':True,'seq':0,'left_clutch_seq':0}
     source_timing={'last':None,'max_gap_s':0.}
     try:
@@ -189,6 +194,16 @@ def main():
             start('teleop',['-p','teleop_config:='+str(root/'src/integration/bindu_runtime/config/teleop_snowbot_left.json'),
                             '-p','model_root:='+str(root/'src/hardware/bindu_description/urdf'),
                             '-p','require_mode_selection:=true'])
+        if args.tool_display:
+            start('teleop_display',['-p','tool_config:='+str(config),
+                '-p','model_root:='+str(root/'src/hardware/bindu_description/urdf')])
+            def on_display(msg):
+                data=json.loads(msg.data)
+                state['display']=data
+                if not state['display_modes'] or state['display_modes'][-1]!=data['mode']:
+                    state['display_modes'].append(data['mode'])
+            node.create_subscription(String,ns+'/teleop/tool/display',on_display,
+                QoSProfile(depth=1,reliability=ReliabilityPolicy.BEST_EFFORT))
         if physics_model:
             node.create_subscription(SimulationFeedback,ns+'/simulation/feedback',
                 lambda m:state.update(physics=m),
@@ -339,6 +354,40 @@ def main():
                    and len(c.joint_names)==command_count for c in commands),commands
         assert any(max(abs(a-b) for a,b in zip(c.positions,commands[count-1].positions))>1e-5
                    for c in commands[count:]),'no arm response'
+        if args.tool_display:
+            until(node,lambda:state['display'] and state['display']['mode']=='FOLLOW' and
+                  state['display']['target'] is not None and state['display']['measured'] is not None)
+            assert state['display']['requested'] is not None
+            assert state['display']['frame']=='car_base_link'
+            assert state['display']['physical_gripper_confirmed'] is None
+            assert state['display']['grasp_applied']=='rigid'
+        if args.pause_resume:
+            pause_client=node.create_client(SetBool,ns+'/teleop/tool_pause')
+            assert pause_client.wait_for_service(timeout_sec=3.)
+            reply=wait(node,pause_client.call_async(SetBool.Request(data=True)))
+            assert reply.success,reply.message
+            until(node,lambda:state['tool_feedback'] and state['tool_feedback'].startswith('paused:'))
+            held_count=len(state['accepted'])
+            held_positions=dict(zip(state['execution'].joints.name,state['execution'].joints.position))
+            control['enabled']=False
+            held_until=time.monotonic()+.8
+            until(node,lambda:time.monotonic()>=held_until)
+            assert not goal_result.done(),'paused input loss ended the session'
+            assert len(state['accepted'])==held_count,'command accepted after confirmed pause'
+            actual=dict(zip(state['execution'].joints.name,state['execution'].joints.position))
+            assert max(abs(actual[n]-held_positions[n]) for n in controlled)<1e-5
+            assert not state['execution'].reference.name
+            if args.tool_display:
+                until(node,lambda:state['display'] and state['display']['mode']=='PAUSED')
+                assert state['display']['target'] is None
+                assert state['display']['measured'] is not None
+                assert state['display']['reason']=='STOP_CONFIRMED'
+                reply=wait(node,pause_client.call_async(SetBool.Request(data=True)))
+                assert reply.success  # Idempotent pause must keep the stop confirmation.
+            control['enabled']=True
+            reply=wait(node,pause_client.call_async(SetBool.Request(data=False)))
+            assert reply.success,reply.message
+            until(node,lambda:len(state['accepted'])>=held_count+3)
         axial_checked=False
         if args.axial_grasp:
             transitions=[(1.,'right_axial'),(0.,'rigid')]
@@ -371,6 +420,10 @@ def main():
         if args.drop_tool_input:
             control['enabled']=False
         else:
+            if args.pause_resume:
+                reply=wait(node,pause_client.call_async(SetBool.Request(data=True)))
+                assert reply.success
+                until(node,lambda:state['tool_feedback'].startswith('paused:'))
             assert wait(node,goal.cancel_goal_async()).goals_canceling
         ended=wait(node,goal_result,8.).result
         expected_end=('TOOL_INPUT_TIMEOUT' if args.tool_pose_input else 'VR_PAIR_TIMEOUT') if args.drop_tool_input else 'CANCELED'
@@ -446,7 +499,8 @@ def main():
                 until(node,lambda:state['execution'] and not state['execution'].lease_active and
                       not state['execution'].reference.name,6.)
                 active_switch_generation=switch.generation
-        result={'mode_generation':switch_result.generation,'accepted_commands':ended.accepted_commands,
+        result={'tool_display_checked':args.tool_display,'display_modes':state['display_modes'],
+                'pause_resume_checked':args.pause_resume,'mode_generation':switch_result.generation,'accepted_commands':ended.accepted_commands,
                 'cancel_code':ended.code,'last_execution':state['execution'].state,
                 'profile':str(profile),'tool':str(config),'simulation_only':True,
                 'input':'synthetic_vuer_websocket' if args.websocket_input else 'synthetic_ros',

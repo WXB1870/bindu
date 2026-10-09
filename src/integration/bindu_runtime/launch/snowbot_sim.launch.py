@@ -20,7 +20,10 @@ def assemble(context):
     namespace = LaunchConfiguration('namespace')
     common = {'profile': LaunchConfiguration('profile'), 'run_id': LaunchConfiguration('run_id')}
     nodes = []
+    description_enabled = LaunchConfiguration('description_enabled').perform(context).lower() == 'true'
     for name in ('execution', 'recorder', 'description_state'):
+        if name == 'description_state' and not description_enabled:
+            continue
         parameters = dict(common)
         if name == 'execution':
             parameters['device_backend'] = LaunchConfiguration('device_backend')
@@ -39,6 +42,7 @@ def assemble(context):
                           remappings=[('/tf', 'tf'), ('/tf_static', 'tf_static')]))
     nodes.append(Node(package='robot_state_publisher', executable='robot_state_publisher',
                       namespace=namespace, output='screen',
+                      condition=IfCondition(LaunchConfiguration('description_enabled')),
                       parameters=[{'robot_description': (description / 'snowbot_display.urdf').read_text(),
                                    'publish_frequency': 30.}],
                       remappings=[('/tf', 'tf'), ('/tf_static', 'tf_static')]))
@@ -64,6 +68,10 @@ def assemble(context):
                           'port': ParameterValue(LaunchConfiguration('port'), value_type=int),
                           'cert_file': ParameterValue(LaunchConfiguration('cert_file'), value_type=str),
                           'key_file': ParameterValue(LaunchConfiguration('key_file'), value_type=str)}]))
+    nodes.append(Node(package='bindu_runtime', executable='teleop_display', namespace=namespace,
+                      condition=IfCondition(LaunchConfiguration('tool_display_enabled')),
+                      parameters=[{**common, 'tool_config': LaunchConfiguration('bimanual_config'),
+                                   'model_root': str(description)}], output='screen'))
     return nodes
 
 
@@ -75,6 +83,7 @@ def generate_launch_description():
                 'bimanual_config': str(share / 'config/bimanual_snowbot_sim.json'),
                 'device_backend': 'kinematic', 'side': 'left', 'initialize_tool_pose': 'false',
                 'tool_input_source': 'vr',
+                'description_enabled': 'true', 'tool_display_enabled': 'false',
                 'vr_enabled': 'false', 'host': '127.0.0.1', 'port': '8012',
                 'cert_file': '', 'key_file': ''}
     return LaunchDescription([DeclareLaunchArgument(k, default_value=v)

@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "robot_launch": "snowbot_sim.launch.py",
+  "arguments": {
+    "namespace": "bindu_teleop",
+    "profile": "@runtime/config/snowbot_shovel_sim.json",
+    "bimanual_config": "@runtime/config/bimanual_snowbot_shovel.json",
+    "side": "left",
+    "tool_input_source": "tool_pose",
+    "device_backend": "kinematic",
+    "vr_enabled": false,
+    "description_enabled": false,
+    "tool_display_enabled": true,
+    "recording_mode": "compact"
+  }
+}

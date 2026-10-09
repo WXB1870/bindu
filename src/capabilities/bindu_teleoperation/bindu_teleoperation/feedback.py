@@ -88,3 +88,70 @@ def display_snapshot(snapshot, age):
         return {'mode': 'DISPLAY_STALE', 'reason': 'Display unavailable; check ROS observer',
                 'target': None, 'measured': None, 'error': None, 'task': '', 'side': 'left'}
     return snapshot
+
+
+class ToolFeedback(TeleopFeedback):
+    """Tool observer distinguishes software grasp constraints from physical jaws."""
+    def __init__(self, config):
+        super().__init__({**config, 'side': 'tool'})
+        self.reason = 'TOOL_SESSION_INACTIVE'
+        self.grasp_requested = self.grasp_applied = None
+
+    def event(self, kind, code, task, stamp):
+        if stamp < self.event_stamp:
+            return
+        if kind == 'BIMANUAL_STARTED':
+            self.task, self.active = task, True
+            self.mode, self.reason = 'CAPTURING', 'WAITING_FOR_GRASP'
+            self.target = None
+            self.grasp_requested = 'rigid'
+            self.grasp_applied = None
+        elif kind == 'BIMANUAL_GOAL_REJECTED' and not self.active:
+            self.mode, self.reason = 'REJECTED', code
+        elif not self.active or task not in ('', self.task):
+            return
+        elif kind in ('BIMANUAL_PAUSE_REQUESTED', 'BIMANUAL_PAUSED',
+                      'BIMANUAL_RESUME_REQUESTED', 'BIMANUAL_RESUMED'):
+            self.mode = {'BIMANUAL_PAUSE_REQUESTED': 'PAUSING', 'BIMANUAL_PAUSED': 'PAUSED',
+                         'BIMANUAL_RESUME_REQUESTED': 'WAITING_INPUT', 'BIMANUAL_RESUMED': 'CAPTURING'}[kind]
+            self.reason, self.target = code, None
+        elif kind == 'BIMANUAL_GRASP_REQUESTED':
+            self.grasp_requested = json.loads(code)['mode']
+            self.grasp_applied = None
+            self.mode, self.reason, self.target = 'CAPTURING', 'GRASP_SWITCH', None
+        elif kind == 'BIMANUAL_CAPTURED':
+            self.grasp_applied = json.loads(code)['grasp_mode']
+            self.grasp_requested = self.grasp_applied
+            self.mode, self.reason = 'FOLLOW', ''
+        elif kind == 'BIMANUAL_CLUTCH':
+            self.mode = 'PAUSED' if code == 'idle' else 'CAPTURING'
+            self.reason, self.target = 'CLUTCH_'+code.upper(), None
+        elif kind == 'BIMANUAL_QP_RESULT':
+            data = json.loads(code)
+            if self.mode != 'FOLLOW':
+                return
+            self.target, self.target_stamp = data.get('target'), data['input_stamp']
+        elif kind == 'BIMANUAL_ENDED':
+            self.active = False
+            self.mode, self.reason = 'ENDED', json.loads(code)['code']
+            self.target, self.grasp_applied = None, None
+        else:
+            return
+        self.event_stamp = stamp
+
+    def snapshot(self, now, measured, measured_stamp, input_stamp, input_valid, feedback_error=''):
+        # An explicit pause intentionally allows the source to stop streaming.
+        paused = self.mode in ('PAUSED', 'PAUSING', 'WAITING_INPUT')
+        view = super().snapshot(now, measured, measured_stamp,
+                               now if paused else input_stamp, True if paused else input_valid,
+                               feedback_error)
+        if self.active and view['measured'] is None:
+            view['reason'] = feedback_error or 'BIMANUAL_FEEDBACK_STALE'
+        if self.mode != 'FOLLOW' and view['measured'] is not None:
+            view['reason'] = self.reason
+        view['reason'] = {'VR_TRACKING_INVALID': 'TOOL_INPUT_INVALID',
+                          'VR_INPUT_TIMEOUT': 'TOOL_INPUT_TIMEOUT'}.get(view['reason'],view['reason'])
+        view.update(frame=self.cfg.get('input_frame', 'robot_base'),
+                    grasp_requested=self.grasp_requested, grasp_applied=self.grasp_applied,
+                    physical_gripper_confirmed=None)
+        return view

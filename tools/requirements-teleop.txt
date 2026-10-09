@@ -1,6 +1,8 @@
-# Optional VR/IK target: Ubuntu 24.04 / CPython 3.12 x86_64; validation scope in README.
+# VR/IK dependencies: CPython 3.10 (Humble) or 3.12 (Jazzy).
+# Python 3.10 resolution is checked separately; target ROS/hardware still needs validation.
 # Keep isolated from the system ROS Python environment; see README.
-numpy==2.3.5
+numpy==2.2.6; python_version < "3.11"
+numpy==2.3.5; python_version >= "3.11"
 pin==3.9.0
 casadi==3.7.2
 vuer==0.0.60

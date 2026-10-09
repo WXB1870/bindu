@@ -8,9 +8,9 @@ from rclpy.action import ActionServer, GoalResponse, CancelResponse
 from rclpy.callback_groups import ReentrantCallbackGroup, MutuallyExclusiveCallbackGroup
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
 from rclpy.task import Future
-from std_srvs.srv import Trigger
+from std_srvs.srv import Trigger, SetBool
 from bindu_contracts.teleoperation import VRFrame, ToolPoseFrame
-from bindu_teleoperation.bimanual_session import BimanualSession, ToolPoseSession, AcceptedReference
+from bindu_teleoperation.bimanual_session import BimanualSession, ToolPoseSession, AcceptedReference, ToolPause
 from bindu_kinematics.bimanual_worker import BimanualWorker
 from bindu_interfaces.action import TeleopSession as TeleopAction
 from bindu_interfaces.msg import VRInput, ExecutionState, RecorderHealth, MotionCommand, TeleopModeState, ToolPoseInput
@@ -52,6 +52,7 @@ class BimanualToolNode(RuntimeNode):
         self.frames={}
         self.state=self.health=self.mode_state=None
         self.busy=False
+        self.pause_control=ToolPause()
         group=ReentrantCallbackGroup()
         self.lease_client=self.create_client(Lease,'execution/lease',callback_group=group)
         self.submit_client=self.create_client(SubmitMotion,'execution/submit',callback_group=group)
@@ -70,9 +71,26 @@ class BimanualToolNode(RuntimeNode):
         self.waiters=set()
         self.create_timer(.005,self.poll_worker)
         self.create_service(Trigger,'teleop/tool_ready',self.ready)
+        self.create_service(SetBool,'teleop/tool_pause',self.request_pause)
         self.server=ActionServer(self,TeleopAction,'teleop/tool_session',
             execute_callback=self.execute,goal_callback=self.goal,
             cancel_callback=lambda _:CancelResponse.ACCEPT,callback_group=group)
+
+    def request_pause(self,request,reply):
+        if not self.busy:
+            reply.success,reply.message=False,'TOOL_SESSION_INACTIVE'
+            return reply
+        try:
+            self.pause_control.request(request.data,self.now())
+        except ValueError as exc:
+            reply.success,reply.message=False,str(exc)
+            return reply
+        reply.success=True
+        reply.message='PAUSE_REQUESTED' if request.data else 'RESUME_REQUESTED'
+        event = ('BIMANUAL_PAUSED' if self.pause_control.phase == 'paused' else
+                 'BIMANUAL_PAUSE_REQUESTED' if request.data else 'BIMANUAL_RESUME_REQUESTED')
+        self.event(event, 'STOP_CONFIRMED' if event == 'BIMANUAL_PAUSED' else self.pause_control.phase)
+        return reply
 
     def on_health(self,msg):
         if msg.run_id == self.run_id: self.health=msg
@@ -129,7 +147,7 @@ class BimanualToolNode(RuntimeNode):
         reply.success,reply.message=not bool(reason),reason or 'BIMANUAL_READY'
         return reply
 
-    def check(self):
+    def check(self, require_input=True):
         now=self.now()
         m=self.mode_state
         if (m is None or m.profile_hash != self.profile.digest or
@@ -144,6 +162,12 @@ class BimanualToolNode(RuntimeNode):
             raise RuntimeError('BIMANUAL_FEEDBACK_STALE')
         if self.health is None or not self.health.ready or not 0 <= now-seconds(self.health.stamp)<.75:
             raise RuntimeError('RECORDER_UNAVAILABLE')
+        if not require_input:
+            if self.tool_frame is not None and self.tool_frame.stop and self.input_source == 'tool_pose':
+                raise RuntimeError('TOOL_INPUT_STOP')
+            if self.input_source == 'vr' and any(f.stop for f in self.frames.values()):
+                raise RuntimeError('VR_STOP')
+            return
         if self.input_source == 'tool_pose':
             f=self.tool_frame
             if (f is None or not f.valid or f.stop or f.stamp<=seconds(m.changed_at) or
@@ -164,6 +188,7 @@ class BimanualToolNode(RuntimeNode):
                 not all(c.service_is_ready() for c in
                         (self.lease_client,self.submit_client,self.control_client))):
             return GoalResponse.REJECT
+        self.pause_control=ToolPause()
         self.busy=True
         return GoalResponse.ACCEPT
 
@@ -232,6 +257,7 @@ class BimanualToolNode(RuntimeNode):
         work_stamp=0.
         work_sampled_at=0.
         work_positions=None
+        work_target=None
         work_dt=None
         pending_reference=None
         last_mode='idle'
@@ -266,18 +292,9 @@ class BimanualToolNode(RuntimeNode):
                 now=time.monotonic()
                 if goal.is_cancel_requested: canceled=True;break
                 if now-started >= goal.request.duration: break
-                self.check()
+                self.check(require_input=self.pause_control.phase=='follow')
                 if self.mode_state.generation != session.generation:
                     raise RuntimeError('BIMANUAL_MODE_GENERATION_CHANGED')
-                if self.input_source == 'tool_pose':
-                    session.ingest(self.tool_frame,self.now())
-                else:
-                    left,right=self.frames['left'],self.frames['right']
-                    if left.source_id != right.source_id or left.seq != right.seq:
-                        # ROS delivers the two sides as separate messages.
-                        await self.pause()
-                        continue
-                    session.ingest(left,right,self.now())
                 if pending is not None:
                     if pending.done():
                         reply=pending.result()
@@ -296,6 +313,47 @@ class BimanualToolNode(RuntimeNode):
                     renewal=self.lease_client.call_async(Lease.Request(operation='renew',
                         lease_id=lease.lease_id,epoch=lease.epoch))
                     renewal_at,next_renewal=now,now+.3
+                if self.pause_control.phase == 'pausing':
+                    if pending is not None:
+                        reply=await self.wait(pending)
+                        if not reply.accepted: raise RuntimeError(reply.code)
+                        accepted+=1
+                        pending=None
+                    if not await self.stop(lease):
+                        raise RuntimeError('BIMANUAL_PAUSE_STOP_UNCONFIRMED')
+                    worker_token+=1
+                    self.worker_result=None
+                    awaiting=''
+                    reference.reset()
+                    pending_reference=None
+                    session.reanchor()
+                    self.pause_control.confirm_stopped()
+                    self.event('BIMANUAL_PAUSED','STOP_CONFIRMED',goal.request.task_id)
+                if self.pause_control.phase == 'paused':
+                    goal.publish_feedback(TeleopAction.Feedback(session_id=session.identity,
+                        mode='paused:'+session.grasp_mode,accepted_commands=accepted))
+                    await self.pause()
+                    continue
+                if self.pause_control.phase == 'waiting_input':
+                    frame_stamp=(self.tool_frame.stamp if self.tool_frame else float('-inf')) if self.input_source=='tool_pose' else min(
+                        (f.stamp for f in self.frames.values()),default=float('-inf'))
+                    frame_seq=(self.tool_frame.seq if self.tool_frame else -1) if self.input_source=='tool_pose' else min(
+                        (f.seq for f in self.frames.values()),default=-1)
+                    if frame_seq <= session.seq or not self.pause_control.accepts(frame_stamp):
+                        if self.now()-self.pause_control.resume_after > self.cfg['input_max_age']:
+                            raise RuntimeError('TOOL_RESUME_INPUT_TIMEOUT')
+                        await self.pause()
+                        continue
+                    self.check()
+                    self.event('BIMANUAL_RESUMED','FRESH_INPUT',goal.request.task_id)
+                if self.input_source == 'tool_pose':
+                    session.ingest(self.tool_frame,self.now())
+                else:
+                    left,right=self.frames['left'],self.frames['right']
+                    if left.source_id != right.source_id or left.seq != right.seq:
+                        await self.pause()
+                        continue
+                    session.ingest(left,right,self.now())
                 if session.grasp_generation != last_grasp_generation:
                     # Finish accepted submissions, stop physically, then fence
                     # every old worker result and rebuild both VR/QP anchors.
@@ -366,7 +424,8 @@ class BimanualToolNode(RuntimeNode):
                                 pending_at=now
                                 self.event('BIMANUAL_QP_RESULT',json.dumps({'solve_us':metrics[0],
                                     'relative_error':metrics[1],'recovery_scale':metrics[2],
-                                    'input_stamp':work_stamp,'integration_dt':work_dt}),
+                                    'input_stamp':work_stamp,'integration_dt':work_dt,
+                                    'target':work_target}),
                                     goal.request.task_id,command.command_id)
                         awaiting=''
                 if (session.mode=='follow' and session.anchor_input is not None and
@@ -383,6 +442,7 @@ class BimanualToolNode(RuntimeNode):
                         work_seq,work_stamp=session.seq,session.stamp
                         work_sampled_at,work_dt=sampled_at,dt
                         work_positions=tuple(measured[n] for n in self.names)
+                        work_target=None if session.target is None else session.target.ravel().tolist()
                 goal.publish_feedback(TeleopAction.Feedback(session_id=session.identity,
                     mode=(('capturing' if session.mode=='follow' and session.anchor_tool is None else session.mode)
                           +(':'+session.grasp_mode if session.axial else '')),
