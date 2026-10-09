@@ -133,7 +133,9 @@ public:
   void setPosturePolicy(const Eigen::VectorXd &reference,
                         const Eigen::VectorXd &lower, const Eigen::VectorXd &upper);
   SolveResult solve(const pinocchio::SE3 &desired_tool, double dt,
-                    const Eigen::VectorXd &reference);
+                    const Eigen::VectorXd &reference,
+                    const Eigen::Matrix<double, 6, 1> &world_velocity = Eigen::Matrix<double, 6, 1>::Zero(),
+                    const pinocchio::SE3 *measured_tool = nullptr);
   const Config &config() const { return config_; }
 
 private:

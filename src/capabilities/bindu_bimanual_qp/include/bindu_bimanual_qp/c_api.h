@@ -68,11 +68,18 @@ int bq_posture_policy(void *handle, const double *reference,
 /* reference/out follow active-name order. reference is the last accepted
  * command (capture feedback for the first step), never an unaccepted result.
  * dt is the elapsed reference sampling interval, 0 < dt <= 0.1 s. The caller
- * owns acceptance/time/reset state. Kinematics always use measured q.
+ * owns acceptance/time/reset state. Kinematics use the supplied q; tracking
+ * callers may supply accepted-reference q and a separate measured tool pose.
  * metrics has 3 doubles: QP solve microseconds, relative error, recovery scale.
  * Outputs are only valid on success; no C function sends device commands. */
 int bq_solve(void *handle, const double *q, int nq, const double *reference, int n,
              const double *target, double dt, double *out, double *metrics);
+/* Additive v1 entry: optional 6-vector [world linear m/s, world angular rad/s]
+ * at the tool origin, and optional measured tool pose for feedback error.
+ * Both NULL preserve the old pose-only solve exactly. */
+int bq_solve_tracking(void *handle, const double *q, int nq, const double *reference, int n,
+                        const double *target, const double *world_velocity, const double *measured_tool, double dt,
+                        double *out, double *metrics);
 int bq_tool_pose(void *handle, const double *q, int nq, double *out);
 int bq_relative_pose(void *handle, const double *q, int nq, double *out);
 

@@ -221,12 +221,20 @@ int bq_posture_policy(void *ptr, const double *reference, const double *lower,
 }
 int bq_solve(void *ptr, const double *q, int nq, const double *reference, int n,
              const double *target, double dt, double *out, double *metrics) {
+  return bq_solve_tracking(ptr,q,nq,reference,n,target,nullptr,nullptr,dt,out,metrics);
+}
+int bq_solve_tracking(void *ptr, const double *q, int nq, const double *reference, int n,
+                        const double *target, const double *world_velocity, const double *measured_tool, double dt,
+                        double *out, double *metrics) {
   return checked(ptr, [&](Handle &h) {
     if (!h.qp || !reference || !out || !metrics || n != h.robot->variables())
       throw std::invalid_argument("solver not captured or invalid output/reference layout");
     update(h,q,nq);
     const Eigen::Map<const Eigen::VectorXd> ref(reference,n);
-    auto solved = h.qp->solve(pose(target),dt,ref);
+    Eigen::Matrix<double, 6, 1> velocity = Eigen::Matrix<double, 6, 1>::Zero();
+    if (world_velocity) velocity = Eigen::Map<const Eigen::Matrix<double, 6, 1>>(world_velocity);
+    const auto measured = measured_tool ? pose(measured_tool) : pinocchio::SE3::Identity();
+    auto solved = h.qp->solve(pose(target),dt,ref,velocity,measured_tool ? &measured : nullptr);
     if (!solved.ok) throw std::runtime_error(solved.reason);
     // Canonicalize only sub-nanoradian/metre roundoff of captured/accepted
     // positions. Core validation has already rejected actual hard violations.

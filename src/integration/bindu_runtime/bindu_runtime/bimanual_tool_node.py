@@ -437,7 +437,8 @@ class BimanualToolNode(RuntimeNode):
                     sampled_at=self.now()
                     baseline,dt=reference.step(sampled_at) if operation=='solve' else (None,None)
                     if self.worker.submit(operation,worker_token,measured,session.target,
-                                          reference=baseline,dt=dt,grasp_mode=session.grasp_mode):
+                                          reference=baseline,dt=dt,grasp_mode=session.grasp_mode,
+                                          target_stamp=session.stamp):
                         awaiting=operation
                         work_seq,work_stamp=session.seq,session.stamp
                         work_sampled_at,work_dt=sampled_at,dt

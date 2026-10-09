@@ -182,7 +182,7 @@ def run_input_stream(solver, profile, config, initial, inputs):
                                    'speed_rad_s':float(max(map(abs,v)))})
                 else:
                     baseline,interval=reference.step(t)
-                    positions,metrics=solver.solve(measured,session.target,reference=baseline,dt=interval)
+                    positions,metrics=solver.solve(measured,session.target,reference=baseline,dt=interval,target_stamp=latest.stamp)
                     executor.submit(Motion(str(step),lease,epoch,profile.digest,'shovel_input',str(step),
                         'joint_target','',t,config['command_max_age'],names=solver.names,
                         positions=positions,schema_version=2,resource_groups=solver.groups),t)
@@ -252,6 +252,7 @@ def generate(config_path, description, output):
         grip_offset = np.r_[recipe['grip_offset_m'], 1.]
         samples, dense_samples = [], []
         max_speed, max_relative, max_tracking, max_solve = 0., 0., 0., 0.
+        max_tracking_angle = 0.
         start_grips = None
         max_grip_error = 0.
         min_margin = float('inf')
@@ -343,6 +344,7 @@ def generate(config_path, description, output):
                 start_grips = np.array(grips)
             max_grip_error = max(max_grip_error, float(np.max(np.linalg.norm(grips-start_grips, axis=1))))
             max_tracking = max(max_tracking, float(np.linalg.norm(tool[:3, 3]-desired[:3, 3])))
+            max_tracking_angle = max(max_tracking_angle, float(Rotation.from_matrix(tool[:3,:3].T @ desired[:3,:3]).magnitude()))
             sample = {'t': round(seconds, 6), 'q': dict(q), 'tool': tool.tolist(),
                       'grasp_mode': mode, 'right_grip_roll_rad': roll, 'right_axis_error_rad': axis_error}
             dense_samples.append(sample)
@@ -372,6 +374,9 @@ def generate(config_path, description, output):
         clearance = min(float((np.array(s['tool']) @ np.r_[p, 1.])[2])-ground_z
                         for s in dense_samples for p in corners)
         ready_clearance = min(float((home @ np.r_[p, 1.])[2])-ground_z for p in corners)
+        if (max_tracking > gate['max_target_lag_m'] or
+                max_tracking_angle > gate['max_target_rotation_error_rad']):
+            raise ValueError(f'SHOVEL_TRACKING_ERROR position={max_tracking:.6g} rotation={max_tracking_angle:.6g}')
         if (push < gate['min_push_m'] or lift < gate['min_lift_m'] or
                 return_error > gate['max_return_error_m'] or
                 max_grip_error > gate['max_grip_error_m'] or
@@ -429,6 +434,7 @@ def generate(config_path, description, output):
                       'right_grip_roll_range_rad': [min(s['right_grip_roll_rad'] for s in dense_samples),
                                                    max(s['right_grip_roll_rad'] for s in dense_samples)],
                       'max_target_lag_m': max_tracking,
+                      'max_target_rotation_error_rad': max_tracking_angle,
                       'max_qp_solve_us': max_solve,
                       'joint_ranges_rad': ranges}
     finally:

@@ -133,20 +133,21 @@ Curves fit_target(const JointLimits& limits,const JointState& state,const std::v
                  double start,double horizon,double stop_timeout) {
     validate(limits,state);validate(rest(goal),limits.size());
     check(std::isfinite(horizon)&&horizon>0.,"INVALID_TRANSITION_HORIZON");
-    bool reverse=false;double distance=0.;
+    double distance=0.;
     for(size_t i=0;i<goal.size();++i) {
         check(goal[i]>=limits[i].lower&&goal[i]<=limits[i].upper,"JOINT_LIMIT");
-        reverse|=state.v[i]*(goal[i]-state.q[i])<-1e-8;
         distance=std::max(distance,std::abs(goal[i]-state.q[i])/limits[i].velocity);
     }
-    if(!reverse) {
+    {
+        // A single axis reversing does not require braking the entire group.
+        // First try a C2 continuation; analytic limits certify any overshoot.
         double duration=std::max(.02,distance);
         for(int attempt=0;attempt<70&&duration<=horizon;++attempt,duration*=1.12) {
             auto c=std::make_shared<Curve>(start,duration,state,rest(goal));
             if(c->valid(limits)) return {c};
         }
     }
-    if(reverse||moving(state)) {
+    if(moving(state)) {
         auto prefix=fit_stop(limits,state,start,stop_timeout);
         const double end=prefix.back()->end();auto stopped=sample(prefix,end);
         // Normalize certified numerical endpoint residuals before recursion.

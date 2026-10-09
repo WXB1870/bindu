@@ -61,6 +61,17 @@ class Interpolation(unittest.TestCase):
         self.assertIsNone(e.reference)
         self.assertTrue(any(event.code=='COMMAND_TIMEOUT' for event in e.events))
 
+    def test_small_axis_reversal_does_not_stop_other_moving_axis(self):
+        p=replace(self.p,groups={'arm':['a','b']},limits={'a':[-1.,1.],'b':[-1.,1.]})
+        initial=State((0.,0.),(.5,.001),(0.,0.))
+        path=fit_target(p,('a','b'),initial,(.3,-.002),0.)
+        self.assertTrue(all(c.valid(p,('a','b')) for c in path.curves))
+        for i in range(201):
+            state=path.sample(path.end*i/200)
+            if state.q[0]<.15:
+                self.assertGreater(state.v[0],.1)
+        self.assertAlmostEqual(path.sample(path.end).q[1],-.002)
+
     def test_one_polynomial_derivatives(self):
         path = fit_target(self.p, ('a',), State((.1,),(.15,),(-.4,)), (.7,), 0.)
         h = 1e-5

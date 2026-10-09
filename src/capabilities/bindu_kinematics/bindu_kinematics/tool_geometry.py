@@ -197,6 +197,7 @@ def make_collision_checker(urdf, recipe, conservative_convex=False):
     if not set(contacts).issubset(names):
         raise ValueError('UNKNOWN_SHAFT_CONTACT_LINK')
     segments = {}
+    segment_cache = {}
     for name in set(names):
         spans = [tuple(ends)]
         if name in contacts:
@@ -207,9 +208,13 @@ def make_collision_checker(urdf, recipe, conservative_convex=False):
             # Cylinder cut faces bound each allowed contact band precisely;
             # unlike skipping a hand mesh this still checks the rest of the rod.
             spans = [(ends[0], center-half_length), (center+half_length, ends[1])]
-        segments[name] = [(fcl.Cylinder(radius, b-a) if name in contacts else fcl.Capsule(radius, b-a),
-                           np.array(recipe['left_grip_in_tool_m'])+shaft_axis*(a+b)/2)
-                          for a, b in spans]
+        segments[name] = []
+        for a, b in spans:
+            key = (a, b, name in contacts)
+            if key not in segment_cache:
+                segment_cache[key] = (fcl.Cylinder(radius, b-a) if name in contacts else fcl.Capsule(radius, b-a),
+                    np.array(recipe['left_grip_in_tool_m'])+shaft_axis*(a+b)/2)
+            segments[name].append(segment_cache[key])
     pan = fcl.Box(*recipe['pan_size_m'])
     bin_parts = [(name, fcl.Box(*size), fcl.Transform3s(np.eye(3), np.array(center)))
                  for name, size, center in bin_boxes(recipe)]
@@ -229,6 +234,19 @@ def make_collision_checker(urdf, recipe, conservative_convex=False):
             bounds[key] = (shape, (low+high)/2, (high-low)/2)
         _, center, half = bounds[key]
         return rotation @ center+translation, np.abs(rotation) @ half
+    # Geometry is immutable: share identical shaft pieces and precompute query
+    # layout. Only transforms and conservative bounds change with each pose.
+    tool_parts = [('PAN', pan, np.asarray(recipe['pan_center_m']))] + [
+        ('SHAFT', shape, center) for shape, center in segment_cache.values()]
+    tool_ids = {id(shape): i for i, (_, shape, _) in enumerate(tool_parts)}
+    body_queries = [(i, j) for i, name in enumerate(names)
+                    for j in [0]+[tool_ids[id(shape)] for shape, _ in segments[name]]]
+    body_indices, part_indices = np.array(body_queries).T
+    corners_local = pan_corners(recipe)
+    shaft_points = np.array(recipe['left_grip_in_tool_m']) + ends[:, None]*shaft_axis
+    bin_bounds = [world_bounds(box, pose.getRotation(), pose.getTranslation())
+                  for _, box, pose in bin_parts]
+
     def check(samples, collect_failures=False):
         if not samples:
             raise ValueError('EMPTY_COLLISION_SAMPLES')
@@ -262,8 +280,7 @@ def make_collision_checker(urdf, recipe, conservative_convex=False):
                 if (set(support_heights) != set(ground['support_links']) or
                         any(abs(height-ground_z) > support_tolerance for height in support_heights.values())):
                     raise ValueError('GROUND_SUPPORT_MISMATCH')
-            corners = (tool @ pan_corners(recipe).T).T
-            shaft_points = np.array(recipe['left_grip_in_tool_m']) + ends[:,None]*shaft_axis
+            corners = (tool @ corners_local.T).T
             # The real/visual shaft is a flat-ended cylinder. A capsule's
             # artificial end sphere would extend below the shovel attachment.
             axis_z = float((tool[:3,:3] @ shaft_axis)[2])
@@ -276,45 +293,55 @@ def make_collision_checker(urdf, recipe, conservative_convex=False):
             bodies = [(name,shape,fcl.Transform3s(place.rotation,place.translation),
                        world_bounds(shape,place.rotation,place.translation))
                       for name,shape,place in zip(names,query_shapes,geometry_data.oMg)]
-            pan_bounds = world_bounds(pan,pan_pose.getRotation(),pan_pose.getTranslation())
-            for name, body_shape, body_pose, (body_center, body_half) in bodies:
-                parts = [('PAN', pan, pan_pose)]
-                parts += [('SHAFT', shape, fcl.Transform3s(tool[:3, :3] @ rotation,
-                           tool[:3, 3]+tool[:3, :3] @ center)) for shape, center in segments[name]]
-                for part, shape, pose in parts:
-                    part_center, part_half = pan_bounds if part == 'PAN' else world_bounds(shape, pose.getRotation(), pose.getTranslation())
-                    lower_bound = np.linalg.norm(np.maximum(np.abs(part_center-body_center)-part_half-body_half, 0.))-1e-9
-                    if lower_bound >= max(clearance_limit, minimum):
-                        bounded_queries += 1
-                        continue
-                    exact_queries += 1
-                    result = fcl.DistanceResult()
-                    distance = float(fcl.distance(shape, pose, body_shape, body_pose, distance_request, result))
-                    if not np.isfinite(distance):
-                        raise ValueError('NONFINITE_COLLISION_DISTANCE')
-                    if distance < minimum:
-                        minimum = distance
-                        worst = {'part': part, 'link': name, 't': sample['t']}
-                    if distance < clearance_limit and failure is None:
-                        failure = f'{part}_CLEARANCE: {name} distance={distance:.6g}'
+            parts = [(part, shape, pan_pose if part == 'PAN' else fcl.Transform3s(
+                        tool[:3, :3] @ rotation, tool[:3, 3]+tool[:3, :3] @ center))
+                     for part, shape, center in tool_parts]
+            part_bounds = [world_bounds(shape, pose.getRotation(), pose.getTranslation())
+                           for _, shape, pose in parts]
+            part_centers, part_halves = np.asarray(part_bounds).transpose(1, 0, 2)
+            body_centers, body_halves = np.asarray([body[3] for body in bodies]).transpose(1, 0, 2)
+            lower_bounds = np.linalg.norm(np.maximum(
+                np.abs(part_centers[part_indices]-body_centers[body_indices])-
+                part_halves[part_indices]-body_halves[body_indices], 0.), axis=1)-1e-9
+            for (body_index, part_index), lower_bound in zip(body_queries, lower_bounds):
+                if lower_bound >= max(clearance_limit, minimum):
+                    bounded_queries += 1
+                    continue
+                exact_queries += 1
+                name, body_shape, body_pose, _ = bodies[body_index]
+                part, shape, pose = parts[part_index]
+                result = fcl.DistanceResult()
+                distance = float(fcl.distance(shape, pose, body_shape, body_pose, distance_request, result))
+                if not np.isfinite(distance):
+                    raise ValueError('NONFINITE_COLLISION_DISTANCE')
+                if distance < minimum:
+                    minimum = distance
+                    worst = {'part': part, 'link': name, 't': sample['t']}
+                if distance < clearance_limit and failure is None:
+                    failure = f'{part}_CLEARANCE: {name} distance={distance:.6g}'
+            pan_bounds = part_bounds[0]
             # No grip exemptions apply to the receiving bin. Check every body mesh,
             # the full shaft and the pan against its four walls and floor.
             shaft_pose = fcl.Transform3s(tool[:3,:3] @ rotation,tool[:3,3]+tool[:3,:3] @ shaft_center)
             scene_parts = bodies + [('PAN',pan,pan_pose,pan_bounds),
                 ('SHAFT',full_shaft,shaft_pose,world_bounds(full_shaft,shaft_pose.getRotation(),shaft_pose.getTranslation()))]
-            for wall,box,box_pose in bin_parts:
-                c1,h1 = world_bounds(box,box_pose.getRotation(),box_pose.getTranslation())
-                for name,shape,pose,(c2,h2) in scene_parts:
-                    bound = np.linalg.norm(np.maximum(np.abs(c1-c2)-h1-h2,0.))-1e-9
-                    if bound >= max(bin_limit,bin_minimum):
-                        continue
-                    distance = float(fcl.distance(shape,pose,box,box_pose,distance_request,fcl.DistanceResult()))
-                    if not np.isfinite(distance):
-                        raise ValueError('NONFINITE_BIN_DISTANCE')
-                    if distance < bin_minimum:
-                        bin_minimum,bin_worst = distance, {'wall':wall,'part':name,'t':sample['t']}
-                    if distance < bin_limit and failure is None:
-                        failure = f'BIN_CLEARANCE: {wall} / {name} distance={distance:.6g}'
+            if bin_parts:
+                scene_centers, scene_halves = np.asarray([part[3] for part in scene_parts]).transpose(1, 0, 2)
+                wall_centers, wall_halves = np.asarray(bin_bounds).transpose(1, 0, 2)
+                bin_lower_bounds = np.linalg.norm(np.maximum(
+                    np.abs(wall_centers[:, None]-scene_centers)-
+                    wall_halves[:, None]-scene_halves, 0.), axis=2)-1e-9
+                for (wall, box, box_pose), lower_bounds in zip(bin_parts, bin_lower_bounds):
+                    for (name, shape, pose, _), bound in zip(scene_parts, lower_bounds):
+                        if bound >= max(bin_limit, bin_minimum):
+                            continue
+                        distance = float(fcl.distance(shape,pose,box,box_pose,distance_request,fcl.DistanceResult()))
+                        if not np.isfinite(distance):
+                            raise ValueError('NONFINITE_BIN_DISTANCE')
+                        if distance < bin_minimum:
+                            bin_minimum,bin_worst = distance, {'wall':wall,'part':name,'t':sample['t']}
+                        if distance < bin_limit and failure is None:
+                            failure = f'BIN_CLEARANCE: {wall} / {name} distance={distance:.6g}'
             failure = failure or ('TOOL_BELOW_GROUND' if ground_failure else None)
             if failure:
                 if not collect_failures:

@@ -70,6 +70,55 @@ def websocket_pair(port,control,stop,errors):
     except Exception as exc: errors.append(str(exc))
 
 
+def check_tool_trace(rows, inputs, config, description, output):
+    """Align measured FK with the latest published request, then check all CAD poses."""
+    import pinocchio as pin
+    from bisect import bisect_right
+    from bindu_kinematics.tool_geometry import collision_check
+    if not rows or not inputs:
+        raise ValueError('EMPTY_TOOL_TRACKING_TRACE')
+    stamps=[p['stamp'] for p in inputs]
+    if not all(np.isfinite(stamps)) or any(b<=a for a,b in zip(stamps,stamps[1:])):
+        raise ValueError('INVALID_TOOL_INPUT_TIMESTAMPS')
+    model=pin.buildModelFromUrdf(str(config['urdf']));data=model.createData()
+    frame=model.getFrameId(config['left_frame']);mount=np.array(config['left_to_tool']).reshape(4,4)
+    required=set(model.names[1:])
+    dense=[];errors=[];previous=float('-inf')
+    for row in rows:
+        stamp=row['stamp']
+        if stamp==previous:continue
+        if not np.isfinite(stamp) or stamp<previous:raise ValueError('INVALID_TOOL_FEEDBACK_TIME')
+        previous=stamp
+        if set(row['positions']) != required:raise ValueError('TOOL_FEEDBACK_JOINT_LAYOUT')
+        q=pin.neutral(model)
+        for name,value in row['positions'].items():q[model.joints[model.getJointId(name)].idx_q]=value
+        if not np.isfinite(q).all():raise ValueError('NONFINITE_TOOL_FEEDBACK')
+        pin.framesForwardKinematics(model,data,q)
+        tool=data.oMf[frame].homogeneous @ mount
+        dense.append({'t':stamp,'q':row['positions'],'tool':tool.tolist()})
+        index=bisect_right(stamps,stamp)-1
+        if index<0:continue
+        target=np.array(inputs[index]['pose']).reshape(4,4)
+        if not np.isfinite(target).all():raise ValueError('NONFINITE_TOOL_REQUEST')
+        errors.append({'stamp':stamp,'input_stamp':stamps[index],
+                       'position_m':float(np.linalg.norm(tool[:3,3]-target[:3,3])),
+                       'rotation_rad':float(np.linalg.norm(pin.log3(tool[:3,:3].T @ target[:3,:3])))})
+    if not errors:raise ValueError('EMPTY_TOOL_TRACKING_MATCHES')
+    limits=config['demo']['acceptance']
+    result={'samples':len(errors),'alignment':'latest input stamp <= feedback stamp; no time shift',
+            'input_max_gap_s':max((b-a for a,b in zip(stamps,stamps[1:])),default=0.),
+            'max_position_m':max(e['position_m'] for e in errors),
+            'max_rotation_rad':max(e['rotation_rad'] for e in errors)}
+    (output/'tracking_trace.json').write_text(json.dumps(errors)+'\n')
+    (output/'measured_motion.json').write_text(json.dumps(dense)+'\n')
+    if result['max_position_m']>limits['max_target_lag_m'] or result['max_rotation_rad']>limits['max_target_rotation_error_rad']:
+        raise ValueError('TOOL_TRACKING_ERROR:'+json.dumps(result))
+    recipe=dict(config['demo'])
+    recipe['left_grip_in_tool_m']=(np.linalg.inv(mount) @ np.r_[recipe['grip_offset_m'],1.])[:3].tolist()
+    result['geometry']=collision_check(description/recipe['display_urdf'],dense,recipe)
+    return result
+
+
 def main():
     parser=argparse.ArgumentParser()
     parser.add_argument('--output',type=Path,default=Path('/tmp/bindu-bimanual-check'))
@@ -172,7 +221,7 @@ def main():
     source_thread=None
     peer=None; peer_stop=threading.Event(); peer_errors=[]
     state={'execution':None,'mode':None,'accepted':[],'events':[],'physics':None,'trace':[],
-           'tool_feedback':None,'display':None,'display_modes':[]}
+           'tool_feedback':None,'display':None,'display_modes':[],'tool_inputs':[]}
     control={'grip':0.,'trigger':0.,'delta':0.,'enabled':True,'seq':0,'left_clutch_seq':0}
     source_timing={'last':None,'max_gap_s':0.}
     try:
@@ -261,6 +310,9 @@ def main():
                     tight=grasp_mode_at(recipe,elapsed)=='rigid'
                 tool_input.publish(ToolPoseInput(stamp=now,source_id='synthetic_tool',seq=control['seq'],
                     frame_id=tool_cfg['input_frame'],pose=pose.ravel().tolist(),tight=tight,valid=True))
+                state['tool_inputs'].append({'stamp':now.sec+now.nanosec*1e-9,'seq':control['seq'],
+                    'pose':pose.ravel().tolist(),'tight':tight,
+                    'cycle_time':elapsed if control['cycle_started'] is not None else None})
             if args.shovel_cycle: return  # No paired VR/grip/clutch inputs in this acceptance.
             for side,x in (('left',0.),('right',.3)):
                 pose=np.eye(4);pose[0,3]=x+control['delta']
@@ -341,9 +393,13 @@ def main():
             ended=wait(node,goal_result,8.).result
             assert ended.code=='TOOL_INPUT_TIMEOUT',ended
             until(node,lambda:not state['execution'].lease_active and not state['execution'].reference.name,6.)
-            result={'status':'passed','input':'ToolPoseInput','scope':'production ROS, QP, executor, ideal simulated joints',
+            # Freeze motion-period timing before the CPU-heavy offline CAD audit.
+            motion_source_timing=dict(source_timing)
+            tracking=check_tool_trace(state['trace'],state['tool_inputs'],tool_cfg,
+                                      root/'src/hardware/bindu_description/urdf',output)
+            result={'status':'passed','tracking':tracking,'input':'ToolPoseInput','scope':'production ROS, QP, executor, ideal simulated joints',
                     'code':ended.code,'accepted_commands':ended.accepted_commands,'grasp_transitions':transitions,
-                    'source_timing':source_timing,'dynamic_contact_validated':False,'paired_vr_frames_published':False}
+                    'source_timing':motion_source_timing,'dynamic_contact_validated':False,'paired_vr_frames_published':False}
             (output/'result.json').write_text(json.dumps(result,indent=2)+'\n')
             print(json.dumps(result));return
         count=len(state['accepted'])
@@ -525,6 +581,7 @@ def main():
             'max_publish_gap_s':source_timing['max_gap_s']})+'\n')
         source_executor.shutdown(timeout_sec=3.)
         if source_thread: source_thread.join(timeout=3.)
+        (output/'tool_inputs.json').write_text(json.dumps(state['tool_inputs'])+'\n')
         source.destroy_node()
         node.destroy_node();rclpy.shutdown()
         for process in processes:

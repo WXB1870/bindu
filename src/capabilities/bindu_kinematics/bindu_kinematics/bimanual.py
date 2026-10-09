@@ -37,6 +37,11 @@ class BimanualQP:
         self.reference_kinematics = config.get('reference_kinematics', False)
         if type(self.reference_kinematics) is not bool:
             raise ValueError('BIMANUAL_REFERENCE_KINEMATICS_CONFIG')
+        self.feedforward = config.get('tool_velocity_feedforward', False)
+        if type(self.feedforward) is not bool:
+            raise ValueError('BIMANUAL_FEEDFORWARD_CONFIG')
+        self.tracking = self.feedforward or self.reference_kinematics
+        self.target_sample = None
         self.grasp_reference = None
         self.handle = None
         self.groups = tuple(config['resource_groups'])
@@ -74,6 +79,12 @@ class BimanualQP:
             ('bq_relative_pose', [p,array,i,array], i)):
             fn = getattr(lib, name)
             fn.argtypes, fn.restype = args, result
+        if self.tracking:
+            try:
+                fn = lib.bq_solve_tracking
+            except AttributeError as exc:
+                raise ValueError('BIMANUAL_TRACKING_ABI_MISSING: rebuild bindu_bimanual_qp') from exc
+            fn.argtypes, fn.restype = [p,array,i,array,i,array,array,array,c.c_double,array,array], i
         self.native_config = NativeConfig()
         if not lib.bq_config_defaults(c.byref(self.native_config), c.sizeof(NativeConfig)):
             raise ValueError('BIMANUAL_CONFIG_ABI_MISMATCH')
@@ -230,6 +241,7 @@ class BimanualQP:
 
     def capture(self, feedback, grasp_mode='rigid'):
         self.captured = False
+        self.target_sample = None
         if not self.handle:
             raise ValueError('BIMANUAL_CLOSED')
         if grasp_mode not in ('rigid', 'right_axial') or grasp_mode == 'right_axial' and self.axial is None:
@@ -331,7 +343,7 @@ class BimanualQP:
         if not ok:
             raise ValueError('BIMANUAL_SHARED_TARGET:'+self._error())
 
-    def solve(self, feedback, target, *, reference, dt):
+    def solve(self, feedback, target, *, reference, dt, target_stamp=None):
         """Propose a step; caller commits reference/time only after acceptance.
 
         Optional reference kinematics integrate a coherent tool path at the
@@ -342,12 +354,12 @@ class BimanualQP:
         if not self.captured:
             raise ValueError('BIMANUAL_NOT_CAPTURED')
         try:
-            return self._solve(feedback, target, reference, float(dt))
+            return self._solve(feedback, target, reference, float(dt), target_stamp)
         except (ValueError, TypeError):
             self.captured = False
             raise
 
-    def _solve(self, feedback, target, reference, dt):
+    def _solve(self, feedback, target, reference, dt, target_stamp):
         if not math.isfinite(dt) or not 0 < dt <= self.max_interval:
             raise ValueError('BIMANUAL_INTEGRATION_INTERVAL')
         q = self._q(feedback)
@@ -357,7 +369,11 @@ class BimanualQP:
         measured = np.array([feedback[n] for n in self.names])
         if np.max(np.abs(reference-measured)) > self.max_reference_error:
             raise ValueError('BIMANUAL_REFERENCE_TRACKING_ERROR')
+        measured_tool = None
         if self.reference_kinematics:
+            measured_tool = np.empty((4,4), dtype=np.float64)
+            if not self.lib.bq_tool_pose(self.handle,self._ptr(q),self.nq,self._ptr(measured_tool)):
+                raise ValueError('BIMANUAL_MEASURED_TOOL:'+self._error())
             relative = np.empty((4,4),dtype=np.float64)
             if not self.lib.bq_relative_pose(self.handle,self._ptr(q),self.nq,self._ptr(relative)):
                 raise ValueError('BIMANUAL_MEASURED_GRASP:'+self._error())
@@ -379,8 +395,28 @@ class BimanualQP:
         out = np.empty(len(self.names), dtype=np.float64)
         metrics = np.empty(3, dtype=np.float64)
         started = time.perf_counter()
-        if not self.lib.bq_solve(self.handle, self._ptr(q), self.nq, self._ptr(reference),
-                len(self.names), self._ptr(target), dt, self._ptr(out), self._ptr(metrics)):
+        if self.tracking:
+            target = self._transform(target)
+        args = (self.handle, self._ptr(q), self.nq, self._ptr(reference), len(self.names), self._ptr(target))
+        if self.tracking:
+            velocity = np.zeros(6, dtype=np.float64)
+            if self.feedforward and target_stamp is not None:
+                if not math.isfinite(target_stamp):
+                    raise ValueError('BIMANUAL_TARGET_TIME')
+                if self.target_sample is not None:
+                    previous_stamp, previous = self.target_sample
+                    gap = target_stamp-previous_stamp
+                    if gap < 0 or (gap == 0 and not np.array_equal(target, previous)):
+                        raise ValueError('BIMANUAL_TARGET_TIME')
+                    if 0 < gap <= self.max_interval:
+                        import pinocchio as pin
+                        velocity[:3] = (target[:3,3]-previous[:3,3])/gap
+                        velocity[3:] = pin.log3(target[:3,:3] @ previous[:3,:3].T)/gap
+            ok = self.lib.bq_solve_tracking(*args, self._ptr(velocity),
+                None if measured_tool is None else self._ptr(measured_tool), dt, self._ptr(out), self._ptr(metrics))
+        else:
+            ok = self.lib.bq_solve(*args, dt, self._ptr(out), self._ptr(metrics))
+        if not ok:
             raise ValueError('BIMANUAL_QP:'+self._error())
         if (time.perf_counter()-started)*1e6 > float(self.cfg['solve_timeout_us']):
             raise ValueError('BIMANUAL_QP_TIMEOUT')
@@ -411,4 +447,6 @@ class BimanualQP:
         self.check_path(feedback,reference,out)
         if (time.perf_counter()-started)*1e6 > float(self.cfg['solve_timeout_us']):
             raise ValueError('BIMANUAL_QP_TIMEOUT')
+        if self.feedforward:
+            self.target_sample = None if target_stamp is None else (target_stamp, target.copy())
         return tuple(float(v) for v in out), tuple(float(v) for v in metrics)

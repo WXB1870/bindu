@@ -67,6 +67,80 @@ class NativeBimanual(unittest.TestCase):
         self.feedback=dict.fromkeys(self.qp.model_names,0.)
         self.feedback.update(self.pose)
 
+    def test_feedforward_uses_source_time_and_resets_on_recapture(self):
+        solver=BimanualQP({**self.config,'tool_velocity_feedforward':True},self.profile)
+        self.addCleanup(solver.close)
+        target=solver.capture(self.feedback)
+        reference=[self.feedback[n] for n in solver.names]
+        observed=[]
+        native=solver.lib.bq_solve_tracking
+        def observe(*args):
+            observed.append(np.ctypeslib.as_array(args[6],shape=(6,)).copy())
+            return native(*args)
+        solver.lib.bq_solve_tracking=observe
+        solver.solve(self.feedback,target,reference=reference,dt=.01,target_stamp=1.)
+        moved=target.copy();moved[0,3]+=.001
+        import pinocchio as pin
+        moved[:3,:3]=pin.exp3(np.array([0.,0.,.002])) @ target[:3,:3]
+        solver.solve(self.feedback,moved,reference=reference,dt=.03,target_stamp=1.02)
+        np.testing.assert_allclose(observed[0],np.zeros(6))
+        np.testing.assert_allclose(observed[1],[.05,0,0,0,0,.1],atol=1e-10)
+        solver.capture(self.feedback)
+        solver.solve(self.feedback,moved,reference=reference,dt=.01,target_stamp=2.)
+        np.testing.assert_allclose(observed[-1],np.zeros(6))
+        with self.assertRaisesRegex(ValueError,'TARGET_TIME'):
+            solver.solve(self.feedback,moved,reference=reference,dt=.01,target_stamp=float('nan'))
+        self.assertFalse(solver.captured)
+
+    def test_tracking_abi_rejects_nonfinite_velocity_and_measured_pose(self):
+        solver=BimanualQP({**self.config,'tool_velocity_feedforward':True},self.profile)
+        self.addCleanup(solver.close)
+        target=solver.capture(self.feedback)
+        q=solver._q(self.feedback)
+        reference=np.array([self.feedback[n] for n in solver.names])
+        out=np.full(len(solver.names),123.)
+        metrics=np.empty(3)
+        for velocity,measured in ((np.full(6,np.nan),target),
+                                  (np.zeros(6),np.full((4,4),np.nan))):
+            self.assertEqual(solver.lib.bq_solve_tracking(solver.handle,solver._ptr(q),solver.nq,
+                solver._ptr(reference),len(reference),solver._ptr(target),solver._ptr(velocity),
+                solver._ptr(measured),.01,solver._ptr(out),solver._ptr(metrics)),0)
+            np.testing.assert_array_equal(out,np.full(len(solver.names),123.))
+
+    def test_causal_feedforward_removes_constant_velocity_servo_lag(self):
+        errors=[]
+        for enabled in (False,True):
+            solver=BimanualQP({**self.config,'tool_velocity_feedforward':enabled},self.profile)
+            self.addCleanup(solver.close)
+            feedback=dict(self.feedback);home=solver.capture(feedback)
+            for step in range(101):
+                target=home.copy();target[0,3]+=.02*step*.01
+                q,_=solver.solve(feedback,target,reference=[feedback[n] for n in solver.names],
+                                 dt=.01,target_stamp=step*.01)
+                feedback.update(zip(solver.names,q))
+            actual=np.empty((4,4))
+            self.assertTrue(solver.lib.bq_tool_pose(solver.handle,solver._ptr(solver._q(feedback)),
+                            solver.nq,solver._ptr(actual)))
+            errors.append(float(np.linalg.norm(actual[:3,3]-target[:3,3])))
+        self.assertLess(errors[1],.003)
+        self.assertLess(errors[1],errors[0]*.35)
+
+    def test_reference_jacobian_still_tracks_measured_tool_error(self):
+        solver=BimanualQP({**self.config,'reference_kinematics':True},self.profile)
+        self.addCleanup(solver.close)
+        home=solver.capture(self.feedback);target=home.copy();target[0,3]+=.01
+        reference,_=propose(solver,self.feedback,target)
+        q=solver._q(self.feedback)
+        for name,value in zip(solver.names,reference):q[solver.model_names.index(name)]=value
+        target=np.empty((4,4))
+        self.assertTrue(solver.lib.bq_tool_pose(solver.handle,solver._ptr(q),solver.nq,solver._ptr(target)))
+        # Target equals reference FK, but the measured tool has not arrived.
+        advanced,_=propose(solver,self.feedback,target,reference=reference)
+        for name,value in zip(solver.names,advanced):q[solver.model_names.index(name)]=value
+        actual=np.empty((4,4))
+        self.assertTrue(solver.lib.bq_tool_pose(solver.handle,solver._ptr(q),solver.nq,solver._ptr(actual)))
+        self.assertGreater(float((actual[:3,3]-target[:3,3]) @ (target[:3,3]-home[:3,3])),1e-12)
+
     def test_position_reference_respects_profile_and_relative_constraint(self):
         tool=self.qp.capture(self.feedback)
         target=tool.copy();target[0,3]+=.01
@@ -187,7 +261,7 @@ class NativeBimanual(unittest.TestCase):
         invalid=solver.posture_upper.copy();invalid[0]=float('nan')
         self.assertEqual(solver.lib.bq_posture_policy(solver.handle,p(preferred),p(solver.posture_lower),
                                                      p(invalid),len(preferred)),0)
-        with self.assertRaisesRegex(ValueError,'solver not captured'):
+        with self.assertRaisesRegex(ValueError,'not captured'):
             propose(solver,feedback,target)
         self.assertFalse(solver.captured)
 
@@ -385,6 +459,6 @@ class AxialShovelTests(unittest.TestCase):
             self.qp._ptr(self.qp.tool),self.qp._ptr(self.qp.right_grip),self.qp._ptr(invalid),
             c.byref(self.qp.native_config))
         self.assertEqual(ok,0)
-        with self.assertRaisesRegex(ValueError,'solver not captured'):
+        with self.assertRaisesRegex(ValueError,'not captured'):
             propose(self.qp,self.ready,tool)
         self.assertFalse(self.qp.captured)
