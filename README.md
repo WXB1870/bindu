@@ -1,34 +1,47 @@
 # Bindu
 
-基于 **ROS 2** 的模块化机器人控制系统，面向长程导航与移动操作。首期目标是让轮式人形根据语言指令寻找饮料、导航抓取并持物返回，后续扩展至双足人形。
+基于 **ROS 2** 的模块化机器人控制系统，面向遥操作与移动操作。通过公共接口连接输入设备、运动求解、任务能力和设备控制，使算法与机器人硬件可以独立替换。
 
-通过公共接口连接任务、感知、规划、VLA、遥操作和设备控制，使算法与机器人硬件可以独立替换。VLA 在机器人端仅部署客户端，模型推理在远端运行。
+**当前阶段重点是机器人遥操作：先在仿真中验证单臂控制、双臂持工具及腰臂协调，再接入现场 VR 和真实设备。** 导航、感知、规划和 VLA 是可独立接入的能力；已有模拟任务用于验证框架集成。
+
+## 遥操作工作流程
+
+这条流程用于把操作者的目标转换为受约束的机器人运动，并通过反馈确认执行状态：
+
+1. **选择模型与配置**：定义受控关节、限位、末端坐标系、工具安装关系与握持约束。本体差异由模型、配置和适配器表达。
+2. **提供目标输入**：单臂模式将手柄相对运动映射为末端目标；双臂工具模式接受基座坐标系下的工具目标位姿与握持状态。当前可用合成输入验证，后续 VR 映射器输出同一工具接口。
+3. **选择模式并开启会话**：显式切换单臂或双臂工具模式，检查输入、反馈及控制权，再建立跟随基准。保留供 GUI 调用的模式与会话接口。
+4. **求解并执行**：IK / QP 根据当前反馈和配置生成关节目标；工具模式可联合协调双臂与腰部。共享执行层负责插值、动态限制和设备下发，上层工具输入无需提供腰角、臂角或动作阶段。
+5. **观察与结束**：记录目标、执行参考和设备反馈；取消、输入断流或异常时按执行契约处理停止与控制权释放。
+
+工具接口的当前握持语义是双手紧握，或左手保持紧握、右手允许绕杆轴转动；它目前改变运动学约束，实体夹爪的开度、力控与滑移反馈尚未接入。
 
 ## 功能状态
 
-当前以仿真验证和能力接入为主，完整移动抓取与真机控制尚未完成。
-
 | 模块 | 当前能力与边界 |
 |---|---|
-| 任务与执行 | 模拟任务、控制权、C++ 插值、取消与异常处理；已做 Isaac 物理验证 |
+| 遥操作输入与会话 | 单臂相对控制、位姿滤波、双臂工具位姿输入及手动模式切换；合成输入链路已验证，现场头显待联调 |
+| 运动学与工具控制 | 单臂 IK、双臂 QP 与配置化腰臂协调；已有握持切换、限位及配置范围内的几何检查，覆盖范围随模型和配置而定 |
+| 共享执行 | 控制权、C++ 插值、取消、断流和异常处理；已有模拟回归及部分 Isaac 物理执行验证 |
+| 仿真与设备 | 已有运动学设备和 Isaac 验证入口；工具流程目前完成理想关节反馈与零重力姿态回放，接触动力学和真机尚未验收 |
 | 导航 | 已接 Nav2、二维 SLAM/AMCL 和三维 FAST-LIO/ICP；真实雷达待接入，长期稳定性待验证 |
-| VR 与 IK | 单臂相对控制、位姿滤波和局部自碰撞检查；保留单臂/双臂工具手动切换、取消和断流停止，现场头显待联调 |
-| Snowbot 雪铲 | 工具位姿＋右手紧握/虚握输入，双臂与两轴腰部联合求解；铲入、抬起、箱口翻铲和回位已完成理想关节执行及 Isaac 运动学验证 |
-| VLA | Pi 远端推理客户端支持两种历史 ZMQ 模式；已通过模拟服务测试 |
-| 设备与记录 | 模拟底盘、关节、灵巧手及异步日志；真实设备与完整训练数据管线待接入 |
-| 其他能力 | 感知、规划已有模拟实现，语音预留；实际算法待接入 |
+| VLA | Pi 远端推理客户端支持两种历史 ZMQ 模式；已通过模拟服务测试，模型推理在远端运行 |
+| 任务、感知与记录 | 任务编排、感知和规划已有模拟实现，支持异步日志；实际感知、完整移动抓取及训练数据管线待接入，语音预留 |
 
 ## 环境要求
 
 - 已验证开发环境：Ubuntu 24.04、ROS 2 Jazzy、Python 3.12、x86_64。
-- 构建工具：colcon、rosdep；运行依赖包括 NumPy 和 PyZMQ。
+- 基础依赖：colcon、rosdep、NumPy 和 PyZMQ。
+- 双臂原生 QP 构建还需 Pinocchio、Eigen3 和 ProxSuite CMake 开发包；单臂 IK / VR 有额外 Python 依赖。按[双臂运行说明](运行与验证.md#snowbot-双臂与两轴腰部遥操作)和[VR 依赖说明](运行与验证.md#vr-遥操作运行入口)配置相应环境。
 - Jetson Orin / Ubuntu 22.04 的部署兼容性尚未验证。
 
-下列命令假定 ROS 2 Jazzy、colcon 和已初始化的 rosdep 可用。新终端只加载当前使用的工作区，避免混用旧安装环境。
+下列命令假定 ROS 2 Jazzy、colcon、已初始化的 rosdep 及所选能力依赖可用。新终端只加载当前使用的工作区，避免混用旧安装环境。
 
 ## 快速开始
 
 ### 1. 获取与构建
+
+此步骤安装工程依赖并构建 ROS 包，不启动控制会话。
 
 ```bash
 git clone https://github.com/WXB1870/bindu.git
@@ -39,28 +52,30 @@ colcon build --base-paths src --symlink-install
 source install/setup.bash
 ```
 
-### 2. 启动模拟系统
+### 2. 验证最小双臂遥操作链路
 
-在工作区终端执行：
+在上述终端执行。此示例使用简化双臂模型、合成成对手柄输入和运动学模拟设备，检查模式选择、QP 求解、共享执行、取消及切回单臂模式的协议。
 
 ```bash
 export ROS_DOMAIN_ID=116 ROS_LOCALHOST_ONLY=1
-ros2 launch bindu_runtime skeleton.launch.py recording_mode:=normal
+python3 tests/validate_bimanual.py \
+  --output "artifacts/bimanual-check-$(date +%Y%m%d-%H%M%S)"
 ```
 
-另开一个终端，进入同一工作区并提交模拟取物任务：
+验证器自动启动并收尾所需 ROS 节点，结果和日志写入指定目录，成功时生成 `result.json`。该入口无需头显或 Isaac GUI，也不连接真机；默认简化模型为空场景，结果只说明该测试链路通过，不能作为具体机器人的碰撞或物理验收。
 
-```bash
-source /opt/ros/jazzy/setup.bash
-source install/setup.bash
-export ROS_DOMAIN_ID=116 ROS_LOCALHOST_ONLY=1
-ros2 action send_goal /bindu_sim/tasks/fetch_drink bindu_interfaces/action/FetchDrink \
-  "{task_id: demo_1, object_id: drink, strategy: planner}" --feedback
-```
+### 3. 进入模型适配与交互验证
 
-`strategy` 支持 `planner` 和 `chunk` 两种模拟策略。一次成功任务后，模拟场景保留持物状态；新的独立实验需重启模拟系统。以上流程不连接真实机器人。
+选择对应机器人的模型、执行 profile 和遥操作配置，再按[运行与验证](运行与验证.md)中的专项命令启动。启动节点只是准备运行环境；跟随动作还需要有效输入、模式选择及显式会话。
 
-日志默认 `compact`；上述开发示例显式使用 `normal`。三档含义见[日志记录级别](运行与验证.md#日志记录级别)。
+| 目的 | 入口 |
+|---|---|
+| 验证单臂映射、输入接收与停止行为 | [单臂 / VR 运行入口](运行与验证.md#vr-遥操作运行入口) |
+| 验证双臂工具模式与腰部协调 | [双臂模型适配入口](运行与验证.md#snowbot-双臂与两轴腰部遥操作) |
+| 验证工具位姿流、握持切换及可视化回放 | [工具输入与仿真示例](运行与验证.md#vr-手柄控制右手虚握2026-10-09) |
+| 验证执行器的物理跟踪和停止反馈 | [Isaac 物理仿真入口](运行与验证.md#isaac-sim-图形物理仿真) |
+
+`skeleton.launch.py` 与 `FetchDrink` 属于任务编排的模拟取物示例，用于检查任务、策略和执行接口的串联；它们是独立的框架示例，不属于上述遥操作启动步骤。开发运行建议显式设置 `recording_mode:=normal`；日志默认 `compact`，三档含义见[日志记录级别](运行与验证.md#日志记录级别)。
 
 ## 工程入口
 
@@ -77,34 +92,26 @@ src/
 └── capabilities/    # IK、VLA、感知、导航、规划、交互、遥操作
 ```
 
-`tests/` 存放验证入口，`tools/` 存放开发与仿真工具。`build/`、`install/`、`log/`、`artifacts/` 为本地构建或实验产物，不提交 Git。
-
-机器人描述入口见[模型与资产索引](运行与验证.md#机器人模型与资产)：Snowbot 的三份 URDF 由同一脚本生成，共用一套网格；G1 运动学模型随源码保存，物理仿真网格按需生成到 `artifacts/`。
-
-### Snowbot 双手单杆雪铲
-
-动作输入为基座坐标系下的雪铲目标位姿和右手紧握/虚握状态，左手持续紧握；时间戳、序号等字段用于通信和停止保护。双臂与两轴腰部由同一求解器协调，动作输入不含阶段腰角或关节关键帧。后续 VR 映射器可输出同一接口。
-
 | 入口 | 用途 |
 |---|---|
-| [ToolPoseInput.msg](src/shared/bindu_interfaces/msg/ToolPoseInput.msg) | 统一工具位姿与握持状态消息 |
-| [雪铲配置](src/integration/bindu_runtime/config/bimanual_snowbot_shovel.json)、[执行 profile](src/integration/bindu_runtime/config/snowbot_shovel_sim.json) | 工具尺寸、安装关系、几何保护、示例位姿输入及共用执行限制 |
-| [plan_shovel_motion.py](tools/plan_shovel_motion.py) | 生成示例输入流，经共用控制器执行，检查完整轨迹与碰撞 |
-| [validate_shovel_isaac.py](tests/validate_shovel_isaac.py) | 核对 Isaac 实际连杆姿态；`--gui` 预览，`--video` 导出无文字视频 |
+| [ToolPoseInput.msg](src/shared/bindu_interfaces/msg/ToolPoseInput.msg) | 工具目标位姿与握持状态；时间戳、序号等字段用于通信和停止保护 |
+| [遥操作能力](src/capabilities/bindu_teleoperation/bindu_teleoperation/)、[运动学能力](src/capabilities/bindu_kinematics/bindu_kinematics/) | 输入映射、会话与握持约束、IK / QP 适配 |
+| [运行配置](src/integration/bindu_runtime/config/)、[启动装配](src/integration/bindu_runtime/launch/) | 机器人、工具、执行限制及节点组合 |
+| [测试](tests/)、[开发工具](tools/) | 模块测试、ROS 链路验证、工作空间检查与仿真回放 |
 
-雪铲和接雪箱由上述 Isaac 脚本使用 **Python＋USD/PXR（`UsdGeom`）** 参数化生成：圆柱体构成铲杆，薄长方体组成铲盘底板、背板、侧板及箱壁。尺寸读取雪铲配置，与几何检查共用；机器人本体使用前述 CAD/URDF 资产。雪铲属于简化仿真模型，尚非加工用机械 CAD；当前结果不包含真实夹爪力控、杆在手内滑转或雪料接触动力学。
+机器人描述、网格来源与生成方式见[模型与资产索引](运行与验证.md#机器人模型与资产)。现有工具与容器可视化使用 Python＋USD/PXR（`UsdGeom`）按配置尺寸生成，属于简化仿真几何；模型回放不代表机械承载、实体握持或材料接触已验证。
 
-依赖、启动参数、复现命令及验证证据见[雪铲输入与仿真验证](运行与验证.md#vr-手柄控制右手虚握2026-10-09)。实验数据和视频按前述规则保存在本机 `artifacts/`，不随源码分发。
+`build/`、`install/`、`log/`、`artifacts/` 为本地构建或实验产物，不提交 Git；实验数据和视频不随源码分发。
 
 ## 文档
 
-- [运行与验证](运行与验证.md)：Conda 环境、日志、测试、G1/Isaac、导航、Pi、VR、Snowbot 雪铲与视频导出的命令及验证边界。
+- [运行与验证](运行与验证.md)：依赖配置、启动命令、各类验证与视频导出，以及结果的适用范围。
 - [软件架构](软件架构设计.md)：模块职责、替换接口与实现边界。
 - [动作执行契约](动作执行契约.md)：目标、控制权、时间轴与停止语义。
 - [协作规范](AGENTS.md)：开发验证要求和文件管理规则。
 
-README 只保留项目入口与最小启动流程；专项命令维护在运行与验证文档，日常实验进展在本地进度与过程记录中维护。
+README 只保留项目目标、工作流程与最小验证入口；专项命令维护在运行与验证文档，日常实验进展在本地进度与过程记录中维护。
 
 ## License
 
-见 [MIT License](LICENSE)。第三方模块及参考资产遵循各自随附许可；用户提供的Snowbot CAD压缩包未附许可声明，其来源及分发边界见`src/hardware/bindu_description/SNOWBOT_ASSETS_NOTICE`。
+见 [MIT License](LICENSE)。第三方模块及参考资产遵循各自随附许可；用户提供的 Snowbot CAD 压缩包未附许可声明，其来源及分发边界见 [SNOWBOT_ASSETS_NOTICE](src/hardware/bindu_description/SNOWBOT_ASSETS_NOTICE)。
