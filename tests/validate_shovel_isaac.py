@@ -88,6 +88,16 @@ def verify(motion_path, output):
     left_to_tool = np.array(motion['left_to_tool']).reshape(4, 4)
     grip_offset = np.r_[motion['recipe']['grip_offset_m'], 1.]
     right_in_tool = np.r_[motion['recipe']['right_grip_in_tool_m'], 1.]
+    config = json.loads(Path(motion['config_path']).read_text())
+    axis = np.array(motion['recipe']['shaft_axis_in_tool'])
+    right_mount = np.array(config['right_to_tool']).reshape(4,4)
+    if axis.shape != (3,) or not np.isfinite(axis).all() or not np.isclose(np.linalg.norm(axis),1.) or not np.isfinite(right_mount).all():
+        raise ValueError('NONFINITE_AXIAL_GEOMETRY')
+    helper = np.eye(3)[np.argmin(abs(axis))]
+    transverse = np.cross(helper,axis); transverse /= np.linalg.norm(transverse)
+    grip_rotation = np.column_stack((transverse,np.cross(axis,transverse),axis))
+    measured_rolls = []
+    maximum.update(right_axis_rad=0., right_roll_readback_rad=0.)
     if not all(np.isfinite(value).all() for value in (left_to_tool, grip_offset, right_in_tool)):
         raise ValueError('NONFINITE_TOOL_GEOMETRY')
     pan = np.array(motion['recipe']['pan_center_m'])
@@ -129,6 +139,21 @@ def verify(motion_path, output):
             angle = Rotation.from_matrix(expected[:3, :3].T @ pose[:3, :3]).magnitude()
             maximum['flange_rotation_rad'] = max(maximum['flange_rotation_rad'], float(angle))
         actual_tool = actual[frames[0]] @ left_to_tool
+        schedule = motion['recipe'].get('grasp_schedule', [{'t':0.,'mode':'rigid'}])
+        mode = next(k['mode'] for k in reversed(schedule) if sample['t']+1e-9 >= k['t'])
+        if sample.get('grasp_mode','rigid') != mode:
+            raise ValueError('ISAAC_GRASP_SCHEDULE_MISMATCH')
+        grip_error = (actual_tool[:3,:3] @ grip_rotation).T @ actual[frames[1]][:3,:3] @ right_mount[:3,:3] @ grip_rotation
+        axis_error = float(np.arccos(np.clip(grip_error[2,2],-1.,1.)))
+        roll = float(np.arctan2(grip_error[1,0],grip_error[0,0]))
+        measured_rolls.append(roll)
+        maximum['right_axis_rad'] = max(maximum['right_axis_rad'],axis_error)
+        if 'right_grip_roll_rad' in sample:
+            if not np.isfinite(sample['right_grip_roll_rad']):
+                raise ValueError('NONFINITE_GRIP_ROLL')
+            difference = roll-sample['right_grip_roll_rad']
+            maximum['right_roll_readback_rad'] = max(maximum['right_roll_readback_rad'],
+                abs(float(np.arctan2(np.sin(difference),np.cos(difference)))))
         measured_samples.append({'t':sample['t'],'tool':actual_tool.tolist()})
         clearance = float((corners @ actual_tool.T)[:,2].min())-ground_z
         min_clearance = min(min_clearance, clearance)
@@ -141,7 +166,9 @@ def verify(motion_path, output):
         if index % 100 == 0:
             print('POSE_CHECK', index, sample['t'], maximum, flush=True)
     if (maximum['joint_rad'] > .002 or maximum['flange_translation_m'] > .002 or
-            maximum['flange_rotation_rad'] > .005 or maximum['right_grip_m'] > .002):
+            maximum['flange_rotation_rad'] > .005 or maximum['right_grip_m'] > .002 or
+            maximum['right_axis_rad'] > config['grasp_rotation_tolerance_rad'] or
+            maximum['right_roll_readback_rad'] > .005):
         raise ValueError('ISAAC_POSE_PROPAGATION:'+json.dumps(maximum))
     gate = motion['recipe']['acceptance']
     if (min_clearance < gate['min_ground_clearance_m'] or ready_clearance > gate['max_ready_clearance_m'] or
@@ -150,6 +177,9 @@ def verify(motion_path, output):
     result = {'dump': check_dump(measured_samples,motion['recipe']), 'ground_z_in_base_m': ground_z, 'min_pan_ground_clearance_m': min_clearance,
               'ready_pan_ground_clearance_m': ready_clearance, 'max_flange_motion_m': max_flange_motion,
               'status': 'passed', 'samples': len(motion['samples']), 'maximum_errors': maximum,
+              'right_grip_roll_range_rad': [min(measured_rolls),max(measured_rolls)],
+              'grasp_schedule': motion['recipe'].get('grasp_schedule',[]),
+              'validator_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
               'motion_sha256': hashlib.sha256(motion_path.read_bytes()).hexdigest(),
               'motion': str(motion_path), 'mode': 'zero-gravity joint-position kinematic replay'}
     (output/'validation.json').write_text(json.dumps(result, indent=2)+'\n')
@@ -205,52 +235,82 @@ def preview(app, context, output):
         cube('/World/Shovel/Side'+str(sign).replace('-','N'),[size[0],wall,size[2]],
              center+[0,sign*(size[1]-wall)/2,0],(.12,.46,.85))
     cube('/World/Shovel/Back',[wall,size[1],size[2]],center+[-(size[0]-wall)/2,0,0],(.12,.46,.85))
+    # Annotation glyphs, not modeled jaws: the gold stripe follows the shaft;
+    # the palm pointer follows the actual right flange and can turn relative
+    # to that stripe. No invented gripper opening or physical slip animation.
+    shaft('/World/Shovel/RollStripe',rear+axis*sum(ends)/2+tangent*.020,
+          .003,ends[1]-ends[0],(1.,.85,.05))
+    config=json.loads(Path(motion['config_path']).read_text())
+    right_mount=np.array(config['right_to_tool']).reshape(4,4)
+    pointer=UsdGeom.Xform.Define(stage,'/World/RightPalmMarker')
+    pointer_transform=pointer.AddTransformOp()
+    cube('/World/RightPalmMarker/Pointer',[.12,.014,.014],[.06,0.,0.],(.1,1.,.45))
+    pointer_color=UsdGeom.Gprim(stage.GetPrimAtPath('/World/RightPalmMarker/Pointer')).GetDisplayColorAttr()
+    right_grip=np.eye(4);right_grip[:3,:3]=right_mount[:3,:3] @ rotation
+    right_grip[:3,3]=recipe['grip_offset_m']
     playback={'t':0.,'playing':True,'seek':True}
     samples=motion['samples'];fps=recipe['sample_hz'];duration=samples[-1]['t']
     positions=np.asarray([[s['q'][n] for n in body.dof_names] for s in samples])
     flange=flanges[motion['left_frame']];mount=np.asarray(motion['left_to_tool']).reshape(4,4)
     def camera(eye): set_camera_view(eye=eye,target=[.65,-.4,.55])
+    def restart():
+        playback.update(t=0.,seek=True,playing=True);pause.text='Pause'
     def toggle():
+        if playback['t'] >= duration:
+            restart();return
         playback['playing']=not playback['playing'];pause.text='Pause' if playback['playing'] else 'Play'
     def seek(t): playback.update(t=t,seek=True)
     camera([3.3,-3.6,2.25])
-    panel=ui.Window('Snowbot shovel playback',width=440,height=310)
+    loose_change=next((k for k in recipe.get('grasp_schedule',[]) if k['mode']=='right_axial'),None)
+    panel=ui.Window('Snowbot shovel playback',width=510,height=390)
     phase_text={'准备':'Ready','铲入':'Push','抬铲':'Lift','保持':'Hold','侧向扬起':'Transfer',
                 '翻铲倒雪':'Tip into bin','倒雪保持':'Dump hold','扶正铲头':'Restore pan',
                 '转回前方':'Return swing','转回侧方':'Return to side','下放回位':'Lower','完成':'Complete','转送箱口':'Move over bin'}
     with panel.frame:
         with ui.ScrollingFrame():
             with ui.VStack(spacing=5):
-                ui.Label('Side grip / accelerated motion / receiving bin',height=22)
+                ui.Label('Side grip / right axial support / receiving bin',height=22)
                 ui.Label('1x trajectory time | Kinematic replay',height=20)
                 ui.Label('No snow / load / contact dynamics',height=20)
+                ui.Label('Gold stripe: shaft | Pointer: actual right palm',height=20)
+                ui.Label('Scheduled trigger; physical gripper not actuated',height=20)
+                ui.Label('Plays once; Restart / seek resets the pose fixture',height=20)
                 label=ui.Label('Ready',height=24)
+                grasp_label=ui.Label('Both hands locked',height=24)
+                roll_label=ui.Label('Right-hand / shaft relative roll: 0 deg',height=24)
                 with ui.HStack(height=30,spacing=5):
                     pause=ui.Button('Pause',clicked_fn=toggle)
-                    ui.Button('Restart',clicked_fn=lambda:seek(0.))
+                    ui.Button('Restart',clicked_fn=restart)
                 with ui.HStack(height=30,spacing=5):
                     ui.Button('Ready',clicked_fn=lambda:seek(0.))
                     ui.Button('Raised',clicked_fn=lambda:seek(recipe['acceptance']['lift_seconds']))
                     if 'dump' in recipe:
                         ui.Button('Dump',clicked_fn=lambda:seek(recipe['dump']['hold_seconds'][0]))
+                if loose_change is not None:
+                    with ui.HStack(height=30,spacing=5):
+                        ui.Button('Loose grip',clicked_fn=lambda:seek(loose_change['t']))
+                        ui.Button('Re-lock',clicked_fn=lambda:seek(recipe['grasp_schedule'][-1]['t']))
                 with ui.HStack(height=30,spacing=5):
                     ui.Button('Oblique',clicked_fn=lambda:camera([3.3,-3.6,2.25]))
                     ui.Button('Front',clicked_fn=lambda:camera([4.,-.4,1.25]))
                     ui.Button('Top',clicked_fn=lambda:camera([.65,-.4,4.]))
     from omni.kit.viewport.utility import get_active_viewport, capture_viewport_to_file
-    snapshot_times = {'ready':.2}
+    snapshot_times = {'ready':.2, 'return':duration}
     if 'dump' in recipe:
         snapshot_times['dump'] = recipe['dump']['hold_seconds'][0]+.2
+    if loose_change is not None and 'dump' in recipe:
+        snapshot_times['loose']=(loose_change['t']+recipe['dump']['hold_seconds'][0])/2
+        snapshot_times['relock']=recipe['grasp_schedule'][-1]['t']+.2
     captured = set()
-    previous=time.monotonic();last_index=-1;cycles=0
+    previous=time.monotonic();last_index=-1
     print('SHOVEL_GUI_READY',flush=True)
     while app.is_running():
         now=time.monotonic();dt=min(now-previous,.1);previous=now
         if playback['playing'] and not playback['seek']:
             playback['t']+=dt
             if playback['t']>duration:
-                playback['t']%=duration;cycles+=1
-                print('SHOVEL_GUI_LOOP',cycles,flush=True)
+                playback['t']=duration;playback['playing']=False;pause.text='Play'
+                print('SHOVEL_GUI_COMPLETE; Restart resets the initial fixture',flush=True)
         index=min(round(playback['t']*fps),len(samples)-1)
         if index!=last_index or playback['seek']:
             if not world.is_playing(): world.play()
@@ -262,6 +322,14 @@ def preview(app, context, output):
             tf=np.eye(4);tf[:3,3]=position
             tf[:3,:3]=Rotation.from_quat(np.r_[wxyz[1:],wxyz[0]]).as_matrix()
             transform.Set(Gf.Matrix4d((tf@mount).T.tolist()))
+            right_position,right_wxyz=flanges[motion['right_frame']].get_world_pose()
+            right_tf=np.eye(4);right_tf[:3,3]=right_position
+            right_tf[:3,:3]=Rotation.from_quat(np.r_[right_wxyz[1:],right_wxyz[0]]).as_matrix()
+            pointer_transform.Set(Gf.Matrix4d((right_tf @ right_grip).T.tolist()))
+            loose=samples[index].get('grasp_mode')=='right_axial'
+            pointer_color.Set([Gf.Vec3f(*((1.,.45,.05) if loose else (.1,1.,.45)))])
+            grasp_label.text=('TRIGGER HELD | RIGHT AXIAL SUPPORT' if loose else 'TRIGGER RELEASED | BOTH HANDS LOCKED')
+            roll_label.text=f'Right-hand / shaft relative roll: {np.rad2deg(samples[index].get("right_grip_roll_rad",0.)):.1f} deg'
             label.text=f'{samples[index]["t"]:.2f} / {duration:.2f} s | {phase_text.get(samples[index]["phase"],"Motion")}'
             last_index=index;playback['seek']=False
         world.render()

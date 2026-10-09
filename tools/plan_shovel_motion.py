@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate and check an offline rigid-shovel trajectory with the existing QP.
+"""Generate and check an offline shovel trajectory with the existing QP.
 
 The recipe owns robot names, ready posture, grasp and motion. This tool does not
 publish commands. Positions are metres/radians in the fixed URDF base frame.
@@ -58,6 +58,28 @@ def validate_recipe(config):
             raise ValueError('INVALID_SHOVEL_PLANNING_LIMITS')
     bin_boxes(recipe)
     keys, gate = recipe['keyframes'], recipe['acceptance']
+    schedule = recipe.get('grasp_schedule', [{'t': 0., 'mode': 'rigid'}])
+    if (not schedule or schedule[0] != {'t': 0., 'mode': 'rigid'} or
+            any(set(k) != {'t','mode'} or k['mode'] not in ('rigid','right_axial') for k in schedule) or
+            any(b['t'] <= a['t'] or b['mode'] == a['mode'] for a,b in zip(schedule,schedule[1:])) or
+            any(k['mode'] == 'right_axial' for k in schedule) and 'right_axial_grasp' not in config):
+        raise ValueError('INVALID_SHOVEL_GRASP_SCHEDULE')
+    if 'right_axial_grasp' in config and (
+            not np.allclose(config['right_axial_grasp']['axis_in_tool'], axis) or
+            not np.allclose(config['right_axial_grasp']['grip_in_right_flange_m'], recipe['grip_offset_m'])):
+        raise ValueError('SHOVEL_AXIAL_GEOMETRY_MISMATCH')
+    switch_hold = float(recipe.get('grasp_switch_hold_s', 0.))
+    if len(schedule)>1 and switch_hold/2 < 4*float(recipe.get('joint_filter_sigma_s',0.))+.01:
+        raise ValueError('SHOVEL_GRASP_HOLD_FILTER_SUPPORT')
+    for change in schedule[1:]:
+        # Switch inside a stationary target hold, on both the control and saved
+        # pose grids. Actual joint stop speed is independently checked below.
+        hold = next(((a,b) for a,b in zip(keys,keys[1:]) if a['t'] < change['t'] < b['t']), None)
+        if (hold is None or not hold[0]['t'] <= change['t']-switch_hold/2 < change['t']+switch_hold/2 <= hold[1]['t'] or not np.isclose(change['t']*recipe['sample_hz'], round(change['t']*recipe['sample_hz'])) or
+                not np.isclose(change['t']/config['sample_period'], round(change['t']/config['sample_period'])) or
+                any(not np.allclose(hold[0].get(field,0.),hold[1].get(field,0.))
+                    for field in ('translation_m','yaw_pitch_rad','shaft_roll_rad'))):
+            raise ValueError('SHOVEL_GRASP_SWITCH_REQUIRES_HOLD')
     if 'dump' in recipe:
         if 'receiving_bin' not in recipe or not np.isclose(recipe['receiving_bin']['bottom_z_m'], recipe['ground']['z_in_base_m']):
             raise ValueError('INVALID_RECEIVING_BIN_GROUND')
@@ -75,6 +97,9 @@ def validate_recipe(config):
 
 
 def target_at(keyframes, home, pivot, seconds, shaft_axis=None):
+    if not np.isfinite(seconds) or seconds < -1e-9 or seconds > keyframes[-1]['t']+1e-9:
+        raise ValueError('TIME_OUTSIDE_RECIPE')
+    seconds = np.clip(seconds, 0., keyframes[-1]['t'])
     for first, last in zip(keyframes, keyframes[1:]):
         if seconds <= last['t']:
             u = np.clip((seconds-first['t'])/(last['t']-first['t']), 0., 1.)
@@ -95,6 +120,11 @@ def target_at(keyframes, home, pivot, seconds, shaft_axis=None):
     raise ValueError('TIME_OUTSIDE_RECIPE')
 
 
+def grasp_mode_at(recipe, seconds):
+    return next(k['mode'] for k in reversed(recipe.get('grasp_schedule', [{'t':0.,'mode':'rigid'}]))
+                if seconds+1e-9 >= k['t'])
+
+
 def generate(config_path, description, output):
     config = json.loads(config_path.read_text())
     validate_recipe(config)
@@ -109,6 +139,7 @@ def generate(config_path, description, output):
     keys = recipe['keyframes']
     if (not np.isclose(dt, profile.control_period) or stride < 1 or
             not np.isclose(stride*fps*dt, 1.) or keys[0]['t'] != 0 or
+            not np.isclose(keys[-1]['t']*fps, round(keys[-1]['t']*fps)) or
             any(b['t'] <= a['t'] for a, b in zip(keys, keys[1:]))):
         raise ValueError('INVALID_SHOVEL_TIMELINE')
     output.mkdir(parents=True, exist_ok=True)
@@ -148,8 +179,13 @@ def generate(config_path, description, output):
         history = [initial_positions.copy() for _ in range(3)]
         max_acceleration, max_jerk = 0., 0.
         raw_positions = []
+        grasp_mode = 'rigid'
         for step in range(round(keys[-1]['t']/dt)+1):
-            seconds = step*dt
+            seconds = round(step*dt, 9)
+            requested_mode = grasp_mode_at(recipe, seconds)
+            if requested_mode != grasp_mode:
+                solver.capture(q, grasp_mode=requested_mode)
+                grasp_mode = requested_mode
             desired = target_at(keys, home, pivot, seconds, recipe['shaft_axis_in_tool'])
             if 'shared_targets_rad' in keys[0]:
                 first,last = next((a,b) for a,b in zip(keys,keys[1:]) if seconds <= b['t'])
@@ -158,8 +194,16 @@ def generate(config_path, description, output):
                 solver.set_shared_targets({n:(1-blend)*first['shared_targets_rad'][n]+blend*last['shared_targets_rad'][n]
                                            for n in solver.shared_names})
             try:
-                positions, metrics = solver.solve(q, desired,
-                    reference=[q[n] for n in solver.names], dt=dt)
+                # An explicit stationary joint hold surrounds each switch. Its
+                # constant span exceeds the offline filter support, so future
+                # QP posture motion cannot leak through the grasp-change point.
+                holding = any(abs(seconds-change['t']) <= recipe.get('grasp_switch_hold_s',0.)/2+1e-9
+                              for change in recipe.get('grasp_schedule',[])[1:])
+                if holding:
+                    positions, metrics = [q[n] for n in solver.names], (0.,)
+                else:
+                    positions, metrics = solver.solve(q, desired,
+                        reference=[q[n] for n in solver.names], dt=dt)
             except ValueError as exc:
                 raise ValueError(f'{exc} t={seconds:.3f}') from exc
             q.update(zip(solver.names, positions))
@@ -167,10 +211,13 @@ def generate(config_path, description, output):
             max_solve = max(max_solve, metrics[0])
         from scipy.ndimage import gaussian_filter1d
         raw_positions = np.asarray(raw_positions)
+        print('QP_COMPLETE',len(raw_positions),flush=True)
         sigma = float(recipe.get('joint_filter_sigma_s', 0.))
         if not np.isfinite(sigma) or sigma < 0:
             raise ValueError('INVALID_SHOVEL_JOINT_FILTER')
         planned_positions = gaussian_filter1d(raw_positions, sigma/dt, axis=0, mode='nearest', truncate=4.) if sigma else raw_positions
+        np.savez_compressed(output/'joint_plan.npz', raw=raw_positions, filtered=planned_positions,
+                            names=solver.names, dt=dt)
         raw_velocity = np.diff(np.vstack((initial_positions,raw_positions)),axis=0)/dt
         raw_acceleration = np.diff(np.vstack((np.zeros_like(initial_positions),raw_velocity)),axis=0)/dt
         raw_jerk = np.diff(np.vstack((np.zeros_like(initial_positions),raw_acceleration)),axis=0)/dt
@@ -178,8 +225,12 @@ def generate(config_path, description, output):
         q = dict(recipe['initial_positions_rad'])
         expected_relative = (BimanualQP._transform(config['left_to_tool']) @
                              np.linalg.inv(BimanualQP._transform(config['right_to_tool'])))
+        grasp_mode = 'rigid'
+        transitions = []
+        max_axis_error = 0.
+        previous_relative = expected_relative.copy()
         for step, positions in enumerate(planned_positions):
-            seconds = step*dt
+            seconds = round(step*dt, 9)
             desired = target_at(keys, home, pivot, seconds, recipe['shaft_axis_in_tool'])
             speed = max(abs(v-q[n])/dt for n, v in zip(solver.names, positions))
             max_speed = max(max_speed, speed)
@@ -208,17 +259,39 @@ def generate(config_path, description, output):
             pin.framesForwardKinematics(model, data, state)
             poses = [data.oMf[i].homogeneous.copy() for i in ids]
             actual_relative = np.linalg.inv(poses[0]) @ poses[1]
+            mode = grasp_mode_at(recipe, seconds)
+            if mode != grasp_mode:
+                # Re-lock at the measured current pose, never the pre-slip 6D
+                # reference. Filtering must not hide motion at the switch.
+                if speed > .005:
+                    raise ValueError(f'SHOVEL_GRASP_SWITCH_NOT_STOPPED t={seconds:.3f} speed={speed:.6g}')
+                expected_relative = previous_relative.copy()
+                transitions.append({'t': round(seconds,6), 'mode': mode, 'speed_rad_s': speed})
+                grasp_mode = mode
             relative_error = pin.log6(pin.SE3(np.linalg.inv(expected_relative) @ actual_relative)).vector
-            max_relative = max(max_relative, float(np.linalg.norm(relative_error)))
-            if max_relative > config['max_relative_error']:
-                raise ValueError('SHOVEL_FILTERED_CLOSURE')
+            if mode == 'rigid':
+                max_relative = max(max_relative, float(np.linalg.norm(relative_error)))
+                if max_relative > config['max_relative_error']:
+                    raise ValueError('SHOVEL_FILTERED_CLOSURE')
+            previous_relative = actual_relative
             tool = poses[0] @ left_to_tool
+            roll = 0.
+            axis_error = 0.
+            if solver.axial is not None:
+                grip = np.linalg.inv(tool) @ poses[1] @ solver.right_grip
+                axis_error = float(np.arccos(np.clip(grip[:3,2] @ solver.tool_grip[:3,2], -1., 1.)))
+                max_axis_error = max(max_axis_error, axis_error)
+                if axis_error > config['grasp_rotation_tolerance_rad']:
+                    raise ValueError('SHOVEL_FILTERED_SHAFT_AXIS')
+                relative_grip = np.linalg.inv(solver.tool_grip) @ grip
+                roll = float(np.arctan2(relative_grip[1,0],relative_grip[0,0]))
             grips = [(np.linalg.inv(tool) @ pose @ grip_offset)[:3] for pose in poses]
             if start_grips is None:
                 start_grips = np.array(grips)
             max_grip_error = max(max_grip_error, float(np.max(np.linalg.norm(grips-start_grips, axis=1))))
             max_tracking = max(max_tracking, float(np.linalg.norm(tool[:3, 3]-desired[:3, 3])))
-            sample = {'t': round(seconds, 6), 'q': dict(q), 'tool': tool.tolist()}
+            sample = {'t': round(seconds, 6), 'q': dict(q), 'tool': tool.tolist(),
+                      'grasp_mode': mode, 'right_grip_roll_rad': roll, 'right_axis_error_rad': axis_error}
             dense_samples.append(sample)
             if step % stride == 0:
                 phase = next((a['phase'] for a, b in zip(keys, keys[1:])
@@ -291,11 +364,17 @@ def generate(config_path, description, output):
                       'min_pan_ground_clearance_m': clearance, 'max_joint_speed_rad_s': max_speed,
                       'ready_pan_ground_clearance_m': ready_clearance,
                       'max_joint_acceleration_rad_s2': max_acceleration, 'max_joint_jerk_rad_s3': max_jerk,
-                      'max_relative_se3_error': max_relative, 'max_target_lag_m': max_tracking,
+                      'max_relative_se3_error': max_relative,
+                      'max_right_axis_error_rad': max_axis_error,
+                      'grasp_transitions': transitions,
+                      'right_grip_roll_range_rad': [min(s['right_grip_roll_rad'] for s in dense_samples),
+                                                   max(s['right_grip_roll_rad'] for s in dense_samples)],
+                      'max_target_lag_m': max_tracking,
                       'max_qp_solve_us': max_solve,
                       'joint_ranges_rad': ranges}
     finally:
         solver.close()
+    print('MOTION_CHECK_COMPLETE; checking full CAD geometry',len(dense_samples),flush=True)
     validation['geometry'] = collision_check(display, dense_samples, recipe)
     for name, digest in validation['geometry'].pop('source_sha256').items():
         if name in sources and sources[name] != digest:

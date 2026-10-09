@@ -10,7 +10,7 @@ import pinocchio as pin
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT/'tools'))
-from plan_shovel_motion import collision_check, validate_recipe, target_at
+from plan_shovel_motion import collision_check, validate_recipe, target_at, grasp_mode_at
 from shovel_geometry import bin_boxes, check_dump
 from scipy.spatial.transform import Rotation
 
@@ -129,6 +129,34 @@ class ShovelGeometryTests(unittest.TestCase):
             tf=target_at(keys,np.eye(4),pivot,t,axis)
             for point in (pivot,pivot-.34*axis):
                 np.testing.assert_allclose((tf @ np.r_[point,1.])[:3],point,atol=1e-10)
+
+    def test_target_final_grid_point_tolerates_only_roundoff(self):
+        keys = self.recipe['keyframes']
+        t = np.nextafter(keys[-1]['t'], float('inf'))
+        target_at(keys,np.eye(4),np.array(self.recipe['pivot_in_tool_m']),t,np.array(self.recipe['shaft_axis_in_tool']))
+        for invalid in (t+.01, float('nan')):
+            with self.assertRaisesRegex(ValueError,'TIME_OUTSIDE_RECIPE'):
+                target_at(keys,np.eye(4),np.zeros(3),invalid)
+
+    def test_grasp_changes_require_configured_axial_support_and_stationary_hold(self):
+        recipe = self.config['demo']
+        schedule = recipe['grasp_schedule']
+        validate_recipe(self.config)
+        for change in schedule[1:]:
+            self.assertEqual(grasp_mode_at(recipe, change['t']), change['mode'])
+            self.assertNotEqual(grasp_mode_at(recipe, change['t']-.01), change['mode'])
+        for field,value,reason in [('t',5.,'REQUIRES_HOLD'),('t',17.551,'REQUIRES_HOLD'),
+                                   ('mode','open','INVALID_SHOVEL_GRASP_SCHEDULE'),
+                                   ('mode','rigid','INVALID_SHOVEL_GRASP_SCHEDULE')]:
+            bad = copy.deepcopy(self.config)
+            bad['demo']['grasp_schedule'][1][field] = value
+            with self.subTest(field=field,value=value), self.assertRaisesRegex(ValueError,reason):
+                validate_recipe(bad)
+        bad = copy.deepcopy(self.config)
+        del bad['right_axial_grasp']
+        with self.assertRaisesRegex(ValueError,'INVALID_SHOVEL_GRASP_SCHEDULE'):
+            validate_recipe(bad)
+        self.assertEqual(grasp_mode_at({}, 10.), 'rigid')
 
     def test_planning_limit_override_is_simulation_only(self):
         config=copy.deepcopy(self.config)

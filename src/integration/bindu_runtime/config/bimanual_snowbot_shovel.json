@@ -220,7 +220,7 @@
         }
       },
       {
-        "t": 17.35,
+        "t": 17.95,
         "phase": "翻铲倒雪",
         "translation_m": [
           0.0,
@@ -238,7 +238,7 @@
         }
       },
       {
-        "t": 29.35,
+        "t": 29.95,
         "phase": "倒雪保持",
         "translation_m": [
           0.0,
@@ -256,7 +256,7 @@
         }
       },
       {
-        "t": 30.65,
+        "t": 31.25,
         "phase": "扶正铲头",
         "translation_m": [
           0.0,
@@ -274,7 +274,7 @@
         }
       },
       {
-        "t": 42.65,
+        "t": 43.25,
         "phase": "保持",
         "translation_m": [
           0.0,
@@ -292,7 +292,7 @@
         }
       },
       {
-        "t": 43.35,
+        "t": 44.55,
         "phase": "转回侧方",
         "translation_m": [
           0.0,
@@ -310,7 +310,7 @@
         }
       },
       {
-        "t": 48.65,
+        "t": 49.85,
         "phase": "保持",
         "translation_m": [
           0.0,
@@ -328,7 +328,7 @@
         }
       },
       {
-        "t": 49.35,
+        "t": 50.55,
         "phase": "下放回位",
         "translation_m": [
           0.0,
@@ -346,7 +346,7 @@
         }
       },
       {
-        "t": 57.35,
+        "t": 58.55,
         "phase": "保持",
         "translation_m": [
           0.0,
@@ -364,7 +364,7 @@
         }
       },
       {
-        "t": 58.35,
+        "t": 59.55,
         "phase": "完成",
         "translation_m": [
           0.0,
@@ -398,7 +398,7 @@
       "max_ready_clearance_m": 0.015,
       "min_tool_robot_clearance_m": 0.02,
       "lift_seconds": 11.35,
-      "swing_seconds": 17.35,
+      "swing_seconds": 17.95,
       "max_phase_angle_error_rad": 0.01,
       "posture_limits_rad": {
         "body_joint_2": [
@@ -515,24 +515,39 @@
     },
     "dump": {
       "hold_seconds": [
-        29.35,
-        30.65
+        29.95,
+        31.25
       ],
       "transfer_seconds": [
-        17.35,
-        42.65
+        17.95,
+        43.25
       ],
       "mouth_margin_m": 0.04,
       "min_rim_clearance_m": 0.05,
       "min_pan_tilt_deg": 100.0
     },
-    "timing_note": "Motion durations reduced to one third (rounded to 50 ms grid); viewer plays at 1x.",
+    "timing_note": "Motion durations remain at the requested 3x timing; two target holds gain 0.6 s each for stopped grasp changes. Viewer plays at 1x.",
     "planning_limits": {
       "max_speed": 0.75,
       "max_acceleration": 9.0,
       "max_jerk": 162.0
     },
-    "joint_filter_sigma_s": 0.06
+    "joint_filter_sigma_s": 0.06,
+    "grasp_schedule": [
+      {
+        "t": 0.0,
+        "mode": "rigid"
+      },
+      {
+        "t": 17.55,
+        "mode": "right_axial"
+      },
+      {
+        "t": 44.15,
+        "mode": "rigid"
+      }
+    ],
+    "grasp_switch_hold_s": 0.6
   },
   "right_to_tool": [
     -0.7180654330047566,
