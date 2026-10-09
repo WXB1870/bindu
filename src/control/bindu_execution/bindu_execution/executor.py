@@ -10,7 +10,7 @@ import math
 import uuid
 from bindu_contracts.contracts import Event
 from bindu_contracts.ports import ExecutionIO
-from .interpolation import State, Timeline, fit_online, fit_timed, fit_stop, join, trim_before
+from .interpolation import State, Timeline, fit_online, fit_target, fit_timed, fit_stop, join, trim_before
 
 
 class Rejected(ValueError):
@@ -151,7 +151,10 @@ class Executor:
             if (self.active and self.active.mode == m.mode and self.active.positions == m.positions
                     and self.reference_names == m.names):
                 return self.path
-            suffix = fit_online(self.profile, m.names, initial, m.positions, switch)
+            # Coupled tools can select the existing synchronized group curve;
+            # ordinary position streams retain the adaptive scalar executor.
+            fit = fit_target if self.profile.joint_target_interpolation == 'synchronized' else fit_online
+            suffix = fit(self.profile, m.names, initial, m.positions, switch)
         else:
             # A positional waypoint means rest there unless explicit v/a are
             # supplied. Never silently discard a planner's derivatives.

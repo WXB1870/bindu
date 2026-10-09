@@ -37,6 +37,30 @@ class Interpolation(unittest.TestCase):
         self.assertLessEqual(abs(state.a[0]), self.p.acceleration('a')+1e-8)
         self.assertLessEqual(abs(state.j[0]), self.p.jerk('a')+1e-8)
 
+    def test_synchronized_stream_preserves_group_ratio_and_stops_on_timeout(self):
+        p=replace(self.p,groups={'left':['a'],'right':['b']},limits={'a':[-1.,1.],'b':[-1.,1.]},
+                  joint_target_interpolation='synchronized')
+        drivers={g:SimJointDriver(names,1.5) for g,names in p.groups.items()}
+        e=Executor(p,RobotIO(p,drivers,SimBaseDriver()))
+        lease,epoch=e.acquire('tool',list(p.groups),2.,0.)
+        command=Motion('coupled',lease,epoch,p.digest,'tool','','joint_target','',0.,.5,
+                       names=('a','b'),positions=(.6,-.3),schema_version=2,
+                       resource_groups=('left','right'))
+        e.submit(command,0.)
+        for i in range(1,51):
+            t=i*.01;e.tick(t)
+            if e.reference is not None:
+                q=e.reference.q
+                self.assertAlmostEqual(q[0],-2*q[1],places=10)
+                for j,n in enumerate(('a','b')):
+                    self.assertLessEqual(abs(e.reference.v[j]),p.speed(n)+1e-8)
+                    self.assertLessEqual(abs(e.reference.a[j]),p.acceleration(n)+1e-8)
+                    self.assertLessEqual(abs(e.reference.j[j]),p.jerk(n)+1e-8)
+        self.assertTrue(e.stopping is not None or e.reference is None)
+        for i in range(51,160):e.tick(i*.01)
+        self.assertIsNone(e.reference)
+        self.assertTrue(any(event.code=='COMMAND_TIMEOUT' for event in e.events))
+
     def test_one_polynomial_derivatives(self):
         path = fit_target(self.p, ('a',), State((.1,),(.15,),(-.4,)), (.7,), 0.)
         h = 1e-5

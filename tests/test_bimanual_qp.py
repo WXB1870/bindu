@@ -98,6 +98,35 @@ class NativeBimanual(unittest.TestCase):
         np.testing.assert_allclose(results[0], results[1], atol=1e-6)
         np.testing.assert_allclose(results[0], results[2], atol=1e-6)
 
+    def test_reference_kinematics_keeps_measured_grasp_guard(self):
+        solver=BimanualQP(dict(self.config,reference_kinematics=True),self.profile)
+        self.addCleanup(solver.close)
+        tool=solver.capture(self.feedback)
+        target=tool.copy();target[0,3]+=.01
+        out,_=propose(solver,self.feedback,target)
+        self.assertGreater(np.linalg.norm(np.array(out)-[self.feedback[n] for n in solver.names]),1e-6)
+        damaged=dict(self.feedback);damaged[solver.names[-2]]+=.2
+        with self.assertRaisesRegex(ValueError,'MEASURED_GRASP_ERROR'):
+            propose(solver,damaged,target,reference=[damaged[n] for n in solver.names])
+        self.assertFalse(solver.captured)
+
+    def test_reference_governor_bounds_lead_without_relaxing_hard_guard(self):
+        solver=BimanualQP(dict(self.config,reference_kinematics=True),self.profile)
+        self.addCleanup(solver.close)
+        target=solver.capture(self.feedback);target[0,3]+=.2
+        initial=np.array([self.feedback[n] for n in solver.names]);ref=initial.copy()
+        scales=[]
+        for _ in range(200):
+            out,metrics=propose(solver,self.feedback,target,reference=ref,dt=.02)
+            ref=np.asarray(out);scales.append(metrics[2])
+            self.assertLessEqual(float(np.max(np.abs(ref-initial))),.8*solver.max_reference_error+1e-10)
+        self.assertLess(min(scales),.99)
+        self.assertGreater(float(np.max(np.abs(ref-initial))),.01)
+        wrong=ref.copy();wrong[0]=initial[0]+solver.max_reference_error+.01
+        with self.assertRaisesRegex(ValueError,'REFERENCE_TRACKING_ERROR'):
+            propose(solver,self.feedback,target,reference=wrong)
+        self.assertFalse(solver.captured)
+
     def test_large_tracking_error_and_gap_require_recapture(self):
         initial = np.array([self.feedback[n] for n in self.qp.names])
         tool = self.qp.capture(self.feedback)

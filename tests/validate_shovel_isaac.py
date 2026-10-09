@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check planned joint and flange poses in Isaac Sim; no video or ROS commands.
+"""Check joint/link poses in Isaac Sim; optional viewport video, no ROS commands.
 
 Run with Isaac Sim's python.sh in an environment without ROS PYTHONPATH or
 LD_LIBRARY_PATH. Joint positions are set with zero gravity: this validates the
@@ -40,7 +40,11 @@ def verify(motion_path, output):
         raise ValueError('EMPTY_MOTION')
     times = np.array([sample['t'] for sample in motion['samples']])
     fps = motion['recipe']['sample_hz']
-    duration = motion['recipe']['keyframes'][-1]['t']
+    duration = motion.get('duration_s',motion['recipe']['keyframes'][-1]['t'])
+    if duration < motion['recipe']['keyframes'][-1]['t']:
+        raise ValueError('MOTION_TRUNCATED_INPUT')
+    if 'tool_input_path' in motion and hashlib.sha256(Path(motion['tool_input_path']).read_bytes()).hexdigest()!=motion['tool_input_sha256']:
+        raise ValueError('MOTION_INPUT_IDENTITY')
     if (not np.isfinite(times).all() or not np.isfinite([fps,duration]).all() or fps <= 0 or
             len(times) != round(duration*fps)+1 or not np.allclose(times,np.arange(len(times))/fps)):
         raise ValueError('INVALID_MOTION_TIMELINE')
@@ -187,9 +191,12 @@ def verify(motion_path, output):
     return world, body, flanges, motion
 
 
-def preview(app, context, output):
+def preview(app, context, output, record_video=False):
     """Play checked samples at their configured trajectory timing."""
     import time
+    import asyncio
+    import shutil
+    import subprocess
     import numpy as np
     from scipy.spatial.transform import Rotation
     from pxr import Gf, UsdGeom, UsdLux
@@ -273,7 +280,7 @@ def preview(app, context, output):
                 ui.Label('1x trajectory time | Kinematic replay',height=20)
                 ui.Label('No snow / load / contact dynamics',height=20)
                 ui.Label('Gold stripe: shaft | Pointer: actual right palm',height=20)
-                ui.Label('Scheduled trigger; physical gripper not actuated',height=20)
+                ui.Label('Recorded pose + tight input; gripper not actuated',height=20)
                 ui.Label('Plays once; Restart / seek resets the pose fixture',height=20)
                 label=ui.Label('Ready',height=24)
                 grasp_label=ui.Label('Both hands locked',height=24)
@@ -302,9 +309,23 @@ def preview(app, context, output):
         snapshot_times['loose']=(loose_change['t']+recipe['dump']['hold_seconds'][0])/2
         snapshot_times['relock']=recipe['grasp_schedule'][-1]['t']+.2
     captured = set()
+    frames_dir = output/'video_frames'
+    video_index = 0
+    if record_video:
+        if not shutil.which('ffmpeg'):
+            raise RuntimeError('VIDEO_FFMPEG_UNAVAILABLE')
+        frames_dir.mkdir()
+        viewport = get_active_viewport()
+        viewport.resolution = (1280,720)
+        playback['playing'] = False
+        for _ in range(20): world.render()
     previous=time.monotonic();last_index=-1
     print('SHOVEL_GUI_READY',flush=True)
     while app.is_running():
+        if record_video:
+            # Fixed timestamps and completed captures avoid dropped frames or
+            # changing playback speed on a slow renderer.
+            playback.update(t=video_index/fps, seek=True, playing=False)
         now=time.monotonic();dt=min(now-previous,.1);previous=now
         if playback['playing'] and not playback['seek']:
             playback['t']+=dt
@@ -328,7 +349,7 @@ def preview(app, context, output):
             pointer_transform.Set(Gf.Matrix4d((right_tf @ right_grip).T.tolist()))
             loose=samples[index].get('grasp_mode')=='right_axial'
             pointer_color.Set([Gf.Vec3f(*((1.,.45,.05) if loose else (.1,1.,.45)))])
-            grasp_label.text=('TRIGGER HELD | RIGHT AXIAL SUPPORT' if loose else 'TRIGGER RELEASED | BOTH HANDS LOCKED')
+            grasp_label.text=('tight=false | RIGHT AXIAL SUPPORT' if loose else 'tight=true | BOTH HANDS LOCKED')
             roll_label.text=f'Right-hand / shaft relative roll: {np.rad2deg(samples[index].get("right_grip_roll_rad",0.)):.1f} deg'
             label.text=f'{samples[index]["t"]:.2f} / {duration:.2f} s | {phase_text.get(samples[index]["phase"],"Motion")}'
             last_index=index;playback['seek']=False
@@ -337,7 +358,51 @@ def preview(app, context, output):
             if name not in captured and playback['t'] >= t:
                 capture_viewport_to_file(get_active_viewport(),str(output/(name+'.png')))
                 captured.add(name)
-        time.sleep(.005)
+        if record_video:
+            path = frames_dir/f'{video_index:06d}.png'
+            capture = capture_viewport_to_file(viewport, str(path))
+            pending = asyncio.ensure_future(capture.wait_for_result())
+            deadline = time.monotonic()+20.
+            while not pending.done() and app.is_running() and time.monotonic()<deadline:
+                app.update()
+            if not pending.done():
+                raise RuntimeError('VIDEO_CAPTURE_TIMEOUT')
+            if 'LdrColor' not in pending.result():
+                raise RuntimeError('VIDEO_CAPTURE_NO_COLOR')
+            # Viewport completion schedules the GPU readback; wait for the
+            # renderer's asynchronous file write before advancing the pose.
+            import omni.kit.renderer_capture
+            renderer_capture=omni.kit.renderer_capture.acquire_renderer_capture_interface()
+            for _ in range(3):
+                renderer_capture.wait_async_capture()
+                app.update()
+            while not path.is_file() and time.monotonic()<deadline:
+                app.update()
+                time.sleep(.002)
+            if not path.is_file() or not path.stat().st_size:
+                raise RuntimeError('VIDEO_CAPTURE_EMPTY')
+            video_index += 1
+            if video_index % 100 == 0:
+                print(f'SHOVEL_VIDEO_FRAMES {video_index}/{len(samples)}',flush=True)
+            if video_index == len(samples): break
+        else:
+            time.sleep(.005)
+    if record_video:
+        if video_index != len(samples):
+            raise RuntimeError('VIDEO_INTERRUPTED')
+        video=output/'snowbot_shovel_pose_input.mp4'
+        with (output/'ffmpeg.log').open('w') as log:
+            subprocess.run(['ffmpeg','-nostdin','-v','warning','-framerate',str(fps),
+                '-i','video_frames/%06d.png','-c:v','libx264','-threads','2',
+                '-crf','19','-pix_fmt','yuv420p','-movflags','+faststart',video.name],
+                cwd=output,stdout=log,stderr=subprocess.STDOUT,check=True)
+        metadata={'status':'passed','frames':video_index,'fps':fps,'duration_s':video_index/fps,
+                  'trajectory_duration_s':duration,'playback_speed':1.,'resolution':[1280,720],
+                  'motion_sha256':json.loads((output/'validation.json').read_text())['motion_sha256'],
+                  'video_path':str(video),'video_sha256':hashlib.sha256(video.read_bytes()).hexdigest(),
+                  'kinematic_replay':True,'snow_contact_dynamics':False,'text_overlay':False}
+        (output/'video.json').write_text(json.dumps(metadata,indent=2)+'\n')
+        print('SHOVEL_VIDEO_COMPLETE '+str(video),flush=True)
 
 
 def main():
@@ -345,6 +410,7 @@ def main():
     parser.add_argument('motion', type=Path)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--gui', action='store_true', help='After verification, keep an interactive 1x playback window open')
+    parser.add_argument('--video', action='store_true', help='Capture every checked sample at 1x timing to MP4, then exit')
     args = parser.parse_args()
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=True)
@@ -354,8 +420,8 @@ def main():
     app = SimulationApp({'headless': not args.gui, 'fast_shutdown': True, 'window_width':1600, 'window_height':1000})
     try:
         context = verify(args.motion.resolve(), output)
-        if args.gui:
-            preview(app, context, output)
+        if args.gui or args.video:
+            preview(app, context, output, record_video=args.video)
     except BaseException:
         # Kit's atexit fast shutdown replaces uncaught exceptions with exit 0.
         # Preserve the diagnostic and failure status before that handler runs.

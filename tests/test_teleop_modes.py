@@ -4,9 +4,9 @@ from pathlib import Path
 from types import SimpleNamespace as S
 import numpy as np
 from bindu_contracts.profile import Profile
-from bindu_contracts.teleoperation import VRFrame
+from bindu_contracts.teleoperation import VRFrame, ToolPoseFrame
 from bindu_teleoperation.modes import ModeSelection
-from bindu_teleoperation.bimanual_session import BimanualSession, AcceptedReference
+from bindu_teleoperation.bimanual_session import BimanualSession, ToolPoseSession, AcceptedReference
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -65,6 +65,23 @@ class ModeTests(unittest.TestCase):
         self.assertEqual(self.ready(),'VR_PAIR_MISMATCH')
         self.frames['right']=VRFrame('source',1,11.1,'right',self.frames['right'].pose,grip=1.)
         self.assertEqual(self.ready(),'VR_RELEASE_REQUIRED')
+
+    def test_mapped_tool_selection_needs_only_fresh_pose_and_grip(self):
+        self.m.tool_config = dict(input_frame='base', input_max_age=.25, right_axial_grasp={})
+        frame = ToolPoseFrame('tool', 1, 11.1, 'base', tuple(np.eye(4).ravel()), True)
+        def ready(f=frame):
+            return self.m.ready(self.state, self.health, {}, 11.15,
+                                tuple(self.profile.groups), tool_frame=f)
+        self.assertEqual(ready(), '')
+        self.assertEqual(ready(replace(frame, tight=False)), '')
+        for bad in (None, replace(frame, stamp=11.), replace(frame, stop=True),
+                    replace(frame, frame_id='wrong'), replace(frame, valid=False)):
+            self.assertEqual(ready(bad), 'TOOL_INPUT_INVALID')
+        self.state.lease_active = True
+        self.assertEqual(ready(), 'EXECUTION_NOT_QUIESCENT')
+        self.state.lease_active = False
+        self.m.target = ('single_arm', 'left')
+        self.assertEqual(ready(), 'VR_RELEASE_REQUIRED')
 
     def test_generation_fences_old_requests_and_failure_is_safe(self):
         self.assertEqual(self.ready(),'')
@@ -233,3 +250,40 @@ class AxialTriggerTests(unittest.TestCase):
         self.session.ingest(*self.frame(10.41,left_angle=.5),10.41)
         self.session.capture(np.eye(4))
         np.testing.assert_allclose(self.session.target,np.eye(4),atol=1e-12)
+
+
+class ToolPoseInputTests(unittest.TestCase):
+    def setUp(self):
+        self.cfg={'input_frame':'base','input_max_age':.25,'right_axial_grasp':{}}
+        self.session=ToolPoseSession(self.cfg,1,0.)
+
+    def frame(self, seq=1, stamp=.1, tight=True):
+        pose=np.eye(4);pose[0,3]=.3
+        return ToolPoseFrame('source',seq,stamp,'base',tuple(pose.ravel()),tight)
+
+    def test_absolute_target_survives_grasp_stop_and_recapture(self):
+        s=self.session;s.ingest(self.frame(),.1)
+        s.capture(np.eye(4))
+        first=s.target.copy()
+        s.ingest(self.frame(2,.2,False),.2)
+        self.assertEqual(s.grasp_mode,'right_axial')
+        self.assertEqual(s.grasp_generation,1)
+        self.assertIsNone(s.anchor_tool)
+        shifted=np.eye(4);shifted[0,3]=.2
+        s.capture(shifted)
+        np.testing.assert_array_equal(s.target,first)
+        s.ingest(self.frame(3,.3,True),.3)
+        self.assertEqual(s.grasp_mode,'rigid')
+        self.assertEqual(s.grasp_generation,2)
+
+    def test_invalid_stale_wrong_frame_stop_and_connection_change_fail(self):
+        f=self.frame()
+        for change in ({'pose':tuple([float('nan')]*16)},{'stamp':-.1},
+                       {'stamp':.2},{'frame_id':'wrong'},{'tight':1},
+                       {'valid':False},{'stop':True},{'seq':-1}):
+            with self.subTest(change=change),self.assertRaises(ValueError):
+                self.session.ingest(replace(f,**change),.1)
+        self.session.ingest(f,.1)
+        with self.assertRaisesRegex(ValueError,'CONNECTION_CHANGED'):
+            self.session.ingest(replace(f,source_id='another',seq=2),.1)
+        self.assertFalse(self.session.ingest(f,.1))

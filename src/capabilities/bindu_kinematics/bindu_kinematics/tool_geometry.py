@@ -271,14 +271,18 @@ def make_collision_checker(urdf, recipe, conservative_convex=False):
             shaft_heights = (shaft_points @ tool[:3,:3].T + tool[:3,3])[:,2] - radial_height
             ground_failure = min(corners[:,2].min(),shaft_heights.min()) < ground_z+floor_clearance
             pan_pose = fcl.Transform3s(tool[:3, :3], tool[:3, 3]+tool[:3, :3] @ np.array(recipe['pan_center_m']))
-            for name, body_shape, placement in zip(names, query_shapes, geometry_data.oMg):
-                body_pose = fcl.Transform3s(placement.rotation, placement.translation)
-                body_center, body_half = world_bounds(body_shape, placement.rotation, placement.translation)
+            # The same body poses are checked against the tool and all five
+            # bin walls. Compute their world bounds once per measured pose.
+            bodies = [(name,shape,fcl.Transform3s(place.rotation,place.translation),
+                       world_bounds(shape,place.rotation,place.translation))
+                      for name,shape,place in zip(names,query_shapes,geometry_data.oMg)]
+            pan_bounds = world_bounds(pan,pan_pose.getRotation(),pan_pose.getTranslation())
+            for name, body_shape, body_pose, (body_center, body_half) in bodies:
                 parts = [('PAN', pan, pan_pose)]
                 parts += [('SHAFT', shape, fcl.Transform3s(tool[:3, :3] @ rotation,
                            tool[:3, 3]+tool[:3, :3] @ center)) for shape, center in segments[name]]
                 for part, shape, pose in parts:
-                    part_center, part_half = world_bounds(shape, pose.getRotation(), pose.getTranslation())
+                    part_center, part_half = pan_bounds if part == 'PAN' else world_bounds(shape, pose.getRotation(), pose.getTranslation())
                     lower_bound = np.linalg.norm(np.maximum(np.abs(part_center-body_center)-part_half-body_half, 0.))-1e-9
                     if lower_bound >= max(clearance_limit, minimum):
                         bounded_queries += 1
@@ -295,14 +299,12 @@ def make_collision_checker(urdf, recipe, conservative_convex=False):
                         failure = f'{part}_CLEARANCE: {name} distance={distance:.6g}'
             # No grip exemptions apply to the receiving bin. Check every body mesh,
             # the full shaft and the pan against its four walls and floor.
-            scene_parts = [(name,shape,fcl.Transform3s(place.rotation,place.translation))
-                           for name,shape,place in zip(names,query_shapes,geometry_data.oMg)]
-            scene_parts += [('PAN',pan,pan_pose), ('SHAFT',full_shaft,
-                            fcl.Transform3s(tool[:3,:3] @ rotation,tool[:3,3]+tool[:3,:3] @ shaft_center))]
+            shaft_pose = fcl.Transform3s(tool[:3,:3] @ rotation,tool[:3,3]+tool[:3,:3] @ shaft_center)
+            scene_parts = bodies + [('PAN',pan,pan_pose,pan_bounds),
+                ('SHAFT',full_shaft,shaft_pose,world_bounds(full_shaft,shaft_pose.getRotation(),shaft_pose.getTranslation()))]
             for wall,box,box_pose in bin_parts:
                 c1,h1 = world_bounds(box,box_pose.getRotation(),box_pose.getTranslation())
-                for name,shape,pose in scene_parts:
-                    c2,h2 = world_bounds(shape,pose.getRotation(),pose.getTranslation())
+                for name,shape,pose,(c2,h2) in scene_parts:
                     bound = np.linalg.norm(np.maximum(np.abs(c1-c2)-h1-h2,0.))-1e-9
                     if bound >= max(bin_limit,bin_minimum):
                         continue

@@ -1,15 +1,16 @@
 """Manual teleoperation mode fencing; no ROS or robot-specific resource names."""
 import math
-from .bimanual_session import BimanualSession
+from .bimanual_session import BimanualSession, ToolPoseSession
 from .vr.mapping import pose_matrix
 
 
 class ModeSelection:
-    def __init__(self, profile, initial_side, now, input_age=.25, feedback_age=.2, left_orientation=False):
+    def __init__(self, profile, initial_side, now, input_age=.25, feedback_age=.2, left_orientation=False, tool_config=None):
         if initial_side not in ('left','right'):
             raise ValueError('INVALID_SIDE')
         self.profile = profile
         self.left_orientation = left_orientation
+        self.tool_config = tool_config
         self.mode, self.side, self.phase = 'single_arm', initial_side, 'READY'
         self.generation, self.changed_at = 1, now
         self.target = None
@@ -29,7 +30,7 @@ class ModeSelection:
         self.phase, self.code, self.changed_at = 'SWITCHING', 'STOPPING_PREVIOUS_MODE', now
         return True
 
-    def ready(self, state, health, frames, now, resources):
+    def ready(self, state, health, frames, now, resources, tool_frame=None):
         if self.phase != 'SWITCHING' or state is None:
             return 'EXECUTION_NOT_READY'
         if (state.profile_hash != self.profile.digest or state.lease_active or
@@ -44,6 +45,14 @@ class ModeSelection:
         if health is None or not health.ready or not 0 <= now-health.stamp < .75:
             return 'RECORDER_UNAVAILABLE'
         mode, side = self.target
+        if mode == 'bimanual_tool' and self.tool_config is not None:
+            # A mapped tool source has no VR clutch. Manual selection still
+            # requires stopped execution and fresh input after the switch.
+            try:
+                ToolPoseSession(self.tool_config, self.generation, self.changed_at).ingest(tool_frame, now)
+            except (ValueError, TypeError) as exc:
+                return str(exc) if isinstance(exc, ValueError) else 'TOOL_INPUT_INVALID'
+            return ''
         sides = ('left','right') if mode == 'bimanual_tool' else (side,)
         selected = []
         for key in sides:

@@ -9,11 +9,11 @@ from rclpy.callback_groups import ReentrantCallbackGroup, MutuallyExclusiveCallb
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
 from rclpy.task import Future
 from std_srvs.srv import Trigger
-from bindu_contracts.teleoperation import VRFrame
-from bindu_teleoperation.bimanual_session import BimanualSession, AcceptedReference
+from bindu_contracts.teleoperation import VRFrame, ToolPoseFrame
+from bindu_teleoperation.bimanual_session import BimanualSession, ToolPoseSession, AcceptedReference
 from bindu_kinematics.bimanual_worker import BimanualWorker
 from bindu_interfaces.action import TeleopSession as TeleopAction
-from bindu_interfaces.msg import VRInput, ExecutionState, RecorderHealth, MotionCommand, TeleopModeState
+from bindu_interfaces.msg import VRInput, ExecutionState, RecorderHealth, MotionCommand, TeleopModeState, ToolPoseInput
 from bindu_interfaces.srv import Lease, SubmitMotion, ControlExecution
 from .common import MODE_STATE_MAX_AGE, RuntimeNode, seconds, stamp, spin
 
@@ -30,6 +30,13 @@ class BimanualToolNode(RuntimeNode):
         urdf=Path(self.cfg['urdf'])
         self.cfg['urdf']=str(urdf if urdf.is_absolute() else
                              Path(self.get_parameter('model_root').value)/urdf)
+        self.declare_parameter('input_source','vr')
+        self.input_source=self.get_parameter('input_source').value
+        if self.input_source not in ('vr','tool_pose'):
+            raise ValueError('BIMANUAL_INPUT_SOURCE')
+        if self.input_source == 'tool_pose' and not self.cfg.get('input_frame'):
+            raise ValueError('BIMANUAL_INPUT_FRAME')
+        self.tool_frame=None
         self.groups=tuple(self.cfg['resource_groups'])
         if (len(self.groups) not in (2,3) or len(set(self.groups))!=len(self.groups) or
                 any(g not in self.profile.groups for g in self.groups)):
@@ -53,11 +60,14 @@ class BimanualToolNode(RuntimeNode):
         # Otherwise one hand can starve while the other keeps arriving.
         self.create_subscription(VRInput,'teleop/vr/input',self.on_frame,5,
                                  callback_group=MutuallyExclusiveCallbackGroup())
+        self.create_subscription(ToolPoseInput,'teleop/tool/input',self.on_tool_frame,5,
+                                 callback_group=MutuallyExclusiveCallbackGroup())
         self.create_subscription(ExecutionState,'execution/state',lambda m:setattr(self,'state',m),1)
         self.create_subscription(RecorderHealth,'recorder/health',self.on_health,5)
         self.create_subscription(TeleopModeState,'teleop/mode_state',
             lambda m:setattr(self,'mode_state',m),QoSProfile(depth=1,
                 reliability=ReliabilityPolicy.RELIABLE,durability=DurabilityPolicy.TRANSIENT_LOCAL))
+        self.waiters=set()
         self.create_timer(.005,self.poll_worker)
         self.create_service(Trigger,'teleop/tool_ready',self.ready)
         self.server=ActionServer(self,TeleopAction,'teleop/tool_session',
@@ -72,7 +82,16 @@ class BimanualToolNode(RuntimeNode):
             self.frames[msg.side]=VRFrame(msg.source_id,msg.seq,seconds(msg.stamp),msg.side,
                 tuple(msg.pose),msg.grip,msg.trigger,msg.init,msg.stop,msg.valid,msg.clutch_seq)
 
+    def on_tool_frame(self,msg):
+        if self.input_source == 'tool_pose':
+            self.tool_frame=ToolPoseFrame(msg.source_id,msg.seq,seconds(msg.stamp),
+                msg.frame_id,tuple(msg.pose),msg.tight,msg.valid,msg.stop)
+
     def poll_worker(self):
+        # Reuse one timer: creating/destroying a ROS timer at every await
+        # stalls callback scheduling during sustained input streams.
+        for future in tuple(self.waiters):
+            if not future.done(): future.set_result(None)
         if self.worker_error: return
         try:
             item=self.worker.poll()
@@ -125,7 +144,12 @@ class BimanualToolNode(RuntimeNode):
             raise RuntimeError('BIMANUAL_FEEDBACK_STALE')
         if self.health is None or not self.health.ready or not 0 <= now-seconds(self.health.stamp)<.75:
             raise RuntimeError('RECORDER_UNAVAILABLE')
-        if (any(side not in self.frames or self.frames[side].stamp <= seconds(m.changed_at) or
+        if self.input_source == 'tool_pose':
+            f=self.tool_frame
+            if (f is None or not f.valid or f.stop or f.stamp<=seconds(m.changed_at) or
+                    not 0<=now-f.stamp<=self.cfg['input_max_age']):
+                raise RuntimeError('TOOL_INPUT_TIMEOUT')
+        elif (any(side not in self.frames or self.frames[side].stamp <= seconds(m.changed_at) or
                 not 0 <= now-self.frames[side].stamp <= self.cfg['input_max_age']
                 for side in ('left','right'))):
             raise RuntimeError('VR_PAIR_TIMEOUT')
@@ -145,9 +169,9 @@ class BimanualToolNode(RuntimeNode):
 
     async def pause(self):
         future=Future(executor=self.executor)
-        timer=self.create_timer(.005,lambda:future.set_result(None) if not future.done() else None)
+        self.waiters.add(future)
         try: await future
-        finally: self.destroy_timer(timer)
+        finally: self.waiters.discard(future)
 
     async def wait(self,future,timeout=.7):
         deadline=time.monotonic()+timeout
@@ -177,7 +201,7 @@ class BimanualToolNode(RuntimeNode):
                         0 <= self.now()-seconds(s.feedback_stamp)<self.cfg['feedback_max_age'] and
                         not s.reference.name and
                         all(n in velocities and math.isfinite(velocities[n]) and
-                            abs(velocities[n])<.01 for n in self.names) and
+                            abs(velocities[n])<.005 for n in self.names) and
                         (not release or not s.lease_active)):
                     return True
                 await self.pause()
@@ -194,7 +218,8 @@ class BimanualToolNode(RuntimeNode):
 
     async def execute(self,goal):
         mode=self.mode_state
-        session=BimanualSession(self.cfg,mode.generation,seconds(mode.changed_at))
+        session_type=ToolPoseSession if self.input_source=='tool_pose' else BimanualSession
+        session=session_type(self.cfg,mode.generation,seconds(mode.changed_at))
         reference=AcceptedReference(self.cfg.get('max_integration_interval',.1))
         result=TeleopAction.Result(simulated=True)
         lease=pending=renewal=None
@@ -244,14 +269,15 @@ class BimanualToolNode(RuntimeNode):
                 self.check()
                 if self.mode_state.generation != session.generation:
                     raise RuntimeError('BIMANUAL_MODE_GENERATION_CHANGED')
-                left,right=self.frames['left'],self.frames['right']
-                if left.source_id != right.source_id or left.seq != right.seq:
-                    # ROS delivers the two sides as separate messages. Wait for
-                    # their common receiver event instead of faulting on the
-                    # brief interval between callbacks.
-                    await self.pause()
-                    continue
-                session.ingest(left,right,self.now())
+                if self.input_source == 'tool_pose':
+                    session.ingest(self.tool_frame,self.now())
+                else:
+                    left,right=self.frames['left'],self.frames['right']
+                    if left.source_id != right.source_id or left.seq != right.seq:
+                        # ROS delivers the two sides as separate messages.
+                        await self.pause()
+                        continue
+                    session.ingest(left,right,self.now())
                 if pending is not None:
                     if pending.done():
                         reply=pending.result()
@@ -397,4 +423,7 @@ class BimanualToolNode(RuntimeNode):
 
 
 def main():
-    spin(BimanualToolNode)
+    # All service waits yield and numerical work lives in a separate process.
+    # Serialize callbacks like ExecutionNode: multiple executor threads can
+    # starve fresh state/input callbacks behind the high-frequency polling timer.
+    spin(BimanualToolNode, threaded=False)

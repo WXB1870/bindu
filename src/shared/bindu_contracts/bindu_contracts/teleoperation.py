@@ -23,6 +23,23 @@ class VRFrame:
 
 
 @dataclass(frozen=True)
+class ToolPoseFrame:
+    """Absolute tool pose in the robot base; independent of VR and task phases.
+
+    tight=False means right axial support, not releasing the tool. The left
+    grip remains locked. Source/sequence/time are transport safety metadata.
+    """
+    source_id: str
+    seq: int
+    stamp: float
+    frame_id: str
+    pose: Tuple[float, ...]
+    tight: bool
+    valid: bool = True
+    stop: bool = False
+
+
+@dataclass(frozen=True)
 class IKRequest:
     request_id: str
     generation: int

@@ -24,6 +24,7 @@ class Profile:
 
     base_limits: dict = field(default_factory=dict)
     feedback_tolerances: dict = field(default_factory=dict)
+    joint_target_interpolation: str = "adaptive"
 
     def base_speed(self, axis):
         return self.base_limits.get(axis + "_velocity", .4)
@@ -54,11 +55,13 @@ class Profile:
             raise ValueError('invalid maximum speed')
         digest = hashlib.sha256(json.dumps(raw, sort_keys=True).encode()).hexdigest()
         cfg = raw.get('execution', {})
-        allowed = {'max_acceleration', 'max_jerk', 'control_period', 'max_tick_gap', 'stop_timeout', 'joint_dynamics', 'max_transition_duration', 'base_limits', 'feedback_tolerances'}
+        allowed = {'max_acceleration', 'max_jerk', 'control_period', 'max_tick_gap', 'stop_timeout', 'joint_dynamics', 'max_transition_duration', 'base_limits', 'feedback_tolerances', 'joint_target_interpolation'}
         if set(cfg)-allowed:
             raise ValueError('unknown execution setting')
         profile = cls(raw['name'], raw['groups'], raw['limits'], raw['max_speed'],
                       tuple(raw['capabilities']), digest, **cfg)
+        if profile.joint_target_interpolation not in ('adaptive','synchronized'):
+            raise ValueError('invalid joint target interpolation')
         for value in (profile.max_acceleration, profile.max_jerk, profile.control_period,
                       profile.max_tick_gap, profile.stop_timeout, profile.max_transition_duration):
             if type(value) not in (float, int) or not math.isfinite(value) or value <= 0:

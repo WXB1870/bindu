@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
-"""Generate and check an offline shovel trajectory with the existing QP.
+"""Generate mapped tool input and check its causal execution with the shared QP/executor.
 
 The recipe owns robot names, ready posture, grasp and motion. This tool does not
 publish commands. Positions are metres/radians in the fixed URDF base frame.
 Rotation is world yaw, local pitch, then roll about the shaft. The rear grip
-is the pivot. Optional offline joint smoothing is validated after filtering.
+is the pivot. Only the input generator knows the recipe; execution has no lookahead.
 """
 import argparse
-from dataclasses import replace
 import hashlib
 import json
 from pathlib import Path
@@ -33,6 +32,8 @@ def validate_recipe(config):
         return not isinstance(value, (int, float)) or np.isfinite(value)
     if not finite(config):
         raise ValueError('NONFINITE_SHOVEL_CONFIG')
+    if config.get('simulation_only') is not True:
+        raise ValueError('SHOVEL_REQUIRES_SIMULATION')
     recipe, design = config['demo'], config['demo']['selected_design']
     if ('shared_targets' in config or
             any('shared_targets_rad' in key for key in recipe['keyframes'])):
@@ -53,12 +54,6 @@ def validate_recipe(config):
         expected = -design['grip_spacing_m'] if value['grip']=='right' else 0.
         if value['grip'] not in ('left','right') or not np.isclose(value['center_m'], expected):
             raise ValueError('SHOVEL_CONTACT_MISMATCH')
-    if 'planning_limits' in recipe:
-        limits = recipe['planning_limits']
-        if (config.get('simulation_only') is not True or
-                set(limits) != {'max_speed','max_acceleration','max_jerk'} or
-                any(not isinstance(v,(int,float)) or v <= 0 for v in limits.values())):
-            raise ValueError('INVALID_SHOVEL_PLANNING_LIMITS')
     bin_boxes(recipe)
     keys, gate = recipe['keyframes'], recipe['acceptance']
     schedule = recipe.get('grasp_schedule', [{'t': 0., 'mode': 'rigid'}])
@@ -71,30 +66,10 @@ def validate_recipe(config):
             not np.allclose(config['right_axial_grasp']['axis_in_tool'], axis) or
             not np.allclose(config['right_axial_grasp']['grip_in_right_flange_m'], recipe['grip_offset_m'])):
         raise ValueError('SHOVEL_AXIAL_GEOMETRY_MISMATCH')
-    switch_hold = float(recipe.get('grasp_switch_hold_s', 0.))
-    switch_ramp = float(recipe.get('grasp_switch_ramp_s', 0.))
-    if not np.isfinite(switch_ramp) or switch_ramp < 0:
-        raise ValueError('SHOVEL_GRASP_STOP_RAMP')
-    if len(schedule)>1 and switch_hold/2 < 4*float(recipe.get('joint_filter_sigma_s',0.))+.01:
-        raise ValueError('SHOVEL_GRASP_HOLD_FILTER_SUPPORT')
-    for change in schedule[1:]:
-        # Switch inside a stationary target hold, on both the control and saved
-        # pose grids. Actual joint stop speed is independently checked below.
-        hold = next(((a,b) for a,b in zip(keys,keys[1:]) if a['t'] < change['t'] < b['t']), None)
-        if (hold is None or not hold[0]['t'] <= change['t']-switch_hold/2-switch_ramp < change['t']+switch_hold/2+switch_ramp <= hold[1]['t'] or not np.isclose(change['t']*recipe['sample_hz'], round(change['t']*recipe['sample_hz'])) or
-                not np.isclose(change['t']/config['sample_period'], round(change['t']/config['sample_period'])) or
-                any(not np.allclose(hold[0].get(field,0.),hold[1].get(field,0.))
-                    for field in ('translation_m','yaw_pitch_rad','shaft_roll_rad'))):
-            raise ValueError('SHOVEL_GRASP_SWITCH_REQUIRES_HOLD')
-    finish_hold = float(recipe.get('finish_hold_s', 0.))
-    finish_ramp = float(recipe.get('finish_ramp_s', 0.))
-    if finish_hold or finish_ramp:
-        if (not np.isfinite([finish_hold, finish_ramp]).all() or finish_ramp <= 0 or
-                finish_hold < 4*float(recipe.get('joint_filter_sigma_s',0.))+.01 or
-                finish_hold+finish_ramp > keys[-1]['t']-keys[-2]['t'] or
-                any(not np.allclose(keys[-2].get(field,0.),keys[-1].get(field,0.))
-                    for field in ('translation_m','yaw_pitch_rad','shaft_roll_rad'))):
-            raise ValueError('SHOVEL_FINISH_STOP_REQUIRES_HOLD')
+    forbidden = {'planning_limits','joint_filter_sigma_s','grasp_switch_hold_s',
+                 'grasp_switch_ramp_s','finish_hold_s','finish_ramp_s'}
+    if forbidden.intersection(recipe):
+        raise ValueError('SHOVEL_OFFLINE_CONDITION_FORBIDDEN')
     if 'dump' in recipe:
         if 'receiving_bin' not in recipe or not np.isclose(recipe['receiving_bin']['bottom_z_m'], recipe['ground']['z_in_base_m']):
             raise ValueError('INVALID_RECEIVING_BIN_GROUND')
@@ -140,28 +115,86 @@ def grasp_mode_at(recipe, seconds):
                 if seconds+1e-9 >= k['t'])
 
 
-def motion_stop_scale(recipe, seconds):
-    """Offline, uniform joint-increment taper at grasp changes and completion.
+def run_input_stream(solver, profile, config, initial, inputs):
+    """Causal local execution of mapped teleoperation packets.
 
-    This is not an online time step: QP integration still uses the actual dt.
-    The resulting path is independently checked after filtering below.
+    No recipe, phases, future targets or target duration enter this loop.
+    It uses the production Executor and simulated device drivers. End of input
+    exercises the ordinary freshness watchdog, then records the stopped tail.
     """
-    scale = 1.
-    half_hold = float(recipe.get('grasp_switch_hold_s', 0.))/2
-    ramp = float(recipe.get('grasp_switch_ramp_s', 0.))
-    for change in recipe.get('grasp_schedule', [])[1:]:
-        distance = abs(seconds-change['t'])-half_hold
-        if distance <= 1e-9:
-            return 0.
-        if ramp > 0:
-            u = np.clip(distance/ramp, 0., 1.)
-            scale = min(scale, u**3*(10.-15.*u+6.*u*u))
-    finish_hold = float(recipe.get('finish_hold_s', 0.))
-    if finish_hold > 0:
-        remaining = recipe['keyframes'][-1]['t']-finish_hold-seconds
-        u = np.clip(remaining/recipe['finish_ramp_s'], 0., 1.)
-        scale = min(scale, u**3*(10.-15.*u+6.*u*u))
-    return scale
+    from bindu_contracts.contracts import Motion
+    from bindu_teleoperation.bimanual_session import ToolPoseSession, AcceptedReference
+    from bindu_execution.executor import Executor
+    from bindu_hardware.robot_io.system import RobotIO
+    from bindu_hardware.drivers.simulated_joints import SimJointDriver
+    from bindu_hardware.drivers.simulated_base import SimBaseDriver
+    drivers={g:SimJointDriver(names,profile.max_speed,initial) for g,names in profile.groups.items()}
+    io=RobotIO(profile,drivers,SimBaseDriver())
+    executor=Executor(profile,io)
+    session=ToolPoseSession(config,0,-1.)
+    reference=AcceptedReference(config.get('max_integration_interval',.1))
+    dt=profile.control_period
+    lease,epoch=executor.acquire(session.identity,solver.groups,2.,0.)
+    frames=iter(inputs)
+    latest=None
+    exhausted=False
+    closing=False
+    last_generation=0
+    records=[];events=[];packets=[]
+    max_solve=0.
+    next_renewal=0.
+    for step in range(360000):
+        t=round(step*dt,9)
+        executor.tick(t)
+        measured=dict(initial);measured.update(executor.feedback.positions)
+        v=tuple((measured[n]-records[-1]['q'][n])/dt for n in solver.names) if records else (0.,)*len(solver.names)
+        if executor.events and any('EMERGENCY' in e.code or e.state=='FAILED' for e in executor.events):
+            raise ValueError('SHOVEL_EXECUTION_FAILED:'+executor.events[-1].code)
+        if t>=next_renewal:
+            executor.renew(lease,epoch,t);next_renewal=t+.3
+        if not exhausted:
+            try:
+                latest=next(frames)
+                if abs(latest.stamp-t)>1e-8:
+                    raise ValueError('SHOVEL_INPUT_GRID')
+                session.ingest(latest,t)
+                packets.append({'stamp':latest.stamp,'seq':latest.seq,'source_id':latest.source_id,
+                    'frame_id':latest.frame_id,'pose':list(latest.pose),'tight':latest.tight})
+            except StopIteration:
+                exhausted=True
+        if latest is None:
+            raise ValueError('EMPTY_TOOL_INPUT')
+        if exhausted and t-latest.stamp>config['input_max_age'] and not closing:
+            executor.halt(t)
+            closing=True
+            events.append({'t':t,'event':'input_timeout_stop'})
+        if not closing:
+            if session.grasp_generation != last_generation:
+                executor.halt(t)
+                session.reanchor();reference.reset()
+                last_generation=session.grasp_generation
+                events.append({'t':t,'event':'grasp_requested','mode':session.grasp_mode})
+            if executor.stopping is None and (session.anchor_tool is not None or max(map(abs,v))<=.005):
+                if session.anchor_tool is None:
+                    session.capture(solver.capture(measured,session.grasp_mode))
+                    reference.capture([measured[n] for n in solver.names],t)
+                    events.append({'t':t,'event':'grasp_applied','mode':session.grasp_mode,
+                                   'speed_rad_s':float(max(map(abs,v)))})
+                else:
+                    baseline,interval=reference.step(t)
+                    positions,metrics=solver.solve(measured,session.target,reference=baseline,dt=interval)
+                    executor.submit(Motion(str(step),lease,epoch,profile.digest,'shovel_input',str(step),
+                        'joint_target','',t,config['command_max_age'],names=solver.names,
+                        positions=positions,schema_version=2,resource_groups=solver.groups),t)
+                    reference.accept(positions,t)
+                    max_solve=max(max_solve,metrics[0])
+        records.append({'t':t,'q':measured,'grasp_mode':solver.grasp_mode})
+        if closing and executor.stopping is None and t>=events[-1]['t']+.1 and step%5==0:
+            break
+    else:
+        raise ValueError('TOOL_STREAM_DID_NOT_STOP')
+    executor.halt(t,revoke=True)
+    return records,events,packets,max_solve
 
 
 def generate(config_path, description, output):
@@ -169,8 +202,6 @@ def generate(config_path, description, output):
     validate_recipe(config)
     recipe = dict(config['demo'])
     profile = Profile.load(config_path.parent/recipe['profile'])
-    if 'planning_limits' in recipe:
-        profile = replace(profile, **recipe['planning_limits'])
     config['urdf'] = str(description/config['urdf'])
     display = description/recipe['display_urdf']
     dt, fps = config['sample_period'], recipe['sample_hz']
@@ -195,6 +226,16 @@ def generate(config_path, description, output):
                     Path(__import__('bindu_kinematics.tool_geometry',fromlist=['']).__file__).resolve(),
                     Path(__import__('bindu_kinematics.bimanual', fromlist=['__file__']).__file__),
                     Path(solver.lib._name))
+    source_paths += tuple(Path(module.__file__).resolve() for module in (
+        __import__('bindu_teleoperation.bimanual_session',fromlist=['']),
+        __import__('bindu_execution.executor',fromlist=['']),
+        __import__('bindu_execution.interpolation',fromlist=['']),
+        __import__('bindu_execution._native',fromlist=['']),
+        __import__('bindu_contracts.teleoperation',fromlist=['']),
+        __import__('bindu_contracts.profile',fromlist=['']),
+        __import__('bindu_hardware.drivers.simulated_joints',fromlist=['']),
+        __import__('bindu_hardware.robot_io.system',fromlist=['']),
+        __import__('bindu_hardware.robot_io.feedback',fromlist=[''])))
     sources = {str(path): hashlib.sha256(path.read_bytes()).hexdigest() for path in source_paths}
     try:
         q = dict(recipe['initial_positions_rad'])
@@ -217,45 +258,23 @@ def generate(config_path, description, output):
         initial_positions = np.array([q[n] for n in solver.names])
         history = [initial_positions.copy() for _ in range(3)]
         max_acceleration, max_jerk = 0., 0.
-        raw_positions = []
-        grasp_mode = 'rigid'
-        for step in range(round(keys[-1]['t']/dt)+1):
-            seconds = round(step*dt, 9)
-            requested_mode = grasp_mode_at(recipe, seconds)
-            if requested_mode != grasp_mode:
-                solver.capture(q, grasp_mode=requested_mode)
-                grasp_mode = requested_mode
-            desired = target_at(keys, home, pivot, seconds, recipe['shaft_axis_in_tool'])
-            try:
-                # An explicit stationary joint hold surrounds each switch. Its
-                # constant span exceeds the offline filter support, so future
-                # QP posture motion cannot leak through the grasp-change point.
-                scale = motion_stop_scale(recipe, seconds)
-                previous = np.array([q[n] for n in solver.names])
-                if scale == 0.:
-                    positions, metrics = previous, (0.,)
-                else:
-                    positions, metrics = solver.solve(q, desired,
-                        reference=previous, dt=dt)
-                    positions = previous + scale*(np.asarray(positions)-previous)
-            except ValueError as exc:
-                raise ValueError(f'{exc} t={seconds:.3f}') from exc
-            q.update(zip(solver.names, positions))
-            raw_positions.append(positions)
-            max_solve = max(max_solve, metrics[0])
-        from scipy.ndimage import gaussian_filter1d
-        raw_positions = np.asarray(raw_positions)
-        print('QP_COMPLETE',len(raw_positions),flush=True)
-        sigma = float(recipe.get('joint_filter_sigma_s', 0.))
-        if not np.isfinite(sigma) or sigma < 0:
-            raise ValueError('INVALID_SHOVEL_JOINT_FILTER')
-        planned_positions = gaussian_filter1d(raw_positions, sigma/dt, axis=0, mode='nearest', truncate=4.) if sigma else raw_positions
-        np.savez_compressed(output/'joint_plan.npz', raw=raw_positions, filtered=planned_positions,
-                            names=solver.names, dt=dt, raw_stage='after_stop_taper_before_gaussian')
-        raw_velocity = np.diff(np.vstack((initial_positions,raw_positions)),axis=0)/dt
-        raw_acceleration = np.diff(np.vstack((np.zeros_like(initial_positions),raw_velocity)),axis=0)/dt
-        raw_jerk = np.diff(np.vstack((np.zeros_like(initial_positions),raw_acceleration)),axis=0)/dt
-        raw_peaks = dict(speed_rad_s=float(np.abs(raw_velocity).max()), acceleration_rad_s2=float(np.abs(raw_acceleration).max()), jerk_rad_s3=float(np.abs(raw_jerk).max()))
+        from bindu_contracts.teleoperation import ToolPoseFrame
+        def inputs():
+            for step in range(round(keys[-1]['t']/dt)+1):
+                seconds=round(step*dt,9)
+                desired=target_at(keys,home,pivot,seconds,recipe['shaft_axis_in_tool'])
+                yield ToolPoseFrame('synthetic_shovel',step,seconds,config['input_frame'],
+                    tuple(desired.ravel()),grasp_mode_at(recipe,seconds)=='rigid')
+        records,stream_events,input_packets,max_solve=run_input_stream(solver,profile,config,q,inputs())
+        planned_positions=np.asarray([[row['q'][n] for n in solver.names] for row in records])
+        np.savez_compressed(output/'joint_plan.npz',executed=planned_positions,
+                            names=solver.names,dt=dt,stage='shared_executor_feedback')
+        (output/'tool_inputs.json').write_text(json.dumps(input_packets)+'\n')
+        (output/'stream_events.json').write_text(json.dumps(stream_events,indent=2)+'\n')
+        applied=[{'t':e['t'],'mode':e['mode']} for e in stream_events if e['event']=='grasp_applied']
+        recipe['input_grasp_schedule']=recipe['grasp_schedule']
+        recipe['grasp_schedule']=applied
+        print('STREAM_COMPLETE',len(records),flush=True)
         q = dict(recipe['initial_positions_rad'])
         expected_relative = (BimanualQP._transform(config['left_to_tool']) @
                              np.linalg.inv(BimanualQP._transform(config['right_to_tool'])))
@@ -265,7 +284,7 @@ def generate(config_path, description, output):
         previous_relative = expected_relative.copy()
         for step, positions in enumerate(planned_positions):
             seconds = round(step*dt, 9)
-            desired = target_at(keys, home, pivot, seconds, recipe['shaft_axis_in_tool'])
+            desired = target_at(keys, home, pivot, min(seconds,keys[-1]['t']), recipe['shaft_axis_in_tool'])
             speed = max(abs(v-q[n])/dt for n, v in zip(solver.names, positions))
             max_speed = max(max_speed, speed)
             if any(abs(v-q[n])/dt > profile.speed(n)+1e-6 for n,v in zip(solver.names,positions)):
@@ -293,10 +312,10 @@ def generate(config_path, description, output):
             pin.framesForwardKinematics(model, data, state)
             poses = [data.oMf[i].homogeneous.copy() for i in ids]
             actual_relative = np.linalg.inv(poses[0]) @ poses[1]
-            mode = grasp_mode_at(recipe, seconds)
+            mode = records[step]['grasp_mode']
             if mode != grasp_mode:
                 # Re-lock at the measured current pose, never the pre-slip 6D
-                # reference. Filtering must not hide motion at the switch.
+                # reference. Measured joints must be stopped at the switch.
                 if speed > .005:
                     raise ValueError(f'SHOVEL_GRASP_SWITCH_NOT_STOPPED t={seconds:.3f} speed={speed:.6g}')
                 expected_relative = previous_relative.copy()
@@ -306,7 +325,7 @@ def generate(config_path, description, output):
             if mode == 'rigid':
                 max_relative = max(max_relative, float(np.linalg.norm(relative_error)))
                 if max_relative > config['max_relative_error']:
-                    raise ValueError('SHOVEL_FILTERED_CLOSURE')
+                    raise ValueError('SHOVEL_EXECUTED_CLOSURE')
             previous_relative = actual_relative
             tool = poses[0] @ left_to_tool
             roll = 0.
@@ -316,7 +335,7 @@ def generate(config_path, description, output):
                 axis_error = float(np.arccos(np.clip(grip[:3,2] @ solver.tool_grip[:3,2], -1., 1.)))
                 max_axis_error = max(max_axis_error, axis_error)
                 if axis_error > config['grasp_rotation_tolerance_rad']:
-                    raise ValueError('SHOVEL_FILTERED_SHAFT_AXIS')
+                    raise ValueError('SHOVEL_EXECUTED_SHAFT_AXIS')
                 relative_grip = np.linalg.inv(solver.tool_grip) @ grip
                 roll = float(np.arctan2(relative_grip[1,0],relative_grip[0,0]))
             grips = [(np.linalg.inv(tool) @ pose @ grip_offset)[:3] for pose in poses]
@@ -358,7 +377,7 @@ def generate(config_path, description, output):
                 max_grip_error > gate['max_grip_error_m'] or
                 clearance < gate['min_ground_clearance_m'] or
                 ready_clearance > gate['max_ready_clearance_m']):
-            raise ValueError('SHOVEL_MOTION_ACCEPTANCE_FAILED')
+            raise ValueError('SHOVEL_MOTION_ACCEPTANCE_FAILED:'+json.dumps(dict(push_m=push,lift_m=lift,return_error_m=return_error,max_grip_error_m=max_grip_error,clearance_m=clearance,ready_clearance_m=ready_clearance)))
         if (min_margin < gate['min_joint_margin_rad'] or return_angle > gate['max_return_angle_rad'] or
                 any(ranges[n][1]-ranges[n][0] < value for n, value in gate['required_joint_excursion_rad'].items())):
             raise ValueError('SHOVEL_POSTURE_RESERVE_FAILED')
@@ -366,7 +385,7 @@ def generate(config_path, description, output):
                for name,(low,high) in gate['posture_limits_rad'].items()):
             raise ValueError('SHOVEL_POSTURE_LIMIT')
         final_speed = float(np.max(np.abs(planned_positions[-1]-planned_positions[-2]))/dt)
-        if recipe.get('finish_hold_s',0.) and final_speed > .005:
+        if final_speed > .005:
             raise ValueError('SHOVEL_FINISH_NOT_STOPPED')
         # Include the transition from the last QP point to a stationary hold.
         for _ in range(3):
@@ -391,8 +410,10 @@ def generate(config_path, description, output):
         dump_result = check_dump(dense_samples, recipe)
         validation = {'ready_shaft_axis_base': (home[:3,:3] @ axis).tolist(),
                       'ready_grips_base_m': [(home @ np.r_[g,1.])[:3].tolist() for g in start_grips],
-                      'duration_s': keys[-1]['t'], 'planning_limits': recipe.get('planning_limits'),
-                      'pre_filter_peaks': raw_peaks, 'pre_filter_stage': 'after_stop_taper', 'joint_filter_sigma_s': sigma, 'dump': dump_result, 'status': 'passed', 'control_steps': round(keys[-1]['t']/dt)+1,
+                      'duration_s': records[-1]['t'], 'input_duration_s': keys[-1]['t'],
+                      'execution_profile': profile.name, 'input_contract': 'ToolPoseFrame',
+                      'execution_mode':'causal shared Executor, ideal joint feedback',
+                      'stream_events':stream_events, 'dump': dump_result, 'status': 'passed', 'control_steps':len(records),
                       'samples': len(samples), 'push_m': push, 'lift_m': lift,
                       'lift_angle_deg': float(np.rad2deg(lift_angle)),
                       'outward_swing_deg': float(np.rad2deg(swing_angle)),
@@ -421,6 +442,9 @@ def generate(config_path, description, output):
     if any(hashlib.sha256(Path(name).read_bytes()).hexdigest() != digest for name,digest in sources.items()):
         raise ValueError('SOURCE_CHANGED_DURING_PLAN')
     payload = {'schema': 2, 'units': 'm, rad, s', 'frame': 'fixed URDF base',
+               'duration_s':records[-1]['t'],'input_contract':'ToolPoseFrame',
+               'tool_input_path':str(output/'tool_inputs.json'),
+               'tool_input_sha256':hashlib.sha256((output/'tool_inputs.json').read_bytes()).hexdigest(),
                'source_sha256': sources,
                'config_path': str(config_path), 'config_sha256': hashlib.sha256(config_path.read_bytes()).hexdigest(),
                'display_urdf': str(display), 'display_sha256': hashlib.sha256(display.read_bytes()).hexdigest(),

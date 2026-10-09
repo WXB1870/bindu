@@ -46,6 +46,7 @@ def assemble(context):
                       output='screen', parameters=[{**common, 'initial_side': side,
                                                     'supported_sides': [side],
                                                     'require_single_worker': True,
+                                                    'input_source': LaunchConfiguration('tool_input_source'),
                                                     'tool_config': LaunchConfiguration('bimanual_config')}]))
     nodes.append(Node(package='bindu_runtime', executable='teleop', namespace=namespace,
                       output='screen', parameters=[{**common,
@@ -53,6 +54,7 @@ def assemble(context):
                           'model_root': str(description), 'require_mode_selection': True}]))
     nodes.append(Node(package='bindu_runtime', executable='teleop_tool', namespace=namespace,
                       output='screen', parameters=[{**common,
+                          'input_source': LaunchConfiguration('tool_input_source'),
                           'tool_config': LaunchConfiguration('bimanual_config'),
                           'model_root': str(description)}]))
     nodes.append(Node(package='bindu_runtime', executable='vr_input', namespace=namespace,
@@ -72,6 +74,7 @@ def generate_launch_description():
                 'profile': str(share / 'config/snowbot_sim.json'),
                 'bimanual_config': str(share / 'config/bimanual_snowbot_sim.json'),
                 'device_backend': 'kinematic', 'side': 'left', 'initialize_tool_pose': 'false',
+                'tool_input_source': 'vr',
                 'vr_enabled': 'false', 'host': '127.0.0.1', 'port': '8012',
                 'cert_file': '', 'key_file': ''}
     return LaunchDescription([DeclareLaunchArgument(k, default_value=v)

@@ -24,6 +24,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/NavigationVelocity.msg"
   "msg/NavigationPose.msg"
   "msg/VRInput.msg"
+  "msg/ToolPoseInput.msg"
   "msg/TeleopModeState.msg"
   "action/TeleopSession.action"
   "action/SelectTeleopMode.action"

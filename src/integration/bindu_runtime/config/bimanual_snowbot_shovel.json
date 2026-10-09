@@ -50,7 +50,7 @@
   "demo": {
     "description": "Simulation fixture: sideways shaft, head to robot right. Raise while bringing the grip 8 cm closer and 6 cm higher, transfer over the receiving bin, then roll to dump. Grips are not calibrated.",
     "display_urdf": "snowbot_display.urdf",
-    "profile": "snowbot_sim.json",
+    "profile": "snowbot_shovel_sim.json",
     "initial_positions_rad": {
       "body_joint_1": 0.12279875965405346,
       "body_joint_2": 0.07901770571818609,
@@ -462,13 +462,7 @@
       "min_rim_clearance_m": 0.05,
       "min_pan_tilt_deg": 100.0
     },
-    "timing_note": "2 s insertion, 7 s lift/lower, 8 s dump/restore; short target dwells, 0.3 s grasp deceleration/recovery ramps around the retained 0.6 s stop, and a 0.4 s final deceleration plus 0.3 s stopped tail. Viewer plays at 1x.",
-    "planning_limits": {
-      "max_speed": 0.75,
-      "max_acceleration": 9.0,
-      "max_jerk": 162.0
-    },
-    "joint_filter_sigma_s": 0.06,
+    "timing_note": "Synthetic mapped teleoperation input at 100 Hz: tool pose and tight state only. Grasp transitions stop on receipt using the shared executor; no future-point filter or pre-timed joint ramps.",
     "grasp_schedule": [
       {
         "t": 0.0,
@@ -482,11 +476,7 @@
         "t": 34.0,
         "mode": "rigid"
       }
-    ],
-    "grasp_switch_hold_s": 0.6,
-    "grasp_switch_ramp_s": 0.3,
-    "finish_hold_s": 0.3,
-    "finish_ramp_s": 0.4
+    ]
   },
   "right_to_tool": [
     -0.7180654330047566,
@@ -535,5 +525,7 @@
         0.45
       ]
     }
-  }
+  },
+  "reference_kinematics": true,
+  "input_frame": "car_base_link"
 }

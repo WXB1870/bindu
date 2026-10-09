@@ -34,6 +34,10 @@ class BimanualQP:
     def __init__(self, config, profile):
         self.cfg = config
         self.captured = False
+        self.reference_kinematics = config.get('reference_kinematics', False)
+        if type(self.reference_kinematics) is not bool:
+            raise ValueError('BIMANUAL_REFERENCE_KINEMATICS_CONFIG')
+        self.grasp_reference = None
         self.handle = None
         self.groups = tuple(config['resource_groups'])
         if (len(self.groups) not in (2,3) or len(set(self.groups)) != len(self.groups) or
@@ -268,6 +272,7 @@ class BimanualQP:
                     self._ptr(self.posture_lower),self._ptr(self.posture_upper),len(self.names)):
                 raise ValueError('BIMANUAL_POSTURE_POLICY:'+self._error())
         self.grasp_mode = grasp_mode
+        self.grasp_reference = measured.copy()
         out = np.empty((4,4), dtype=np.float64)
         if not self.lib.bq_tool_pose(self.handle, self._ptr(q), self.nq, self._ptr(out)):
             raise ValueError('BIMANUAL_TOOL_POSE:'+self._error())
@@ -329,8 +334,9 @@ class BimanualQP:
     def solve(self, feedback, target, *, reference, dt):
         """Propose a step; caller commits reference/time only after acceptance.
 
-        Feedback/Jacobians remain measured. dt is explicit, not inferred from VR
-        frequency. A large tracking error requires hold and a fresh capture;
+        Optional reference kinematics integrate a coherent tool path at the
+        accepted reference; measured feedback still gates grasp, tracking and
+        collision safety. dt is explicit, not inferred from VR frequency. A large tracking error requires hold and a fresh capture;
         silently realigning a moving reference would introduce a position jump.
         """
         if not self.captured:
@@ -351,6 +357,24 @@ class BimanualQP:
         measured = np.array([feedback[n] for n in self.names])
         if np.max(np.abs(reference-measured)) > self.max_reference_error:
             raise ValueError('BIMANUAL_REFERENCE_TRACKING_ERROR')
+        if self.reference_kinematics:
+            relative = np.empty((4,4),dtype=np.float64)
+            if not self.lib.bq_relative_pose(self.handle,self._ptr(q),self.nq,self._ptr(relative)):
+                raise ValueError('BIMANUAL_MEASURED_GRASP:'+self._error())
+            if self.grasp_mode == 'rigid':
+                error = np.linalg.inv(self.grasp_reference) @ relative
+                angle = math.acos(float(np.clip((np.trace(error[:3,:3])-1.)/2.,-1.,1.)))
+                distance = np.linalg.norm(error[:3,3])
+            else:
+                actual = np.linalg.inv(self.tool) @ relative @ self.right_grip
+                distance = np.linalg.norm(actual[:3,3]-self.tool_grip[:3,3])
+                angle = math.acos(float(np.clip(actual[:3,2] @ self.tool_grip[:3,2],-1.,1.)))
+            if math.hypot(distance,angle) > self.cfg['max_relative_error']:
+                raise ValueError('BIMANUAL_MEASURED_GRASP_ERROR')
+            # Measured non-controlled joints remain context; the integrated
+            # controlled reference must have its own coherent FK/Jacobians.
+            q = q.copy()
+            q[[self.model_names.index(n) for n in self.names]] = reference
         target = np.ascontiguousarray(target, dtype=np.float64).reshape(4,4)
         out = np.empty(len(self.names), dtype=np.float64)
         metrics = np.empty(3, dtype=np.float64)
@@ -362,6 +386,19 @@ class BimanualQP:
             raise ValueError('BIMANUAL_QP_TIMEOUT')
         if not np.isfinite(out).all() or not np.isfinite(metrics).all():
             raise ValueError('BIMANUAL_NONFINITE_RESULT')
+        if self.reference_kinematics:
+            # A position executor can lag under changing input cadence. Keep
+            # the integrated target inside the measured tracking budget with
+            # 20% transport reserve; shrink the whole coupled step uniformly.
+            # The hard measured/reference guard above remains independent.
+            delta = out-reference
+            lead = reference-measured
+            reserve = .8*self.max_reference_error
+            moving = np.abs(delta)>1e-12
+            bounds = np.where(delta[moving]>0.,reserve,-reserve)
+            scale = float(np.clip(np.min((bounds-lead[moving])/delta[moving],initial=1.),0.,1.))
+            out = reference+scale*delta
+            metrics[2] *= scale
         if np.max(np.abs(out-measured)) > self.max_reference_error:
             raise ValueError('BIMANUAL_REFERENCE_TRACKING_ERROR')
         for name, old, new in zip(self.names, reference, out):

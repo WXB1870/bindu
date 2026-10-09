@@ -10,7 +10,7 @@ import pinocchio as pin
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT/'tools'))
-from plan_shovel_motion import collision_check, validate_recipe, target_at, grasp_mode_at, motion_stop_scale
+from plan_shovel_motion import collision_check, validate_recipe, target_at, grasp_mode_at, run_input_stream
 from shovel_geometry import bin_boxes, check_dump
 from scipy.spatial.transform import Rotation
 
@@ -138,15 +138,17 @@ class ShovelGeometryTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,'TIME_OUTSIDE_RECIPE'):
                 target_at(keys,np.eye(4),np.zeros(3),invalid)
 
-    def test_grasp_changes_require_configured_axial_support_and_stationary_hold(self):
+    def test_grasp_changes_require_support_but_not_a_prearranged_hold(self):
         recipe = self.config['demo']
         schedule = recipe['grasp_schedule']
         validate_recipe(self.config)
         for change in schedule[1:]:
             self.assertEqual(grasp_mode_at(recipe, change['t']), change['mode'])
             self.assertNotEqual(grasp_mode_at(recipe, change['t']-.01), change['mode'])
-        for field,value,reason in [('t',5.,'REQUIRES_HOLD'),('t',17.551,'REQUIRES_HOLD'),
-                                   ('mode','open','INVALID_SHOVEL_GRASP_SCHEDULE'),
+        for when in (5.,17.551):
+            moving=copy.deepcopy(self.config);moving['demo']['grasp_schedule'][1]['t']=when
+            validate_recipe(moving)
+        for field,value,reason in [('mode','open','INVALID_SHOVEL_GRASP_SCHEDULE'),
                                    ('mode','rigid','INVALID_SHOVEL_GRASP_SCHEDULE')]:
             bad = copy.deepcopy(self.config)
             bad['demo']['grasp_schedule'][1][field] = value
@@ -169,51 +171,46 @@ class ShovelGeometryTests(unittest.TestCase):
             with self.subTest(late_key=late_key), self.assertRaisesRegex(ValueError,'REQUIRES_TOOL_POSE_INPUT'):
                 validate_recipe(config)
 
-    def test_grasp_stop_taper_preserves_stop_and_has_smooth_edges(self):
-        recipe={'grasp_switch_hold_s':.6,'grasp_switch_ramp_s':.3,
-                'grasp_schedule':[{'t':0.,'mode':'rigid'},{'t':1.,'mode':'right_axial'}]}
-        for t in (.7,1.,1.3):
-            self.assertEqual(motion_stop_scale(recipe,t),0.)
-        for t in (0.,.4,1.6,2.):
-            self.assertAlmostEqual(motion_stop_scale(recipe,t),1.)
-        self.assertAlmostEqual(motion_stop_scale(recipe,.55),.5)
-        self.assertAlmostEqual(motion_stop_scale(recipe,1.45),.5)
-        for t in (.4,.7,1.3,1.6):
-            h=1e-5
-            v=[motion_stop_scale(recipe,t+x) for x in (-h,0.,h)]
-            self.assertLess(abs((v[2]-v[0])/(2*h)),1e-5)
-            self.assertLess(abs((v[2]-2*v[1]+v[0])/h**2),.01)
-        bad=copy.deepcopy(self.config);bad['demo']['grasp_switch_ramp_s']=1.
-        with self.assertRaisesRegex(ValueError,'REQUIRES_HOLD'):
-            validate_recipe(bad)
-        bad['demo']['grasp_switch_ramp_s']=-.1
-        with self.assertRaisesRegex(ValueError,'STOP_RAMP'):
+    def test_offline_smoothing_and_planning_overrides_are_forbidden(self):
+        for key in ('joint_filter_sigma_s','grasp_switch_hold_s','grasp_switch_ramp_s',
+                    'finish_hold_s','finish_ramp_s'):
+            bad=copy.deepcopy(self.config);bad['demo'][key]=.3
+            with self.subTest(key=key),self.assertRaisesRegex(ValueError,'OFFLINE_CONDITION'):
+                validate_recipe(bad)
+        bad=copy.deepcopy(self.config);bad['simulation_only']=False
+        with self.assertRaisesRegex(ValueError,'REQUIRES_SIMULATION'):
             validate_recipe(bad)
 
-    def test_finish_stop_has_a_flat_tail_and_requires_static_target(self):
-        recipe={'keyframes':[{'t':2.}], 'finish_hold_s':.3,'finish_ramp_s':.4}
-        self.assertEqual(motion_stop_scale(recipe,1.2),1.)
-        self.assertAlmostEqual(motion_stop_scale(recipe,1.5),.5)
-        for t in (1.7,1.8,2.):
-            self.assertAlmostEqual(motion_stop_scale(recipe,t),0.)
-        bad=copy.deepcopy(self.config)
-        bad['demo'].update(finish_hold_s=.3,finish_ramp_s=.4)
-        bad['demo']['keyframes'][-1]['translation_m'][0]=.01
-        with self.assertRaisesRegex(ValueError,'FINISH_STOP_REQUIRES_HOLD'):
-            validate_recipe(bad)
-        bad=copy.deepcopy(self.config);bad['demo'].update(finish_hold_s=.1,finish_ramp_s=.1)
-        with self.assertRaisesRegex(ValueError,'FINISH_STOP_REQUIRES_HOLD'):
-            validate_recipe(bad)
+    def test_stream_causality_and_unplanned_grasp_change_while_moving(self):
+        from bindu_contracts.profile import Profile
+        from bindu_contracts.teleoperation import ToolPoseFrame
+        from bindu_kinematics.bimanual import BimanualQP
+        cfg=copy.deepcopy(self.config)
+        cfg['urdf']=str(ROOT/'src/hardware/bindu_description/urdf'/cfg['urdf'])
+        profile=Profile.load(ROOT/'src/integration/bindu_runtime/config'/cfg['demo']['profile'])
+        runs=[]
+        for future_direction in (-1.,1.):
+            solver=BimanualQP(cfg,profile)
+            try:
+                home=solver.capture(cfg['demo']['initial_positions_rad'])
+                def frames():
+                    for k in range(151):
+                        t=round(k*.01,9);pose=home.copy()
+                        pose[0,3]+=.006*t if t<=1. else .006+future_direction*.006*(t-1.)
+                        yield ToolPoseFrame('test',k,t,cfg['input_frame'],tuple(pose.ravel()),t<.8 or t>=1.2)
+                records,events,packets,_=run_input_stream(solver,profile,cfg,cfg['demo']['initial_positions_rad'],frames())
+                self.assertTrue(any(e['event']=='grasp_requested' and e['t']==.8 for e in events))
+                applied=[e for e in events if e['event']=='grasp_applied'][1:]
+                self.assertEqual([e['mode'] for e in applied],['right_axial','rigid'])
+                self.assertTrue(all(e['speed_rad_s']<=.005 for e in applied))
+                self.assertGreaterEqual(applied[0]['t'],.8)
+                self.assertEqual(len(packets),151)
+                self.assertEqual(events[-1]['event'],'input_timeout_stop')
+                runs.append(np.array([[row['q'][n] for n in solver.names] for row in records]))
+            finally:
+                solver.close()
+        np.testing.assert_allclose(runs[0][:101],runs[1][:101],atol=1e-12)
 
-    def test_planning_limit_override_is_simulation_only(self):
-        config=copy.deepcopy(self.config)
-        config['simulation_only']=False
-        with self.assertRaisesRegex(ValueError,'INVALID_SHOVEL_PLANNING_LIMITS'):
-            validate_recipe(config)
-        config=copy.deepcopy(self.config)
-        config['demo']['planning_limits']['max_speed']=-1
-        with self.assertRaisesRegex(ValueError,'INVALID_SHOVEL_PLANNING_LIMITS'):
-            validate_recipe(config)
 
 
 if __name__ == '__main__':

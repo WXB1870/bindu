@@ -17,7 +17,7 @@ from rclpy.action import ActionClient
 from rclpy.executors import SingleThreadedExecutor
 from std_srvs.srv import Trigger
 from bindu_interfaces.action import SelectTeleopMode, TeleopSession
-from bindu_interfaces.msg import VRInput, ExecutionState, RecorderHealth, MotionCommand, TeleopModeState, RuntimeEvent, SimulationFeedback
+from bindu_interfaces.msg import VRInput, ToolPoseInput, ExecutionState, RecorderHealth, MotionCommand, TeleopModeState, RuntimeEvent, SimulationFeedback
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 from bindu_runtime.common import stamp
 
@@ -86,7 +86,13 @@ def main():
                         help='Snowbot shovel fixture: right trigger support rotation and re-lock')
     parser.add_argument('--drop-tool-input',action='store_true',
                         help='Require tool input loss to stop all controlled joints and release ownership')
+    parser.add_argument('--tool-pose-input',action='store_true',help='Exercise absolute mapped tool pose and tight state')
+    parser.add_argument('--shovel-cycle',action='store_true',help='Complete shovel input stream over the production ROS path')
     args=parser.parse_args()
+    if args.tool_pose_input and not args.axial_grasp: parser.error('tool input requires --axial-grasp')
+    if args.tool_pose_input and (args.websocket_input or args.coalesced_release):
+        parser.error('mapped tool input does not use VR WebSocket/clutch fixtures')
+    if args.shovel_cycle and not args.tool_pose_input: parser.error('shovel cycle requires --tool-pose-input')
     if args.websocket_input and args.coalesced_release: parser.error('coalesced fixture injects ROS counters')
     if args.snowbot and args.g1_model: parser.error('choose one robot fixture')
     if args.axial_grasp and not args.snowbot: parser.error('axial grasp requires --snowbot')
@@ -105,6 +111,7 @@ def main():
         config=root/'src/integration/bindu_runtime/config/bimanual_snowbot_sim.json'
         if args.axial_grasp:
             config=root/'src/integration/bindu_runtime/config/bimanual_snowbot_shovel.json'
+            profile=config.parent/json.loads(config.read_text())['demo']['profile']
         if args.expect_geometry_rejection:
             invalid=json.loads(config.read_text())
             invalid['flange_distance_range']=[.1,.2]
@@ -172,8 +179,10 @@ def main():
         initial = json.loads(config.read_text())['demo']['initial_positions_rad'] if args.axial_grasp else {}
         start('execution',['-p','device_backend:=external_simulation'] if physics_model else
               ['-p','kinematic_initial_positions:='+json.dumps(json.dumps(initial))] if initial else [])
-        start('teleop_mode',['-p','require_single_worker:=true','-p','tool_config:='+str(config)] if args.snowbot else [])
+        start('teleop_mode',['-p','require_single_worker:=true','-p','tool_config:='+str(config),
+                             '-p','input_source:='+('tool_pose' if args.tool_pose_input else 'vr')] if args.snowbot else [])
         start('teleop_tool',['-p','tool_config:='+str(config),
+                            '-p','input_source:='+('tool_pose' if args.tool_pose_input else 'vr'),
                             '-p','model_root:='+str((root/'src/hardware/bindu_description/urdf')
                                                     if physics_model or args.snowbot else fixture.parent)])
         if args.snowbot:
@@ -190,7 +199,9 @@ def main():
             tracked={n:abs(actual[n]-q) for n,q in zip(m.reference.name,m.reference.position)
                      if n in actual and n in controlled}
             velocities={n:abs(v) for n,v in zip(m.joints.name,m.joints.velocity) if n in controlled}
-            state['trace'].append({'state':m.state,'code':m.code,'lease':m.lease_active,
+            state['trace'].append({'stamp':m.feedback_stamp.sec+m.feedback_stamp.nanosec*1e-9,
+                'positions':actual,'velocities':dict(zip(m.joints.name,m.joints.velocity)),
+                'state':m.state,'code':m.code,'lease':m.lease_active,
                 'reference_count':len(m.reference.name),'max_tracking_error':max(tracked.values(),default=0.),
                 'worst_tracking_joint':max(tracked,key=tracked.get,default=''),
                 'max_velocity':max(velocities.values(),default=0.),
@@ -202,6 +213,19 @@ def main():
             lambda m:state['accepted'].append(m),100)
         node.create_subscription(RuntimeEvent,ns+'/events',
             lambda m:state['events'].append((m.component,m.state,m.code)),100)
+        if args.tool_pose_input:
+            from bindu_contracts.profile import Profile
+            from bindu_kinematics.bimanual import BimanualQP
+            import sys
+            sys.path.insert(0,str(root/'tools'))
+            from plan_shovel_motion import target_at,grasp_mode_at
+            tool_cfg=json.loads(config.read_text());recipe=tool_cfg['demo']
+            tool_cfg['urdf']=str(root/'src/hardware/bindu_description/urdf'/tool_cfg['urdf'])
+            solver=BimanualQP(tool_cfg,Profile.load(profile))
+            try:home=solver.capture(recipe['initial_positions_rad'])
+            finally:solver.close()
+            control['cycle_started']=None
+            tool_input=source.create_publisher(ToolPoseInput,ns+'/teleop/tool/input',10)
         vr=source.create_publisher(VRInput,ns+'/teleop/vr/input',10)
         health=source.create_publisher(RecorderHealth,ns+'/recorder/health',10)
         def publish():
@@ -213,6 +237,16 @@ def main():
             health.publish(RecorderHealth(stamp=now,run_id=run,ready=True))
             if not control['enabled'] or args.websocket_input: return
             control['seq']+=1
+            if args.tool_pose_input:
+                pose=home.copy();pose[0,3]+=control['delta']
+                tight=control['trigger']<.7
+                if control['cycle_started'] is not None:
+                    elapsed=min(time.monotonic()-control['cycle_started'],recipe['keyframes'][-1]['t'])
+                    pose=target_at(recipe['keyframes'],home,np.array(recipe['pivot_in_tool_m']),elapsed,recipe['shaft_axis_in_tool'])
+                    tight=grasp_mode_at(recipe,elapsed)=='rigid'
+                tool_input.publish(ToolPoseInput(stamp=now,source_id='synthetic_tool',seq=control['seq'],
+                    frame_id=tool_cfg['input_frame'],pose=pose.ravel().tolist(),tight=tight,valid=True))
+            if args.shovel_cycle: return  # No paired VR/grip/clutch inputs in this acceptance.
             for side,x in (('left',0.),('right',.3)):
                 pose=np.eye(4);pose[0,3]=x+control['delta']
                 vr.publish(VRInput(stamp=now,source_id='synthetic_pair',seq=control['seq'],
@@ -260,7 +294,7 @@ def main():
         goal=None
         for _ in range(15):
             goal=wait(node,tool.send_goal_async(TeleopSession.Goal(task_id=run,
-                resource_group='bimanual_tool',duration=30. if args.axial_grasp else (16. if args.coalesced_release else 8.)),
+                resource_group='bimanual_tool',duration=70. if args.shovel_cycle else 30. if args.axial_grasp else (16. if args.coalesced_release else 8.)),
                 feedback_callback=lambda msg:state.update(tool_feedback=msg.feedback.mode)))
             if goal.accepted: break
             prior_seq=control['seq']
@@ -270,13 +304,33 @@ def main():
         goal_result=goal.get_result_async()
         # Goal acceptance precedes execute/lease acquisition. Keep released
         # input until the actual session has ingested it and reports idle.
-        until(node,lambda:state['tool_feedback'] in ('idle','idle:rigid'))
+        if not args.tool_pose_input:
+            until(node,lambda:state['tool_feedback'] in ('idle','idle:rigid'))
         control['grip']=1.
         try: until(node,lambda:len(state['accepted'])>=3,6.)
         except RuntimeError:
             print('DEBUG_ACTION',goal_result.result() if goal_result.done() else None,state['events'][-10:],
                   (state['execution'].state,state['execution'].code) if state['execution'] else None)
             raise
+        if args.shovel_cycle:
+            begin_event=len(state['events'])
+            control['cycle_started']=time.monotonic()
+            until(node,lambda:time.monotonic()-control['cycle_started']>=recipe['keyframes'][-1]['t']+.5
+                  or goal_result.done(),recipe['keyframes'][-1]['t']+5.)
+            if goal_result.done():
+                raise RuntimeError('SHOVEL_ROS_EARLY_END:'+goal_result.result().result.code)
+            transitions=[json.loads(e[2])['grasp_mode'] for e in state['events'][begin_event:]
+                         if e[1]=='BIMANUAL_CAPTURED']
+            assert transitions==['right_axial','rigid'],transitions
+            control['enabled']=False
+            ended=wait(node,goal_result,8.).result
+            assert ended.code=='TOOL_INPUT_TIMEOUT',ended
+            until(node,lambda:not state['execution'].lease_active and not state['execution'].reference.name,6.)
+            result={'status':'passed','input':'ToolPoseInput','scope':'production ROS, QP, executor, ideal simulated joints',
+                    'code':ended.code,'accepted_commands':ended.accepted_commands,'grasp_transitions':transitions,
+                    'source_timing':source_timing,'dynamic_contact_validated':False,'paired_vr_frames_published':False}
+            (output/'result.json').write_text(json.dumps(result,indent=2)+'\n')
+            print(json.dumps(result));return
         count=len(state['accepted'])
         control['delta']=.01
         until(node,lambda:len(state['accepted'])>=count+3,6.)
@@ -319,7 +373,7 @@ def main():
         else:
             assert wait(node,goal.cancel_goal_async()).goals_canceling
         ended=wait(node,goal_result,8.).result
-        expected_end='VR_PAIR_TIMEOUT' if args.drop_tool_input else 'CANCELED'
+        expected_end=('TOOL_INPUT_TIMEOUT' if args.tool_pose_input else 'VR_PAIR_TIMEOUT') if args.drop_tool_input else 'CANCELED'
         assert ended.code==expected_end and ended.accepted_commands>=3,(
             ended,state['events'][-10:],state['trace'][-10:],
             (state['execution'].state,state['execution'].code) if state['execution'] else None)

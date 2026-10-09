@@ -164,3 +164,60 @@ class BimanualSession:
         self.target=np.asarray(relative_target(self.anchor_input,self.current_input,self.anchor_tool,
             self.cfg['position_scale'],mapping_mode='robot_base',
             operator_yaw_rad=self.cfg['operator_yaw_rad'])).reshape(4,4)
+
+
+class ToolPoseSession:
+    """Mapped teleoperation input: tool pose + right-grip state, no phase clock."""
+    def __init__(self, config, generation, selected_at):
+        self.cfg, self.generation, self.selected_at = config, generation, selected_at
+        self.identity = uuid.uuid4().hex
+        self.source = None
+        self.seq, self.stamp = -1, 0.
+        self.mode = 'idle'
+        self.grasp_mode, self.grasp_generation = 'rigid', 0
+        self.axial = config.get('right_axial_grasp')
+        self.anchor_input = self.anchor_tool = self.target = self.current_input = None
+
+    def ingest(self, frame, now):
+        if (frame is None or not frame.valid or frame.stop or not frame.source_id or
+                not math.isfinite(now) or not math.isfinite(frame.stamp) or
+                not 0 <= now-frame.stamp <= self.cfg['input_max_age'] or
+                frame.stamp <= self.selected_at or type(frame.tight) is not bool or
+                type(frame.seq) is not int or frame.seq < 0 or
+                frame.frame_id != self.cfg['input_frame']):
+            raise ValueError('TOOL_INPUT_INVALID')
+        if self.source is not None and self.source != frame.source_id:
+            raise ValueError('TOOL_CONNECTION_CHANGED')
+        if frame.seq <= self.seq:
+            return False
+        if self.source is not None and frame.stamp < self.stamp:
+            raise ValueError('TOOL_INPUT_UNORDERED')
+        pose = np.asarray(frame.pose, dtype=float).reshape(4,4)
+        rotation = pose[:3,:3]
+        if (not np.isfinite(pose).all() or not np.allclose(pose[3], [0,0,0,1], atol=1e-8) or
+                not np.allclose(rotation.T @ rotation, np.eye(3), atol=1e-6) or
+                np.linalg.det(rotation) < .999999):
+            raise ValueError('TOOL_POSE_INVALID')
+        desired = 'rigid' if frame.tight else 'right_axial'
+        if desired == 'right_axial' and self.axial is None:
+            raise ValueError('TOOL_AXIAL_UNCONFIGURED')
+        if desired != self.grasp_mode:
+            self.grasp_mode = desired
+            self.grasp_generation += 1
+            self.reanchor()
+        self.source,self.seq,self.stamp = frame.source_id,frame.seq,frame.stamp
+        self.current_input = self.anchor_input = pose.copy()
+        self.target = pose.copy()
+        self.mode = 'follow'
+        return True
+
+    def reanchor(self):
+        # Rebuild the measured grasp after stopping, but never shift an
+        # absolute tool target when the operator changes grip state.
+        self.anchor_tool = None
+
+    def capture(self, tool_pose):
+        if self.mode != 'follow' or self.current_input is None:
+            raise ValueError('TOOL_NOT_ENGAGED')
+        self.anchor_tool = np.asarray(tool_pose, dtype=float).reshape(4,4)
+        self.target = self.current_input.copy()
