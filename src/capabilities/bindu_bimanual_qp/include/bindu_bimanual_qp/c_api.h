@@ -50,6 +50,13 @@ int bq_set_limits(void *handle, const double *lower, const double *upper,
 /* q follows model-name order; all poses are row-major 4x4 SE(3) matrices. */
 int bq_capture(void *handle, const double *q, int nq, const double *left_to_tool,
                const bq_config *config);
+/* Additive ABI v1 capability; old rigid callers/layouts are unchanged. The
+ * support grip frame +Z is the shaft axis, with translation at the grasp point.
+ * This is a kinematic constraint only, not a gripper force command. Call after
+ * confirmed stop. Failed capture invalidates all previous grasp references. */
+int bq_capture_axial(void *handle, const double *q, int nq, const double *left_to_tool,
+                     const double *right_to_grip, const double *tool_to_grip,
+                     const bq_config *config);
 /* NULL,0 clears the optional shared-joint posture objective. */
 int bq_shared_targets(void *handle, const double *targets, int n);
 /* reference/out follow active-name order. reference is the last accepted

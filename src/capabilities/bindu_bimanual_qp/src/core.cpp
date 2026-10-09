@@ -157,13 +157,30 @@ void RigidToolKinematics::capture() {
 }
 
 void RigidToolKinematics::capture(const pinocchio::SE3 &left_to_tool) {
+  reset();
   if (!left_to_tool.translation().allFinite() || !left_to_tool.rotation().allFinite() ||
       !left_to_tool.rotation().isUnitary(1e-5) || left_to_tool.rotation().determinant() < 0.999) {
     throw std::invalid_argument("invalid fixed tool transform");
   }
+  axial_ = false;
   left_to_tool_ = left_to_tool;
   relative_ref_ = robot_.leftPose().actInv(robot_.rightPose());
   captured_ = true;
+}
+
+void RigidToolKinematics::captureAxial(const pinocchio::SE3 &left_to_tool,
+                                      const pinocchio::SE3 &right_to_grip,
+                                      const pinocchio::SE3 &tool_to_grip) {
+  reset();
+  for (const auto &p : {right_to_grip, tool_to_grip}) {
+    if (!p.translation().allFinite() || !p.rotation().allFinite() ||
+        !p.rotation().isUnitary(1e-5) || p.rotation().determinant() < .999)
+      throw std::invalid_argument("invalid support grip transform");
+  }
+  capture(left_to_tool);
+  right_to_grip_ = right_to_grip;
+  tool_to_grip_ = tool_to_grip;
+  axial_ = true;
 }
 
 pinocchio::SE3 RigidToolKinematics::toolPose() const {
@@ -180,13 +197,36 @@ pinocchio::SE3 RigidToolKinematics::relativePose() const {
   return robot_.leftPose().actInv(robot_.rightPose());
 }
 
-Eigen::Matrix<double, 6, 1> RigidToolKinematics::relativeError() const {
+Eigen::VectorXd RigidToolKinematics::relativeError() const {
   if (!captured_) throw std::logic_error("grasp not captured");
-  return pinocchio::log6(relative_ref_.actInv(relativePose())).toVector();
+  if (!axial_) return pinocchio::log6(relative_ref_.actInv(relativePose())).toVector();
+  const auto grip = toolPose().actInv(robot_.rightPose() * right_to_grip_);
+  const Eigen::Vector3d axis = grip.rotation().col(2);
+  // Two tangent components alone would also accept an antiparallel shaft.
+  if (axis.dot(tool_to_grip_.rotation().col(2)) <= 0.)
+    throw std::runtime_error("support shaft direction reversed");
+  Eigen::VectorXd error(5);
+  error.head<3>() = grip.translation() - tool_to_grip_.translation();
+  error.tail<2>() = tool_to_grip_.rotation().leftCols<2>().transpose() * axis;
+  return error;
 }
 
 Eigen::MatrixXd RigidToolKinematics::relativeErrorJacobian() const {
   if (!captured_) throw std::logic_error("grasp not captured");
+  if (axial_) {
+    const auto relative = toolPose().actInv(robot_.rightPose());
+    const Eigen::Vector3d point = relative.act(right_to_grip_.translation());
+    const Eigen::Vector3d axis = relative.rotation() * right_to_grip_.rotation().col(2);
+    const auto jt = toolJacobian();
+    const auto jr = robot_.rightJacobian();
+    Eigen::MatrixXd jac(5, robot_.variables());
+    jac.topRows<3>() = relative.rotation() * (jr.topRows<3>() -
+        pinocchio::skew(right_to_grip_.translation()) * jr.bottomRows<3>()) -
+        jt.topRows<3>() + pinocchio::skew(point) * jt.bottomRows<3>();
+    jac.bottomRows<2>() = -tool_to_grip_.rotation().leftCols<2>().transpose() *
+        pinocchio::skew(axis) * (relative.rotation() * jr.bottomRows<3>() - jt.bottomRows<3>());
+    return jac;
+  }
   const auto relative = relativePose();
   const auto error = relative_ref_.actInv(relative);
   const Eigen::MatrixXd relative_twist = robot_.rightJacobian() -
@@ -234,7 +274,7 @@ void QpController::clearSharedTargets() { have_shared_targets_ = false; }
 
 void QpController::reset() {
   qp_ = std::make_unique<proxsuite::proxqp::dense::QP<double>>(
-      robot_.variables(), 6, 0, true);
+      robot_.variables(), kin_.constraintRows(), 0, true);
   qp_->settings.verbose = false;
   qp_->settings.compute_timings = true;
   qp_->settings.eps_abs = 1e-7;
@@ -267,7 +307,7 @@ SolveResult QpController::solve(const pinocchio::SE3 &desired_tool, double dt,
   const int n = robot_.variables();
   const Eigen::MatrixXd jt = kin_.toolJacobian();
   const Eigen::MatrixXd a = kin_.relativeErrorJacobian();
-  Eigen::Matrix<double, 6, 1> b = -config_.relative_gain * e_rel;
+  Eigen::VectorXd b = -config_.relative_gain * e_rel;
   const Eigen::VectorXd q = robot_.activePositions();
   const Eigen::VectorXd nominal_velocity = config_.posture_gain * (nominal_ - q);
   Eigen::MatrixXd h = jt.transpose() * jt +
@@ -309,7 +349,7 @@ SolveResult QpController::solve(const pinocchio::SE3 &desired_tool, double dt,
   }
   // A physical position servo can briefly violate the rigid grasp. The
   // requested recovery velocity may then be outside the joint velocity box.
-  // Preserve the 6D equality, but lower its recovery rate until feasible.
+  // Preserve the selected grasp equality, but lower its recovery rate until feasible.
   for (const double scale : {1.0, 0.5, 0.25, 0.1, 0.0}) {
     b = -scale * config_.relative_gain * e_rel;
     try {

@@ -93,6 +93,14 @@ class ModeTests(unittest.TestCase):
         self.frames['right'] = replace(right, pose=tuple(pose.ravel()))
         self.assertEqual(self.ready(), 'VR_ORIENTATION_DEGENERATE')
 
+    def test_left_orientation_readiness_matches_axial_session(self):
+        right=self.frames['right'];pose=np.asarray(right.pose).reshape(4,4).copy()
+        pose[:3,:3]=np.diag([1.,-1.,-1.])
+        self.frames['right']=replace(right,pose=tuple(pose.ravel()))
+        self.assertEqual(self.ready(),'VR_ORIENTATION_DEGENERATE')
+        self.m.left_orientation=True
+        self.assertEqual(self.ready(),'')
+
     def test_mode_switch_rejects_nonfinite_grip(self):
         self.frames['right'] = replace(self.frames['right'], grip=float('nan'))
         self.assertEqual(self.ready(), 'VR_RELEASE_REQUIRED')
@@ -163,3 +171,65 @@ class BimanualSessionTests(unittest.TestCase):
         self.assertIsNone(session.target)
         with self.assertRaisesRegex(ValueError,'VR_PAIR_INVALID'):
             session.ingest(*frames(6,10.44,1.)[:1],frames(5,10.44,1.)[1],10.44)
+
+
+class AxialTriggerTests(unittest.TestCase):
+    def setUp(self):
+        self.session=BimanualSession(dict(input_max_age=.25,engage_seconds=.05,
+            position_scale=1.,operator_yaw_rad=0.,right_axial_grasp={}),2,10.)
+        self.seq=0
+
+    def frame(self,when,grip=1.,trigger=0.,left_angle=0.,right_angle=0.):
+        self.seq+=1
+        from scipy.spatial.transform import Rotation
+        frames=[]
+        for side,x,angle in (('left',0.,left_angle),('right',.3,right_angle)):
+            pose=np.eye(4);pose[0,3]=x
+            pose[:3,:3]=Rotation.from_rotvec([angle,0.,0.]).as_matrix()
+            frames.append(VRFrame('input',self.seq,when,side,tuple(pose.ravel()),
+                grip=grip,trigger=trigger if side=='right' else 0.))
+        return frames
+
+    def engage(self):
+        for t,grip in ((10.1,0.),(10.2,1.),(10.3,1.)):
+            self.session.ingest(*self.frame(t,grip),t)
+        self.session.capture(np.eye(4))
+
+    def test_trigger_requires_release_then_hold_and_hysteresis(self):
+        self.session.ingest(*self.frame(10.1,trigger=1.),10.1)
+        self.assertEqual(self.session.grasp_mode,'rigid')
+        self.engage()
+        self.session.ingest(*self.frame(10.4,trigger=1.),10.4)
+        self.assertEqual(self.session.grasp_mode,'right_axial')
+        self.assertIsNone(self.session.target)
+        generation=self.session.grasp_generation
+        self.session.ingest(*self.frame(10.41,trigger=.5),10.41)
+        self.assertEqual(self.session.grasp_generation,generation)
+        self.session.capture(np.eye(4))
+        self.session.ingest(*self.frame(10.42,trigger=0.),10.42)
+        self.assertEqual(self.session.grasp_mode,'rigid')
+        self.assertIsNone(self.session.target)
+        self.assertEqual(self.session.grasp_generation,generation+1)
+
+    def test_right_wrist_orientation_does_not_command_tool_roll(self):
+        self.engage()
+        self.session.ingest(*self.frame(10.4,trigger=1.),10.4)
+        self.session.capture(np.eye(4))
+        self.session.ingest(*self.frame(10.41,trigger=1.,right_angle=2.9),10.41)
+        np.testing.assert_allclose(self.session.target,np.eye(4),atol=1e-12)
+        self.session.ingest(*self.frame(10.42,trigger=1.,left_angle=.2,right_angle=2.9),10.42)
+        self.assertGreater(np.linalg.norm(self.session.target[:3,:3]-np.eye(3)),.1)
+        self.session.ingest(*self.frame(10.43,grip=0.,trigger=1.),10.43)
+        self.assertEqual(self.session.mode,'idle')
+        self.assertIsNone(self.session.target)
+
+    def test_invalid_trigger_is_rejected_and_stop_reanchor_uses_fresh_input(self):
+        self.engage()
+        with self.assertRaisesRegex(ValueError,'VR_PAIR_INVALID'):
+            self.session.ingest(*self.frame(10.4,trigger=float('nan')),10.4)
+        self.session.reanchor()
+        with self.assertRaisesRegex(ValueError,'NOT_ENGAGED'):
+            self.session.capture(np.eye(4))
+        self.session.ingest(*self.frame(10.41,left_angle=.5),10.41)
+        self.session.capture(np.eye(4))
+        np.testing.assert_allclose(self.session.target,np.eye(4),atol=1e-12)

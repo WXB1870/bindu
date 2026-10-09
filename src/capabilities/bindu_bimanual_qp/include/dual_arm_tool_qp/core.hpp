@@ -96,12 +96,19 @@ public:
   explicit RigidToolKinematics(RobotModel &robot) : robot_(robot) {}
   void capture();
   void capture(const pinocchio::SE3 &left_to_tool);
-  void reset() { captured_ = false; }
+  // Right grip is a revolute support: translation and shaft direction remain
+  // constrained, only rotation about grip-frame +Z is free. Both offsets are
+  // physical grasp frames (not flange origins); caller switches while stopped.
+  void captureAxial(const pinocchio::SE3 &left_to_tool,
+                    const pinocchio::SE3 &right_to_grip,
+                    const pinocchio::SE3 &tool_to_grip);
+  int constraintRows() const { return axial_ ? 5 : 6; }
+  void reset() { captured_ = false; axial_ = false; }
   bool captured() const { return captured_; }
   pinocchio::SE3 toolPose() const;
   Eigen::MatrixXd toolJacobian() const;
   pinocchio::SE3 relativePose() const;
-  Eigen::Matrix<double, 6, 1> relativeError() const;
+  Eigen::VectorXd relativeError() const;
   Eigen::MatrixXd relativeErrorJacobian() const;
   const pinocchio::SE3 &referenceRelativePose() const { return relative_ref_; }
   const pinocchio::SE3 &leftToTool() const { return left_to_tool_; }
@@ -109,6 +116,9 @@ public:
 private:
   RobotModel &robot_;
   bool captured_{false};
+  bool axial_{false};
+  pinocchio::SE3 right_to_grip_{pinocchio::SE3::Identity()};
+  pinocchio::SE3 tool_to_grip_{pinocchio::SE3::Identity()};
   pinocchio::SE3 left_to_tool_{pinocchio::SE3::Identity()};
   pinocchio::SE3 relative_ref_{pinocchio::SE3::Identity()};
 };

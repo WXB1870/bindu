@@ -1,6 +1,7 @@
 """Snowbot CAD fixture: manual single-arm / dual-arm tool simulation."""
 from pathlib import Path
 import uuid
+import json
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, OpaqueFunction
 from launch.conditions import IfCondition
@@ -23,6 +24,10 @@ def assemble(context):
         parameters = dict(common)
         if name == 'execution':
             parameters['device_backend'] = LaunchConfiguration('device_backend')
+            if LaunchConfiguration('initialize_tool_pose').perform(context).lower() == 'true':
+                fixture = json.loads(Path(LaunchConfiguration('bimanual_config').perform(context)).read_text())
+                parameters['kinematic_initial_positions'] = ParameterValue(
+                    json.dumps(fixture['demo']['initial_positions_rad']), value_type=str)
         if name == 'description_state':
             parameters['base_frame'] = 'car_base_link'
         if name == 'recorder':
@@ -40,7 +45,8 @@ def assemble(context):
     nodes.append(Node(package='bindu_runtime', executable='teleop_mode', namespace=namespace,
                       output='screen', parameters=[{**common, 'initial_side': side,
                                                     'supported_sides': [side],
-                                                    'require_single_worker': True}]))
+                                                    'require_single_worker': True,
+                                                    'tool_config': LaunchConfiguration('bimanual_config')}]))
     nodes.append(Node(package='bindu_runtime', executable='teleop', namespace=namespace,
                       output='screen', parameters=[{**common,
                           'teleop_config': str(share / f'config/teleop_snowbot_{side}.json'),
@@ -65,7 +71,7 @@ def generate_launch_description():
                 'output': '/tmp/bindu-snowbot-runs', 'recording_mode': 'compact',
                 'profile': str(share / 'config/snowbot_sim.json'),
                 'bimanual_config': str(share / 'config/bimanual_snowbot_sim.json'),
-                'device_backend': 'kinematic', 'side': 'left',
+                'device_backend': 'kinematic', 'side': 'left', 'initialize_tool_pose': 'false',
                 'vr_enabled': 'false', 'host': '127.0.0.1', 'port': '8012',
                 'cert_file': '', 'key_file': ''}
     return LaunchDescription([DeclareLaunchArgument(k, default_value=v)

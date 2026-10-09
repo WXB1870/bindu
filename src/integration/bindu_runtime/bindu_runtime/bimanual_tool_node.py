@@ -1,4 +1,4 @@
-"""Simulation-only dual-hand rigid-tool teleop through the shared position executor."""
+"""Simulation-only dual-hand tool teleop through the shared position executor."""
 import json
 import math
 import time
@@ -25,7 +25,7 @@ class BimanualToolNode(RuntimeNode):
         self.declare_parameter('tool_config',str(share/'config/bimanual_g1_sim.json'))
         self.declare_parameter('model_root',str(Path(get_package_share_directory('bindu_description'))/'urdf'))
         self.cfg=json.loads(Path(self.get_parameter('tool_config').value).read_text())
-        if not self.cfg.get('simulation_only') or self.cfg.get('collision_scope') != 'empty_scene_only':
+        if not self.cfg.get('simulation_only') or self.cfg.get('collision_scope') not in ('empty_scene_only','configured_tool_geometry'):
             raise ValueError('BIMANUAL_REQUIRES_EMPTY_SCENE_SIMULATION')
         urdf=Path(self.cfg['urdf'])
         self.cfg['urdf']=str(urdf if urdf.is_absolute() else
@@ -210,6 +210,7 @@ class BimanualToolNode(RuntimeNode):
         work_dt=None
         pending_reference=None
         last_mode='idle'
+        last_grasp_generation=0
         self.worker_result=None
         self.preflight_status=''
         try:
@@ -230,7 +231,9 @@ class BimanualToolNode(RuntimeNode):
             self.event('BIMANUAL_STARTED',json.dumps({'session_id':session.identity,
                 'mode_generation':session.generation,'resource_groups':self.groups,
                 'collision_scope':self.cfg['collision_scope'],'tool_frame':self.cfg['left_frame'],
-                'tool_transform':self.cfg['left_to_tool']}),goal.request.task_id)
+                'tool_transform':self.cfg['left_to_tool'],
+                'right_axial_grasp':bool(session.axial),
+                'grip_actuation':'kinematic_constraint_only'}),goal.request.task_id)
             started=time.monotonic()
             next_renewal=started
             pending_at=renewal_at=0.
@@ -267,6 +270,27 @@ class BimanualToolNode(RuntimeNode):
                     renewal=self.lease_client.call_async(Lease.Request(operation='renew',
                         lease_id=lease.lease_id,epoch=lease.epoch))
                     renewal_at,next_renewal=now,now+.3
+                if session.grasp_generation != last_grasp_generation:
+                    # Finish accepted submissions, stop physically, then fence
+                    # every old worker result and rebuild both VR/QP anchors.
+                    if pending is not None:
+                        reply=await self.wait(pending)
+                        if not reply.accepted: raise RuntimeError(reply.code)
+                        accepted+=1
+                        pending=None
+                    if not await self.stop(lease):
+                        raise RuntimeError('BIMANUAL_GRASP_STOP_UNCONFIRMED')
+                    worker_token+=1
+                    self.worker_result=None
+                    awaiting=''
+                    reference.reset()
+                    pending_reference=None
+                    session.reanchor()
+                    last_grasp_generation=session.grasp_generation
+                    self.event('BIMANUAL_GRASP_REQUESTED',json.dumps({
+                        'mode':session.grasp_mode,'generation':last_grasp_generation,
+                        'simulated':True,'physical_gripper_command':False}),goal.request.task_id)
+                    continue
                 if session.mode != last_mode:
                     if session.mode == 'idle':
                         if pending is not None:
@@ -294,7 +318,8 @@ class BimanualToolNode(RuntimeNode):
                             session.capture(value)
                             reference.capture(work_positions,work_sampled_at)
                             self.event('BIMANUAL_CAPTURED',json.dumps({'tool_pose':value.tolist(),
-                                'input_stamp':session.stamp}),goal.request.task_id)
+                                'input_stamp':session.stamp,'grasp_mode':session.grasp_mode,
+                                'grasp_generation':session.grasp_generation}),goal.request.task_id)
                         else:
                             # A newer VR frame does not invalidate a bounded,
                             # same-grasp solve. Clutch/mode changes clear awaiting.
@@ -318,7 +343,8 @@ class BimanualToolNode(RuntimeNode):
                                     'input_stamp':work_stamp,'integration_dt':work_dt}),
                                     goal.request.task_id,command.command_id)
                         awaiting=''
-                if (session.mode=='follow' and not self.worker.busy and not awaiting and
+                if (session.mode=='follow' and session.anchor_input is not None and
+                        not self.worker.busy and not awaiting and
                         pending is None and (session.seq != work_seq or session.anchor_tool is None)):
                     measured=dict(zip(s.joints.name,s.joints.position))
                     worker_token+=1
@@ -326,13 +352,15 @@ class BimanualToolNode(RuntimeNode):
                     sampled_at=self.now()
                     baseline,dt=reference.step(sampled_at) if operation=='solve' else (None,None)
                     if self.worker.submit(operation,worker_token,measured,session.target,
-                                          reference=baseline,dt=dt):
+                                          reference=baseline,dt=dt,grasp_mode=session.grasp_mode):
                         awaiting=operation
                         work_seq,work_stamp=session.seq,session.stamp
                         work_sampled_at,work_dt=sampled_at,dt
                         work_positions=tuple(measured[n] for n in self.names)
                 goal.publish_feedback(TeleopAction.Feedback(session_id=session.identity,
-                    mode=session.mode,accepted_commands=accepted))
+                    mode=(('capturing' if session.mode=='follow' and session.anchor_tool is None else session.mode)
+                          +(':'+session.grasp_mode if session.axial else '')),
+                    accepted_commands=accepted))
                 await self.pause()
             result.code='CANCELED' if canceled else 'TELEOP_SESSION_COMPLETE'
         except (RuntimeError,ValueError,KeyError) as exc:

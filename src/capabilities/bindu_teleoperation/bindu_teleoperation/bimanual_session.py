@@ -1,4 +1,4 @@
-"""Two-hand clutch and one rigid-tool pose target, independent of robot model."""
+"""Two-hand clutch and tool pose target with optional right axial support, independent of robot model."""
 import math
 import uuid
 import numpy as np
@@ -60,13 +60,26 @@ class BimanualSession:
         self.stamp = 0.
         self.target = None
         self.clutch_seq = None
+        self.grasp_mode = 'rigid'
+        self.grasp_generation = 0
+        self.axial = config.get('right_axial_grasp')
+        self.trigger_armed = False
+        if self.axial is not None:
+            self.press = float(self.axial.get('press_threshold', .7))
+            self.release = float(self.axial.get('release_threshold', .3))
+            if not 0 <= self.release < self.press <= 1:
+                raise ValueError('BIMANUAL_TRIGGER_THRESHOLDS')
 
     @staticmethod
-    def paired_pose(left, right):
+    def paired_pose(left, right, left_orientation=False):
         a,b = robot_pose(left.pose),robot_pose(right.pose)
         distance = float(np.linalg.norm(a[:3,3]-b[:3,3]))
         if not .05 <= distance <= 1.2:
             raise ValueError('VR_GRASP_GEOMETRY')
+        if left_orientation:
+            pose = a.copy()
+            pose[:3,3] = (a[:3,3]+b[:3,3])/2
+            return pose
         u,s,vt = np.linalg.svd(a[:3,:3]+b[:3,:3])
         if s[-1] < .1:
             raise ValueError('VR_ORIENTATION_DEGENERATE')
@@ -82,7 +95,8 @@ class BimanualSession:
         frames=(left,right)
         if (any(f is None or not f.valid or f.stop or f.init or not f.source_id or
                 not 0 <= now-f.stamp <= self.cfg['input_max_age'] or
-                f.stamp <= self.selected_at or not math.isfinite(f.grip)
+                f.stamp <= self.selected_at or
+                not all(math.isfinite(v) and 0 <= v <= 1 for v in (f.grip,f.trigger))
                 for f in frames) or left.source_id != right.source_id or
                 left.seq != right.seq or abs(left.stamp-right.stamp) > .02):
             raise ValueError('VR_PAIR_INVALID')
@@ -105,7 +119,18 @@ class BimanualSession:
             self.mode = 'idle'
             self.anchor_input = self.anchor_tool = self.target = None
         self.clutch_seq = clutch_seq
-        pose=self.paired_pose(left,right)
+        desired = self.grasp_mode
+        if self.axial is not None:
+            if right.trigger < self.release:
+                self.trigger_armed = True
+                desired = 'rigid'
+            elif right.trigger > self.press and self.trigger_armed and min(left.grip,right.grip) > .7:
+                desired = 'right_axial'
+        if desired != self.grasp_mode:
+            self.grasp_mode = desired
+            self.grasp_generation += 1
+            self.reanchor()
+        pose=self.paired_pose(left,right,left_orientation=self.axial is not None)
         self.current_input=pose
         self.source,self.seq,self.stamp=left.source_id,left.seq,max(left.stamp,right.stamp)
         if min(left.grip,right.grip) < .3:
@@ -120,11 +145,17 @@ class BimanualSession:
                 self.mode='follow'
                 self.anchor_input=pose
                 self.anchor_tool=self.target=None
+        if self.mode == 'follow' and self.anchor_input is None:
+            self.anchor_input = pose
         if self.mode == 'follow' and self.anchor_tool is not None:
             self.target=np.asarray(relative_target(self.anchor_input,pose,self.anchor_tool,
                 self.cfg['position_scale'],mapping_mode='robot_base',
                 operator_yaw_rad=self.cfg['operator_yaw_rad'])).reshape(4,4)
         return True
+
+    def reanchor(self):
+        """Discard pending mapping at a confirmed-stop constraint transition."""
+        self.anchor_input = self.anchor_tool = self.target = None
 
     def capture(self, tool_pose):
         if self.mode != 'follow' or self.anchor_input is None:

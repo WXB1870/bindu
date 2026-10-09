@@ -1,4 +1,4 @@
-"""Optional native rigid-tool QP with named, model-derived joint layout."""
+"""Optional native rigid/axial tool QP with named, model-derived joint layout."""
 import ctypes as c
 import math
 import time
@@ -117,6 +117,27 @@ class BimanualQP:
             raise ValueError('BIMANUAL_LIMIT_CONFIG:'+error)
         try:
             self.tool = self._transform(config['left_to_tool'])
+            self.axial = config.get('right_axial_grasp')
+            self.grasp_mode = 'rigid'
+            if self.axial is not None:
+                try:
+                    fn = lib.bq_capture_axial
+                except AttributeError as exc:
+                    raise ValueError('BIMANUAL_AXIAL_ABI_MISSING: rebuild bindu_bimanual_qp') from exc
+                fn.argtypes, fn.restype = [p,array,i,array,array,array,c.POINTER(NativeConfig)], i
+                right_tool = self._transform(config['right_to_tool'])
+                axis = np.asarray(self.axial['axis_in_tool'], dtype=float)
+                point = np.asarray(self.axial['grip_in_right_flange_m'], dtype=float)
+                if (axis.shape != (3,) or point.shape != (3,) or
+                        not np.isfinite(np.r_[axis,point]).all() or
+                        not np.isclose(np.linalg.norm(axis), 1., atol=1e-8)):
+                    raise ValueError('BIMANUAL_AXIAL_GEOMETRY')
+                helper = np.eye(3)[np.argmin(abs(axis))]
+                transverse = np.cross(helper,axis); transverse /= np.linalg.norm(transverse)
+                self.tool_grip = np.eye(4)
+                self.tool_grip[:3,:3] = np.column_stack((transverse,np.cross(axis,transverse),axis))
+                self.tool_grip[:3,3] = (np.linalg.inv(right_tool) @ np.r_[point,1.])[:3]
+                self.right_grip = right_tool @ self.tool_grip
             self.expected_relative = None
             if 'right_to_tool' in config:
                 right_tool = self._transform(config['right_to_tool'])
@@ -129,6 +150,21 @@ class BimanualQP:
         except (KeyError, TypeError, ValueError):
             self.close()
             raise
+        self.collision_check = None
+        if config.get('collision_scope') == 'configured_tool_geometry':
+            try:
+                from .tool_geometry import make_collision_checker
+                recipe = dict(config['demo'])
+                recipe['left_grip_in_tool_m'] = (np.linalg.inv(self.tool) @
+                    np.r_[recipe['grip_offset_m'],1.])[:3].tolist()
+                self.collision_check = make_collision_checker(
+                    Path(config['urdf']).parent/recipe['display_urdf'],recipe,conservative_convex=True)
+                self.collision_step = float(config.get('collision_joint_step_rad',.01))
+                if not math.isfinite(self.collision_step) or not 0 < self.collision_step <= .01:
+                    raise ValueError('BIMANUAL_COLLISION_STEP')
+            except Exception:
+                self.close()
+                raise
         self.limits = profile.limits
         self.speed = {n: min(profile.speed(n), float(v)) for n,v in zip(active,speed)}
 
@@ -167,37 +203,82 @@ class BimanualQP:
             raise ValueError('BIMANUAL_TOOL_TRANSFORM')
         return transform
 
-    def capture(self, feedback):
+    def capture(self, feedback, grasp_mode='rigid'):
         self.captured = False
         if not self.handle:
             raise ValueError('BIMANUAL_CLOSED')
+        if grasp_mode not in ('rigid', 'right_axial') or grasp_mode == 'right_axial' and self.axial is None:
+            raise ValueError('BIMANUAL_GRASP_MODE')
         q = self._q(feedback)
         measured = np.empty((4,4), dtype=np.float64)
         if not self.lib.bq_relative_pose(self.handle, self._ptr(q), self.nq, self._ptr(measured)):
             raise ValueError('BIMANUAL_GRASP_POSE:'+self._error())
         distance = float(np.linalg.norm(measured[:3,3]))
         low, high = self.cfg['flange_distance_range']
-        if not low <= distance <= high:
+        if self.axial is None and not low <= distance <= high:
             raise ValueError('BIMANUAL_GRASP_GEOMETRY')
         if self.expected_relative is not None:
             error = np.linalg.inv(self.expected_relative) @ measured
             angle = math.acos(float(np.clip((np.trace(error[:3,:3])-1.)/2., -1., 1.)))
-            if (np.linalg.norm(error[:3,3]) > self.grasp_position_tolerance or
+            distance_error = np.linalg.norm(error[:3,3])
+            if self.axial is not None:
+                # Re-lock at the measured roll angle after slip; never restore
+                # the old 6D reference. Grasp point and shaft direction remain
+                # tied to calibrated geometry even across sessions.
+                grip = np.linalg.inv(self.tool) @ measured @ self.right_grip
+                distance_error = np.linalg.norm(grip[:3,3]-self.tool_grip[:3,3])
+                angle = math.acos(float(np.clip(grip[:3,2] @ self.tool_grip[:3,2], -1., 1.)))
+            if (distance_error > self.grasp_position_tolerance or
                     angle > self.grasp_rotation_tolerance):
                 raise ValueError('BIMANUAL_GRASP_POSE')
-        if not self.lib.bq_capture(self.handle, self._ptr(q), self.nq, self._ptr(self.tool),
-                                  c.byref(self.native_config)):
+        if grasp_mode == 'right_axial':
+            ok = self.lib.bq_capture_axial(self.handle, self._ptr(q), self.nq, self._ptr(self.tool),
+                self._ptr(self.right_grip), self._ptr(self.tool_grip), c.byref(self.native_config))
+        else:
+            ok = self.lib.bq_capture(self.handle, self._ptr(q), self.nq, self._ptr(self.tool),
+                                     c.byref(self.native_config))
+        if not ok:
             raise ValueError('BIMANUAL_CAPTURE:'+self._error())
+        self.grasp_mode = grasp_mode
         out = np.empty((4,4), dtype=np.float64)
         if not self.lib.bq_tool_pose(self.handle, self._ptr(q), self.nq, self._ptr(out)):
             raise ValueError('BIMANUAL_TOOL_POSE:'+self._error())
         self.captured = True
         try:
+            self.check_path(feedback, [feedback[n] for n in self.names])
             self.set_shared_targets(self.cfg.get('shared_targets'))
         except (ValueError, TypeError):
             self.captured = False
             raise
         return out
+
+    def check_path(self, feedback, *waypoints):
+        """Fail closed on sampled feedback/reference/candidate geometry.
+
+        Joint-space segments are sampled at <= configured step; this is a
+        rejection guard, not trajectory avoidance or a swept-volume guarantee.
+        """
+        if self.collision_check is None:
+            return
+        base = self._q(feedback)
+        before = np.array([feedback[n] for n in self.names])
+        samples=[]
+        indices=[self.model_names.index(n) for n in self.names]
+        for end in waypoints:
+            end=np.asarray(end,dtype=float)
+            count=max(1,int(np.ceil(np.max(np.abs(end-before))/self.collision_step)))
+            for fraction in np.linspace(0.,1.,count+1):
+                q=base.copy(); q[indices]=before+fraction*(end-before)
+                if samples and np.max(np.abs(q-last_q)) < 1e-12:
+                    continue
+                last_q=q
+                tool=np.empty((4,4),dtype=np.float64)
+                if not self.lib.bq_tool_pose(self.handle,self._ptr(q),self.nq,self._ptr(tool)):
+                    raise ValueError('BIMANUAL_COLLISION_FK:'+self._error())
+                samples.append({'t':float(len(samples)),'q':dict(zip(self.model_names,q)),
+                                'tool':tool})
+            before=end
+        self.collision_check(samples)
 
     def set_shared_targets(self, targets=None):
         """Optional named shared-joint posture objective; None clears it."""
@@ -255,4 +336,7 @@ class BimanualQP:
             lo, hi = self.limits[name]
             if not lo <= new <= hi or abs(new-old) > self.speed[name]*dt+1e-6:
                 raise ValueError('BIMANUAL_POSITION_LIMIT:'+name)
+        self.check_path(feedback,reference,out)
+        if (time.perf_counter()-started)*1e6 > float(self.cfg['solve_timeout_us']):
+            raise ValueError('BIMANUAL_QP_TIMEOUT')
         return tuple(float(v) for v in out), tuple(float(v) for v in metrics)

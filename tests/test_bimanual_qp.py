@@ -265,3 +265,53 @@ class NativeBimanual(unittest.TestCase):
         self.addCleanup(solver.close)
         with self.assertRaisesRegex(ValueError,'BIMANUAL_GRASP_POSE'):
             solver.capture(config['demo']['initial_positions_rad'])
+
+
+class AxialShovelTests(unittest.TestCase):
+    def setUp(self):
+        self.cfg=json.loads((ROOT/'src/integration/bindu_runtime/config/bimanual_snowbot_shovel.json').read_text())
+        self.cfg['urdf']=str(ROOT/'src/hardware/bindu_description/urdf/snowbot_control.urdf')
+        self.profile=Profile.load(ROOT/'src/integration/bindu_runtime/config/snowbot_sim.json')
+        self.qp=BimanualQP(self.cfg,self.profile)
+        self.addCleanup(self.qp.close)
+        self.ready=self.cfg['demo']['initial_positions_rad']
+
+    def test_axial_capture_and_relock_preserve_tool_with_grip_checks(self):
+        before=self.qp.capture(self.ready)
+        axial=self.qp.capture(self.ready,'right_axial')
+        np.testing.assert_allclose(axial,before,atol=1e-12)
+        q,_=propose(self.qp,self.ready,axial)
+        np.testing.assert_allclose(q,[self.ready[n] for n in self.qp.names],atol=1e-7)
+        rigid=self.qp.capture(self.ready,'rigid')
+        np.testing.assert_allclose(rigid,before,atol=1e-12)
+        with self.assertRaisesRegex(ValueError,'GRASP_MODE'):
+            self.qp.capture(self.ready,'unknown')
+        with self.assertRaisesRegex(ValueError,'NOT_CAPTURED'):
+            propose(self.qp,self.ready,rigid)
+
+    def test_guard_rejects_tool_into_body_and_failed_capture_invalidates(self):
+        self.qp.capture(self.ready)
+        bad=dict(self.ready)
+        bad['body_joint_2']+=.7
+        with self.assertRaisesRegex(ValueError,'CLEARANCE|COLLISION|GROUND'):
+            self.qp.capture(bad,'right_axial')
+        self.assertFalse(self.qp.captured)
+
+    def test_axial_attachment_matches_shovel_geometry(self):
+        np.testing.assert_allclose(self.cfg['right_axial_grasp']['axis_in_tool'],
+                                   self.cfg['demo']['shaft_axis_in_tool'])
+        np.testing.assert_allclose(self.cfg['right_axial_grasp']['grip_in_right_flange_m'],
+                                   self.cfg['demo']['grip_offset_m'])
+
+    def test_native_failed_axial_capture_cannot_reuse_rigid_reference(self):
+        import ctypes as c
+        tool=self.qp.capture(self.ready)
+        q=self.qp._q(self.ready)
+        invalid=self.qp.tool_grip.copy();invalid[0,0]=float('nan')
+        ok=self.qp.lib.bq_capture_axial(self.qp.handle,self.qp._ptr(q),self.qp.nq,
+            self.qp._ptr(self.qp.tool),self.qp._ptr(self.qp.right_grip),self.qp._ptr(invalid),
+            c.byref(self.qp.native_config))
+        self.assertEqual(ok,0)
+        with self.assertRaisesRegex(ValueError,'solver not captured'):
+            propose(self.qp,self.ready,tool)
+        self.assertFalse(self.qp.captured)

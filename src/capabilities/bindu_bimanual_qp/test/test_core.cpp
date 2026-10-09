@@ -321,3 +321,55 @@ TEST_F(CoreTest, RepeatedQpStepsMoveToolWithoutOpeningGrasp) {
   EXPECT_LT(final_error, initial_error * 0.75);
   EXPECT_LT(max_grasp_error, 0.002);
 }
+
+TEST_F(CoreTest, AxialGripJacobianMatchesFiniteDifferencesAtNonzeroError) {
+  const auto tool = kin_->leftToTool();
+  const pinocchio::SE3 right_grip(pinocchio::exp3(Eigen::Vector3d(.3,-.2,.4)),
+                                  Eigen::Vector3d(.075,.02,-.03));
+  const auto tool_grip = kin_->toolPose().actInv(robot_->rightPose() * right_grip);
+  kin_->captureAxial(tool,right_grip,tool_grip);
+  auto q = robot_->positions();
+  q[robot_->qIndex("left_joint_2")] += .06;
+  q[robot_->qIndex("right_joint_4")] -= .08;
+  robot_->update(q);
+  const auto error = kin_->relativeError();
+  const auto jac = kin_->relativeErrorJacobian();
+  ASSERT_EQ(error.size(),5);
+  ASSERT_GT(error.norm(),.01);
+  for (int i=0;i<robot_->variables();++i) {
+    auto perturbed=q;
+    perturbed[robot_->qIndex(robot_->activeJointNames()[i])] += 1e-7;
+    robot_->update(perturbed);
+    EXPECT_LT(((kin_->relativeError()-error)/1e-7-jac.col(i)).norm(),1e-5);
+  }
+  robot_->update(q);
+  datq::Config cfg; cfg.max_relative_error=.3;
+  datq::QpController controller(*robot_,*kin_,cfg,robot_->activePositions());
+  auto result=controller.solve(kin_->toolPose(),.01,robot_->activePositions());
+  ASSERT_TRUE(result.ok) << result.reason;
+  EXPECT_LT((jac*result.velocity+result.relative_gain_scale*cfg.relative_gain*error).norm(),1e-3);
+}
+
+TEST_F(CoreTest, AxialRollIsFreeButSlipTiltAndReversedAxisAreNot) {
+  const auto tool=kin_->leftToTool();
+  const pinocchio::SE3 right_grip(pinocchio::exp3(Eigen::Vector3d(.3,.2,-.4)),
+                                  Eigen::Vector3d(.075,.03,.02));
+  const auto tool_grip=kin_->toolPose().actInv(robot_->rightPose()*right_grip);
+  auto rolled=tool_grip;
+  rolled.rotation()=rolled.rotation()*pinocchio::exp3(Eigen::Vector3d(0,0,2.1));
+  kin_->captureAxial(tool,right_grip,rolled);
+  EXPECT_LT(kin_->relativeError().norm(),1e-12);
+  auto slid=rolled; slid.translation()+=rolled.rotation().col(2)*.02;
+  kin_->captureAxial(tool,right_grip,slid);
+  EXPECT_NEAR(kin_->relativeError().head<3>().norm(),.02,1e-12);
+  auto tilted=tool_grip;
+  tilted.rotation()=tilted.rotation()*pinocchio::exp3(Eigen::Vector3d(.1,0,0));
+  kin_->captureAxial(tool,right_grip,tilted);
+  EXPECT_NEAR(kin_->relativeError().tail<2>().norm(),std::sin(.1),1e-12);
+  tilted.rotation()=tool_grip.rotation()*pinocchio::exp3(Eigen::Vector3d(3.141592653589793,0,0));
+  kin_->captureAxial(tool,right_grip,tilted);
+  EXPECT_THROW(kin_->relativeError(),std::runtime_error);
+  kin_->capture(tool);
+  EXPECT_EQ(kin_->constraintRows(),6);
+  EXPECT_LT(kin_->relativeError().norm(),1e-12);
+}

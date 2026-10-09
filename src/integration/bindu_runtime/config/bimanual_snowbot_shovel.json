@@ -1,6 +1,6 @@
 {
   "simulation_only": true,
-  "collision_scope": "empty_scene_only",
+  "collision_scope": "configured_tool_geometry",
   "urdf": "snowbot_control.urdf",
   "resource_groups": [
     "waist",
@@ -559,5 +559,20 @@
   "shared_target_weight": 0.2,
   "shared_target_gain": 6.0,
   "limit_margin": 0.15,
-  "damper_gain": 2.0
+  "damper_gain": 2.0,
+  "right_axial_grasp": {
+    "grip_in_right_flange_m": [
+      0.075,
+      0,
+      0
+    ],
+    "axis_in_tool": [
+      -0.6427876096865394,
+      0,
+      0.766044443118978
+    ],
+    "press_threshold": 0.7,
+    "release_threshold": 0.3
+  },
+  "collision_joint_step_rad": 0.01
 }

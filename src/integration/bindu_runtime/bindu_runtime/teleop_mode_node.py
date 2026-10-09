@@ -1,5 +1,7 @@
 """Single authority for manual teleop mode selection and safety transition."""
 import math
+import json
+from pathlib import Path
 import time
 from types import SimpleNamespace
 from rclpy.action import ActionServer, GoalResponse, CancelResponse
@@ -20,9 +22,13 @@ class TeleopModeNode(RuntimeNode):
         self.declare_parameter('initial_side', 'left')
         self.declare_parameter('supported_sides', ['left'])
         self.declare_parameter('require_single_worker', False)
+        self.declare_parameter('tool_config', '')
+        tool_config = self.get_parameter('tool_config').value
+        axial = 'right_axial_grasp' in json.loads(Path(tool_config).read_text()) if tool_config else False
         self.require_single_worker = self.get_parameter('require_single_worker').value
         self.supported_sides = tuple(self.get_parameter('supported_sides').value)
-        self.selection = ModeSelection(self.profile, self.get_parameter('initial_side').value, self.now())
+        self.selection = ModeSelection(self.profile, self.get_parameter('initial_side').value, self.now(),
+                                       left_orientation=axial)
         if self.selection.side not in self.supported_sides or set(self.supported_sides)-{'left','right'}:
             raise ValueError('INVALID_SUPPORTED_SIDES')
         self.state = self.health = None

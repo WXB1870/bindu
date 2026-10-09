@@ -5,10 +5,11 @@ from .vr.mapping import pose_matrix
 
 
 class ModeSelection:
-    def __init__(self, profile, initial_side, now, input_age=.25, feedback_age=.2):
+    def __init__(self, profile, initial_side, now, input_age=.25, feedback_age=.2, left_orientation=False):
         if initial_side not in ('left','right'):
             raise ValueError('INVALID_SIDE')
         self.profile = profile
+        self.left_orientation = left_orientation
         self.mode, self.side, self.phase = 'single_arm', initial_side, 'READY'
         self.generation, self.changed_at = 1, now
         self.target = None
@@ -59,7 +60,7 @@ class ModeSelection:
                     abs(selected[0].stamp-selected[1].stamp) > .02):
                 return 'VR_PAIR_MISMATCH'
             try:
-                BimanualSession.paired_pose(*selected)
+                BimanualSession.paired_pose(*selected,left_orientation=self.left_orientation)
             except ValueError as exc:
                 if str(exc) in ('VR_GRASP_GEOMETRY', 'VR_ORIENTATION_DEGENERATE'):
                     return str(exc)

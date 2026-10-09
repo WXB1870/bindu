@@ -25,6 +25,7 @@ def verify(motion_path, output):
     from isaacsim.core.utils.types import ArticulationAction
 
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]/'tools'))
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]/'src/capabilities/bindu_kinematics'))
     from shovel_geometry import check_dump
     motion = json.loads(motion_path.read_text())
     source = Path(motion['display_urdf'])

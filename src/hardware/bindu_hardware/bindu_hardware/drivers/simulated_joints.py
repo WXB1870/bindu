@@ -3,8 +3,8 @@ from bindu_contracts.devices import JointReading
 
 class SimJointDriver:
     """Bounded-speed kinematic fixture for one named joint group."""
-    def __init__(self, names, max_speed):
-        self.positions = {name: 0. for name in names}
+    def __init__(self, names, max_speed, initial_positions=None):
+        self.positions = {name: float((initial_positions or {}).get(name,0.)) for name in names}
         self.target = dict(self.positions)
         self.max_speed = max_speed
         self.fault = ''

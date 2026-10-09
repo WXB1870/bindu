@@ -5,6 +5,7 @@ import json
 import os
 import shutil
 import signal
+import socket
 import subprocess
 import threading
 import time
@@ -37,6 +38,37 @@ def until(node,predicate,timeout=10.):
     raise RuntimeError('ROS_CONDITION_TIMEOUT')
 
 
+def websocket_pair(port,control,stop,errors):
+    """Use the real Vuer decoder/receiver, with explicitly synthetic controllers."""
+    from websockets.sync.client import connect
+    from msgpack import packb
+    try:
+        deadline=time.monotonic()+20.
+        ws=None
+        while ws is None and time.monotonic()<deadline and not stop.is_set():
+            try: ws=connect(f'ws://127.0.0.1:{port}/',open_timeout=1.)
+            except OSError: stop.wait(.1)
+        if ws is None: raise RuntimeError('VUER_NOT_AVAILABLE')
+        with ws:
+            while not stop.is_set():
+                if control['enabled']:
+                    value={}
+                    for side,x in (('left',0.),('right',.3)):
+                        pose=np.eye(4);pose[0,3]=x+control['delta']
+                        value[side]=pose.ravel(order='F').tolist()
+                        value[side+'State']={'squeezeValue':control['grip'],
+                            'triggerValue':control['trigger'] if side=='right' else 0.,
+                            'aButton':False,'bButton':False}
+                    ws.send(packb({'etype':'CONTROLLER_MOVE','key':'motionControllers',
+                                   'value':value},use_bin_type=True))
+                    control['seq']+=1
+                for _ in range(4):
+                    try: ws.recv(timeout=.001)
+                    except TimeoutError: break
+                stop.wait(.02)
+    except Exception as exc: errors.append(str(exc))
+
+
 def main():
     parser=argparse.ArgumentParser()
     parser.add_argument('--output',type=Path,default=Path('/tmp/bindu-bimanual-check'))
@@ -48,10 +80,16 @@ def main():
                         help='Exercise active single-arm to bimanual mode preemption')
     parser.add_argument('--coalesced-release',action='store_true',
                         help='Drop the released frame but preserve its clutch generation')
+    parser.add_argument('--websocket-input',action='store_true',
+                        help='Send paired synthetic controllers through real Vuer WebSocket')
+    parser.add_argument('--axial-grasp',action='store_true',
+                        help='Snowbot shovel fixture: right trigger support rotation and re-lock')
     parser.add_argument('--drop-tool-input',action='store_true',
                         help='Require tool input loss to stop all controlled joints and release ownership')
     args=parser.parse_args()
+    if args.websocket_input and args.coalesced_release: parser.error('coalesced fixture injects ROS counters')
     if args.snowbot and args.g1_model: parser.error('choose one robot fixture')
+    if args.axial_grasp and not args.snowbot: parser.error('axial grasp requires --snowbot')
     if args.expect_geometry_rejection and not args.snowbot:
         parser.error('geometry rejection fixture requires --snowbot')
     if args.switch_while_active and not args.snowbot:
@@ -65,6 +103,8 @@ def main():
     if args.snowbot:
         profile=root/'src/integration/bindu_runtime/config/snowbot_sim.json'
         config=root/'src/integration/bindu_runtime/config/bimanual_snowbot_sim.json'
+        if args.axial_grasp:
+            config=root/'src/integration/bindu_runtime/config/bimanual_snowbot_shovel.json'
         if args.expect_geometry_rejection:
             invalid=json.loads(config.read_text())
             invalid['flange_distance_range']=[.1,.2]
@@ -118,9 +158,10 @@ def main():
     source_executor=SingleThreadedExecutor()
     source_executor.add_node(source)
     source_thread=None
+    peer=None; peer_stop=threading.Event(); peer_errors=[]
     state={'execution':None,'mode':None,'accepted':[],'events':[],'physics':None,'trace':[],
            'tool_feedback':None}
-    control={'grip':0.,'delta':0.,'enabled':True,'seq':0,'left_clutch_seq':0}
+    control={'grip':0.,'trigger':0.,'delta':0.,'enabled':True,'seq':0,'left_clutch_seq':0}
     source_timing={'last':None,'max_gap_s':0.}
     try:
         if physics_model:
@@ -128,8 +169,10 @@ def main():
             processes.append(subprocess.Popen([str(root/'tools/run_g1_isaac.sh'),'--headless',
                 '--model',str(physics_model),'--namespace',ns,'--output',str(output/'isaac_run'),
                 '--duration','180'],stdout=log,stderr=subprocess.STDOUT,start_new_session=True))
-        start('execution',['-p','device_backend:=external_simulation'] if physics_model else [])
-        start('teleop_mode',['-p','require_single_worker:=true'] if args.snowbot else [])
+        initial = json.loads(config.read_text())['demo']['initial_positions_rad'] if args.axial_grasp else {}
+        start('execution',['-p','device_backend:=external_simulation'] if physics_model else
+              ['-p','kinematic_initial_positions:='+json.dumps(json.dumps(initial))] if initial else [])
+        start('teleop_mode',['-p','require_single_worker:=true','-p','tool_config:='+str(config)] if args.snowbot else [])
         start('teleop_tool',['-p','tool_config:='+str(config),
                             '-p','model_root:='+str((root/'src/hardware/bindu_description/urdf')
                                                     if physics_model or args.snowbot else fixture.parent)])
@@ -168,16 +211,23 @@ def main():
             source_timing['last']=tick
             now=source.get_clock().now().to_msg()
             health.publish(RecorderHealth(stamp=now,run_id=run,ready=True))
-            if not control['enabled']: return
+            if not control['enabled'] or args.websocket_input: return
             control['seq']+=1
             for side,x in (('left',0.),('right',.3)):
                 pose=np.eye(4);pose[0,3]=x+control['delta']
                 vr.publish(VRInput(stamp=now,source_id='synthetic_pair',seq=control['seq'],
-                    side=side,pose=pose.ravel().tolist(),grip=control['grip'],valid=True,
+                    side=side,pose=pose.ravel().tolist(),grip=control['grip'],
+                    trigger=control['trigger'] if side=='right' else 0.,valid=True,
                     clutch_seq=control['left_clutch_seq'] if side=='left' else 0))
         source.create_timer(.02,publish)
         source_thread=threading.Thread(target=source_executor.spin,daemon=True)
         source_thread.start()
+        if args.websocket_input:
+            with socket.socket() as sock:
+                sock.bind(('127.0.0.1',0));port=sock.getsockname()[1]
+            start('vr_input',['-p','side:=both','-p','port:='+str(port)])
+            peer=threading.Thread(target=websocket_pair,args=(port,control,peer_stop,peer_errors),daemon=True)
+            peer.start()
         selector=ActionClient(node,SelectTeleopMode,ns+'/teleop/select_mode')
         tool=ActionClient(node,TeleopSession,ns+'/teleop/tool_session')
         assert selector.wait_for_server(timeout_sec=20.)
@@ -196,6 +246,7 @@ def main():
             assert not state['accepted']
             result={'robot':'snowbot','mode_phase':'SAFE','code':selected_result.code,
                     'accepted_commands':0,'simulation_only':True}
+            assert not peer_errors,peer_errors
             (output/'result.json').write_text(json.dumps(result,indent=2)+'\n')
             print(json.dumps(result))
             return
@@ -209,7 +260,7 @@ def main():
         goal=None
         for _ in range(15):
             goal=wait(node,tool.send_goal_async(TeleopSession.Goal(task_id=run,
-                resource_group='bimanual_tool',duration=16. if args.coalesced_release else 8.),
+                resource_group='bimanual_tool',duration=30. if args.axial_grasp else (16. if args.coalesced_release else 8.)),
                 feedback_callback=lambda msg:state.update(tool_feedback=msg.feedback.mode)))
             if goal.accepted: break
             prior_seq=control['seq']
@@ -219,7 +270,7 @@ def main():
         goal_result=goal.get_result_async()
         # Goal acceptance precedes execute/lease acquisition. Keep released
         # input until the actual session has ingested it and reports idle.
-        until(node,lambda:state['tool_feedback']=='idle')
+        until(node,lambda:state['tool_feedback'] in ('idle','idle:rigid'))
         control['grip']=1.
         try: until(node,lambda:len(state['accepted'])>=3,6.)
         except RuntimeError:
@@ -234,6 +285,22 @@ def main():
                    and len(c.joint_names)==command_count for c in commands),commands
         assert any(max(abs(a-b) for a,b in zip(c.positions,commands[count-1].positions))>1e-5
                    for c in commands[count:]),'no arm response'
+        axial_checked=False
+        if args.axial_grasp:
+            transitions=[(1.,'right_axial'),(0.,'rigid')]
+            if args.drop_tool_input or args.coalesced_release:
+                transitions.append((1.,'right_axial'))
+            for trigger,mode in transitions:
+                event_start=len(state['events'])
+                control['trigger']=trigger
+                until(node,lambda:any(e[1]=='BIMANUAL_CAPTURED' and
+                    json.loads(e[2]).get('grasp_mode')==mode
+                    for e in state['events'][event_start:]),6.)
+                count_after=len(state['accepted'])
+                until(node,lambda:len(state['accepted'])>=count_after+2,4.)
+                assert any(e[1]=='BIMANUAL_GRASP_REQUESTED' and
+                    json.loads(e[2])['mode']==mode for e in state['events'][event_start:])
+            axial_checked=True
         reclutch_checked=False
         if args.coalesced_release:
             event_start=len(state['events'])
@@ -292,7 +359,9 @@ def main():
             count=len(state['accepted'])
             control['grip']=1.
             until(node,lambda:len(state['accepted'])>=count+3,6.)
-            control['delta']=.02
+            # Preserve the re-clutched hand origin; absolute .02 would be a
+            # 19 cm jump after the coalesced-release fixture's 20 cm relocation.
+            control['delta']+=.01
             until(node,lambda:len(state['accepted'])>=count+5,6.)
             assert wait(node,single_goal.cancel_goal_async()).goals_canceling
             single_end=wait(node,single_result,8.).result
@@ -323,18 +392,24 @@ def main():
                 until(node,lambda:state['execution'] and not state['execution'].lease_active and
                       not state['execution'].reference.name,6.)
                 active_switch_generation=switch.generation
-        result={'mode_generation':switch_result.generation,'accepted_commands':len(commands),
+        result={'mode_generation':switch_result.generation,'accepted_commands':ended.accepted_commands,
                 'cancel_code':ended.code,'last_execution':state['execution'].state,
                 'profile':str(profile),'tool':str(config),'simulation_only':True,
+                'input':'synthetic_vuer_websocket' if args.websocket_input else 'synthetic_ros',
                 'backend':'PhysX' if physics_model else 'kinematic',
                 'robot':'snowbot' if args.snowbot else ('g1' if physics_model else 'two_arm_fixture'),
                 'single_arm_accepted':single_accepted,
                 'coalesced_release_checked':reclutch_checked,
+                'axial_grasp_checked':axial_checked,
                 'tool_input_loss_checked':args.drop_tool_input,
                 'active_switch_generation':active_switch_generation}
+        assert not peer_errors,peer_errors
         (output/'result.json').write_text(json.dumps(result,indent=2)+'\n')
         print(json.dumps(result))
     finally:
+        peer_stop.set()
+        if peer: peer.join(timeout=3.)
+        (output/'websocket_errors.json').write_text(json.dumps(peer_errors)+'\n')
         (output/'trace.json').write_text(json.dumps(state['trace'])+'\n')
         (output/'events.json').write_text(json.dumps(state['events'])+'\n')
         (output/'source_stats.json').write_text(json.dumps({

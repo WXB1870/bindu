@@ -11,8 +11,6 @@ from dataclasses import replace
 import hashlib
 import json
 from pathlib import Path
-import tempfile
-import xml.etree.ElementTree as ET
 
 import numpy as np
 import pinocchio as pin
@@ -21,6 +19,7 @@ from scipy.spatial.transform import Rotation
 from bindu_contracts.profile import Profile
 from bindu_kinematics.bimanual import BimanualQP
 from shovel_geometry import bin_boxes, check_dump
+from bindu_kinematics.tool_geometry import collision_check
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -96,222 +95,6 @@ def target_at(keyframes, home, pivot, seconds, shaft_axis=None):
     raise ValueError('TIME_OUTSIDE_RECIPE')
 
 
-def collision_check(urdf, samples, recipe, collect_failures=False):
-    """Discrete CAD and tool clearance; only bounded grip bands allow contact.
-
-    The ground is expressed in the fixed URDF base frame and cross-checked
-    against configured supporting links. Missing meshes require explicit
-    conservative proxies. This is not a contact/dynamics or continuous check.
-    """
-    import coal as fcl
-
-    if not samples:
-        raise ValueError('EMPTY_COLLISION_SAMPLES')
-    tree = ET.parse(urdf)
-    skipped, proxies = [], recipe.get('empty_mesh_proxies', {})
-    asset_hashes = {str(urdf): hashlib.sha256(urdf.read_bytes()).hexdigest()}
-    for mesh in tree.findall('.//mesh'):
-        uri = mesh.get('filename')
-        prefix = f'package://{urdf.parent.parent.name}/'
-        if uri.startswith(prefix):
-            uri = str(urdf.parent.parent / uri.removeprefix(prefix))
-            mesh.set('filename', uri)
-        elif not Path(uri).is_absolute():
-            raise ValueError('UNRESOLVED_COLLISION_MESH:'+uri)
-        asset_hashes[uri] = hashlib.sha256(Path(uri).read_bytes()).hexdigest()
-    for link in tree.findall('link'):
-        for collision in link.findall('collision'):
-            mesh = collision.find('geometry/mesh')
-            path = Path(mesh.get('filename')) if mesh is not None else None
-            if path is not None and path.stat().st_size == 84 and path.read_bytes()[80:] == b'\0\0\0\0':
-                name = link.get('name')
-                if name not in proxies:
-                    raise ValueError('MISSING_COLLISION_GEOMETRY:'+name)
-                proxy = proxies[name]
-                size, center = np.asarray(proxy['size_m']), np.asarray(proxy['center_m'])
-                if size.shape != (3,) or center.shape != (3,) or not np.isfinite(np.r_[size,center]).all() or min(size) <= 0:
-                    raise ValueError('INVALID_EMPTY_MESH_PROXY')
-                skipped.append(name)
-                geometry_element = collision.find('geometry')
-                geometry_element.remove(mesh)
-                ET.SubElement(geometry_element, 'box', size=' '.join(map(str,size)))
-                origin = collision.find('origin')
-                if origin is None:
-                    origin = ET.SubElement(collision, 'origin')
-                origin.set('xyz',' '.join(map(str,center)))
-                origin.set('rpy','0 0 0')
-    if set(proxies) != set(skipped):
-        raise ValueError('UNUSED_EMPTY_MESH_PROXY')
-    with tempfile.TemporaryDirectory(prefix='bindu-shovel-') as directory:
-        absolute = Path(directory)/'collision.urdf'
-        tree.write(absolute)
-        model = pin.buildModelFromUrdf(str(absolute))
-        geometry = pin.buildGeomFromUrdf(model, str(absolute), pin.GeometryType.COLLISION)
-    parents = {j.find('child').get('link'): j.find('parent').get('link') for j in tree.findall('joint')}
-
-    def ancestors(name):
-        chain = [name]
-        while name in parents:
-            name = parents[name]
-            chain.append(name)
-        return chain
-
-    names = [model.frames[g.parentFrame].name for g in geometry.geometryObjects]
-    for a, first in enumerate(names):
-        for b in range(a+1, len(names)):
-            second = names[b]
-            if geometry.geometryObjects[a].parentJoint == geometry.geometryObjects[b].parentJoint:
-                continue
-            left, right = ancestors(first), ancestors(second)
-            distance = min(left.index(n)+right.index(n) for n in set(left) & set(right))
-            if distance > 2:
-                geometry.addCollisionPair(pin.CollisionPair(a, b))
-    data, geometry_data = model.createData(), pin.GeometryData(geometry)
-    if any(not model.existJointName(n) for n in samples[0]['q']):
-        raise ValueError('COLLISION_JOINT_LAYOUT')
-    index = {n: model.joints[model.getJointId(n)].idx_q for n in samples[0]['q']}
-    if set(index) != set(model.names[1:]):
-        raise ValueError('COLLISION_JOINT_LAYOUT')
-    shaft_axis = np.asarray(recipe['shaft_axis_in_tool'], dtype=float)
-    ends = np.asarray(recipe['shaft_from_left_grip_m'], dtype=float)
-    radius = float(recipe['shaft_radius_m'])
-    clearance_limit = float(recipe['acceptance']['min_tool_robot_clearance_m'])
-    ground = recipe['ground']
-    ground_z = float(ground['z_in_base_m'])
-    support_tolerance = float(ground['support_tolerance_m'])
-    if (not np.isfinite(np.r_[shaft_axis, ends, radius, clearance_limit, ground_z, support_tolerance,
-                              recipe['pan_size_m'], recipe['pan_center_m']]).all() or
-            not np.isclose(np.linalg.norm(shaft_axis), 1.) or ends.shape != (2,) or ends[1] <= ends[0] or
-            radius <= 0 or min(recipe['pan_size_m']) <= 0 or clearance_limit <= 0 or support_tolerance <= 0):
-        raise ValueError('INVALID_SHOVEL_GEOMETRY')
-    reference = np.array([1., 0., 0.]) if abs(shaft_axis[0]) < .9 else np.array([0., 1., 0.])
-    transverse = np.cross(reference, shaft_axis)
-    transverse /= np.linalg.norm(transverse)
-    rotation = np.column_stack((transverse, np.cross(shaft_axis, transverse), shaft_axis))
-    contacts = recipe['shaft_contacts']
-    if not set(contacts).issubset(names):
-        raise ValueError('UNKNOWN_SHAFT_CONTACT_LINK')
-    segments = {}
-    for name in set(names):
-        spans = [tuple(ends)]
-        if name in contacts:
-            center, half_length = contacts[name]['center_m'], contacts[name]['half_length_m']
-            if (not np.isfinite([center, half_length]).all() or half_length <= 0 or
-                    center-half_length <= ends[0] or center+half_length >= ends[1]):
-                raise ValueError('INVALID_SHAFT_CONTACT_BAND')
-            # Cylinder cut faces bound each allowed contact band precisely;
-            # unlike skipping a hand mesh this still checks the rest of the rod.
-            spans = [(ends[0], center-half_length), (center+half_length, ends[1])]
-        segments[name] = [(fcl.Cylinder(radius, b-a) if name in contacts else fcl.Capsule(radius, b-a),
-                           np.array(recipe['left_grip_in_tool_m'])+shaft_axis*(a+b)/2)
-                          for a, b in spans]
-    pan = fcl.Box(*recipe['pan_size_m'])
-    bin_parts = [(name, fcl.Box(*size), fcl.Transform3s(np.eye(3), np.array(center)))
-                 for name, size, center in bin_boxes(recipe)]
-    bin_limit = recipe.get('receiving_bin', {}).get('min_clearance_m', .02)
-    if not np.isfinite(bin_limit) or bin_limit <= 0:
-        raise ValueError('INVALID_BIN_CLEARANCE')
-    full_shaft = fcl.Capsule(radius, ends[1]-ends[0])
-    shaft_center = np.array(recipe['left_grip_in_tool_m'])+shaft_axis*sum(ends)/2
-    bin_minimum, bin_worst = float('inf'), None
-    # AABB distance is a conservative lower bound. Skip an exact mesh query
-    # only when it cannot violate the gate or reduce the recorded global minimum.
-    bounds = {}
-    def world_bounds(shape, rotation, translation):
-        key = id(shape)
-        if key not in bounds:
-            shape.computeLocalAABB()
-            low, high = np.array(shape.aabb_local.min_), np.array(shape.aabb_local.max_)
-            bounds[key] = ((low+high)/2, (high-low)/2)
-        center, half = bounds[key]
-        return rotation @ center+translation, np.abs(rotation) @ half
-    failures, worst = [], None
-    exact_queries, bounded_queries = 0, 0
-    minimum = float('inf')
-    support_heights = {}
-    distance_request = fcl.DistanceRequest()
-    for sample_index, sample in enumerate(samples):
-        if set(sample['q']) != set(index):
-            raise ValueError('COLLISION_JOINT_LAYOUT')
-        q = pin.neutral(model)
-        for name, value in sample['q'].items():
-            q[index[name]] = value
-        tool = BimanualQP._transform(sample['tool'])
-        if not np.isfinite(q).all() or not np.isfinite(sample['t']):
-            raise ValueError('NONFINITE_COLLISION_SAMPLE')
-        pin.computeCollisions(model, data, geometry, geometry_data, q, False)
-        failure = None
-        for pair, result in zip(geometry.collisionPairs, geometry_data.collisionResults):
-            if result.isCollision():
-                failure = f'SELF_COLLISION: {names[pair.first]} / {names[pair.second]}'
-                break
-        if sample_index == 0:
-            for name, obj, placement in zip(names, geometry.geometryObjects, geometry_data.oMg):
-                if name in ground['support_links']:
-                    vertices = np.asarray(obj.geometry.vertices())
-                    height = float(np.min((vertices @ placement.rotation.T + placement.translation)[:, 2]))
-                    support_heights[name] = min(height, support_heights.get(name, float('inf')))
-            if (set(support_heights) != set(ground['support_links']) or
-                    any(abs(height-ground_z) > support_tolerance for height in support_heights.values())):
-                raise ValueError('GROUND_SUPPORT_MISMATCH')
-        pan_pose = fcl.Transform3s(tool[:3, :3], tool[:3, 3]+tool[:3, :3] @ np.array(recipe['pan_center_m']))
-        for name, obj, placement in zip(names, geometry.geometryObjects, geometry_data.oMg):
-            body_pose = fcl.Transform3s(placement.rotation, placement.translation)
-            body_center, body_half = world_bounds(obj.geometry, placement.rotation, placement.translation)
-            parts = [('PAN', pan, pan_pose)]
-            parts += [('SHAFT', shape, fcl.Transform3s(tool[:3, :3] @ rotation,
-                       tool[:3, 3]+tool[:3, :3] @ center)) for shape, center in segments[name]]
-            for part, shape, pose in parts:
-                part_center, part_half = world_bounds(shape, pose.getRotation(), pose.getTranslation())
-                lower_bound = np.linalg.norm(np.maximum(np.abs(part_center-body_center)-part_half-body_half, 0.))-1e-9
-                if lower_bound >= max(clearance_limit, minimum):
-                    bounded_queries += 1
-                    continue
-                exact_queries += 1
-                result = fcl.DistanceResult()
-                distance = float(fcl.distance(shape, pose, obj.geometry, body_pose, distance_request, result))
-                if not np.isfinite(distance):
-                    raise ValueError('NONFINITE_COLLISION_DISTANCE')
-                if distance < minimum:
-                    minimum = distance
-                    worst = {'part': part, 'link': name, 't': sample['t']}
-                if distance < clearance_limit and failure is None:
-                    failure = f'{part}_CLEARANCE: {name} distance={distance:.6g}'
-        # No grip exemptions apply to the receiving bin. Check every body mesh,
-        # the full shaft and the pan against its four walls and floor.
-        scene_parts = [(name,obj.geometry,fcl.Transform3s(place.rotation,place.translation))
-                       for name,obj,place in zip(names,geometry.geometryObjects,geometry_data.oMg)]
-        scene_parts += [('PAN',pan,pan_pose), ('SHAFT',full_shaft,
-                        fcl.Transform3s(tool[:3,:3] @ rotation,tool[:3,3]+tool[:3,:3] @ shaft_center))]
-        for wall,box,box_pose in bin_parts:
-            c1,h1 = world_bounds(box,box_pose.getRotation(),box_pose.getTranslation())
-            for name,shape,pose in scene_parts:
-                c2,h2 = world_bounds(shape,pose.getRotation(),pose.getTranslation())
-                bound = np.linalg.norm(np.maximum(np.abs(c1-c2)-h1-h2,0.))-1e-9
-                if bound >= max(bin_limit,bin_minimum):
-                    continue
-                distance = float(fcl.distance(shape,pose,box,box_pose,distance_request,fcl.DistanceResult()))
-                if not np.isfinite(distance):
-                    raise ValueError('NONFINITE_BIN_DISTANCE')
-                if distance < bin_minimum:
-                    bin_minimum,bin_worst = distance, {'wall':wall,'part':name,'t':sample['t']}
-                if distance < bin_limit and failure is None:
-                    failure = f'BIN_CLEARANCE: {wall} / {name} distance={distance:.6g}'
-        if sample_index % 1000 == 0:
-            print('GEOMETRY_CHECK', sample_index, sample['t'], minimum, flush=True)
-        if failure:
-            if not collect_failures:
-                raise ValueError(f"{failure} t={sample['t']}")
-            failures.append({'sample': sample['t'], 'reason': failure})
-    return {'samples': len(samples), 'mesh_pairs': len(geometry.collisionPairs),
-            'excluded_tree_distance': 2, 'shaft_contacts': contacts,
-            'empty_mesh_proxies': proxies, 'support_heights_m': support_heights,
-            'min_tool_robot_clearance_m': minimum, 'closest_tool_robot_pair': worst,
-            'exact_distance_queries': exact_queries, 'aabb_bounded_queries': bounded_queries,
-            'min_bin_clearance_m': bin_minimum if bin_parts else None, 'closest_bin_pair': bin_worst,
-            'source_sha256': asset_hashes, 'violations': len(failures), 'failures': failures}
-
-
 def generate(config_path, description, output):
     config = json.loads(config_path.read_text())
     validate_recipe(config)
@@ -339,6 +122,7 @@ def generate(config_path, description, output):
     source_paths = (config_path, Path(config['urdf']), display,
                     config_path.parent/recipe['profile'], Path(__file__).resolve(),
                     Path(__import__('shovel_geometry').__file__).resolve(),
+                    Path(__import__('bindu_kinematics.tool_geometry',fromlist=['']).__file__).resolve(),
                     Path(__import__('bindu_kinematics.bimanual', fromlist=['__file__']).__file__),
                     Path(solver.lib._name))
     sources = {str(path): hashlib.sha256(path.read_bytes()).hexdigest() for path in source_paths}

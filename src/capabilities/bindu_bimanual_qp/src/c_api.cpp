@@ -170,10 +170,30 @@ int bq_capture(void *ptr, const double *q, int n, const double *tool, const bq_c
     Config native;
     copyConfig(native,*config);
     update(h,q,n);
-    auto qp = std::make_unique<QpController>(*h.robot,*h.kin,native,
-                                             h.robot->activePositions(),h.shared_count);
-    h.kin->capture(pose(tool));
-    h.qp = std::move(qp);
+    try {
+      h.kin->capture(pose(tool));
+      h.qp = std::make_unique<QpController>(*h.robot,*h.kin,native,
+                                           h.robot->activePositions(),h.shared_count);
+    } catch (...) { h.kin->reset(); throw; }
+  });
+}
+int bq_capture_axial(void *ptr, const double *q, int n, const double *tool,
+                     const double *right_grip, const double *tool_grip,
+                     const bq_config *config) {
+  return checked(ptr, [&](Handle &h) {
+    h.qp.reset(); h.kin->reset();
+    if (!config || config->abi_version != BQ_ABI_VERSION || config->struct_size != sizeof(bq_config))
+      throw std::invalid_argument("QP config ABI mismatch");
+    Config native;
+    copyConfig(native,*config);
+    update(h,q,n);
+    try {
+      h.kin->captureAxial(pose(tool),pose(right_grip),pose(tool_grip));
+      if (h.kin->relativeError().norm() > native.max_relative_error)
+        throw std::invalid_argument("support grip mismatch");
+      h.qp = std::make_unique<QpController>(*h.robot,*h.kin,native,
+                                           h.robot->activePositions(),h.shared_count);
+    } catch (...) { h.kin->reset(); throw; }
   });
 }
 int bq_shared_targets(void *ptr, const double *targets, int n) {

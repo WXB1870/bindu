@@ -143,3 +143,20 @@ class ShovelGeometryTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class OnlineGeometryTests(unittest.TestCase):
+    setUpClass = classmethod(ShovelGeometryTests.setUpClass.__func__)
+    # Check the conservative online representation against a real CAD fixture.
+    def test_online_outer_guard_preserves_ready_and_rejects_body_overlap(self):
+        from bindu_kinematics.tool_geometry import make_collision_checker
+        check=make_collision_checker(self.urdf,self.recipe,conservative_convex=True)
+        result=check([self.sample])
+        self.assertEqual(result['tool_body_representation'],'convex_outer')
+        self.assertGreaterEqual(result['min_tool_robot_clearance_m'],.02)
+        bad=copy.deepcopy(self.sample)
+        bad['tool']=np.eye(4);bad['tool'][:3,3]=self.body_point
+        with self.assertRaisesRegex(ValueError,'CLEARANCE|COLLISION'):
+            check([bad])
+        with self.assertRaisesRegex(ValueError,'EMPTY'):
+            check([])

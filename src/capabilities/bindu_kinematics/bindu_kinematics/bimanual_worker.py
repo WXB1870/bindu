@@ -13,9 +13,9 @@ def _run(config, profile, requests, results):
         while True:
             item=requests.get()
             if item is None: return
-            operation,token,feedback,target,reference,dt=item
+            operation,token,feedback,target,reference,dt,grasp_mode=item
             try:
-                if operation == 'capture': value=solver.capture(feedback)
+                if operation == 'capture': value=solver.capture(feedback,grasp_mode)
                 elif operation == 'solve':
                     value=solver.solve(feedback,target,reference=reference,dt=dt)
                 else: raise ValueError('BIMANUAL_WORKER_OPERATION')
@@ -41,9 +41,9 @@ class BimanualWorker:
         self.started=time.monotonic()
         self.process.start()
 
-    def submit(self,operation,token,feedback,target=None,*,reference=None,dt=None):
+    def submit(self,operation,token,feedback,target=None,*,reference=None,dt=None,grasp_mode='rigid'):
         if not self.ready or self.busy: return False
-        self.requests.put_nowait((operation,token,feedback,target,reference,dt))
+        self.requests.put_nowait((operation,token,feedback,target,reference,dt,grasp_mode))
         self.busy=True
         self.submitted=time.monotonic()
         return True
