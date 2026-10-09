@@ -72,17 +72,29 @@ def validate_recipe(config):
             not np.allclose(config['right_axial_grasp']['grip_in_right_flange_m'], recipe['grip_offset_m'])):
         raise ValueError('SHOVEL_AXIAL_GEOMETRY_MISMATCH')
     switch_hold = float(recipe.get('grasp_switch_hold_s', 0.))
+    switch_ramp = float(recipe.get('grasp_switch_ramp_s', 0.))
+    if not np.isfinite(switch_ramp) or switch_ramp < 0:
+        raise ValueError('SHOVEL_GRASP_STOP_RAMP')
     if len(schedule)>1 and switch_hold/2 < 4*float(recipe.get('joint_filter_sigma_s',0.))+.01:
         raise ValueError('SHOVEL_GRASP_HOLD_FILTER_SUPPORT')
     for change in schedule[1:]:
         # Switch inside a stationary target hold, on both the control and saved
         # pose grids. Actual joint stop speed is independently checked below.
         hold = next(((a,b) for a,b in zip(keys,keys[1:]) if a['t'] < change['t'] < b['t']), None)
-        if (hold is None or not hold[0]['t'] <= change['t']-switch_hold/2 < change['t']+switch_hold/2 <= hold[1]['t'] or not np.isclose(change['t']*recipe['sample_hz'], round(change['t']*recipe['sample_hz'])) or
+        if (hold is None or not hold[0]['t'] <= change['t']-switch_hold/2-switch_ramp < change['t']+switch_hold/2+switch_ramp <= hold[1]['t'] or not np.isclose(change['t']*recipe['sample_hz'], round(change['t']*recipe['sample_hz'])) or
                 not np.isclose(change['t']/config['sample_period'], round(change['t']/config['sample_period'])) or
                 any(not np.allclose(hold[0].get(field,0.),hold[1].get(field,0.))
                     for field in ('translation_m','yaw_pitch_rad','shaft_roll_rad'))):
             raise ValueError('SHOVEL_GRASP_SWITCH_REQUIRES_HOLD')
+    finish_hold = float(recipe.get('finish_hold_s', 0.))
+    finish_ramp = float(recipe.get('finish_ramp_s', 0.))
+    if finish_hold or finish_ramp:
+        if (not np.isfinite([finish_hold, finish_ramp]).all() or finish_ramp <= 0 or
+                finish_hold < 4*float(recipe.get('joint_filter_sigma_s',0.))+.01 or
+                finish_hold+finish_ramp > keys[-1]['t']-keys[-2]['t'] or
+                any(not np.allclose(keys[-2].get(field,0.),keys[-1].get(field,0.))
+                    for field in ('translation_m','yaw_pitch_rad','shaft_roll_rad'))):
+            raise ValueError('SHOVEL_FINISH_STOP_REQUIRES_HOLD')
     if 'dump' in recipe:
         if 'receiving_bin' not in recipe or not np.isclose(recipe['receiving_bin']['bottom_z_m'], recipe['ground']['z_in_base_m']):
             raise ValueError('INVALID_RECEIVING_BIN_GROUND')
@@ -126,6 +138,30 @@ def target_at(keyframes, home, pivot, seconds, shaft_axis=None):
 def grasp_mode_at(recipe, seconds):
     return next(k['mode'] for k in reversed(recipe.get('grasp_schedule', [{'t':0.,'mode':'rigid'}]))
                 if seconds+1e-9 >= k['t'])
+
+
+def motion_stop_scale(recipe, seconds):
+    """Offline, uniform joint-increment taper at grasp changes and completion.
+
+    This is not an online time step: QP integration still uses the actual dt.
+    The resulting path is independently checked after filtering below.
+    """
+    scale = 1.
+    half_hold = float(recipe.get('grasp_switch_hold_s', 0.))/2
+    ramp = float(recipe.get('grasp_switch_ramp_s', 0.))
+    for change in recipe.get('grasp_schedule', [])[1:]:
+        distance = abs(seconds-change['t'])-half_hold
+        if distance <= 1e-9:
+            return 0.
+        if ramp > 0:
+            u = np.clip(distance/ramp, 0., 1.)
+            scale = min(scale, u**3*(10.-15.*u+6.*u*u))
+    finish_hold = float(recipe.get('finish_hold_s', 0.))
+    if finish_hold > 0:
+        remaining = recipe['keyframes'][-1]['t']-finish_hold-seconds
+        u = np.clip(remaining/recipe['finish_ramp_s'], 0., 1.)
+        scale = min(scale, u**3*(10.-15.*u+6.*u*u))
+    return scale
 
 
 def generate(config_path, description, output):
@@ -194,13 +230,14 @@ def generate(config_path, description, output):
                 # An explicit stationary joint hold surrounds each switch. Its
                 # constant span exceeds the offline filter support, so future
                 # QP posture motion cannot leak through the grasp-change point.
-                holding = any(abs(seconds-change['t']) <= recipe.get('grasp_switch_hold_s',0.)/2+1e-9
-                              for change in recipe.get('grasp_schedule',[])[1:])
-                if holding:
-                    positions, metrics = [q[n] for n in solver.names], (0.,)
+                scale = motion_stop_scale(recipe, seconds)
+                previous = np.array([q[n] for n in solver.names])
+                if scale == 0.:
+                    positions, metrics = previous, (0.,)
                 else:
                     positions, metrics = solver.solve(q, desired,
-                        reference=[q[n] for n in solver.names], dt=dt)
+                        reference=previous, dt=dt)
+                    positions = previous + scale*(np.asarray(positions)-previous)
             except ValueError as exc:
                 raise ValueError(f'{exc} t={seconds:.3f}') from exc
             q.update(zip(solver.names, positions))
@@ -214,7 +251,7 @@ def generate(config_path, description, output):
             raise ValueError('INVALID_SHOVEL_JOINT_FILTER')
         planned_positions = gaussian_filter1d(raw_positions, sigma/dt, axis=0, mode='nearest', truncate=4.) if sigma else raw_positions
         np.savez_compressed(output/'joint_plan.npz', raw=raw_positions, filtered=planned_positions,
-                            names=solver.names, dt=dt)
+                            names=solver.names, dt=dt, raw_stage='after_stop_taper_before_gaussian')
         raw_velocity = np.diff(np.vstack((initial_positions,raw_positions)),axis=0)/dt
         raw_acceleration = np.diff(np.vstack((np.zeros_like(initial_positions),raw_velocity)),axis=0)/dt
         raw_jerk = np.diff(np.vstack((np.zeros_like(initial_positions),raw_acceleration)),axis=0)/dt
@@ -328,6 +365,9 @@ def generate(config_path, description, output):
         if any(not low <= s['q'][name] <= high for s in dense_samples
                for name,(low,high) in gate['posture_limits_rad'].items()):
             raise ValueError('SHOVEL_POSTURE_LIMIT')
+        final_speed = float(np.max(np.abs(planned_positions[-1]-planned_positions[-2]))/dt)
+        if recipe.get('finish_hold_s',0.) and final_speed > .005:
+            raise ValueError('SHOVEL_FINISH_NOT_STOPPED')
         # Include the transition from the last QP point to a stationary hold.
         for _ in range(3):
             history.append(history[-1].copy())
@@ -352,7 +392,7 @@ def generate(config_path, description, output):
         validation = {'ready_shaft_axis_base': (home[:3,:3] @ axis).tolist(),
                       'ready_grips_base_m': [(home @ np.r_[g,1.])[:3].tolist() for g in start_grips],
                       'duration_s': keys[-1]['t'], 'planning_limits': recipe.get('planning_limits'),
-                      'raw_qp_peaks': raw_peaks, 'joint_filter_sigma_s': sigma, 'dump': dump_result, 'status': 'passed', 'control_steps': round(keys[-1]['t']/dt)+1,
+                      'pre_filter_peaks': raw_peaks, 'pre_filter_stage': 'after_stop_taper', 'joint_filter_sigma_s': sigma, 'dump': dump_result, 'status': 'passed', 'control_steps': round(keys[-1]['t']/dt)+1,
                       'samples': len(samples), 'push_m': push, 'lift_m': lift,
                       'lift_angle_deg': float(np.rad2deg(lift_angle)),
                       'outward_swing_deg': float(np.rad2deg(swing_angle)),
@@ -360,6 +400,7 @@ def generate(config_path, description, output):
                       'return_angle_rad': return_angle, 'min_joint_margin_rad': min_margin,
                       'min_pan_ground_clearance_m': clearance, 'max_joint_speed_rad_s': max_speed,
                       'ready_pan_ground_clearance_m': ready_clearance,
+                      'final_joint_speed_rad_s': final_speed,
                       'max_joint_acceleration_rad_s2': max_acceleration, 'max_joint_jerk_rad_s3': max_jerk,
                       'max_relative_se3_error': max_relative,
                       'max_right_axis_error_rad': max_axis_error,

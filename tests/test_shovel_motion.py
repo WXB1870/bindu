@@ -10,7 +10,7 @@ import pinocchio as pin
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT/'tools'))
-from plan_shovel_motion import collision_check, validate_recipe, target_at, grasp_mode_at
+from plan_shovel_motion import collision_check, validate_recipe, target_at, grasp_mode_at, motion_stop_scale
 from shovel_geometry import bin_boxes, check_dump
 from scipy.spatial.transform import Rotation
 
@@ -168,6 +168,42 @@ class ShovelGeometryTests(unittest.TestCase):
                 config['shared_targets']={'body_joint_1':0.,'body_joint_2':.2}
             with self.subTest(late_key=late_key), self.assertRaisesRegex(ValueError,'REQUIRES_TOOL_POSE_INPUT'):
                 validate_recipe(config)
+
+    def test_grasp_stop_taper_preserves_stop_and_has_smooth_edges(self):
+        recipe={'grasp_switch_hold_s':.6,'grasp_switch_ramp_s':.3,
+                'grasp_schedule':[{'t':0.,'mode':'rigid'},{'t':1.,'mode':'right_axial'}]}
+        for t in (.7,1.,1.3):
+            self.assertEqual(motion_stop_scale(recipe,t),0.)
+        for t in (0.,.4,1.6,2.):
+            self.assertAlmostEqual(motion_stop_scale(recipe,t),1.)
+        self.assertAlmostEqual(motion_stop_scale(recipe,.55),.5)
+        self.assertAlmostEqual(motion_stop_scale(recipe,1.45),.5)
+        for t in (.4,.7,1.3,1.6):
+            h=1e-5
+            v=[motion_stop_scale(recipe,t+x) for x in (-h,0.,h)]
+            self.assertLess(abs((v[2]-v[0])/(2*h)),1e-5)
+            self.assertLess(abs((v[2]-2*v[1]+v[0])/h**2),.01)
+        bad=copy.deepcopy(self.config);bad['demo']['grasp_switch_ramp_s']=1.
+        with self.assertRaisesRegex(ValueError,'REQUIRES_HOLD'):
+            validate_recipe(bad)
+        bad['demo']['grasp_switch_ramp_s']=-.1
+        with self.assertRaisesRegex(ValueError,'STOP_RAMP'):
+            validate_recipe(bad)
+
+    def test_finish_stop_has_a_flat_tail_and_requires_static_target(self):
+        recipe={'keyframes':[{'t':2.}], 'finish_hold_s':.3,'finish_ramp_s':.4}
+        self.assertEqual(motion_stop_scale(recipe,1.2),1.)
+        self.assertAlmostEqual(motion_stop_scale(recipe,1.5),.5)
+        for t in (1.7,1.8,2.):
+            self.assertAlmostEqual(motion_stop_scale(recipe,t),0.)
+        bad=copy.deepcopy(self.config)
+        bad['demo'].update(finish_hold_s=.3,finish_ramp_s=.4)
+        bad['demo']['keyframes'][-1]['translation_m'][0]=.01
+        with self.assertRaisesRegex(ValueError,'FINISH_STOP_REQUIRES_HOLD'):
+            validate_recipe(bad)
+        bad=copy.deepcopy(self.config);bad['demo'].update(finish_hold_s=.1,finish_ramp_s=.1)
+        with self.assertRaisesRegex(ValueError,'FINISH_STOP_REQUIRES_HOLD'):
+            validate_recipe(bad)
 
     def test_planning_limit_override_is_simulation_only(self):
         config=copy.deepcopy(self.config)

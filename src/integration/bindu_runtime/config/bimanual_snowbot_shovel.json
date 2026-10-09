@@ -48,7 +48,7 @@
   "max_angular_speed": 0.36,
   "solve_timeout_us": 30000,
   "demo": {
-    "description": "Simulation fixture: shaft parallel to chassis front edge in top view, head to robot right; raised, moved over right-front bin and rolled to dump. Grips are not calibrated.",
+    "description": "Simulation fixture: sideways shaft, head to robot right. Raise while bringing the grip 8 cm closer and 6 cm higher, transfer over the receiving bin, then roll to dump. Grips are not calibrated.",
     "display_urdf": "snowbot_display.urdf",
     "profile": "snowbot_sim.json",
     "initial_positions_rad": {
@@ -113,7 +113,7 @@
         ]
       },
       {
-        "t": 0.35,
+        "t": 0.25,
         "phase": "铲入",
         "translation_m": [
           0.0,
@@ -126,7 +126,7 @@
         ]
       },
       {
-        "t": 2.35,
+        "t": 2.25,
         "phase": "铲入",
         "translation_m": [
           0.0,
@@ -139,7 +139,7 @@
         ]
       },
       {
-        "t": 2.65,
+        "t": 2.5,
         "phase": "抬铲",
         "translation_m": [
           0.0,
@@ -152,12 +152,12 @@
         ]
       },
       {
-        "t": 10.65,
+        "t": 9.5,
         "phase": "保持",
         "translation_m": [
-          0.0,
+          -0.08,
           -0.06,
-          0.0
+          0.06
         ],
         "yaw_pitch_rad": [
           -0.0,
@@ -165,12 +165,12 @@
         ]
       },
       {
-        "t": 11.35,
+        "t": 9.85,
         "phase": "转送箱口",
         "translation_m": [
-          0.0,
+          -0.08,
           -0.06,
-          0.0
+          0.06
         ],
         "yaw_pitch_rad": [
           -0.0,
@@ -178,12 +178,12 @@
         ]
       },
       {
-        "t": 16.65,
+        "t": 15.15,
         "phase": "保持",
         "translation_m": [
-          0.0,
+          -0.08,
           -0.06,
-          0.0
+          0.06
         ],
         "yaw_pitch_rad": [
           0.6108652381980153,
@@ -192,12 +192,12 @@
         "shaft_roll_rad": -0.0
       },
       {
-        "t": 17.95,
+        "t": 16.45,
         "phase": "翻铲倒雪",
         "translation_m": [
-          0.0,
+          -0.08,
           -0.06,
-          0.0
+          0.06
         ],
         "yaw_pitch_rad": [
           0.6108652381980153,
@@ -206,12 +206,12 @@
         "shaft_roll_rad": -0.0
       },
       {
-        "t": 29.95,
+        "t": 24.45,
         "phase": "倒雪保持",
         "translation_m": [
-          0.0,
+          -0.08,
           -0.06,
-          0.0
+          0.06
         ],
         "yaw_pitch_rad": [
           0.6108652381980153,
@@ -220,12 +220,12 @@
         "shaft_roll_rad": -2.0943951023931953
       },
       {
-        "t": 31.25,
+        "t": 25.35,
         "phase": "扶正铲头",
         "translation_m": [
-          0.0,
+          -0.08,
           -0.06,
-          0.0
+          0.06
         ],
         "yaw_pitch_rad": [
           0.6108652381980153,
@@ -234,12 +234,12 @@
         "shaft_roll_rad": -2.0943951023931953
       },
       {
-        "t": 43.25,
+        "t": 33.35,
         "phase": "保持",
         "translation_m": [
-          0.0,
+          -0.08,
           -0.06,
-          0.0
+          0.06
         ],
         "yaw_pitch_rad": [
           0.6108652381980153,
@@ -248,12 +248,12 @@
         "shaft_roll_rad": -0.0
       },
       {
-        "t": 44.55,
+        "t": 34.65,
         "phase": "转回侧方",
         "translation_m": [
-          0.0,
+          -0.08,
           -0.06,
-          0.0
+          0.06
         ],
         "yaw_pitch_rad": [
           0.6108652381980153,
@@ -262,12 +262,12 @@
         "shaft_roll_rad": -0.0
       },
       {
-        "t": 49.85,
+        "t": 39.95,
         "phase": "保持",
         "translation_m": [
-          0.0,
+          -0.08,
           -0.06,
-          0.0
+          0.06
         ],
         "yaw_pitch_rad": [
           -0.0,
@@ -276,12 +276,12 @@
         "shaft_roll_rad": -0.0
       },
       {
-        "t": 50.55,
+        "t": 40.3,
         "phase": "下放回位",
         "translation_m": [
-          0.0,
+          -0.08,
           -0.06,
-          0.0
+          0.06
         ],
         "yaw_pitch_rad": [
           -0.0,
@@ -290,7 +290,7 @@
         "shaft_roll_rad": -0.0
       },
       {
-        "t": 58.55,
+        "t": 47.3,
         "phase": "保持",
         "translation_m": [
           0.0,
@@ -304,7 +304,7 @@
         "shaft_roll_rad": -0.0
       },
       {
-        "t": 59.55,
+        "t": 48.4,
         "phase": "完成",
         "translation_m": [
           0.0,
@@ -319,7 +319,7 @@
       }
     ],
     "acceptance": {
-      "push_seconds": 2.65,
+      "push_seconds": 2.5,
       "min_push_m": 0.15,
       "min_lift_m": 0.6,
       "max_return_error_m": 0.002,
@@ -333,8 +333,8 @@
       "min_ground_clearance_m": 0.003,
       "max_ready_clearance_m": 0.015,
       "min_tool_robot_clearance_m": 0.02,
-      "lift_seconds": 11.35,
-      "swing_seconds": 17.95,
+      "lift_seconds": 9.85,
+      "swing_seconds": 16.45,
       "max_phase_angle_error_rad": 0.01,
       "posture_limits_rad": {
         "body_joint_2": [
@@ -437,7 +437,7 @@
     "receiving_bin": {
       "description": "Provisional right-side receiving box; replace with measured dimensions before use.",
       "center_xy_m": [
-        1.5,
+        1.42,
         -1.01
       ],
       "inner_size_xy_m": [
@@ -451,18 +451,18 @@
     },
     "dump": {
       "hold_seconds": [
-        29.95,
-        31.25
+        24.45,
+        25.35
       ],
       "transfer_seconds": [
-        17.95,
-        43.25
+        16.45,
+        33.35
       ],
       "mouth_margin_m": 0.04,
       "min_rim_clearance_m": 0.05,
       "min_pan_tilt_deg": 100.0
     },
-    "timing_note": "Motion durations remain at the requested 3x timing; two target holds gain 0.6 s each for stopped grasp changes. Viewer plays at 1x.",
+    "timing_note": "2 s insertion, 7 s lift/lower, 8 s dump/restore; short target dwells, 0.3 s grasp deceleration/recovery ramps around the retained 0.6 s stop, and a 0.4 s final deceleration plus 0.3 s stopped tail. Viewer plays at 1x.",
     "planning_limits": {
       "max_speed": 0.75,
       "max_acceleration": 9.0,
@@ -475,15 +475,18 @@
         "mode": "rigid"
       },
       {
-        "t": 17.55,
+        "t": 15.8,
         "mode": "right_axial"
       },
       {
-        "t": 44.15,
+        "t": 34.0,
         "mode": "rigid"
       }
     ],
-    "grasp_switch_hold_s": 0.6
+    "grasp_switch_hold_s": 0.6,
+    "grasp_switch_ramp_s": 0.3,
+    "finish_hold_s": 0.3,
+    "finish_ramp_s": 0.4
   },
   "right_to_tool": [
     -0.7180654330047566,
@@ -506,7 +509,7 @@
   "grasp_position_tolerance_m": 0.005,
   "grasp_rotation_tolerance_rad": 0.02,
   "tool_gain": 6.0,
-  "posture_gain": 0.3,
+  "posture_gain": 0.05,
   "limit_margin": 0.15,
   "damper_gain": 2.0,
   "right_axial_grasp": {
@@ -528,8 +531,8 @@
     "reference": "initial_capture",
     "position_bounds": {
       "body_joint_2": [
-        -0.6,
-        0.6
+        -0.45,
+        0.45
       ]
     }
   }
