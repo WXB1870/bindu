@@ -130,6 +130,8 @@ public:
   void reset();
   void setSharedTargets(const Eigen::VectorXd &targets);
   void clearSharedTargets();
+  void setPosturePolicy(const Eigen::VectorXd &reference,
+                        const Eigen::VectorXd &lower, const Eigen::VectorXd &upper);
   SolveResult solve(const pinocchio::SE3 &desired_tool, double dt,
                     const Eigen::VectorXd &reference);
   const Config &config() const { return config_; }
@@ -139,6 +141,8 @@ private:
   RigidToolKinematics &kin_;
   Config config_;
   Eigen::VectorXd nominal_;
+  Eigen::VectorXd posture_lower_, posture_upper_;
+  bool have_posture_policy_{false};
   Eigen::VectorXd shared_targets_;
   int shared_count_{0};
   bool have_shared_targets_{false};

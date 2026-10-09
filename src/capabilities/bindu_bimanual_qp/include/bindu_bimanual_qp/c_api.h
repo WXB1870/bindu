@@ -59,6 +59,12 @@ int bq_capture_axial(void *handle, const double *q, int nq, const double *left_t
                      const bq_config *config);
 /* NULL,0 clears the optional shared-joint posture objective. */
 int bq_shared_targets(void *handle, const double *targets, int n);
+/* Optional additive ABI v1 policy. All arrays follow active-name order and
+ * model joint units. Bounds only tighten model/profile limits. Reference is a
+ * soft posture preference, independent of tool/grasp capture. Failure clears
+ * the capture so a partially configured policy cannot be used. */
+int bq_posture_policy(void *handle, const double *reference,
+                      const double *lower, const double *upper, int n);
 /* reference/out follow active-name order. reference is the last accepted
  * command (capture feedback for the first step), never an unaccepted result.
  * dt is the elapsed reference sampling interval, 0 < dt <= 0.1 s. The caller

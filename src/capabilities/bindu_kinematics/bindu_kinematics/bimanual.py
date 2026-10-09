@@ -116,6 +116,27 @@ class BimanualQP:
             self.close()
             raise ValueError('BIMANUAL_LIMIT_CONFIG:'+error)
         try:
+            self.posture_policy = config.get('posture_policy')
+            self.posture_reference = None
+            self.posture_lower, self.posture_upper = lower.copy(), upper.copy()
+            if self.posture_policy is not None:
+                policy = self.posture_policy
+                if (not isinstance(policy,dict) or set(policy) != {'reference','position_bounds'} or
+                        policy['reference'] != 'initial_capture' or not isinstance(policy['position_bounds'],dict) or
+                        not set(policy['position_bounds']).issubset(active)):
+                    raise ValueError('BIMANUAL_POSTURE_POLICY')
+                for name, bounds in policy['position_bounds'].items():
+                    j=active.index(name)
+                    values=np.asarray(bounds,dtype=float)
+                    if (values.shape!=(2,) or not np.isfinite(values).all() or
+                            not lower[j] <= values[0] < values[1] <= upper[j]):
+                        raise ValueError('BIMANUAL_POSTURE_BOUNDS:'+name)
+                    self.posture_lower[j],self.posture_upper[j]=values
+                try:
+                    fn=lib.bq_posture_policy
+                except AttributeError as exc:
+                    raise ValueError('BIMANUAL_POSTURE_ABI_MISSING: rebuild bindu_bimanual_qp') from exc
+                fn.argtypes,fn.restype=[p,array,array,array,i],i
             self.tool = self._transform(config['left_to_tool'])
             self.axial = config.get('right_axial_grasp')
             self.grasp_mode = 'rigid'
@@ -239,6 +260,13 @@ class BimanualQP:
                                      c.byref(self.native_config))
         if not ok:
             raise ValueError('BIMANUAL_CAPTURE:'+self._error())
+        posture_reference = self.posture_reference
+        if self.posture_policy is not None:
+            if posture_reference is None:
+                posture_reference = np.array([feedback[n] for n in self.names],dtype=np.float64)
+            if not self.lib.bq_posture_policy(self.handle,self._ptr(posture_reference),
+                    self._ptr(self.posture_lower),self._ptr(self.posture_upper),len(self.names)):
+                raise ValueError('BIMANUAL_POSTURE_POLICY:'+self._error())
         self.grasp_mode = grasp_mode
         out = np.empty((4,4), dtype=np.float64)
         if not self.lib.bq_tool_pose(self.handle, self._ptr(q), self.nq, self._ptr(out)):
@@ -250,6 +278,10 @@ class BimanualQP:
         except (ValueError, TypeError):
             self.captured = False
             raise
+        # Retain only a successfully captured preference across grasp changes;
+        # the measured tool/grasp reference is still rebuilt on every capture.
+        if self.posture_policy is not None:
+            self.posture_reference = posture_reference.copy()
         return out
 
     def check_path(self, feedback, *waypoints):
@@ -336,6 +368,9 @@ class BimanualQP:
             lo, hi = self.limits[name]
             if not lo <= new <= hi or abs(new-old) > self.speed[name]*dt+1e-6:
                 raise ValueError('BIMANUAL_POSITION_LIMIT:'+name)
+        if self.posture_policy is not None and (np.any(out<self.posture_lower-1e-9) or
+                                                np.any(out>self.posture_upper+1e-9)):
+            raise ValueError('BIMANUAL_POSTURE_LIMIT')
         self.check_path(feedback,reference,out)
         if (time.perf_counter()-started)*1e6 > float(self.cfg['solve_timeout_us']):
             raise ValueError('BIMANUAL_QP_TIMEOUT')

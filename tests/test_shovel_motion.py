@@ -158,6 +158,17 @@ class ShovelGeometryTests(unittest.TestCase):
             validate_recipe(bad)
         self.assertEqual(grasp_mode_at({}, 10.), 'rigid')
 
+    def test_motion_cannot_supply_staged_waist_joint_targets(self):
+        validate_recipe(self.config)
+        for late_key in (False, True):
+            config=copy.deepcopy(self.config)
+            if late_key:
+                config['demo']['keyframes'][-1]['shared_targets_rad']={'body_joint_2':.2}
+            else:
+                config['shared_targets']={'body_joint_1':0.,'body_joint_2':.2}
+            with self.subTest(late_key=late_key), self.assertRaisesRegex(ValueError,'REQUIRES_TOOL_POSE_INPUT'):
+                validate_recipe(config)
+
     def test_planning_limit_override_is_simulation_only(self):
         config=copy.deepcopy(self.config)
         config['simulation_only']=False

@@ -207,6 +207,18 @@ int bq_shared_targets(void *ptr, const double *targets, int n) {
     h.qp->setSharedTargets(Eigen::Map<const Eigen::VectorXd>(targets,n));
   });
 }
+int bq_posture_policy(void *ptr, const double *reference, const double *lower,
+                      const double *upper, int n) {
+  return checked(ptr, [&](Handle &h) {
+    try {
+      if (!h.qp || !reference || !lower || !upper || n!=h.robot->variables())
+        throw std::invalid_argument("posture policy layout or solver not captured");
+      h.qp->setPosturePolicy(Eigen::Map<const Eigen::VectorXd>(reference,n),
+                            Eigen::Map<const Eigen::VectorXd>(lower,n),
+                            Eigen::Map<const Eigen::VectorXd>(upper,n));
+    } catch (...) { h.qp.reset(); h.kin->reset(); throw; }
+  });
+}
 int bq_solve(void *ptr, const double *q, int nq, const double *reference, int n,
              const double *target, double dt, double *out, double *metrics) {
   return checked(ptr, [&](Handle &h) {

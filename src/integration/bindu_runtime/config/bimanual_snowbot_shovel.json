@@ -110,11 +110,7 @@
         "yaw_pitch_rad": [
           -0.0,
           0.0
-        ],
-        "shared_targets_rad": {
-          "body_joint_1": 0.12279891279492326,
-          "body_joint_2": 0.07901831328465227
-        }
+        ]
       },
       {
         "t": 0.35,
@@ -127,11 +123,7 @@
         "yaw_pitch_rad": [
           -0.0,
           0.0
-        ],
-        "shared_targets_rad": {
-          "body_joint_1": 0.12279891279492326,
-          "body_joint_2": 0.07901831328465227
-        }
+        ]
       },
       {
         "t": 2.35,
@@ -144,11 +136,7 @@
         "yaw_pitch_rad": [
           -0.0,
           0.0
-        ],
-        "shared_targets_rad": {
-          "body_joint_1": 0.007809044033555938,
-          "body_joint_2": 0.19175988015859555
-        }
+        ]
       },
       {
         "t": 2.65,
@@ -161,11 +149,7 @@
         "yaw_pitch_rad": [
           -0.0,
           0.0
-        ],
-        "shared_targets_rad": {
-          "body_joint_1": 0.007809044033555938,
-          "body_joint_2": 0.19175988015859555
-        }
+        ]
       },
       {
         "t": 10.65,
@@ -178,11 +162,7 @@
         "yaw_pitch_rad": [
           -0.0,
           -0.7853981633974483
-        ],
-        "shared_targets_rad": {
-          "body_joint_1": 0.13010357934569697,
-          "body_joint_2": 0.3071304804422056
-        }
+        ]
       },
       {
         "t": 11.35,
@@ -195,11 +175,7 @@
         "yaw_pitch_rad": [
           -0.0,
           -0.7853981633974483
-        ],
-        "shared_targets_rad": {
-          "body_joint_1": 0.13010357934569697,
-          "body_joint_2": 0.3071304804422056
-        }
+        ]
       },
       {
         "t": 16.65,
@@ -213,11 +189,7 @@
           0.6108652381980153,
           -0.7853981633974483
         ],
-        "shaft_roll_rad": -0.0,
-        "shared_targets_rad": {
-          "body_joint_1": 0.05758010467360585,
-          "body_joint_2": 0.5899999999999994
-        }
+        "shaft_roll_rad": -0.0
       },
       {
         "t": 17.95,
@@ -231,11 +203,7 @@
           0.6108652381980153,
           -0.7853981633974483
         ],
-        "shaft_roll_rad": -0.0,
-        "shared_targets_rad": {
-          "body_joint_1": 0.05758010467360585,
-          "body_joint_2": 0.5899999999999994
-        }
+        "shaft_roll_rad": -0.0
       },
       {
         "t": 29.95,
@@ -249,11 +217,7 @@
           0.6108652381980153,
           -0.7853981633974483
         ],
-        "shaft_roll_rad": -2.0943951023931953,
-        "shared_targets_rad": {
-          "body_joint_1": -0.2393902784057141,
-          "body_joint_2": 0.460416067089621
-        }
+        "shaft_roll_rad": -2.0943951023931953
       },
       {
         "t": 31.25,
@@ -267,11 +231,7 @@
           0.6108652381980153,
           -0.7853981633974483
         ],
-        "shaft_roll_rad": -2.0943951023931953,
-        "shared_targets_rad": {
-          "body_joint_1": -0.2393902784057141,
-          "body_joint_2": 0.460416067089621
-        }
+        "shaft_roll_rad": -2.0943951023931953
       },
       {
         "t": 43.25,
@@ -285,11 +245,7 @@
           0.6108652381980153,
           -0.7853981633974483
         ],
-        "shaft_roll_rad": -0.0,
-        "shared_targets_rad": {
-          "body_joint_1": 0.05758010467360585,
-          "body_joint_2": 0.5899999999999994
-        }
+        "shaft_roll_rad": -0.0
       },
       {
         "t": 44.55,
@@ -303,11 +259,7 @@
           0.6108652381980153,
           -0.7853981633974483
         ],
-        "shaft_roll_rad": -0.0,
-        "shared_targets_rad": {
-          "body_joint_1": 0.05758010467360585,
-          "body_joint_2": 0.5899999999999994
-        }
+        "shaft_roll_rad": -0.0
       },
       {
         "t": 49.85,
@@ -321,11 +273,7 @@
           -0.0,
           -0.7853981633974483
         ],
-        "shaft_roll_rad": -0.0,
-        "shared_targets_rad": {
-          "body_joint_1": 0.13010357934569697,
-          "body_joint_2": 0.3071304804422056
-        }
+        "shaft_roll_rad": -0.0
       },
       {
         "t": 50.55,
@@ -339,11 +287,7 @@
           -0.0,
           -0.7853981633974483
         ],
-        "shaft_roll_rad": -0.0,
-        "shared_targets_rad": {
-          "body_joint_1": 0.13010357934569697,
-          "body_joint_2": 0.3071304804422056
-        }
+        "shaft_roll_rad": -0.0
       },
       {
         "t": 58.55,
@@ -357,11 +301,7 @@
           -0.0,
           0.0
         ],
-        "shaft_roll_rad": -0.0,
-        "shared_targets_rad": {
-          "body_joint_1": 0.12279891279492326,
-          "body_joint_2": 0.07901831328465227
-        }
+        "shaft_roll_rad": -0.0
       },
       {
         "t": 59.55,
@@ -375,11 +315,7 @@
           -0.0,
           0.0
         ],
-        "shaft_roll_rad": -0.0,
-        "shared_targets_rad": {
-          "body_joint_1": 0.12279891279492326,
-          "body_joint_2": 0.07901831328465227
-        }
+        "shaft_roll_rad": -0.0
       }
     ],
     "acceptance": {
@@ -571,8 +507,6 @@
   "grasp_rotation_tolerance_rad": 0.02,
   "tool_gain": 6.0,
   "posture_gain": 0.3,
-  "shared_target_weight": 0.2,
-  "shared_target_gain": 6.0,
   "limit_margin": 0.15,
   "damper_gain": 2.0,
   "right_axial_grasp": {
@@ -589,5 +523,14 @@
     "press_threshold": 0.7,
     "release_threshold": 0.3
   },
-  "collision_joint_step_rad": 0.01
+  "collision_joint_step_rad": 0.01,
+  "posture_policy": {
+    "reference": "initial_capture",
+    "position_bounds": {
+      "body_joint_2": [
+        -0.6,
+        0.6
+      ]
+    }
+  }
 }

@@ -140,6 +140,36 @@ class NativeBimanual(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'SHARED_TARGET_LAYOUT'):
             solver.set_shared_targets({'unknown': 0.})
 
+    def test_posture_policy_survives_recapture_and_native_failure_invalidates(self):
+        cfg=dict(self.config,posture_policy={'reference':'initial_capture','position_bounds':{}})
+        solver=BimanualQP(cfg,self.profile)
+        self.addCleanup(solver.close)
+        feedback=dict(self.feedback)
+        tool=solver.capture(feedback)
+        preferred=solver.posture_reference.copy()
+        target=tool.copy();target[0,3]+=.02
+        for _ in range(20):
+            positions,_=propose(solver,feedback,target)
+            feedback.update(zip(solver.names,positions))
+        self.assertGreater(np.linalg.norm(np.array([feedback[n] for n in solver.names])-preferred),1e-4)
+        solver.capture(feedback)
+        np.testing.assert_array_equal(solver.posture_reference,preferred)
+        p=solver._ptr
+        invalid=solver.posture_upper.copy();invalid[0]=float('nan')
+        self.assertEqual(solver.lib.bq_posture_policy(solver.handle,p(preferred),p(solver.posture_lower),
+                                                     p(invalid),len(preferred)),0)
+        with self.assertRaisesRegex(ValueError,'solver not captured'):
+            propose(solver,feedback,target)
+        self.assertFalse(solver.captured)
+
+    def test_posture_policy_rejects_unknown_nonfinite_or_widened_bounds(self):
+        name=self.qp.names[0]
+        for bounds in ({'unknown':[-1.,1.]},{name:[float('nan'),1.]},
+                       {name:[self.profile.limits[name][0]-1.,self.profile.limits[name][1]]}):
+            cfg=dict(self.config,posture_policy={'reference':'initial_capture','position_bounds':bounds})
+            with self.assertRaisesRegex(ValueError,'POSTURE'):
+                BimanualQP(cfg,self.profile)
+
     def test_profile_position_limits_are_used_inside_qp(self):
         tool = self.qp.capture(self.feedback)
         target = tool.copy(); target[0,3] += .015
@@ -290,12 +320,26 @@ class AxialShovelTests(unittest.TestCase):
             propose(self.qp,self.ready,rigid)
 
     def test_guard_rejects_tool_into_body_and_failed_capture_invalidates(self):
-        self.qp.capture(self.ready)
+        # Isolate the geometry guard: the configured posture envelope now
+        # rejects this large bend before it can reach collision checking.
+        cfg=dict(self.cfg);cfg.pop('posture_policy',None)
+        solver=BimanualQP(cfg,self.profile)
+        self.addCleanup(solver.close)
+        solver.capture(self.ready)
         bad=dict(self.ready)
         bad['body_joint_2']+=.7
         with self.assertRaisesRegex(ValueError,'CLEARANCE|COLLISION|GROUND'):
+            solver.capture(bad,'right_axial')
+        self.assertFalse(solver.captured)
+
+    def test_posture_envelope_rejects_capture_and_invalidates_reference(self):
+        tool=self.qp.capture(self.ready)
+        bad=dict(self.ready);bad['body_joint_2']+=.7
+        with self.assertRaisesRegex(ValueError,'POSTURE_POLICY'):
             self.qp.capture(bad,'right_axial')
         self.assertFalse(self.qp.captured)
+        with self.assertRaisesRegex(ValueError,'NOT_CAPTURED'):
+            propose(self.qp,self.ready,tool)
 
     def test_axial_attachment_matches_shovel_geometry(self):
         np.testing.assert_allclose(self.cfg['right_axial_grasp']['axis_in_tool'],

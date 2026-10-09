@@ -34,6 +34,9 @@ def validate_recipe(config):
     if not finite(config):
         raise ValueError('NONFINITE_SHOVEL_CONFIG')
     recipe, design = config['demo'], config['demo']['selected_design']
+    if ('shared_targets' in config or
+            any('shared_targets_rad' in key for key in recipe['keyframes'])):
+        raise ValueError('SHOVEL_REQUIRES_TOOL_POSE_INPUT')
     axis = np.asarray(recipe['shaft_axis_in_tool'])
     ends = recipe['shaft_from_left_grip_m']
     offset = np.r_[recipe['grip_offset_m'], 1.]
@@ -187,12 +190,6 @@ def generate(config_path, description, output):
                 solver.capture(q, grasp_mode=requested_mode)
                 grasp_mode = requested_mode
             desired = target_at(keys, home, pivot, seconds, recipe['shaft_axis_in_tool'])
-            if 'shared_targets_rad' in keys[0]:
-                first,last = next((a,b) for a,b in zip(keys,keys[1:]) if seconds <= b['t'])
-                u = np.clip((seconds-first['t'])/(last['t']-first['t']),0.,1.)
-                blend = u**3*(10.-15.*u+6.*u*u)
-                solver.set_shared_targets({n:(1-blend)*first['shared_targets_rad'][n]+blend*last['shared_targets_rad'][n]
-                                           for n in solver.shared_names})
             try:
                 # An explicit stationary joint hold surrounds each switch. Its
                 # constant span exceeds the offline filter support, so future

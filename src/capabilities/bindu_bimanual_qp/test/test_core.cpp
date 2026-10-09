@@ -260,6 +260,34 @@ TEST_F(CoreTest, SharedWaistTargetMovesWaistWhileHoldingToolAndGrasp) {
   EXPECT_LT(std::abs(stopped.velocity[0]), std::abs(result.velocity[0]) * 0.5);
 }
 
+TEST_F(CoreTest, PostureEnvelopeBoundsAutomaticWaistWithoutSharedTargets) {
+  datq::RobotModel robot(TEST_URDF_PATH, "left_ee", "right_ee", "tool_frame",
+                         left_names_, right_names_, {"waist_joint"});
+  auto q = robot.positions();
+  q[robot.qIndex("waist_joint")] = 0.199;
+  q[robot.qIndex("left_joint_2")] = 0.6;
+  q[robot.qIndex("left_joint_4")] = -0.8;
+  q[robot.qIndex("right_joint_2")] = 0.55;
+  q[robot.qIndex("right_joint_4")] = -0.75;
+  robot.update(q);
+  datq::RigidToolKinematics kin(robot); kin.capture();
+  datq::Config config;
+  datq::QpController controller(robot,kin,config,robot.activePositions(),1);
+  auto lower = robot.lowerLimits(), upper = robot.upperLimits();
+  lower[0]=-0.2; upper[0]=0.2;
+  controller.setPosturePolicy(robot.activePositions(),lower,upper);
+  auto goal=kin.toolPose(); goal.translation().y()+=0.05;
+  const auto result=controller.solve(goal,0.1,robot.activePositions());
+  ASSERT_TRUE(result.ok) << result.reason;
+  EXPECT_GT(result.velocity[0],0.);
+  EXPECT_LE(result.velocity[0],0.002+1e-8);
+  EXPECT_LT((kin.relativeErrorJacobian()*result.velocity).norm(),5e-4);
+  auto invalid=lower; invalid[0]=0.3;
+  EXPECT_THROW(controller.setPosturePolicy(robot.activePositions(),invalid,upper),std::invalid_argument);
+  q[robot.qIndex("waist_joint")]=0.201; robot.update(q);
+  EXPECT_FALSE(controller.solve(goal,0.01,robot.activePositions()).ok);
+}
+
 TEST_F(CoreTest, ReenabledControllerSolvesNewToolTarget) {
   datq::Config config;
   datq::QpController controller(*robot_, *kin_, config, robot_->activePositions());
@@ -289,6 +317,32 @@ TEST_F(CoreTest, ClosureRecoverySlowsWhenFullCorrectionExceedsVelocityBounds) {
   EXPECT_LT((kin_->relativeErrorJacobian() * result.velocity +
              result.relative_gain_scale * config.relative_gain * kin_->relativeError()).norm(),
             1e-3);
+}
+
+TEST_F(CoreTest, BoundedRecoveryRemainsClosingAcrossTightVelocityLimits) {
+  auto q = robot_->positions();
+  q[robot_->qIndex("left_joint_1")] += 0.03;
+  robot_->update(q);
+  const auto error = kin_->relativeError();
+  const auto jac = kin_->relativeErrorJacobian();
+  datq::Config config;
+  config.relative_gain = 100.;
+  config.max_relative_error = 1.;
+  double previous_scale = 2.;
+  for (double limit : {0.2, 0.01, 1e-4}) {
+    robot_->setVelocityLimits(Eigen::VectorXd::Constant(robot_->variables(), limit));
+    datq::QpController controller(*robot_, *kin_, config, robot_->activePositions());
+    const auto result = controller.solve(kin_->toolPose(), 0.01, robot_->activePositions());
+    ASSERT_TRUE(result.ok) << result.reason;
+    EXPECT_GE(result.relative_gain_scale, 0.);
+    EXPECT_LE(result.relative_gain_scale, 1.);
+    EXPECT_LE(result.velocity.cwiseAbs().maxCoeff(), limit+1e-8);
+    EXPECT_LT((jac*result.velocity + config.relative_gain*result.relative_gain_scale*error)
+                  .lpNorm<Eigen::Infinity>(), config.equality_tolerance);
+    EXPECT_LE(error.dot(jac*result.velocity), 1e-8);
+    EXPECT_LE(result.relative_gain_scale, previous_scale+1e-7);
+    previous_scale = result.relative_gain_scale;
+  }
 }
 
 TEST_F(CoreTest, RepeatedQpStepsMoveToolWithoutOpeningGrasp) {

@@ -258,6 +258,8 @@ QpController::QpController(RobotModel &robot, RigidToolKinematics &kin, Config c
       (2. * config_.limit_margin >= (robot.upperLimits()-robot.lowerLimits()).array()).any())
     throw std::invalid_argument("invalid shared joint count or limit margin");
   shared_targets_ = nominal_.head(shared_count_);
+  posture_lower_ = robot_.lowerLimits();
+  posture_upper_ = robot_.upperLimits();
   reset();
 }
 
@@ -272,12 +274,34 @@ void QpController::setSharedTargets(const Eigen::VectorXd &targets) {
 
 void QpController::clearSharedTargets() { have_shared_targets_ = false; }
 
+void QpController::setPosturePolicy(const Eigen::VectorXd &reference,
+                                    const Eigen::VectorXd &lower,
+                                    const Eigen::VectorXd &upper) {
+  const int n = robot_.variables();
+  if (reference.size()!=n || lower.size()!=n || upper.size()!=n ||
+      !reference.allFinite() || !lower.allFinite() || !upper.allFinite() ||
+      (lower.array()>=upper.array()).any() ||
+      (lower.array()<robot_.lowerLimits().array()).any() ||
+      (upper.array()>robot_.upperLimits().array()).any() ||
+      (reference.array()<lower.array()).any() || (reference.array()>upper.array()).any())
+    throw std::invalid_argument("invalid posture policy");
+  const auto q = robot_.activePositions();
+  if ((q.array()<lower.array()-position_roundoff).any() ||
+      (q.array()>upper.array()+position_roundoff).any())
+    throw std::invalid_argument("capture outside posture envelope");
+  nominal_=reference; posture_lower_=lower; posture_upper_=upper;
+  have_posture_policy_=true;
+}
+
 void QpController::reset() {
   qp_ = std::make_unique<proxsuite::proxqp::dense::QP<double>>(
       robot_.variables(), kin_.constraintRows(), 0, true);
   qp_->settings.verbose = false;
   qp_->settings.compute_timings = true;
   qp_->settings.eps_abs = 1e-7;
+  // Bound unsuccessful recovery attempts; the caller still enforces its wall
+  // deadline and every accepted solution retains the same residual gates.
+  qp_->settings.max_iter = 100;
   initialized_ = false;
   fresh_start_ = true;
 }
@@ -341,6 +365,19 @@ SolveResult QpController::solve(const pinocchio::SE3 &desired_tool, double dt,
     upper[i] = std::min({vmax, (hi-ref)/dt,
         std::max(0., config_.damper_gain * (hi-config_.limit_margin-q[i])),
         std::max(0., config_.damper_gain * (hi-config_.limit_margin-ref))});
+    if (have_posture_policy_) {
+      // Additional posture envelope is a hard task bound. Physical limit_margin
+      // remains relative to the model/profile bounds, not this comfort envelope.
+      const double pl = posture_lower_[i], pu = posture_upper_[i];
+      if (q[i]<pl-position_roundoff || q[i]>pu+position_roundoff ||
+          reference[i]<pl-position_roundoff || reference[i]>pu+position_roundoff) {
+        out.reason = "joint position outside posture envelope"; return out;
+      }
+      lower[i] = std::max({lower[i], (pl-ref)/dt,
+                           config_.damper_gain*(pl-q[i]), config_.damper_gain*(pl-ref)});
+      upper[i] = std::min({upper[i], (pu-ref)/dt,
+                           config_.damper_gain*(pu-q[i]), config_.damper_gain*(pu-ref)});
+    }
     if (lower[i] > upper[i]) { out.reason = "joint bounds infeasible"; return out; }
   }
   if (!h.allFinite() || !g.allFinite() || !a.allFinite() || !b.allFinite() ||
@@ -362,7 +399,7 @@ SolveResult QpController::solve(const pinocchio::SE3 &desired_tool, double dt,
         initialized_ = true;
       } else {
         qp_->update(h, g, a, b, proxsuite::nullopt, proxsuite::nullopt,
-                   proxsuite::nullopt, lower, upper);
+                   proxsuite::nullopt, lower, upper, true);
       }
       qp_->solve();
     } catch (const std::exception &ex) {
