@@ -1,0 +1,915 @@
+{
+  "schema_version": 1,
+  "asset_id": "huawei_v34",
+  "source": {
+    "urdf": "v3.4/ik_solver/huawei-urdf-body_hand/huawei_urdf_wheel.urdf",
+    "urdf_sha256": "f563c37245d605dbb301207723ae9e6677497dc3f2541e0b1dc6ec8e6cc785a1",
+    "mesh_origin": "user-provided old-computer backup Music/huawei_new/meshes",
+    "license": "NOASSERTION"
+  },
+  "models": {
+    "kinematic": "urdf/huawei_v34_kinematic.urdf",
+    "display": "urdf/huawei_v34_display.urdf"
+  },
+  "source_meshes": {
+    "meshes/arm_base_Link.STL": {
+      "sha256": "e5294051955b5c35a7576950ba0346dc02e9ebb73f9d9204b2c52053494c2e6a",
+      "bytes": 1271384,
+      "destination": "meshes/huawei_v34/arm_base_Link.STL"
+    },
+    "meshes/arm_l_link_5.STL": {
+      "sha256": "7b38324ddbeba74bc6ce8eecb7e658f45b7298a755e71668927b39c270d3685d",
+      "bytes": 640784,
+      "destination": "meshes/huawei_v34/arm_l_link_5.STL"
+    },
+    "meshes/arm_l_link_6.STL": {
+      "sha256": "6e9ac8e79ff051f774151ba6ca9d5826368b5e6f35bdf690f83e0a8441e6c4e6",
+      "bytes": 789584,
+      "destination": "meshes/huawei_v34/arm_l_link_6.STL"
+    },
+    "meshes/arm_l_link_7.STL": {
+      "sha256": "e801016f3561b451356c741cddb57eaa8db45afe9a8f1b1f85f29ba6c040d138",
+      "bytes": 356484,
+      "destination": "meshes/huawei_v34/arm_l_link_7.STL"
+    },
+    "meshes/arm_r_link_5.STL": {
+      "sha256": "0710404b0e7b2ca4d1f0695a68497021220471646832420bdedd5f19142e7783",
+      "bytes": 640784,
+      "destination": "meshes/huawei_v34/arm_r_link_5.STL"
+    },
+    "meshes/arm_r_link_6.STL": {
+      "sha256": "753e3d6e4a23acde5d3cf49d0d1562652095d2de246443b8b827e5858ac5bffc",
+      "bytes": 789584,
+      "destination": "meshes/huawei_v34/arm_r_link_6.STL"
+    },
+    "meshes/arm_r_link_7.STL": {
+      "sha256": "6c3fcb9fd0d483fb0a2f2db2b7df22cf3a97fcc58cd57bfb34942471470b54c1",
+      "bytes": 356484,
+      "destination": "meshes/huawei_v34/arm_r_link_7.STL"
+    },
+    "meshes/base_link.STL": {
+      "sha256": "26f2aceab683bb1be5533dd0c1b71d2ba28b448e881b62639e2d0ccb437605a8",
+      "bytes": 8361184,
+      "destination": "meshes/huawei_v34/base_link.STL"
+    },
+    "meshes/camera_Link_1.STL": {
+      "sha256": "5f91af3399165188f598b9d38076801701816311ac0802a1bc56f70165c79bfd",
+      "bytes": 102484,
+      "destination": "meshes/huawei_v34/camera_Link_1.STL"
+    },
+    "meshes/chest_Link.STL": {
+      "sha256": "e654fbe546157a3bb2d2791ffc1716983b577e980ec167510f6afc97b748dc88",
+      "bytes": 8244584,
+      "destination": "meshes/huawei_v34/chest_Link.STL"
+    },
+    "meshes/convex_arm_l_link_1.STL": {
+      "sha256": "f20a8a5baf1f3e1fb23f8c09be2bf5b76ea8018089a009c38ab25de860399aae",
+      "bytes": 45284,
+      "destination": "meshes/huawei_v34/convex_arm_l_link_1.STL"
+    },
+    "meshes/convex_arm_l_link_2.STL": {
+      "sha256": "bbc54a562abe1577e7396da12906929bf7f2edb7e713dc9ba68f526df57c369d",
+      "bytes": 36084,
+      "destination": "meshes/huawei_v34/convex_arm_l_link_2.STL"
+    },
+    "meshes/convex_arm_l_link_3.STL": {
+      "sha256": "4c52c2af1d520a82bc20ad054d4b2872e8832fc2349e4b739add7af3d0ea7349",
+      "bytes": 44784,
+      "destination": "meshes/huawei_v34/convex_arm_l_link_3.STL"
+    },
+    "meshes/convex_arm_l_link_4.STL": {
+      "sha256": "5a457b478c8c8a36ed12e16c015255bcb4f8bdff6bfdacf014a5bd8b4bf3c7ad",
+      "bytes": 44184,
+      "destination": "meshes/huawei_v34/convex_arm_l_link_4.STL"
+    },
+    "meshes/convex_arm_l_link_5.STL": {
+      "sha256": "59e0867f6eeb74956cfa3f63fee180999d57ca910d986b9401d63344cc5eea4f",
+      "bytes": 53284,
+      "destination": "meshes/huawei_v34/convex_arm_l_link_5.STL"
+    },
+    "meshes/convex_arm_l_link_6.STL": {
+      "sha256": "506356f02726ce21376a75171acd67e263085802bda25d709739e7615a551032",
+      "bytes": 44684,
+      "destination": "meshes/huawei_v34/convex_arm_l_link_6.STL"
+    },
+    "meshes/convex_arm_l_link_7.STL": {
+      "sha256": "2806af41e32aac5091ab75179e9d4e3ac4f5fcd34a9a770c2ab71deb3c8eef4f",
+      "bytes": 72684,
+      "destination": "meshes/huawei_v34/convex_arm_l_link_7.STL"
+    },
+    "meshes/convex_arm_r_link_1.STL": {
+      "sha256": "d8910cc7a863c66daebcdeac6594f643466d8f1ef575625c4b3fd270abf79830",
+      "bytes": 45384,
+      "destination": "meshes/huawei_v34/convex_arm_r_link_1.STL"
+    },
+    "meshes/convex_arm_r_link_2.STL": {
+      "sha256": "be487ae9469aef4011636e3bdffe58bfdc985ff22cf0fa99040f262e2a59d026",
+      "bytes": 36084,
+      "destination": "meshes/huawei_v34/convex_arm_r_link_2.STL"
+    },
+    "meshes/convex_arm_r_link_3.STL": {
+      "sha256": "c3f14bd5a466519d18f9ceaa03925b3fcfa50798f8ca9a9c37f0fe25ee13e9f7",
+      "bytes": 45284,
+      "destination": "meshes/huawei_v34/convex_arm_r_link_3.STL"
+    },
+    "meshes/convex_arm_r_link_4.STL": {
+      "sha256": "4de3f387dfc4d7f1e9a667514986ee2b350c135240693a622c16994eaca7b5c7",
+      "bytes": 44084,
+      "destination": "meshes/huawei_v34/convex_arm_r_link_4.STL"
+    },
+    "meshes/convex_arm_r_link_5.STL": {
+      "sha256": "d2ea5338f4ed56b1d57aa414156dbfe9d063f1025859d54d19744aac48d70e7b",
+      "bytes": 53384,
+      "destination": "meshes/huawei_v34/convex_arm_r_link_5.STL"
+    },
+    "meshes/convex_arm_r_link_6.STL": {
+      "sha256": "88ccbc213211007e10d166c5ca83de9e3b05b77b3578654fa8c9ebf2ea05f21e",
+      "bytes": 44684,
+      "destination": "meshes/huawei_v34/convex_arm_r_link_6.STL"
+    },
+    "meshes/convex_arm_r_link_7.STL": {
+      "sha256": "5324230da0710369bb8213837e8532cb7d1416254d652d9ddbf9b1c93eecdb38",
+      "bytes": 72584,
+      "destination": "meshes/huawei_v34/convex_arm_r_link_7.STL"
+    },
+    "meshes/hand_connect_link.STL": {
+      "sha256": "8a701e61e9c20378742eed3a6cae029539591b207a243b8eebea78b5d88e4843",
+      "bytes": 464184,
+      "destination": "meshes/huawei_v34/hand_connect_link.STL"
+    },
+    "meshes/head_Link.STL": {
+      "sha256": "dbe8f96288197633915f19d5e5a9a3c869e02ea90083e93b57ed1fa68d2c0b98",
+      "bytes": 3582984,
+      "destination": "meshes/huawei_v34/head_Link.STL"
+    },
+    "meshes/l_index_Link.stl": {
+      "sha256": "790a0e6b3a431349e198f25ab55b86b5670e8d3a8b23074e6840324a4e1b735f",
+      "bytes": 110334,
+      "destination": "meshes/huawei_v34/l_index_Link.stl"
+    },
+    "meshes/l_index_Link1.stl": {
+      "sha256": "d7cb2e1a6ef8452913c8cdd62aca96a87d58e7161d33b1684194b8a03892e06a",
+      "bytes": 114084,
+      "destination": "meshes/huawei_v34/l_index_Link1.stl"
+    },
+    "meshes/l_index_Link2.stl": {
+      "sha256": "92d8967ebd69c3aaf017005f063acfb512b533fe91d9424ef6ba2dedc3d3f5c0",
+      "bytes": 387084,
+      "destination": "meshes/huawei_v34/l_index_Link2.stl"
+    },
+    "meshes/l_index_Link3.stl": {
+      "sha256": "4268282a5fa2a42ba0b651ef5c158ab57e163a0145b70012ccda73194474c4e3",
+      "bytes": 278734,
+      "destination": "meshes/huawei_v34/l_index_Link3.stl"
+    },
+    "meshes/l_index_Link4.stl": {
+      "sha256": "5319921d0fd1199d733ee9279d9e6bd602b7e7dd290d62086cc3e0dbe9891caf",
+      "bytes": 129884,
+      "destination": "meshes/huawei_v34/l_index_Link4.stl"
+    },
+    "meshes/l_index_Link5.stl": {
+      "sha256": "e6c54a73a8b7a120a3075d3ee991f0592fea3d10a69521e13cf4ed817b65f7a3",
+      "bytes": 49084,
+      "destination": "meshes/huawei_v34/l_index_Link5.stl"
+    },
+    "meshes/l_link_0.STL": {
+      "sha256": "840c712ee8c150303665397b41f1b7911aea749e6123b1532620f19406f42a1d",
+      "bytes": 147484,
+      "destination": "meshes/huawei_v34/l_link_0.STL"
+    },
+    "meshes/l_link_1.STL": {
+      "sha256": "38448f2b3771fd7c935c6d2f82f311dd9d3fb471cbe0b618ff93de6f0a3e0666",
+      "bytes": 505084,
+      "destination": "meshes/huawei_v34/l_link_1.STL"
+    },
+    "meshes/l_link_2.STL": {
+      "sha256": "24bb984fb9805c1de4ce8a660b6d6ccdf075046b14b64eb7e1ac024d5305cd25",
+      "bytes": 659084,
+      "destination": "meshes/huawei_v34/l_link_2.STL"
+    },
+    "meshes/l_link_3.STL": {
+      "sha256": "48793bb0bd23b1e5d5760ea029cdee019408dcc29b3de18a1a438846077d6988",
+      "bytes": 808184,
+      "destination": "meshes/huawei_v34/l_link_3.STL"
+    },
+    "meshes/l_link_4.STL": {
+      "sha256": "b88825909dd39b17c918d8878e943f573d1474f1b3a209e8fdd0ed4c73b02965",
+      "bytes": 501184,
+      "destination": "meshes/huawei_v34/l_link_4.STL"
+    },
+    "meshes/l_little_Link.stl": {
+      "sha256": "00638dbe41526b67d3f4bf46abe744cd5632353dc6363bbf877225fa03e2543e",
+      "bytes": 110334,
+      "destination": "meshes/huawei_v34/l_little_Link.stl"
+    },
+    "meshes/l_little_Link1.stl": {
+      "sha256": "ecebb3271829037dc62414b5c413d0b6afa24a2163d4e503478fecbe98888456",
+      "bytes": 190184,
+      "destination": "meshes/huawei_v34/l_little_Link1.stl"
+    },
+    "meshes/l_little_Link2.stl": {
+      "sha256": "30072f02833015f73c9a7aac81416ea4162527e3bea6c03b4d01e152549abf79",
+      "bytes": 258084,
+      "destination": "meshes/huawei_v34/l_little_Link2.stl"
+    },
+    "meshes/l_little_Link3.stl": {
+      "sha256": "bca9ce6c3a2859deefef2e52cd468bcebebe119a455449e33606da74f24eae9e",
+      "bytes": 278734,
+      "destination": "meshes/huawei_v34/l_little_Link3.stl"
+    },
+    "meshes/l_little_Link4.stl": {
+      "sha256": "3f2baf6e615d18dbbe686790cb707296e47db6d24fea6b58a6590a4966a0606c",
+      "bytes": 129884,
+      "destination": "meshes/huawei_v34/l_little_Link4.stl"
+    },
+    "meshes/l_little_Link5.stl": {
+      "sha256": "835edd36a68609c1bc90cceb3cfae5f03bd652c96f1e14e5e9a481dac5fabe41",
+      "bytes": 49084,
+      "destination": "meshes/huawei_v34/l_little_Link5.stl"
+    },
+    "meshes/l_mid_Link.stl": {
+      "sha256": "0619c173b27437c510d474dfa689efdda07ec67d843afdfb5e84f52442d23435",
+      "bytes": 110334,
+      "destination": "meshes/huawei_v34/l_mid_Link.stl"
+    },
+    "meshes/l_mid_Link1.stl": {
+      "sha256": "f82e898a73aff00422022fd5bb89bbbfc86e364d79cff6daae31f10ca0ebe221",
+      "bytes": 114084,
+      "destination": "meshes/huawei_v34/l_mid_Link1.stl"
+    },
+    "meshes/l_mid_Link2.stl": {
+      "sha256": "7b733bf54adfd63f1b3f3ae4918b1de7084ef4905e03b444bcc8234e976864a0",
+      "bytes": 465634,
+      "destination": "meshes/huawei_v34/l_mid_Link2.stl"
+    },
+    "meshes/l_mid_Link3.stl": {
+      "sha256": "df04da68713c83a74d61cb5f0de228ce4f36b9ac6ab096eb17df8bbfb831a56a",
+      "bytes": 278734,
+      "destination": "meshes/huawei_v34/l_mid_Link3.stl"
+    },
+    "meshes/l_mid_Link4.stl": {
+      "sha256": "5319921d0fd1199d733ee9279d9e6bd602b7e7dd290d62086cc3e0dbe9891caf",
+      "bytes": 129884,
+      "destination": "meshes/huawei_v34/l_index_Link4.stl"
+    },
+    "meshes/l_mid_Link5.stl": {
+      "sha256": "e6c54a73a8b7a120a3075d3ee991f0592fea3d10a69521e13cf4ed817b65f7a3",
+      "bytes": 49084,
+      "destination": "meshes/huawei_v34/l_index_Link5.stl"
+    },
+    "meshes/l_ring_Link.stl": {
+      "sha256": "5f31a9550d6fe6aea6c2101984009c79f0d4a9093d9762a15ecbb9f5e0f1c411",
+      "bytes": 110334,
+      "destination": "meshes/huawei_v34/l_ring_Link.stl"
+    },
+    "meshes/l_ring_Link1.stl": {
+      "sha256": "c496c8c66ed3dd3a86daea4a88c1815424bc9fbc966c654033dc616fb1c44cb5",
+      "bytes": 114084,
+      "destination": "meshes/huawei_v34/l_ring_Link1.stl"
+    },
+    "meshes/l_ring_Link2.stl": {
+      "sha256": "b34472e551720cda37452e13328c2fedfa3e9a789726f5dbafc38b154b3df98c",
+      "bytes": 388034,
+      "destination": "meshes/huawei_v34/l_ring_Link2.stl"
+    },
+    "meshes/l_ring_Link3.stl": {
+      "sha256": "c6422d0a020514258a21b1b0a837a96b95e2eb05a1bcb26fca3df7f548a8ec7a",
+      "bytes": 278734,
+      "destination": "meshes/huawei_v34/l_ring_Link3.stl"
+    },
+    "meshes/l_ring_Link4.stl": {
+      "sha256": "410638ad21941d5dc2f0df0887ee2a9c796a84c1e705d90ddd8b8bcd34c00be8",
+      "bytes": 129884,
+      "destination": "meshes/huawei_v34/l_ring_Link4.stl"
+    },
+    "meshes/l_ring_Link5.stl": {
+      "sha256": "e6c54a73a8b7a120a3075d3ee991f0592fea3d10a69521e13cf4ed817b65f7a3",
+      "bytes": 49084,
+      "destination": "meshes/huawei_v34/l_index_Link5.stl"
+    },
+    "meshes/l_thumb_Link.stl": {
+      "sha256": "7a47fae1e6b901d30f01fde18d2915cb7797ac1bc7f0a5aa008c7e6ea8d75dd3",
+      "bytes": 110334,
+      "destination": "meshes/huawei_v34/l_thumb_Link.stl"
+    },
+    "meshes/l_thumb_Link1.stl": {
+      "sha256": "b337d11b6a8557a6977665600f62aff85259f01a3389e55d144a75dbdc1cb77d",
+      "bytes": 112784,
+      "destination": "meshes/huawei_v34/l_thumb_Link1.stl"
+    },
+    "meshes/l_thumb_Link2.stl": {
+      "sha256": "e250f69de66e273dd413194ebe8bdb1df95e2eabaa91d3d444142f39f87faa1d",
+      "bytes": 465634,
+      "destination": "meshes/huawei_v34/l_thumb_Link2.stl"
+    },
+    "meshes/l_thumb_Link3.stl": {
+      "sha256": "4294261dc7a70649090f01b84f10ff68a1fd4545fff0060c15443beb4756a4d5",
+      "bytes": 278734,
+      "destination": "meshes/huawei_v34/l_thumb_Link3.stl"
+    },
+    "meshes/l_thumb_Link4.stl": {
+      "sha256": "477f10a322dcf4c136b1be7bc35c78322d2252b2cddcd873084bbd59326a834b",
+      "bytes": 129884,
+      "destination": "meshes/huawei_v34/l_thumb_Link4.stl"
+    },
+    "meshes/l_thumb_Link5.stl": {
+      "sha256": "b2ff651316538e3764a8f2ab350553e6d727b45f75f29d1074413ec61be08c57",
+      "bytes": 49084,
+      "destination": "meshes/huawei_v34/l_thumb_Link5.stl"
+    },
+    "meshes/left_hand_base_link.stl": {
+      "sha256": "afff8f010537c208e7b6290bfcc8a02d22c641832375716ec896c70e51ca6528",
+      "bytes": 303384,
+      "destination": "meshes/huawei_v34/left_hand_base_link.stl"
+    },
+    "meshes/leg_Link_1.STL": {
+      "sha256": "f9a374461a656bec2bf304ef46cb8c9f929cd1d807dbfa50c248cd668f7950c9",
+      "bytes": 1638884,
+      "destination": "meshes/huawei_v34/leg_Link_1.STL"
+    },
+    "meshes/leg_Link_2.STL": {
+      "sha256": "b3dd13203009c3fac9834ba39c58fe5aa37b9387b13f328ff7af9cb05a8e2cec",
+      "bytes": 3608384,
+      "destination": "meshes/huawei_v34/leg_Link_2.STL"
+    },
+    "meshes/neck_Link.STL": {
+      "sha256": "cad4d8f2f6241693e35690daf12cc2a0b73c5547cef3ca38fcbfb244b67c11fe",
+      "bytes": 301684,
+      "destination": "meshes/huawei_v34/neck_Link.STL"
+    },
+    "meshes/r_index_Link.stl": {
+      "sha256": "5f31c53eb224c2b6cea14881742729c14a5b7289e6a425521443514ed088a9ff",
+      "bytes": 88034,
+      "destination": "meshes/huawei_v34/r_index_Link.stl"
+    },
+    "meshes/r_index_Link1.stl": {
+      "sha256": "1daa409ec00ae810b46524fd132418c62c8345f1de1885c4016a7f21e90b0d83",
+      "bytes": 70084,
+      "destination": "meshes/huawei_v34/r_index_Link1.stl"
+    },
+    "meshes/r_index_Link2.stl": {
+      "sha256": "3f1a3fb6396899bdb41bd1822012ec0f13c11aaaeb432771ab226e16bdfbbb47",
+      "bytes": 255434,
+      "destination": "meshes/huawei_v34/r_index_Link2.stl"
+    },
+    "meshes/r_index_Link3.stl": {
+      "sha256": "0d4f3a3d19bd0f00ba3c4fdd59bd48ea81f983a0684d9fbdeae1484933ed03e8",
+      "bytes": 167334,
+      "destination": "meshes/huawei_v34/r_index_Link3.stl"
+    },
+    "meshes/r_index_Link4.stl": {
+      "sha256": "f64c33647e59848072e7f13b71715372f7c19ff2d8b9bf19b71f7689741e365d",
+      "bytes": 134184,
+      "destination": "meshes/huawei_v34/r_index_Link4.stl"
+    },
+    "meshes/r_index_Link5.stl": {
+      "sha256": "ba6e97e2335de378baf5adbf96d13ef341fcdc3cd9dac98ab4f213c42a1c8570",
+      "bytes": 46484,
+      "destination": "meshes/huawei_v34/r_index_Link5.stl"
+    },
+    "meshes/r_link_0.STL": {
+      "sha256": "c88c6b5591fcc3781e5d66686dfc71b2d0b88a4bd5e526f97017b8acda038b01",
+      "bytes": 147484,
+      "destination": "meshes/huawei_v34/r_link_0.STL"
+    },
+    "meshes/r_link_1.STL": {
+      "sha256": "e423f52f041e5d876a989d5f63eec81aa695fb0496ec1d9421726c9e659d66f0",
+      "bytes": 505084,
+      "destination": "meshes/huawei_v34/r_link_1.STL"
+    },
+    "meshes/r_link_2.STL": {
+      "sha256": "7a864b7b3c3f0b27ada786bc1558a852194847af4c2f3c01adbf91e46798aa08",
+      "bytes": 659084,
+      "destination": "meshes/huawei_v34/r_link_2.STL"
+    },
+    "meshes/r_link_3.STL": {
+      "sha256": "2a267e96848cf498bb2e20df03913348e0a546961d3ec8f69617e9e28edf5ba0",
+      "bytes": 789684,
+      "destination": "meshes/huawei_v34/r_link_3.STL"
+    },
+    "meshes/r_link_4.STL": {
+      "sha256": "e49e1de92b8030b90844a47b8d01020eb1d4bf2254df1cdd64cefbbd821ede51",
+      "bytes": 501184,
+      "destination": "meshes/huawei_v34/r_link_4.STL"
+    },
+    "meshes/r_little_Link.stl": {
+      "sha256": "4a43e1fd4ce58fdac35832db4559887c17029e3372145e05cca59468fe9a4c5a",
+      "bytes": 110084,
+      "destination": "meshes/huawei_v34/r_little_Link.stl"
+    },
+    "meshes/r_little_Link1.stl": {
+      "sha256": "ee8e154645128bba2b299b62762904b3aa62fd873dc5d2f49ab86010af18f3f3",
+      "bytes": 87584,
+      "destination": "meshes/huawei_v34/r_little_Link1.stl"
+    },
+    "meshes/r_little_Link2.stl": {
+      "sha256": "dc704714027109914432a5e70f113dd7ce4a1c1c27273bb74d0d90bbe1adcb7a",
+      "bytes": 255434,
+      "destination": "meshes/huawei_v34/r_little_Link2.stl"
+    },
+    "meshes/r_little_Link3.stl": {
+      "sha256": "7da7b4824c482a5df14e5463b7843a96f7cfda32107808d26e9578987a25a2a5",
+      "bytes": 251034,
+      "destination": "meshes/huawei_v34/r_little_Link3.stl"
+    },
+    "meshes/r_little_Link4.stl": {
+      "sha256": "594950b972a65d080d1da277b1fb94eb11b1567b042f395c970c1f183500b56f",
+      "bytes": 134184,
+      "destination": "meshes/huawei_v34/r_little_Link4.stl"
+    },
+    "meshes/r_little_Link5.stl": {
+      "sha256": "899bc879f9340bb13733f42a8231d1c01726730adb008588f08c3557d1a428d1",
+      "bytes": 69684,
+      "destination": "meshes/huawei_v34/r_little_Link5.stl"
+    },
+    "meshes/r_mid_Link.stl": {
+      "sha256": "c390f31f31f8b11af1b170515e1b430f3db369e06322e517d7e500a15e1b00f5",
+      "bytes": 88034,
+      "destination": "meshes/huawei_v34/r_mid_Link.stl"
+    },
+    "meshes/r_mid_Link1.stl": {
+      "sha256": "42d4177aecb492edfd166326fd4d088a9e46408ac5d81c951145554d4a0272bc",
+      "bytes": 87584,
+      "destination": "meshes/huawei_v34/r_mid_Link1.stl"
+    },
+    "meshes/r_mid_Link2.stl": {
+      "sha256": "0c971895ae3ee9ad69f1c24a80af670b180a91dc0fc0b8b635c6e9a79ef5c780",
+      "bytes": 255434,
+      "destination": "meshes/huawei_v34/r_mid_Link2.stl"
+    },
+    "meshes/r_mid_Link3.stl": {
+      "sha256": "78c654b5dcf3a3cd1521b20a48a39dd61429ee8ca8a4e22dd2c13df773c5e2ac",
+      "bytes": 209234,
+      "destination": "meshes/huawei_v34/r_mid_Link3.stl"
+    },
+    "meshes/r_mid_Link4.stl": {
+      "sha256": "ce410c74e5f1f1eb57354ce9949d8c18554048030d8d10ba5c6318a75c256911",
+      "bytes": 134184,
+      "destination": "meshes/huawei_v34/r_mid_Link4.stl"
+    },
+    "meshes/r_mid_Link5.stl": {
+      "sha256": "28b8f5d94f8b3628381ef2919b70feb6d148879951560920b8352ffae2ae8b6f",
+      "bytes": 69684,
+      "destination": "meshes/huawei_v34/r_mid_Link5.stl"
+    },
+    "meshes/r_ring_Link.stl": {
+      "sha256": "31f6ac0d0906006bc9ce0a134c0273236a22f4193ca40a678c15e9273f58196d",
+      "bytes": 88034,
+      "destination": "meshes/huawei_v34/r_ring_Link.stl"
+    },
+    "meshes/r_ring_Link1.stl": {
+      "sha256": "ee8e154645128bba2b299b62762904b3aa62fd873dc5d2f49ab86010af18f3f3",
+      "bytes": 87584,
+      "destination": "meshes/huawei_v34/r_little_Link1.stl"
+    },
+    "meshes/r_ring_Link2.stl": {
+      "sha256": "5eba90d5ea44ad0d7e2811deb78af648aaba5fc886196250ef1e1bcbf449f0a7",
+      "bytes": 255434,
+      "destination": "meshes/huawei_v34/r_ring_Link2.stl"
+    },
+    "meshes/r_ring_Link3.stl": {
+      "sha256": "03de5aa9d57c8cdfee8765e437c54df1519ac60008dcc8295d246386826fd290",
+      "bytes": 167334,
+      "destination": "meshes/huawei_v34/r_ring_Link3.stl"
+    },
+    "meshes/r_ring_Link4.stl": {
+      "sha256": "f4dd535c872d81e493516dcfa62627c8e6f2518d1c357c0fbe74a1d254f1d36a",
+      "bytes": 134184,
+      "destination": "meshes/huawei_v34/r_ring_Link4.stl"
+    },
+    "meshes/r_ring_Link5.stl": {
+      "sha256": "899bc879f9340bb13733f42a8231d1c01726730adb008588f08c3557d1a428d1",
+      "bytes": 69684,
+      "destination": "meshes/huawei_v34/r_little_Link5.stl"
+    },
+    "meshes/r_thumb_Link.stl": {
+      "sha256": "9a95d1a97592bac9837707cafefb97431f2cd2cafe08588e58512ad23fb69fc1",
+      "bytes": 110084,
+      "destination": "meshes/huawei_v34/r_thumb_Link.stl"
+    },
+    "meshes/r_thumb_Link1.stl": {
+      "sha256": "ea001f9df52563daf749c909a6c8bffff69302fc4916f10acfd1fec0fe24ffda",
+      "bytes": 70084,
+      "destination": "meshes/huawei_v34/r_thumb_Link1.stl"
+    },
+    "meshes/r_thumb_Link2.stl": {
+      "sha256": "36aa729e20f4701248e6c226940f1719909db555d769eb7e3eb80355321688ca",
+      "bytes": 255434,
+      "destination": "meshes/huawei_v34/r_thumb_Link2.stl"
+    },
+    "meshes/r_thumb_Link3.stl": {
+      "sha256": "ed3b445797a937445611dd2dff33a78a897cd48185c498b5a314c5dcfd389ff5",
+      "bytes": 251034,
+      "destination": "meshes/huawei_v34/r_thumb_Link3.stl"
+    },
+    "meshes/r_thumb_Link4.stl": {
+      "sha256": "f4dd535c872d81e493516dcfa62627c8e6f2518d1c357c0fbe74a1d254f1d36a",
+      "bytes": 134184,
+      "destination": "meshes/huawei_v34/r_ring_Link4.stl"
+    },
+    "meshes/r_thumb_Link5.stl": {
+      "sha256": "899bc879f9340bb13733f42a8231d1c01726730adb008588f08c3557d1a428d1",
+      "bytes": 69684,
+      "destination": "meshes/huawei_v34/r_little_Link5.stl"
+    },
+    "meshes/right_hand_base_link.stl": {
+      "sha256": "8758b64c75177c55cebaedc3b5d07bcf796c96a43d99e146ef1696d15a32b4e3",
+      "bytes": 347784,
+      "destination": "meshes/huawei_v34/right_hand_base_link.stl"
+    }
+  },
+  "files": {
+    "meshes/huawei_v34/arm_base_Link.STL": {
+      "sha256": "e5294051955b5c35a7576950ba0346dc02e9ebb73f9d9204b2c52053494c2e6a",
+      "bytes": 1271384
+    },
+    "meshes/huawei_v34/arm_l_link_5.STL": {
+      "sha256": "7b38324ddbeba74bc6ce8eecb7e658f45b7298a755e71668927b39c270d3685d",
+      "bytes": 640784
+    },
+    "meshes/huawei_v34/arm_l_link_6.STL": {
+      "sha256": "6e9ac8e79ff051f774151ba6ca9d5826368b5e6f35bdf690f83e0a8441e6c4e6",
+      "bytes": 789584
+    },
+    "meshes/huawei_v34/arm_l_link_7.STL": {
+      "sha256": "e801016f3561b451356c741cddb57eaa8db45afe9a8f1b1f85f29ba6c040d138",
+      "bytes": 356484
+    },
+    "meshes/huawei_v34/arm_r_link_5.STL": {
+      "sha256": "0710404b0e7b2ca4d1f0695a68497021220471646832420bdedd5f19142e7783",
+      "bytes": 640784
+    },
+    "meshes/huawei_v34/arm_r_link_6.STL": {
+      "sha256": "753e3d6e4a23acde5d3cf49d0d1562652095d2de246443b8b827e5858ac5bffc",
+      "bytes": 789584
+    },
+    "meshes/huawei_v34/arm_r_link_7.STL": {
+      "sha256": "6c3fcb9fd0d483fb0a2f2db2b7df22cf3a97fcc58cd57bfb34942471470b54c1",
+      "bytes": 356484
+    },
+    "meshes/huawei_v34/base_link.STL": {
+      "sha256": "26f2aceab683bb1be5533dd0c1b71d2ba28b448e881b62639e2d0ccb437605a8",
+      "bytes": 8361184
+    },
+    "meshes/huawei_v34/camera_Link_1.STL": {
+      "sha256": "5f91af3399165188f598b9d38076801701816311ac0802a1bc56f70165c79bfd",
+      "bytes": 102484
+    },
+    "meshes/huawei_v34/chest_Link.STL": {
+      "sha256": "e654fbe546157a3bb2d2791ffc1716983b577e980ec167510f6afc97b748dc88",
+      "bytes": 8244584
+    },
+    "meshes/huawei_v34/convex_arm_l_link_1.STL": {
+      "sha256": "f20a8a5baf1f3e1fb23f8c09be2bf5b76ea8018089a009c38ab25de860399aae",
+      "bytes": 45284
+    },
+    "meshes/huawei_v34/convex_arm_l_link_2.STL": {
+      "sha256": "bbc54a562abe1577e7396da12906929bf7f2edb7e713dc9ba68f526df57c369d",
+      "bytes": 36084
+    },
+    "meshes/huawei_v34/convex_arm_l_link_3.STL": {
+      "sha256": "4c52c2af1d520a82bc20ad054d4b2872e8832fc2349e4b739add7af3d0ea7349",
+      "bytes": 44784
+    },
+    "meshes/huawei_v34/convex_arm_l_link_4.STL": {
+      "sha256": "5a457b478c8c8a36ed12e16c015255bcb4f8bdff6bfdacf014a5bd8b4bf3c7ad",
+      "bytes": 44184
+    },
+    "meshes/huawei_v34/convex_arm_l_link_5.STL": {
+      "sha256": "59e0867f6eeb74956cfa3f63fee180999d57ca910d986b9401d63344cc5eea4f",
+      "bytes": 53284
+    },
+    "meshes/huawei_v34/convex_arm_l_link_6.STL": {
+      "sha256": "506356f02726ce21376a75171acd67e263085802bda25d709739e7615a551032",
+      "bytes": 44684
+    },
+    "meshes/huawei_v34/convex_arm_l_link_7.STL": {
+      "sha256": "2806af41e32aac5091ab75179e9d4e3ac4f5fcd34a9a770c2ab71deb3c8eef4f",
+      "bytes": 72684
+    },
+    "meshes/huawei_v34/convex_arm_r_link_1.STL": {
+      "sha256": "d8910cc7a863c66daebcdeac6594f643466d8f1ef575625c4b3fd270abf79830",
+      "bytes": 45384
+    },
+    "meshes/huawei_v34/convex_arm_r_link_2.STL": {
+      "sha256": "be487ae9469aef4011636e3bdffe58bfdc985ff22cf0fa99040f262e2a59d026",
+      "bytes": 36084
+    },
+    "meshes/huawei_v34/convex_arm_r_link_3.STL": {
+      "sha256": "c3f14bd5a466519d18f9ceaa03925b3fcfa50798f8ca9a9c37f0fe25ee13e9f7",
+      "bytes": 45284
+    },
+    "meshes/huawei_v34/convex_arm_r_link_4.STL": {
+      "sha256": "4de3f387dfc4d7f1e9a667514986ee2b350c135240693a622c16994eaca7b5c7",
+      "bytes": 44084
+    },
+    "meshes/huawei_v34/convex_arm_r_link_5.STL": {
+      "sha256": "d2ea5338f4ed56b1d57aa414156dbfe9d063f1025859d54d19744aac48d70e7b",
+      "bytes": 53384
+    },
+    "meshes/huawei_v34/convex_arm_r_link_6.STL": {
+      "sha256": "88ccbc213211007e10d166c5ca83de9e3b05b77b3578654fa8c9ebf2ea05f21e",
+      "bytes": 44684
+    },
+    "meshes/huawei_v34/convex_arm_r_link_7.STL": {
+      "sha256": "5324230da0710369bb8213837e8532cb7d1416254d652d9ddbf9b1c93eecdb38",
+      "bytes": 72584
+    },
+    "meshes/huawei_v34/hand_connect_link.STL": {
+      "sha256": "8a701e61e9c20378742eed3a6cae029539591b207a243b8eebea78b5d88e4843",
+      "bytes": 464184
+    },
+    "meshes/huawei_v34/head_Link.STL": {
+      "sha256": "dbe8f96288197633915f19d5e5a9a3c869e02ea90083e93b57ed1fa68d2c0b98",
+      "bytes": 3582984
+    },
+    "meshes/huawei_v34/l_index_Link.stl": {
+      "sha256": "790a0e6b3a431349e198f25ab55b86b5670e8d3a8b23074e6840324a4e1b735f",
+      "bytes": 110334
+    },
+    "meshes/huawei_v34/l_index_Link1.stl": {
+      "sha256": "d7cb2e1a6ef8452913c8cdd62aca96a87d58e7161d33b1684194b8a03892e06a",
+      "bytes": 114084
+    },
+    "meshes/huawei_v34/l_index_Link2.stl": {
+      "sha256": "92d8967ebd69c3aaf017005f063acfb512b533fe91d9424ef6ba2dedc3d3f5c0",
+      "bytes": 387084
+    },
+    "meshes/huawei_v34/l_index_Link3.stl": {
+      "sha256": "4268282a5fa2a42ba0b651ef5c158ab57e163a0145b70012ccda73194474c4e3",
+      "bytes": 278734
+    },
+    "meshes/huawei_v34/l_index_Link4.stl": {
+      "sha256": "5319921d0fd1199d733ee9279d9e6bd602b7e7dd290d62086cc3e0dbe9891caf",
+      "bytes": 129884
+    },
+    "meshes/huawei_v34/l_index_Link5.stl": {
+      "sha256": "e6c54a73a8b7a120a3075d3ee991f0592fea3d10a69521e13cf4ed817b65f7a3",
+      "bytes": 49084
+    },
+    "meshes/huawei_v34/l_link_0.STL": {
+      "sha256": "840c712ee8c150303665397b41f1b7911aea749e6123b1532620f19406f42a1d",
+      "bytes": 147484
+    },
+    "meshes/huawei_v34/l_link_1.STL": {
+      "sha256": "38448f2b3771fd7c935c6d2f82f311dd9d3fb471cbe0b618ff93de6f0a3e0666",
+      "bytes": 505084
+    },
+    "meshes/huawei_v34/l_link_2.STL": {
+      "sha256": "24bb984fb9805c1de4ce8a660b6d6ccdf075046b14b64eb7e1ac024d5305cd25",
+      "bytes": 659084
+    },
+    "meshes/huawei_v34/l_link_3.STL": {
+      "sha256": "48793bb0bd23b1e5d5760ea029cdee019408dcc29b3de18a1a438846077d6988",
+      "bytes": 808184
+    },
+    "meshes/huawei_v34/l_link_4.STL": {
+      "sha256": "b88825909dd39b17c918d8878e943f573d1474f1b3a209e8fdd0ed4c73b02965",
+      "bytes": 501184
+    },
+    "meshes/huawei_v34/l_little_Link.stl": {
+      "sha256": "00638dbe41526b67d3f4bf46abe744cd5632353dc6363bbf877225fa03e2543e",
+      "bytes": 110334
+    },
+    "meshes/huawei_v34/l_little_Link1.stl": {
+      "sha256": "ecebb3271829037dc62414b5c413d0b6afa24a2163d4e503478fecbe98888456",
+      "bytes": 190184
+    },
+    "meshes/huawei_v34/l_little_Link2.stl": {
+      "sha256": "30072f02833015f73c9a7aac81416ea4162527e3bea6c03b4d01e152549abf79",
+      "bytes": 258084
+    },
+    "meshes/huawei_v34/l_little_Link3.stl": {
+      "sha256": "bca9ce6c3a2859deefef2e52cd468bcebebe119a455449e33606da74f24eae9e",
+      "bytes": 278734
+    },
+    "meshes/huawei_v34/l_little_Link4.stl": {
+      "sha256": "3f2baf6e615d18dbbe686790cb707296e47db6d24fea6b58a6590a4966a0606c",
+      "bytes": 129884
+    },
+    "meshes/huawei_v34/l_little_Link5.stl": {
+      "sha256": "835edd36a68609c1bc90cceb3cfae5f03bd652c96f1e14e5e9a481dac5fabe41",
+      "bytes": 49084
+    },
+    "meshes/huawei_v34/l_mid_Link.stl": {
+      "sha256": "0619c173b27437c510d474dfa689efdda07ec67d843afdfb5e84f52442d23435",
+      "bytes": 110334
+    },
+    "meshes/huawei_v34/l_mid_Link1.stl": {
+      "sha256": "f82e898a73aff00422022fd5bb89bbbfc86e364d79cff6daae31f10ca0ebe221",
+      "bytes": 114084
+    },
+    "meshes/huawei_v34/l_mid_Link2.stl": {
+      "sha256": "7b733bf54adfd63f1b3f3ae4918b1de7084ef4905e03b444bcc8234e976864a0",
+      "bytes": 465634
+    },
+    "meshes/huawei_v34/l_mid_Link3.stl": {
+      "sha256": "df04da68713c83a74d61cb5f0de228ce4f36b9ac6ab096eb17df8bbfb831a56a",
+      "bytes": 278734
+    },
+    "meshes/huawei_v34/l_ring_Link.stl": {
+      "sha256": "5f31a9550d6fe6aea6c2101984009c79f0d4a9093d9762a15ecbb9f5e0f1c411",
+      "bytes": 110334
+    },
+    "meshes/huawei_v34/l_ring_Link1.stl": {
+      "sha256": "c496c8c66ed3dd3a86daea4a88c1815424bc9fbc966c654033dc616fb1c44cb5",
+      "bytes": 114084
+    },
+    "meshes/huawei_v34/l_ring_Link2.stl": {
+      "sha256": "b34472e551720cda37452e13328c2fedfa3e9a789726f5dbafc38b154b3df98c",
+      "bytes": 388034
+    },
+    "meshes/huawei_v34/l_ring_Link3.stl": {
+      "sha256": "c6422d0a020514258a21b1b0a837a96b95e2eb05a1bcb26fca3df7f548a8ec7a",
+      "bytes": 278734
+    },
+    "meshes/huawei_v34/l_ring_Link4.stl": {
+      "sha256": "410638ad21941d5dc2f0df0887ee2a9c796a84c1e705d90ddd8b8bcd34c00be8",
+      "bytes": 129884
+    },
+    "meshes/huawei_v34/l_thumb_Link.stl": {
+      "sha256": "7a47fae1e6b901d30f01fde18d2915cb7797ac1bc7f0a5aa008c7e6ea8d75dd3",
+      "bytes": 110334
+    },
+    "meshes/huawei_v34/l_thumb_Link1.stl": {
+      "sha256": "b337d11b6a8557a6977665600f62aff85259f01a3389e55d144a75dbdc1cb77d",
+      "bytes": 112784
+    },
+    "meshes/huawei_v34/l_thumb_Link2.stl": {
+      "sha256": "e250f69de66e273dd413194ebe8bdb1df95e2eabaa91d3d444142f39f87faa1d",
+      "bytes": 465634
+    },
+    "meshes/huawei_v34/l_thumb_Link3.stl": {
+      "sha256": "4294261dc7a70649090f01b84f10ff68a1fd4545fff0060c15443beb4756a4d5",
+      "bytes": 278734
+    },
+    "meshes/huawei_v34/l_thumb_Link4.stl": {
+      "sha256": "477f10a322dcf4c136b1be7bc35c78322d2252b2cddcd873084bbd59326a834b",
+      "bytes": 129884
+    },
+    "meshes/huawei_v34/l_thumb_Link5.stl": {
+      "sha256": "b2ff651316538e3764a8f2ab350553e6d727b45f75f29d1074413ec61be08c57",
+      "bytes": 49084
+    },
+    "meshes/huawei_v34/left_hand_base_link.stl": {
+      "sha256": "afff8f010537c208e7b6290bfcc8a02d22c641832375716ec896c70e51ca6528",
+      "bytes": 303384
+    },
+    "meshes/huawei_v34/leg_Link_1.STL": {
+      "sha256": "f9a374461a656bec2bf304ef46cb8c9f929cd1d807dbfa50c248cd668f7950c9",
+      "bytes": 1638884
+    },
+    "meshes/huawei_v34/leg_Link_2.STL": {
+      "sha256": "b3dd13203009c3fac9834ba39c58fe5aa37b9387b13f328ff7af9cb05a8e2cec",
+      "bytes": 3608384
+    },
+    "meshes/huawei_v34/neck_Link.STL": {
+      "sha256": "cad4d8f2f6241693e35690daf12cc2a0b73c5547cef3ca38fcbfb244b67c11fe",
+      "bytes": 301684
+    },
+    "meshes/huawei_v34/r_index_Link.stl": {
+      "sha256": "5f31c53eb224c2b6cea14881742729c14a5b7289e6a425521443514ed088a9ff",
+      "bytes": 88034
+    },
+    "meshes/huawei_v34/r_index_Link1.stl": {
+      "sha256": "1daa409ec00ae810b46524fd132418c62c8345f1de1885c4016a7f21e90b0d83",
+      "bytes": 70084
+    },
+    "meshes/huawei_v34/r_index_Link2.stl": {
+      "sha256": "3f1a3fb6396899bdb41bd1822012ec0f13c11aaaeb432771ab226e16bdfbbb47",
+      "bytes": 255434
+    },
+    "meshes/huawei_v34/r_index_Link3.stl": {
+      "sha256": "0d4f3a3d19bd0f00ba3c4fdd59bd48ea81f983a0684d9fbdeae1484933ed03e8",
+      "bytes": 167334
+    },
+    "meshes/huawei_v34/r_index_Link4.stl": {
+      "sha256": "f64c33647e59848072e7f13b71715372f7c19ff2d8b9bf19b71f7689741e365d",
+      "bytes": 134184
+    },
+    "meshes/huawei_v34/r_index_Link5.stl": {
+      "sha256": "ba6e97e2335de378baf5adbf96d13ef341fcdc3cd9dac98ab4f213c42a1c8570",
+      "bytes": 46484
+    },
+    "meshes/huawei_v34/r_link_0.STL": {
+      "sha256": "c88c6b5591fcc3781e5d66686dfc71b2d0b88a4bd5e526f97017b8acda038b01",
+      "bytes": 147484
+    },
+    "meshes/huawei_v34/r_link_1.STL": {
+      "sha256": "e423f52f041e5d876a989d5f63eec81aa695fb0496ec1d9421726c9e659d66f0",
+      "bytes": 505084
+    },
+    "meshes/huawei_v34/r_link_2.STL": {
+      "sha256": "7a864b7b3c3f0b27ada786bc1558a852194847af4c2f3c01adbf91e46798aa08",
+      "bytes": 659084
+    },
+    "meshes/huawei_v34/r_link_3.STL": {
+      "sha256": "2a267e96848cf498bb2e20df03913348e0a546961d3ec8f69617e9e28edf5ba0",
+      "bytes": 789684
+    },
+    "meshes/huawei_v34/r_link_4.STL": {
+      "sha256": "e49e1de92b8030b90844a47b8d01020eb1d4bf2254df1cdd64cefbbd821ede51",
+      "bytes": 501184
+    },
+    "meshes/huawei_v34/r_little_Link.stl": {
+      "sha256": "4a43e1fd4ce58fdac35832db4559887c17029e3372145e05cca59468fe9a4c5a",
+      "bytes": 110084
+    },
+    "meshes/huawei_v34/r_little_Link1.stl": {
+      "sha256": "ee8e154645128bba2b299b62762904b3aa62fd873dc5d2f49ab86010af18f3f3",
+      "bytes": 87584
+    },
+    "meshes/huawei_v34/r_little_Link2.stl": {
+      "sha256": "dc704714027109914432a5e70f113dd7ce4a1c1c27273bb74d0d90bbe1adcb7a",
+      "bytes": 255434
+    },
+    "meshes/huawei_v34/r_little_Link3.stl": {
+      "sha256": "7da7b4824c482a5df14e5463b7843a96f7cfda32107808d26e9578987a25a2a5",
+      "bytes": 251034
+    },
+    "meshes/huawei_v34/r_little_Link4.stl": {
+      "sha256": "594950b972a65d080d1da277b1fb94eb11b1567b042f395c970c1f183500b56f",
+      "bytes": 134184
+    },
+    "meshes/huawei_v34/r_little_Link5.stl": {
+      "sha256": "899bc879f9340bb13733f42a8231d1c01726730adb008588f08c3557d1a428d1",
+      "bytes": 69684
+    },
+    "meshes/huawei_v34/r_mid_Link.stl": {
+      "sha256": "c390f31f31f8b11af1b170515e1b430f3db369e06322e517d7e500a15e1b00f5",
+      "bytes": 88034
+    },
+    "meshes/huawei_v34/r_mid_Link1.stl": {
+      "sha256": "42d4177aecb492edfd166326fd4d088a9e46408ac5d81c951145554d4a0272bc",
+      "bytes": 87584
+    },
+    "meshes/huawei_v34/r_mid_Link2.stl": {
+      "sha256": "0c971895ae3ee9ad69f1c24a80af670b180a91dc0fc0b8b635c6e9a79ef5c780",
+      "bytes": 255434
+    },
+    "meshes/huawei_v34/r_mid_Link3.stl": {
+      "sha256": "78c654b5dcf3a3cd1521b20a48a39dd61429ee8ca8a4e22dd2c13df773c5e2ac",
+      "bytes": 209234
+    },
+    "meshes/huawei_v34/r_mid_Link4.stl": {
+      "sha256": "ce410c74e5f1f1eb57354ce9949d8c18554048030d8d10ba5c6318a75c256911",
+      "bytes": 134184
+    },
+    "meshes/huawei_v34/r_mid_Link5.stl": {
+      "sha256": "28b8f5d94f8b3628381ef2919b70feb6d148879951560920b8352ffae2ae8b6f",
+      "bytes": 69684
+    },
+    "meshes/huawei_v34/r_ring_Link.stl": {
+      "sha256": "31f6ac0d0906006bc9ce0a134c0273236a22f4193ca40a678c15e9273f58196d",
+      "bytes": 88034
+    },
+    "meshes/huawei_v34/r_ring_Link2.stl": {
+      "sha256": "5eba90d5ea44ad0d7e2811deb78af648aaba5fc886196250ef1e1bcbf449f0a7",
+      "bytes": 255434
+    },
+    "meshes/huawei_v34/r_ring_Link3.stl": {
+      "sha256": "03de5aa9d57c8cdfee8765e437c54df1519ac60008dcc8295d246386826fd290",
+      "bytes": 167334
+    },
+    "meshes/huawei_v34/r_ring_Link4.stl": {
+      "sha256": "f4dd535c872d81e493516dcfa62627c8e6f2518d1c357c0fbe74a1d254f1d36a",
+      "bytes": 134184
+    },
+    "meshes/huawei_v34/r_thumb_Link.stl": {
+      "sha256": "9a95d1a97592bac9837707cafefb97431f2cd2cafe08588e58512ad23fb69fc1",
+      "bytes": 110084
+    },
+    "meshes/huawei_v34/r_thumb_Link1.stl": {
+      "sha256": "ea001f9df52563daf749c909a6c8bffff69302fc4916f10acfd1fec0fe24ffda",
+      "bytes": 70084
+    },
+    "meshes/huawei_v34/r_thumb_Link2.stl": {
+      "sha256": "36aa729e20f4701248e6c226940f1719909db555d769eb7e3eb80355321688ca",
+      "bytes": 255434
+    },
+    "meshes/huawei_v34/r_thumb_Link3.stl": {
+      "sha256": "ed3b445797a937445611dd2dff33a78a897cd48185c498b5a314c5dcfd389ff5",
+      "bytes": 251034
+    },
+    "meshes/huawei_v34/right_hand_base_link.stl": {
+      "sha256": "8758b64c75177c55cebaedc3b5d07bcf796c96a43d99e146ef1696d15a32b4e3",
+      "bytes": 347784
+    },
+    "urdf/huawei_v34_display.urdf": {
+      "sha256": "9db9be0741050d5c92b97e1b147be15a176fcf05884a88bd7b8dd8797fcf2827",
+      "bytes": 98634
+    },
+    "urdf/huawei_v34_kinematic.urdf": {
+      "sha256": "c2641a133a70b483916a6608f1d7c7620d088934ada8c7c0384e4466efc2e43c",
+      "bytes": 54488
+    }
+  },
+  "counts": {
+    "links": 90,
+    "source_mesh_names": 101,
+    "stored_meshes": 94,
+    "deduplicated_aliases": 7
+  },
+  "physical_validation": false,
+  "current_robot_calibration": false
+}

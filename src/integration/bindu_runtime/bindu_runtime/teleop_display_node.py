@@ -17,7 +17,7 @@ class TeleopDisplayNode(RuntimeNode):
     def __init__(self):
         super().__init__('teleop_display')
         self.declare_parameter('teleop_config', str(Path(get_package_share_directory('bindu_runtime'))/'config/teleop_v34.json'))
-        self.declare_parameter('model_root', str(Path(get_package_share_directory('bindu_kinematics'))/'models'))
+        self.declare_parameter('model_root', str(Path(get_package_share_directory('bindu_description'))/'urdf'))
         self.declare_parameter('tool_config', '')
         tool_config = self.get_parameter('tool_config').value
         self.tool_mode = bool(tool_config)

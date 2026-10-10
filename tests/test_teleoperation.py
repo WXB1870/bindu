@@ -20,7 +20,7 @@ POSE = tuple(np.eye(4).ravel())
 def configuration():
     profile = Profile.load(ROOT/'src/integration/bindu_runtime/config/huawei_v34_left_sim.json')
     return load_config(ROOT/'src/integration/bindu_runtime/config/teleop_v34.json', profile,
-                       ROOT/'src/capabilities/bindu_kinematics/models')
+                       ROOT/'src/hardware/bindu_description/urdf')
 
 
 class DisplayFeedbackTests(unittest.TestCase):
@@ -175,14 +175,14 @@ class VRContracts(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path=Path(directory)/'teleop.json'
             path.write_text(json.dumps(cfg))
-            loaded=load_config(path,profile,ROOT/'src/capabilities/bindu_kinematics/models')
+            loaded=load_config(path,profile,ROOT/'src/hardware/bindu_description/urdf')
             self.assertEqual((loaded['mapping_mode'],loaded['operator_yaw_rad']),('v34_anchor',0.))
             for mode,yaw in (('unknown',0.),('robot_base',True),('robot_base','90'),
                              ('robot_base',float('nan')),('robot_base',float('inf')),('v34_anchor',.1)):
                 with self.subTest(mode=mode,yaw=yaw):
                     path.write_text(json.dumps(dict(cfg,mapping_mode=mode,operator_yaw_rad=yaw)))
                     with self.assertRaises(ValueError):
-                        load_config(path,profile,ROOT/'src/capabilities/bindu_kinematics/models')
+                        load_config(path,profile,ROOT/'src/hardware/bindu_description/urdf')
 
     def test_base_mapping_reclutch_preserves_direction_and_anchors_at_feedback(self):
         self.cfg['mapping_mode']='robot_base'

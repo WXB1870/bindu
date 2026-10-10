@@ -1,0 +1,14 @@
+Huawei legacy v3.4 model and meshes
+
+Source URDF: v3.4/ik_solver/huawei-urdf-body_hand/huawei_urdf_wheel.urdf.
+Mesh bytes are from the user-provided old-computer backup Music/huawei_new/meshes.
+The historical originals are retained outside the active source tree.
+
+No license statement accompanied these source assets. Their license is
+NOASSERTION; Bindu's MIT and the G1 Apache-2.0 license do not cover them.
+
+The kinematic variant omits geometry. The display variant retains the source
+visual and collision geometry and uses package://bindu_description/ mesh URIs.
+Equal mesh bytes are stored once; source aliases and SHA256 fingerprints are
+recorded in huawei_v34.assets.json. These are historical reference assets, not
+validated physical parameters or calibration of the current robot.

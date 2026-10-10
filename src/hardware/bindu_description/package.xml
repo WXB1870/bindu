@@ -2,7 +2,7 @@
 <package format="3">
   <name>bindu_description</name>
   <version>0.1.0</version>
-  <description>Provisional G1 and user-supplied Snowbot descriptions for Bindu simulation.</description>
+  <description>Robot descriptions and shared meshes: provisional G1, Snowbot, and legacy Huawei v3.4.</description>
   <maintainer email="24S136111@stu.hit.edu.cn">xavier</maintainer>
   <license>Apache-2.0</license>
   <license>NOASSERTION</license>
