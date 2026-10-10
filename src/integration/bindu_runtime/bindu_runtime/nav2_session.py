@@ -202,14 +202,16 @@ class PreparedSession:
 class Nav2SessionNode(Node):
     def __init__(self):
         super().__init__('nav2_session')
-        for name,default in [('navigation_robot',''),('navigation_config',''),('identity_bridge',''),('output','/tmp/bindu-nav2-sessions')]:
+        for name,default in [('navigation_robot',''),('navigation_config',''),('identity_bridge',str(
+                Path(get_package_prefix('bindu_navigation'))/'lib/bindu_navigation/nav2_velocity_identity')),
+                ('output','/tmp/bindu-nav2-sessions')]:
             self.declare_parameter(name,default)
         self.robot=json.loads(Path(self.get_parameter('navigation_robot').value).read_text())
         self.config=NavigationConfig.load(self.get_parameter('navigation_config').value)
         if self.robot['frames']['map']!=self.config.frame or self.robot['frames']['base']!=self.config.base_frame:
             raise ValueError('NAVIGATION_FRAME_CONFIG_MISMATCH')
         self.identity_bridge=Path(self.get_parameter('identity_bridge').value)
-        if not self.identity_bridge.is_file():raise ValueError('BUILD_NAV2_IDENTITY_BRIDGE_FIRST')
+        if not self.identity_bridge.is_file():raise ValueError('NAV2_IDENTITY_BRIDGE_NOT_INSTALLED')
         self.output=Path(self.get_parameter('output').value);self.output.mkdir(parents=True,exist_ok=True)
         self.declare_parameter('require_scan',False)
         self.require_scan=self.get_parameter('require_scan').value;self.scan_stamp=None

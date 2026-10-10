@@ -4,10 +4,14 @@ from launch.actions import DeclareLaunchArgument
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
+from launch_ros.substitutions import FindPackagePrefix
+from launch.substitutions import PathJoinSubstitution
 
 
 def generate_launch_description():
-    args=[DeclareLaunchArgument(k) for k in ('namespace','profile','navigation_robot','navigation_config','output','run_id','identity_bridge')]
+    args=[DeclareLaunchArgument(k) for k in ('namespace','profile','navigation_robot','navigation_config','output','run_id')]
+    args.append(DeclareLaunchArgument('identity_bridge',default_value=PathJoinSubstitution([
+        FindPackagePrefix('bindu_navigation'),'lib','bindu_navigation','nav2_velocity_identity'])))
     args.append(DeclareLaunchArgument('require_scan',default_value='false'))
     args.append(DeclareLaunchArgument('recording_mode',default_value='compact'))
     common={k:LaunchConfiguration(k) for k in ('profile','run_id')}

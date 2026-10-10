@@ -2,7 +2,7 @@
 <package format="3">
   <name>bindu_bimanual_qp</name><version>0.1.0</version>
   <description>Optional robot-independent rigid-tool QP core.</description>
-  <maintainer email="maintainer@example.invalid">Bindu team</maintainer>
+  <maintainer email="wxb1423@gmail.com">xavier</maintainer>
   <license>Apache-2.0</license>
   <buildtool_depend>ament_cmake</buildtool_depend>
   <depend>pinocchio</depend><depend>proxsuite</depend>

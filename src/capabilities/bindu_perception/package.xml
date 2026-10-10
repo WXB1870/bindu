@@ -3,8 +3,8 @@
   <name>bindu_perception</name>
   <version>0.1.0</version>
   <description>Replaceable Bindu capability; currently a simulation fixture</description>
-  <maintainer email="maintainer@example.invalid">Bindu team</maintainer>
-  <license>Proprietary</license>
+  <maintainer email="wxb1423@gmail.com">xavier</maintainer>
+  <license>MIT</license>
   <buildtool_depend>ament_python</buildtool_depend>
 
   <export><build_type>ament_python</build_type></export>

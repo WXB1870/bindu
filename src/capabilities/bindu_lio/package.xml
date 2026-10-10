@@ -3,7 +3,7 @@
   <name>bindu_lio</name>
   <version>0.1.0</version>
   <description>ROS 2 adaptation of the supplied FAST-LIO estimator, isolated from execution.</description>
-  <maintainer email="maintainer@example.invalid">Bindu team</maintainer>
+  <maintainer email="wxb1423@gmail.com">xavier</maintainer>
   <license>GPL-2.0-only</license>
   <buildtool_depend>ament_cmake</buildtool_depend>
   <buildtool_depend>ament_cmake_python</buildtool_depend>

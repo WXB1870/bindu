@@ -3,8 +3,8 @@
   <name>bindu_execution</name>
   <version>0.1.0</version>
   <description>Ownership and motion execution</description>
-  <maintainer email="maintainer@example.invalid">Bindu team</maintainer>
-  <license>Proprietary</license>
+  <maintainer email="wxb1423@gmail.com">xavier</maintainer>
+  <license>MIT</license>
   <buildtool_depend>ament_python</buildtool_depend>
   <exec_depend>bindu_contracts</exec_depend>
   <build_depend>python3-dev</build_depend>

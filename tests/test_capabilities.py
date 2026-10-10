@@ -49,10 +49,12 @@ class DependencyBoundaries(unittest.TestCase):
             'bindu_recording': {'bindu_contracts'},
             'bindu_planning': {'bindu_contracts'},
             'bindu_vla': {'bindu_contracts'},
-            'bindu_navigation': {'bindu_contracts'},
+            # The separate native Nav2 process consumes shared wire types;
+            # the Python navigation core remains ROS-independent.
+            'bindu_navigation': {'bindu_contracts', 'bindu_interfaces'},
             'bindu_perception': {'bindu_contracts'},
             'bindu_teleoperation': {'bindu_contracts'},
-            'bindu_kinematics': {'bindu_contracts'},
+            'bindu_kinematics': {'bindu_contracts', 'bindu_bimanual_qp'},
         }
         for manifest in source.rglob('package.xml'):
             xml = ET.parse(manifest).getroot()

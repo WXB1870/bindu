@@ -1,6 +1,6 @@
 # VR/IK dependencies: CPython 3.10 (Humble) or 3.12 (Jazzy).
 # Humble container check: tools/validate_humble_teleop.sh; hardware still needs validation.
-# Keep isolated from the system ROS Python environment; see README.
+# Keep isolated from the system ROS Python environment; see 运行与验证.md.
 numpy==2.2.6; python_version < "3.11"
 numpy==2.3.5; python_version >= "3.11"
 pin==3.9.0

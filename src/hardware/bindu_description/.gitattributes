@@ -1,0 +1,4 @@
+# Preserve pinned asset bytes, including upstream line endings and EOF spacing.
+urdf/** -text
+meshes/** -text -diff
+usd/** -text whitespace=-blank-at-eof

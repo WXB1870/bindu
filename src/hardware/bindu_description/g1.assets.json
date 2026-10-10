@@ -1,0 +1,536 @@
+{
+  "schema_version": 1,
+  "asset_id": "g1_provisional",
+  "source": {
+    "repository": "GalaxyGeneralRobotics/galbot_one_golf_description",
+    "revision": "2d496b053f0d4e9e2688f59fac66022f447226be",
+    "urdf_sha256": "8e7722191495d8b96ca8d64cc5dff918fb9cd673c74b70728641856d757e3b48",
+    "archive_sha256": "efa6ff84b0393f680915a42f667f02afe8c0303d4edea9d4955dd6bdcf4b5fef",
+    "license": "Apache-2.0"
+  },
+  "models": {
+    "control": "urdf/g1_provisional.urdf",
+    "display": "urdf/g1_display.urdf"
+  },
+  "source_meshes": {
+    "meshes/visual/leg/leg1.glb": "meshes/g1/visual/leg/leg1.glb",
+    "meshes/collision/leg/leg1/link1_collision_01.stl": "meshes/g1/collision/leg/leg1/link1_collision_01.stl",
+    "meshes/collision/leg/leg1/link1_collision_02.stl": "meshes/g1/collision/leg/leg1/link1_collision_02.stl",
+    "meshes/collision/leg/leg1/link1_collision_03.stl": "meshes/g1/collision/leg/leg1/link1_collision_03.stl",
+    "meshes/visual/leg/leg2.glb": "meshes/g1/visual/leg/leg2.glb",
+    "meshes/collision/leg/lge2/link2_collision_01.stl": "meshes/g1/collision/leg/lge2/link2_collision_01.stl",
+    "meshes/collision/leg/lge2/link2_collision_02.stl": "meshes/g1/collision/leg/lge2/link2_collision_02.stl",
+    "meshes/visual/leg/leg3.glb": "meshes/g1/visual/leg/leg3.glb",
+    "meshes/collision/leg/leg3/link3_collision_01.stl": "meshes/g1/collision/leg/leg3/link3_collision_01.stl",
+    "meshes/collision/leg/leg3/link3_collision_02.stl": "meshes/g1/collision/leg/leg3/link3_collision_02.stl",
+    "meshes/visual/leg/leg4.glb": "meshes/g1/visual/leg/leg4.glb",
+    "meshes/collision/leg/leg4/link4_collision_01.stl": "meshes/g1/collision/leg/leg4/link4_collision_01.stl",
+    "meshes/visual/torso/torso.glb": "meshes/g1/visual/torso/torso.glb",
+    "meshes/collision/torso/torso_collision_01.stl": "meshes/g1/collision/torso/torso_collision_01.stl",
+    "meshes/collision/torso/torso_collision_02.stl": "meshes/g1/collision/torso/torso_collision_02.stl",
+    "meshes/visual/chassis/chassis.glb": "meshes/g1/visual/chassis/chassis.glb",
+    "meshes/collision/chassis/chassis_collision_01.stl": "meshes/g1/collision/chassis/chassis_collision_01.stl",
+    "meshes/visual/sensors/mid360/mid360.glb": "meshes/g1/visual/sensors/mid360/mid360.glb",
+    "meshes/collision/sensors/mid360/mid360_collision_01.stl": "meshes/g1/collision/sensors/mid360/mid360_collision_01.stl",
+    "meshes/collision/sensors/mid360/mid360_collision_02.stl": "meshes/g1/collision/sensors/mid360/mid360_collision_02.stl",
+    "meshes/visual/head/head_link2.glb": "meshes/g1/visual/head/head_link2.glb",
+    "meshes/collision/head/head_link2_collision_01.stl": "meshes/g1/collision/head/head_link2_collision_01.stl",
+    "meshes/visual/right_arm/link1_right.glb": "meshes/g1/visual/right_arm/link1_right.glb",
+    "meshes/collision/right_arm/link1/link1_right_collision_01.stl": "meshes/g1/collision/right_arm/link1/link1_right_collision_01.stl",
+    "meshes/collision/right_arm/link1/link1_right_collision_02.stl": "meshes/g1/collision/right_arm/link1/link1_right_collision_02.stl",
+    "meshes/collision/right_arm/link1/link1_right_collision_03.stl": "meshes/g1/collision/right_arm/link1/link1_right_collision_03.stl",
+    "meshes/collision/right_arm/link1/link1_right_collision_04.stl": "meshes/g1/collision/right_arm/link1/link1_right_collision_04.stl",
+    "meshes/visual/right_arm/link2_right.glb": "meshes/g1/visual/right_arm/link2_right.glb",
+    "meshes/collision/right_arm/link2/link2_right_collision_01.stl": "meshes/g1/collision/right_arm/link2/link2_right_collision_01.stl",
+    "meshes/collision/right_arm/link2/link2_right_collision_02.stl": "meshes/g1/collision/right_arm/link2/link2_right_collision_02.stl",
+    "meshes/collision/right_arm/link2/link2_right_collision_03.stl": "meshes/g1/collision/right_arm/link2/link2_right_collision_03.stl",
+    "meshes/visual/right_arm/link3_right.glb": "meshes/g1/visual/right_arm/link3_right.glb",
+    "meshes/collision/right_arm/link3/link3_right_collision_01.stl": "meshes/g1/collision/right_arm/link3/link3_right_collision_01.stl",
+    "meshes/collision/right_arm/link3/link3_right_collision_02.stl": "meshes/g1/collision/right_arm/link3/link3_right_collision_02.stl",
+    "meshes/collision/right_arm/link3/link3_right_collision_03.stl": "meshes/g1/collision/right_arm/link3/link3_right_collision_03.stl",
+    "meshes/visual/right_arm/link4_right.glb": "meshes/g1/visual/right_arm/link4_right.glb",
+    "meshes/collision/right_arm/link4/link4_right_collision_01.stl": "meshes/g1/collision/right_arm/link4/link4_right_collision_01.stl",
+    "meshes/collision/right_arm/link4/link4_right_collision_02.stl": "meshes/g1/collision/right_arm/link4/link4_right_collision_02.stl",
+    "meshes/visual/right_arm/link5_right.glb": "meshes/g1/visual/right_arm/link5_right.glb",
+    "meshes/collision/right_arm/link5/link5_right_collision_01.stl": "meshes/g1/collision/right_arm/link5/link5_right_collision_01.stl",
+    "meshes/collision/right_arm/link5/link5_right_collision_02.stl": "meshes/g1/collision/right_arm/link5/link5_right_collision_02.stl",
+    "meshes/collision/right_arm/link5/link5_right_collision_03.stl": "meshes/g1/collision/right_arm/link5/link5_right_collision_03.stl",
+    "meshes/collision/right_arm/link5/link5_right_collision_04.stl": "meshes/g1/collision/right_arm/link5/link5_right_collision_04.stl",
+    "meshes/collision/right_arm/link5/link5_right_collision_05.stl": "meshes/g1/collision/right_arm/link5/link5_right_collision_05.stl",
+    "meshes/collision/right_arm/link5/link5_right_collision_06.stl": "meshes/g1/collision/right_arm/link5/link5_right_collision_06.stl",
+    "meshes/visual/right_arm/link6_right.glb": "meshes/g1/visual/right_arm/link6_right.glb",
+    "meshes/collision/right_arm/link6/link6_right_collision_01.stl": "meshes/g1/collision/right_arm/link6/link6_right_collision_01.stl",
+    "meshes/visual/right_arm/link7_right.glb": "meshes/g1/visual/right_arm/link7_right.glb",
+    "meshes/collision/right_arm/link7/link7_right_collision_01.stl": "meshes/g1/collision/right_arm/link7/link7_right_collision_01.stl",
+    "meshes/collision/right_arm/link7/link7_right_collision_02.stl": "meshes/g1/collision/right_arm/link7/link7_right_collision_02.stl",
+    "meshes/collision/right_arm/link7/link7_right_collision_03.stl": "meshes/g1/collision/right_arm/link7/link7_right_collision_03.stl",
+    "meshes/collision/right_arm/link7/link7_right_collision_04.stl": "meshes/g1/collision/right_arm/link7/link7_right_collision_04.stl",
+    "meshes/visual/right_arm/d405_stand_right.glb": "meshes/g1/visual/right_arm/d405_stand_right.glb",
+    "meshes/visual/sensors/realsense/d405.glb": "meshes/g1/visual/sensors/realsense/d405.glb",
+    "meshes/collision/sensors/realsense/d405/d405_collision_01.stl": "meshes/g1/collision/sensors/realsense/d405/d405_collision_01.stl",
+    "meshes/visual/left_arm/link1_left.glb": "meshes/g1/visual/left_arm/link1_left.glb",
+    "meshes/collision/left_arm/link1/link1_left_collision_01.stl": "meshes/g1/collision/left_arm/link1/link1_left_collision_01.stl",
+    "meshes/collision/left_arm/link1/link1_left_collision_02.stl": "meshes/g1/collision/left_arm/link1/link1_left_collision_02.stl",
+    "meshes/collision/left_arm/link1/link1_left_collision_03.stl": "meshes/g1/collision/left_arm/link1/link1_left_collision_03.stl",
+    "meshes/collision/left_arm/link1/link1_left_collision_04.stl": "meshes/g1/collision/left_arm/link1/link1_left_collision_04.stl",
+    "meshes/visual/left_arm/link2_left.glb": "meshes/g1/visual/left_arm/link2_left.glb",
+    "meshes/collision/left_arm/link2/link2_left_collision_01.stl": "meshes/g1/collision/left_arm/link2/link2_left_collision_01.stl",
+    "meshes/collision/left_arm/link2/link2_left_collision_02.stl": "meshes/g1/collision/left_arm/link2/link2_left_collision_02.stl",
+    "meshes/collision/left_arm/link2/link2_left_collision_03.stl": "meshes/g1/collision/left_arm/link2/link2_left_collision_03.stl",
+    "meshes/visual/left_arm/link3_left.glb": "meshes/g1/visual/left_arm/link3_left.glb",
+    "meshes/collision/left_arm/link3/link3_left_collision_01.stl": "meshes/g1/collision/left_arm/link3/link3_left_collision_01.stl",
+    "meshes/collision/left_arm/link3/link3_left_collision_02.stl": "meshes/g1/collision/left_arm/link3/link3_left_collision_02.stl",
+    "meshes/collision/left_arm/link3/link3_left_collision_03.stl": "meshes/g1/collision/left_arm/link3/link3_left_collision_03.stl",
+    "meshes/visual/left_arm/link4_left.glb": "meshes/g1/visual/left_arm/link4_left.glb",
+    "meshes/collision/left_arm/link4/link4_left_collision_01.stl": "meshes/g1/collision/left_arm/link4/link4_left_collision_01.stl",
+    "meshes/collision/left_arm/link4/link4_left_collision_02.stl": "meshes/g1/collision/left_arm/link4/link4_left_collision_02.stl",
+    "meshes/visual/left_arm/link5_left.glb": "meshes/g1/visual/right_arm/link5_right.glb",
+    "meshes/collision/left_arm/link5/link5_left_collision_01.stl": "meshes/g1/collision/right_arm/link5/link5_right_collision_01.stl",
+    "meshes/collision/left_arm/link5/link5_left_collision_02.stl": "meshes/g1/collision/right_arm/link5/link5_right_collision_02.stl",
+    "meshes/collision/left_arm/link5/link5_left_collision_03.stl": "meshes/g1/collision/right_arm/link5/link5_right_collision_03.stl",
+    "meshes/collision/left_arm/link5/link5_left_collision_04.stl": "meshes/g1/collision/right_arm/link5/link5_right_collision_04.stl",
+    "meshes/collision/left_arm/link5/link5_left_collision_05.stl": "meshes/g1/collision/right_arm/link5/link5_right_collision_05.stl",
+    "meshes/collision/left_arm/link5/link5_left_collision_06.stl": "meshes/g1/collision/right_arm/link5/link5_right_collision_06.stl",
+    "meshes/visual/left_arm/link6_left.glb": "meshes/g1/visual/left_arm/link6_left.glb",
+    "meshes/collision/left_arm/link6/link6_left_collision_01.stl": "meshes/g1/collision/left_arm/link6/link6_left_collision_01.stl",
+    "meshes/visual/left_arm/link7_left.glb": "meshes/g1/visual/left_arm/link7_left.glb",
+    "meshes/collision/left_arm/link7/link7_left_collision_01.stl": "meshes/g1/collision/left_arm/link7/link7_left_collision_01.stl",
+    "meshes/collision/left_arm/link7/link7_left_collision_02.stl": "meshes/g1/collision/left_arm/link7/link7_left_collision_02.stl",
+    "meshes/collision/left_arm/link7/link7_left_collision_03.stl": "meshes/g1/collision/left_arm/link7/link7_left_collision_03.stl",
+    "meshes/collision/left_arm/link7/link7_left_collision_04.stl": "meshes/g1/collision/left_arm/link7/link7_left_collision_04.stl",
+    "meshes/visual/left_arm/d405_stand_left.glb": "meshes/g1/visual/right_arm/d405_stand_right.glb"
+  },
+  "source_usd": "usd/g1",
+  "files": {
+    "meshes/g1/collision/chassis/chassis_collision_01.stl": {
+      "sha256": "93c585ae47c27aab11de5f8824abb0464621b65b10d1686cc3c25461d97370a7",
+      "bytes": 6284
+    },
+    "meshes/g1/collision/head/head_link2_collision_01.stl": {
+      "sha256": "5dd61f6827fa1b9f4ab6c6304700613c4dbaac9d55bee9f545c4fb92b89f30e6",
+      "bytes": 6284
+    },
+    "meshes/g1/collision/left_arm/link1/link1_left_collision_01.stl": {
+      "sha256": "a0147abc48f282d160e4ded52e2806b5fbd9f24d72d8f0a8b780c2d762910648",
+      "bytes": 2284
+    },
+    "meshes/g1/collision/left_arm/link1/link1_left_collision_02.stl": {
+      "sha256": "be966693fcbdc3488199dacfdfc0905abf06f48a4433a751f3a94da079d1fadf",
+      "bytes": 3484
+    },
+    "meshes/g1/collision/left_arm/link1/link1_left_collision_03.stl": {
+      "sha256": "b63625c4ce6af367c22f15ebde73a86389fe6202f2fd8a858c40cd5b579f2a03",
+      "bytes": 1684
+    },
+    "meshes/g1/collision/left_arm/link1/link1_left_collision_04.stl": {
+      "sha256": "71928dd132c16df25a1b36ab2b506fb78cca4eabeac659c3172fe696179f4855",
+      "bytes": 2284
+    },
+    "meshes/g1/collision/left_arm/link2/link2_left_collision_01.stl": {
+      "sha256": "aff4088907496da4ee4b82515afdc8752658d8a7b508042a7935cad1535d2627",
+      "bytes": 4284
+    },
+    "meshes/g1/collision/left_arm/link2/link2_left_collision_02.stl": {
+      "sha256": "dd909ea59afd9aa8473e16ced542c6be61ae4cf9502691763cd67bd1996d87c9",
+      "bytes": 2284
+    },
+    "meshes/g1/collision/left_arm/link2/link2_left_collision_03.stl": {
+      "sha256": "f77d69802234d5160a49fc8ee08133351d7f78587d471fd0c74c1f9fad64fb6b",
+      "bytes": 3684
+    },
+    "meshes/g1/collision/left_arm/link3/link3_left_collision_01.stl": {
+      "sha256": "ea23d1e51277e34faf3642e5c766324c926078435e5b048a9967017445f50d36",
+      "bytes": 3484
+    },
+    "meshes/g1/collision/left_arm/link3/link3_left_collision_02.stl": {
+      "sha256": "b21a0eb34e20276039285f87cb3c4c1265f3b6e2a30658bbd8a374491c78afce",
+      "bytes": 2284
+    },
+    "meshes/g1/collision/left_arm/link3/link3_left_collision_03.stl": {
+      "sha256": "9bd7ff2c8b6cebee89a70351a4a78ad5e12fd893c41503ddc38f919ddc920c23",
+      "bytes": 4484
+    },
+    "meshes/g1/collision/left_arm/link4/link4_left_collision_01.stl": {
+      "sha256": "fedd3cee27b99c94e43f4a94dbc9efa9f4ba19a12bb0f6036164d488de32fcaa",
+      "bytes": 4884
+    },
+    "meshes/g1/collision/left_arm/link4/link4_left_collision_02.stl": {
+      "sha256": "f236819f000c708b08ca5d33f5a206967f1b04378c610507917039a1cd7bc839",
+      "bytes": 4684
+    },
+    "meshes/g1/collision/left_arm/link6/link6_left_collision_01.stl": {
+      "sha256": "fa40d83a23e6bfecd88818eaddab1f9803f30614c824e397684e9b850ff00d79",
+      "bytes": 6284
+    },
+    "meshes/g1/collision/left_arm/link7/link7_left_collision_01.stl": {
+      "sha256": "c7495f94ce38aecda93660b9cce9d37595c297cc420aeff54d1a49d1b56bc930",
+      "bytes": 2284
+    },
+    "meshes/g1/collision/left_arm/link7/link7_left_collision_02.stl": {
+      "sha256": "514a080a5e57a9c1fc742c39912adfac8aa4f3036a01f3af62e2183259be4f26",
+      "bytes": 2284
+    },
+    "meshes/g1/collision/left_arm/link7/link7_left_collision_03.stl": {
+      "sha256": "357cb533b1fc4e749ef4979a4fb8e422bf44daa9109981a0943162a208d02489",
+      "bytes": 3484
+    },
+    "meshes/g1/collision/left_arm/link7/link7_left_collision_04.stl": {
+      "sha256": "83c45d8ce081dd611534b1074c06f3b703837f06b2adc5885fd60751bfd65a3a",
+      "bytes": 1084
+    },
+    "meshes/g1/collision/leg/leg1/link1_collision_01.stl": {
+      "sha256": "636d888e37c71cc09c2061d1a42016fab8b21362a216dc4f905c2b298d2046e8",
+      "bytes": 2284
+    },
+    "meshes/g1/collision/leg/leg1/link1_collision_02.stl": {
+      "sha256": "25a6d596f0f5c3f2bef27f06be71396af0a19681c31b8fe557cf276751d16b3a",
+      "bytes": 2284
+    },
+    "meshes/g1/collision/leg/leg1/link1_collision_03.stl": {
+      "sha256": "303b8c7a4b5a66f95e7b8aba0a7e929ccb1dc68d0b9e350f544c0d6500f94a2b",
+      "bytes": 684
+    },
+    "meshes/g1/collision/leg/leg3/link3_collision_01.stl": {
+      "sha256": "c0649a36e40ceca21ca975b3777ac38ef3abc9d771fcc55351d644843c702db3",
+      "bytes": 2284
+    },
+    "meshes/g1/collision/leg/leg3/link3_collision_02.stl": {
+      "sha256": "aedb109b5cf29f25a93542b3d3ab7155270d7d0a9f2d4002446d6597445d62aa",
+      "bytes": 2284
+    },
+    "meshes/g1/collision/leg/leg4/link4_collision_01.stl": {
+      "sha256": "daf09f020e1c5f29ecf18cad8f1b212cf3149c48321b74f32de537defc849ce5",
+      "bytes": 2284
+    },
+    "meshes/g1/collision/leg/lge2/link2_collision_01.stl": {
+      "sha256": "3d04e33413d0a86d6657f826ec3c68a45e0d366c831630c047f5688640e39cbc",
+      "bytes": 6884
+    },
+    "meshes/g1/collision/leg/lge2/link2_collision_02.stl": {
+      "sha256": "65bebea81725abddfcc1c5c38b7bcb908e14690829c9984a6e64394c6f4bfea1",
+      "bytes": 6884
+    },
+    "meshes/g1/collision/right_arm/link1/link1_right_collision_01.stl": {
+      "sha256": "728aae34f7e9b5fe1873adbe688033029eb7a7fcc018a50d147ec589ecc127a5",
+      "bytes": 2284
+    },
+    "meshes/g1/collision/right_arm/link1/link1_right_collision_02.stl": {
+      "sha256": "5c5a7b6bff6421a049a80be96f3b8c407e7859d8ab0430687c657c700a9780e1",
+      "bytes": 3484
+    },
+    "meshes/g1/collision/right_arm/link1/link1_right_collision_03.stl": {
+      "sha256": "4cfc6b724803e660920721906eabc030e078ce8c359f59e8f8053538c7228572",
+      "bytes": 1684
+    },
+    "meshes/g1/collision/right_arm/link1/link1_right_collision_04.stl": {
+      "sha256": "a454bcee3b0918a1a4798eb757078d0fca8dd7a78a260da53b5aa1b2800b7fe9",
+      "bytes": 2284
+    },
+    "meshes/g1/collision/right_arm/link2/link2_right_collision_01.stl": {
+      "sha256": "40759a13704de747c7ea93e1c58beb4acdb0424d9480e0e2bd7b466bf0ca6089",
+      "bytes": 4284
+    },
+    "meshes/g1/collision/right_arm/link2/link2_right_collision_02.stl": {
+      "sha256": "163011352a93b97cbfb15bc5145d10d93528e2d7f82ddba6ee37eebb41ad58a5",
+      "bytes": 2284
+    },
+    "meshes/g1/collision/right_arm/link2/link2_right_collision_03.stl": {
+      "sha256": "4e4d5a91154cf9f236ca0d4b6ea7a0b580235925ecf1e52d5fbc14bc42ea5247",
+      "bytes": 3684
+    },
+    "meshes/g1/collision/right_arm/link3/link3_right_collision_01.stl": {
+      "sha256": "de73bbf8cb8830b9731fe828351c680380394c703050812ea25d6fe963bb0424",
+      "bytes": 3484
+    },
+    "meshes/g1/collision/right_arm/link3/link3_right_collision_02.stl": {
+      "sha256": "5df7b192ac2319b5a63012c42fa748c8434ac94969835ed3af12cf66910190bf",
+      "bytes": 2284
+    },
+    "meshes/g1/collision/right_arm/link3/link3_right_collision_03.stl": {
+      "sha256": "30bd6700fbedaa76b3b7b9b3cde084d6c81fb257ce37beca36c68fc3ee205c4b",
+      "bytes": 4484
+    },
+    "meshes/g1/collision/right_arm/link4/link4_right_collision_01.stl": {
+      "sha256": "033e75eb8ee2279e69f9cbbb147321a11229149847cab2f3846ec60d09d551dc",
+      "bytes": 4884
+    },
+    "meshes/g1/collision/right_arm/link4/link4_right_collision_02.stl": {
+      "sha256": "abbdf05e9288956d970822b565b0001ae3c3eae0cb8c89c757fc0088f70127f5",
+      "bytes": 4684
+    },
+    "meshes/g1/collision/right_arm/link5/link5_right_collision_01.stl": {
+      "sha256": "b291e63450627a190ced4d00cee0405d0429b37246dbcb67f8ff9c52a8ae58bb",
+      "bytes": 2684
+    },
+    "meshes/g1/collision/right_arm/link5/link5_right_collision_02.stl": {
+      "sha256": "b392a0d2a3830812cf2120b0072cda8d9dbf4a588e02b648931da1294807763b",
+      "bytes": 3484
+    },
+    "meshes/g1/collision/right_arm/link5/link5_right_collision_03.stl": {
+      "sha256": "43535858b795d180efb904c4dd0f1bcdc95fdf8e59a5b60232307aea41da2fe1",
+      "bytes": 3484
+    },
+    "meshes/g1/collision/right_arm/link5/link5_right_collision_04.stl": {
+      "sha256": "9fe071cceee1f94090c43538cb50ef5d01e036c48d3b131a256072567dd4a7aa",
+      "bytes": 3284
+    },
+    "meshes/g1/collision/right_arm/link5/link5_right_collision_05.stl": {
+      "sha256": "2e6d53d42e3a76e8a95e5765ce639876986dc14d6087883a8b5ce7c3cd8e08e3",
+      "bytes": 684
+    },
+    "meshes/g1/collision/right_arm/link5/link5_right_collision_06.stl": {
+      "sha256": "d289ee97e800d3ed396c057301f9fb073ea35dc602c1dbd8a28c9f16f2dbeee0",
+      "bytes": 684
+    },
+    "meshes/g1/collision/right_arm/link6/link6_right_collision_01.stl": {
+      "sha256": "92c202c2316a46fcd25ebbaf403a88438dddb5558bc5f04c9cccb4763ac88aa5",
+      "bytes": 6284
+    },
+    "meshes/g1/collision/right_arm/link7/link7_right_collision_01.stl": {
+      "sha256": "16590b40552888dca51ceddd68e8fc5d05ec0541c76149741eb57218c393aba5",
+      "bytes": 2284
+    },
+    "meshes/g1/collision/right_arm/link7/link7_right_collision_02.stl": {
+      "sha256": "75ac5f9c8ec09fd1362a3f80790c1e1a4c2b54d9356a4ad09794660307723624",
+      "bytes": 2284
+    },
+    "meshes/g1/collision/right_arm/link7/link7_right_collision_03.stl": {
+      "sha256": "15773d970183238d937bf60f5fe400134ad842c508ae57e51d00e2704bb7a12f",
+      "bytes": 3484
+    },
+    "meshes/g1/collision/right_arm/link7/link7_right_collision_04.stl": {
+      "sha256": "155e4951a307ed10795b3407df9fc61830c063ff43b38ed94c4ed81ca5ef63bf",
+      "bytes": 1084
+    },
+    "meshes/g1/collision/sensors/mid360/mid360_collision_01.stl": {
+      "sha256": "53b20d2c60c80abf65639b3cc0fbeebbd9daabebb756ba713b63445b8c904977",
+      "bytes": 2284
+    },
+    "meshes/g1/collision/sensors/mid360/mid360_collision_02.stl": {
+      "sha256": "acc94102b6edc30198d4ddb8aff1ebf12a8f34af8238048b9636e963db9cabd9",
+      "bytes": 2784
+    },
+    "meshes/g1/collision/sensors/realsense/d405/d405_collision_01.stl": {
+      "sha256": "05a3b23f9def0b1ece08d5b307214637c00a9b185ccfb1e5ba9dcbb5632dd995",
+      "bytes": 6284
+    },
+    "meshes/g1/collision/torso/torso_collision_01.stl": {
+      "sha256": "c008262a03cf71fc485fca13477dc9de9ebc97af72cddfce7f8a04439a159c62",
+      "bytes": 6284
+    },
+    "meshes/g1/collision/torso/torso_collision_02.stl": {
+      "sha256": "281d0ca732ddb6e1882b5aea0f4e2186dfeb4458c10afb10665e35db7fc65f56",
+      "bytes": 1484
+    },
+    "meshes/g1/visual/chassis/chassis.glb": {
+      "sha256": "eb3718351f047124ebb4a0626d2302d5ca700391f3b0dec173c0674f63431ddb",
+      "bytes": 1304228
+    },
+    "meshes/g1/visual/head/head_link2.glb": {
+      "sha256": "55134598690a92ba500bec92e79412710a8c8de4ff748e0460e89d7a2a23116c",
+      "bytes": 311868
+    },
+    "meshes/g1/visual/left_arm/link1_left.glb": {
+      "sha256": "480a03dee1f180ce749806093cf21b2ccb7e4437afa2dfd41780d9e1c530acb8",
+      "bytes": 129944
+    },
+    "meshes/g1/visual/left_arm/link2_left.glb": {
+      "sha256": "6a1b4f0142163328298e156ba4d8616fb1530f4a743268a0dad0c523c3f90d68",
+      "bytes": 357380
+    },
+    "meshes/g1/visual/left_arm/link3_left.glb": {
+      "sha256": "be7e92d5b1b01f8e18ed8dbd854b8b0b02cea583256846171996cac81d118a43",
+      "bytes": 145552
+    },
+    "meshes/g1/visual/left_arm/link4_left.glb": {
+      "sha256": "d09f69c4d34f7f9a32b2d990660eabe4f2b2bed4f448f21efb9ea7684816a26f",
+      "bytes": 143824
+    },
+    "meshes/g1/visual/left_arm/link6_left.glb": {
+      "sha256": "682ed105a3d8dd62d25562f5798a75cbb53804d818b593a14585cb81b344c871",
+      "bytes": 54116
+    },
+    "meshes/g1/visual/left_arm/link7_left.glb": {
+      "sha256": "da8e3df204e1f609d59ee37564302242ce9ea8bcf7b7cc1284d8d6249a48c687",
+      "bytes": 419364
+    },
+    "meshes/g1/visual/leg/leg1.glb": {
+      "sha256": "f5f2e9d43878966c94f7ed4e932d57019eb29e0e2cf112f816b5964538d64ec0",
+      "bytes": 92180
+    },
+    "meshes/g1/visual/leg/leg2.glb": {
+      "sha256": "d16ddc2f0b1a6662ef1b8627836ee7331c638d743e9b064834c712cd697b7dac",
+      "bytes": 255500
+    },
+    "meshes/g1/visual/leg/leg3.glb": {
+      "sha256": "cccd57820fc8355c6966ef460a18fda29ec3ed78eaf02e19b86118aa463af612",
+      "bytes": 69264
+    },
+    "meshes/g1/visual/leg/leg4.glb": {
+      "sha256": "e939c3c3b272f04fe8b5103ff2b4eafaca412667936beea266ce883cd8176786",
+      "bytes": 25192
+    },
+    "meshes/g1/visual/right_arm/d405_stand_right.glb": {
+      "sha256": "40c7d12330b323cedca3faf30b1732a0fc08a5fa1686c33f8bca67fecc11bdfe",
+      "bytes": 55744
+    },
+    "meshes/g1/visual/right_arm/link1_right.glb": {
+      "sha256": "f4908722471eea732f5db757387bec900353f1cdf94f063ca12c7950beb9ff61",
+      "bytes": 129496
+    },
+    "meshes/g1/visual/right_arm/link2_right.glb": {
+      "sha256": "c687081206e9d5fa9bd3b6394b1f6d69a2a418d552f660f430a690aee1fd1aea",
+      "bytes": 26480
+    },
+    "meshes/g1/visual/right_arm/link3_right.glb": {
+      "sha256": "6db98af5b33180393d4264f78867ac9d4b8b82a20563ef77cf869dc3ac8f6ed4",
+      "bytes": 145104
+    },
+    "meshes/g1/visual/right_arm/link4_right.glb": {
+      "sha256": "262715d44cb6d1c5407d57e7d652052daa5647427d51b01ca53f8393f924b776",
+      "bytes": 143012
+    },
+    "meshes/g1/visual/right_arm/link5_right.glb": {
+      "sha256": "3998786e23a13cf990c76748ed6d06687087fa81e57bfbf1dcd2ea0c54fb4982",
+      "bytes": 446596
+    },
+    "meshes/g1/visual/right_arm/link6_right.glb": {
+      "sha256": "153c11b2076fd403af668490f295533c03c8263ceb9d01a06b0c75e114a13b79",
+      "bytes": 53668
+    },
+    "meshes/g1/visual/right_arm/link7_right.glb": {
+      "sha256": "7a304d7d37ae110fd459793c3cd6f6d1eaf80f5c6f5325b5f2fccd591f9d8fad",
+      "bytes": 418204
+    },
+    "meshes/g1/visual/sensors/mid360/mid360.glb": {
+      "sha256": "b957bd7e5ee99e5dfe7a75d065d7f291d9b28cc03d94ac35907540a4a47d2d21",
+      "bytes": 140332
+    },
+    "meshes/g1/visual/sensors/realsense/d405.glb": {
+      "sha256": "2c5d0b7a8887ce46bd0ab1ceb957eacdb8c2742900fc2f41ca513930a49eaa5b",
+      "bytes": 200604
+    },
+    "meshes/g1/visual/torso/torso.glb": {
+      "sha256": "e01f3e9d63e98ca3cb68e01b3c70447b1f6fb546f7d4fadbfe511ff1ceb2b452",
+      "bytes": 2088112
+    },
+    "urdf/g1_display.urdf": {
+      "sha256": "931f4a306fa610b7dce107560a4f8134dce09a18403d4f96e441ab5f2e59f401",
+      "bytes": 35576
+    },
+    "urdf/g1_provisional.urdf": {
+      "sha256": "b2b8017596b336128c084274accf7a0daa62c0e0c24df968e28abcc09ee52345",
+      "bytes": 20002
+    },
+    "usd/g1/Textures/chassis_texture0.png": {
+      "sha256": "d9ea56bd0cf3f65ff752b2a36b93bd41fda2b6f1558d492cc9768bdbdf0e2053",
+      "bytes": 156188
+    },
+    "usd/g1/Textures/chassis_texture1.png": {
+      "sha256": "14490ec312e8dfac273b615e2a19b360f3e6b48c1ccc59181adf48da20cd6279",
+      "bytes": 129476
+    },
+    "usd/g1/Textures/chassis_texture2.jpg": {
+      "sha256": "32e4fdaa3dfbaba79c0572a5fd32a1540ff47f024950d61467756759f591839a",
+      "bytes": 542554
+    },
+    "usd/g1/Textures/d405_texture0.jpg": {
+      "sha256": "aaf5ba2e99221020b0d4c5a2102a5f380698a07a3539afefa0a0d8eb06b20d48",
+      "bytes": 52667
+    },
+    "usd/g1/Textures/d405_texture1.jpg": {
+      "sha256": "4b50abc98ca2c6cc5026ce8bb4436c3afebfa15a8d05131c67521e4208948e5d",
+      "bytes": 54306
+    },
+    "usd/g1/Textures/d405_texture2.jpg": {
+      "sha256": "3a30e89859cad78fd4fe3e25c8957a7e1ae465bf487b88afb8dc513224eeea24",
+      "bytes": 67505
+    },
+    "usd/g1/Textures/leg2_texture0.png": {
+      "sha256": "27e50e7d971018755d24896b8d4fcd0b33974aa60e50d41d6565759e8194da5a",
+      "bytes": 76099
+    },
+    "usd/g1/Textures/leg2_texture1.png": {
+      "sha256": "87ca6a5712aeef9866a6c93266f67f2081c66ffc09512578a15b98ddffcad1b9",
+      "bytes": 44996
+    },
+    "usd/g1/Textures/link2_texture0.jpg": {
+      "sha256": "5427a9562d1f2a4e94d9d73d0294572ab5b12e59772398dbff06587efc495030",
+      "bytes": 175361
+    },
+    "usd/g1/Textures/link2_texture1.jpg": {
+      "sha256": "292e2fa2fa5c9f72f1be538bdbf65ef93976f682c8eb9ddc7a66bf98fa0fb716",
+      "bytes": 155217
+    },
+    "usd/g1/Textures/mid360_texture0.jpg": {
+      "sha256": "0ca14c9631fc36bd94c8190f5dfe441672eeecf47bc2e4e565f1c26be380ef02",
+      "bytes": 32236
+    },
+    "usd/g1/Textures/mid360_texture1.jpg": {
+      "sha256": "e16cd121d3f3c746002cefd7a1a1020b3fd1a8187bee5cc4328f5dff318d57ee",
+      "bytes": 17064
+    },
+    "usd/g1/Textures/mid360_texture2.jpg": {
+      "sha256": "190d153a7169b292f6052763177b18ec81666c6dc5d6cf4ee01a840cd8ccf722",
+      "bytes": 64366
+    },
+    "usd/g1/Textures/omniwheel_10_texture0.jpg": {
+      "sha256": "764ec6cbc2915a185f769fbf5bea301619b0a66ea72a8c72d7e1acaf86bf0d5c",
+      "bytes": 28351
+    },
+    "usd/g1/Textures/omniwheel_10_texture1.jpg": {
+      "sha256": "9241e16d57db30a9426e24be915c2f71ca38fff53cd1b9e39f14aff025efa7bf",
+      "bytes": 70477
+    },
+    "usd/g1/Textures/omniwheel_10_texture2.jpg": {
+      "sha256": "29a17ba13ddd46cd4f6f77f81177215154631b9e58f4d6db2124d5789d3a3cd7",
+      "bytes": 327577
+    },
+    "usd/g1/Textures/pbr.mdl": {
+      "sha256": "eeed10b53c18d789f94a24a3a6b996c49668ae2d5b6a909bae3420f2beb16fc8",
+      "bytes": 42240
+    },
+    "usd/g1/Textures/torso_texture0.jpg": {
+      "sha256": "0c416f4683e1712092e77ec55755e6ed1fbcfab6ed930290c8ef4eb1b213b842",
+      "bytes": 556869
+    },
+    "usd/g1/Textures/torso_texture1.jpg": {
+      "sha256": "3648c243ea26b3f1a592807ecb3c5e0599237a960ca04fb9319f1a1e5bcb32af",
+      "bytes": 529459
+    },
+    "usd/g1/Textures/torso_texture2.jpg": {
+      "sha256": "dc8986c355c8a365a74527594a7c54f5d661eca07e9731c29438110b211aef1a",
+      "bytes": 728210
+    },
+    "usd/g1/payloads/base.usda": {
+      "sha256": "4368ae596ce48ce8b40d88c5d3acbe99dfcb91e63223707f701f034c71b4e100",
+      "bytes": 155958
+    },
+    "usd/g1/payloads/geometries.usd": {
+      "sha256": "9b27cec215224033c055c896d2bb4bf2e7c83abbbc689b99a1075dcaca536d46",
+      "bytes": 6126521
+    },
+    "usd/g1/payloads/instances.usda": {
+      "sha256": "51ee22994b8f655c8c02101ded61b0d9429f54b27336b255a5e156dc3114d5bd",
+      "bytes": 68312
+    },
+    "usd/g1/payloads/materials.usda": {
+      "sha256": "90551b74092b24000ce063303e0d6310bc70c4891ad8b63dd677c3c236842f25",
+      "bytes": 134472
+    },
+    "usd/g1/payloads/right_finger_collisions.usda": {
+      "sha256": "a64b5d7239794a8314b54fddd2396ee56ba11ea740ee102ec7629c4279841157",
+      "bytes": 16970
+    },
+    "usd/g1/payloads/robot.usda": {
+      "sha256": "2ae99198e039829dd08106d2d758fbdf86391caefb247c019f3089878605889d",
+      "bytes": 70447
+    }
+  },
+  "counts": {
+    "meshes": 78,
+    "mesh_references": 86,
+    "source_usd_files": 26
+  },
+  "current_robot_calibration": false
+}

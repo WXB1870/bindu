@@ -1,4 +1,6 @@
 # Optional 3D scan-to-map localization process; keep isolated from VR/IK.
 open3d==0.19.0
-numpy==2.3.5
-scipy==1.16.3
+numpy==2.2.6; python_version < "3.11"
+numpy==2.3.5; python_version >= "3.11"
+scipy==1.15.3; python_version < "3.11"
+scipy==1.16.3; python_version >= "3.11"

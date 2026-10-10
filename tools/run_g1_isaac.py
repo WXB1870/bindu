@@ -13,11 +13,12 @@ from pathlib import Path
 import time
 import uuid
 import xml.etree.ElementTree as ET
+from prepare_g1_physics import validate_physics_model
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def build_scene(model, cfg, room=None):
+def build_scene(model, cfg, room=None, description=None):
     """Keep imported meshes/inertia; author joints explicitly from the pinned URDF.
 
     The local 6.0 RC importer produced split articulation roots and world-parent
@@ -32,13 +33,15 @@ def build_scene(model, cfg, room=None):
     from isaacsim.core.utils.viewports import set_camera_view
     usd = model / 'usd/g1_physics/g1_physics.usda'
     import_record = model / 'usd/import.json'
-    model_hash = hashlib.sha256((model/'g1_physics.urdf').read_bytes()).hexdigest()
-    if not usd.exists() or not import_record.exists() or json.loads(import_record.read_text()).get('urdf_sha256') != model_hash:
+    record=validate_physics_model(model,description=description)
+    model_hash=hashlib.sha256((model/'g1_physics.urdf').read_bytes()).hexdigest()
+    source_fingerprint=hashlib.sha256((model/'provenance.json').read_bytes()).hexdigest()
+    if not usd.exists() or not import_record.exists() or json.loads(import_record.read_text()).get('source_fingerprint')!=source_fingerprint:
         enable_extension('isaacsim.asset.importer.urdf')
         from isaacsim.asset.importer.urdf import URDFImporter, URDFImporterConfig
         usd = Path(URDFImporter(URDFImporterConfig(urdf_path=str(model/'g1_physics.urdf'),
             usd_path=str(model/'usd'), allow_self_collision=False)).import_urdf())
-        import_record.write_text(json.dumps({'urdf_sha256': model_hash})+'\n')
+        import_record.write_text(json.dumps({'urdf_sha256':model_hash,'source_fingerprint':source_fingerprint})+'\n')
     world = World(stage_units_in_meters=1., physics_dt=cfg['physics_dt'], rendering_dt=cfg['physics_dt'])
     world.scene.add_default_ground_plane()
     if room:
@@ -55,7 +58,7 @@ def build_scene(model, cfg, room=None):
     links = {prim.GetName(): prim for prim in Usd.PrimRange(robot) if prim.GetName() in names}
     if set(links) != names:
         raise RuntimeError('PHYSICS_LINK_LAYOUT_MISMATCH')
-    visual_source = model / 'upstream_usd/payloads/base.usda'
+    visual_source = Path(record['source_usd'])/'payloads/base.usda'
     source_stage = Usd.Stage.Open(str(visual_source))
     source_links = {p.GetName(): p for p in source_stage.Traverse() if p.GetName() in names
                     and '/visuals/' not in str(p.GetPath()) and '/collisions/' not in str(p.GetPath())}
@@ -176,6 +179,7 @@ def build_scene(model, cfg, room=None):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--model', type=Path, default=ROOT/'artifacts/g1-physics-model')
+    parser.add_argument('--description',type=Path,default=ROOT/'src/hardware/bindu_description',help='Shared asset directory used to prepare the model')
     parser.add_argument('--namespace', default='/bindu_g1_physics')
     parser.add_argument('--navigation-scene', type=Path, help='Optional robot-independent room JSON')
     parser.add_argument('--navigation-robot', type=Path, help='Required with scene: frames, footprint and laser extrinsics')
@@ -189,6 +193,7 @@ def main():
     if not math.isfinite(args.command_delay) or not 0 <= args.command_delay <= 1:
         parser.error('--command-delay must be finite and between 0 and 1 seconds')
     args.model = args.model.resolve(); args.output.mkdir(parents=True, exist_ok=True)
+    validate_physics_model(args.model,description=args.description)
     cfg = json.loads((args.model/'physics.json').read_text())
     from isaacsim import SimulationApp
     # Use Kit's supported default: the local RC crashes during full extension
@@ -209,7 +214,7 @@ def main():
         nav_robot = json.loads(args.navigation_robot.read_text()) if args.navigation_robot else None
         sensor_cfg = json.loads(args.navigation_sensors.read_text()) if args.navigation_sensors else {'mode':'ideal'}
         if room and not nav_robot: raise ValueError('NAVIGATION_ROBOT_CONFIG_REQUIRED')
-        world, body, frame_error = build_scene(args.model, cfg, room)
+        world, body, frame_error = build_scene(args.model,cfg,room,description=args.description)
         sensors = None
         # Start inside one-sided limits: gravity/solver error at q=0 must not
         # be hidden by clipping measured feedback or relaxing execution limits.

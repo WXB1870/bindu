@@ -12,13 +12,6 @@
       "adapted_sha256": "57a24d52ebc37d8a6a2215963ef47b0228f7d08cdfe9e73b72f80a449677615b"
     },
     {
-      "archive_member": "nav_src/src/NEXTE_Sentry_Nav/sentry_slam/FAST_LIO/include/Exp_mat.h",
-      "source_sha256": "abce87e1fb0e60febf42f38b75f4c018bac24c1bf652e26b7a510a9296d3031d",
-      "path": "vendor/fast_lio/include/Exp_mat.h",
-      "adapted": false,
-      "adapted_sha256": "abce87e1fb0e60febf42f38b75f4c018bac24c1bf652e26b7a510a9296d3031d"
-    },
-    {
       "archive_member": "nav_src/src/NEXTE_Sentry_Nav/sentry_slam/FAST_LIO/include/ikd-Tree/ikd_Tree.cpp",
       "source_sha256": "ec3cbbbb6386eb6c68f9aa081c48b5d62209ada44fe167a002d4e3b112a1ea9f",
       "path": "vendor/fast_lio/include/ikd-Tree/ikd_Tree.cpp",
@@ -103,13 +96,6 @@
       "adapted_sha256": "771ecededd51dc694bdadb57f8a49fad7bc6091c6f6112142096954649ac405f"
     },
     {
-      "archive_member": "nav_src/src/NEXTE_Sentry_Nav/sentry_slam/FAST_LIO/include/IKFoM_toolkit/mtk/types/wrapped_cv_mat.hpp",
-      "source_sha256": "3040f43fcb4195a2572a8819be012ebd2c4b59a38cfae86fcac3e01d7039a589",
-      "path": "vendor/fast_lio/include/IKFoM_toolkit/mtk/types/wrapped_cv_mat.hpp",
-      "adapted": false,
-      "adapted_sha256": "3040f43fcb4195a2572a8819be012ebd2c4b59a38cfae86fcac3e01d7039a589"
-    },
-    {
       "archive_member": "nav_src/src/NEXTE_Sentry_Nav/sentry_slam/FAST_LIO/include/so3_math.h",
       "source_sha256": "e02f73dc804c3f539a80fe49d4221a85dbfeaee4cf0b643d7af062b49148e9f7",
       "path": "vendor/fast_lio/include/so3_math.h",
@@ -165,5 +151,23 @@
     "IMU initialization now initializes acceleration and previous scan end; transport interpolates the final IMU sample to scan end.",
     "Original map crop, nearest-plane Jacobian, iterated filter, ikd-Tree and undistortion equations retained.",
     "Seeded global localization keeps coarse/fine point-to-point ICP; adds immutable snapshots, radial crop, quality/step gates and source-age limits."
+  ],
+  "excluded_files": [
+    {
+      "archive_member": "nav_src/src/NEXTE_Sentry_Nav/sentry_slam/FAST_LIO/include/Exp_mat.h",
+      "source_sha256": "abce87e1fb0e60febf42f38b75f4c018bac24c1bf652e26b7a510a9296d3031d",
+      "path": "vendor/fast_lio/include/Exp_mat.h",
+      "adapted": false,
+      "adapted_sha256": "abce87e1fb0e60febf42f38b75f4c018bac24c1bf652e26b7a510a9296d3031d",
+      "reason": "Not reachable from either FAST-LIO compilation entry; unused OpenCV compatibility header. Original archive retained."
+    },
+    {
+      "archive_member": "nav_src/src/NEXTE_Sentry_Nav/sentry_slam/FAST_LIO/include/IKFoM_toolkit/mtk/types/wrapped_cv_mat.hpp",
+      "source_sha256": "3040f43fcb4195a2572a8819be012ebd2c4b59a38cfae86fcac3e01d7039a589",
+      "path": "vendor/fast_lio/include/IKFoM_toolkit/mtk/types/wrapped_cv_mat.hpp",
+      "adapted": false,
+      "adapted_sha256": "3040f43fcb4195a2572a8819be012ebd2c4b59a38cfae86fcac3e01d7039a589",
+      "reason": "Not reachable from either FAST-LIO compilation entry; unused OpenCV compatibility header. Original archive retained."
+    }
   ]
 }

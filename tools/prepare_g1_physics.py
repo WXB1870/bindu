@@ -2,25 +2,25 @@
 """Generate local G1 physics assets from the control model and pinned upstream geometry.
 
 The output defaults to artifacts/g1-physics-model/ (ignored by Git). It contains
-g1_physics.urdf, meshes/, upstream_usd/, the simulation profile and provenance.
+g1_physics.urdf, the simulation profile and provenance. Meshes and source USD
+are read from bindu_description; they are not copied into generated caches.
 The differential wheels/supports are provisional simulation fixtures. Regenerate
 after changing g1_provisional.urdf, its profile or physics.json.
 """
 import argparse
-import copy
 import hashlib
 import json
 import math
 from pathlib import Path
 import shutil
-import tarfile
-import urllib.request
 import xml.etree.ElementTree as ET
 
 from derive_g1_model import REVISION, SOURCE_SHA256
+from prepare_g1_description import (PREFIX, MANIFEST, digest, verify_description,
+                                    prepare as prepare_description)
 
 ROOT = Path(__file__).resolve().parents[1]
-ARCHIVE_SHA256 = 'efa6ff84b0393f680915a42f667f02afe8c0303d4edea9d4955dd6bdcf4b5fef'
+DESCRIPTION = ROOT/'src/hardware/bindu_description'
 
 
 def add_body(robot, name, mass, radius, width=None):
@@ -43,31 +43,61 @@ def add_body(robot, name, mass, radius, width=None):
             ET.SubElement(material, 'color', rgba='0.08 0.12 0.16 1')
 
 
-def prepare(source, output, root=ROOT):
-    data = (source / 'urdf/galbot_one_golf.urdf').read_bytes()
-    if hashlib.sha256(data).hexdigest() != SOURCE_SHA256:
-        raise ValueError('G1_SOURCE_VERSION_MISMATCH')
-    upstream = {link.get('name'): link for link in ET.fromstring(data).findall('link')}
-    robot = ET.parse(root / 'src/hardware/bindu_description/urdf/g1_provisional.urdf').getroot()
-    robot.set('name', 'bindu_g1_physics')
-    cfg = json.loads((root / 'src/hardware/bindu_description/physics.json').read_text())
-    output.mkdir(parents=True, exist_ok=True)
-    resources = {}
-    for link in robot.findall('link'):
-        for original in upstream[link.get('name')]:
-            if original.tag not in ('visual', 'collision'):
-                continue
-            element = copy.deepcopy(original)
-            for mesh in element.iter('mesh'):
-                relative = Path(mesh.get('filename'))
-                if relative.is_absolute() or '..' in relative.parts:
-                    raise ValueError('INVALID_MESH_PATH')
-                src = source / 'urdf' / relative
-                dest = output / relative
-                dest.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copyfile(src, dest)
-                resources[str(relative)] = hashlib.sha256(src.read_bytes()).hexdigest()
-            link.append(element)
+def inputs(description, root=ROOT):
+    return {name:digest(path) for name,path in {
+        'control':description/'urdf/g1_provisional.urdf',
+        'display':description/'urdf/g1_display.urdf',
+        'asset_manifest':description/MANIFEST,
+        'physics':description/'physics.json',
+        'profile':root/'src/integration/bindu_runtime/config/g1_provisional_sim.json',
+        'preparation_recipe':Path(__file__),
+    }.items()}
+
+
+def validate_physics_model(model, root=ROOT, description=None):
+    """Reject stale source geometry, body axes, profiles or prepared outputs."""
+    model=Path(model);description=Path(description or root/'src/hardware/bindu_description').resolve()
+    path=model/'provenance.json'
+    if not path.is_file():raise ValueError('G1_PHYSICS_CACHE_MISSING: run tools/prepare_g1_physics.py')
+    record=json.loads(path.read_text())
+    if record.get('schema_version')!=2:
+        raise ValueError('G1_PHYSICS_CACHE_LEGACY: regenerate with tools/prepare_g1_physics.py')
+    if record.get('description')!=str(description):
+        raise ValueError('G1_PHYSICS_ASSET_LOCATION_CHANGED: regenerate the cache')
+    assets=verify_description(description)
+    if record.get('source_usd')!=str(description/assets['source_usd']):
+        raise ValueError('G1_PHYSICS_USD_SOURCE_CHANGED')
+    if set(record.get('outputs',{}))!={'g1_physics.urdf','g1_physics_sim.json','physics.json'}:
+        raise ValueError('G1_PHYSICS_CACHE_LAYOUT')
+    if record.get('inputs')!=inputs(description,root):
+        raise ValueError('G1_PHYSICS_INPUTS_CHANGED: regenerate the cache')
+    for name,sha in record['outputs'].items():
+        if Path(name).is_absolute() or '..' in Path(name).parts:
+            raise ValueError('G1_PHYSICS_OUTPUT_PATH')
+        if not (model/name).is_file() or digest(model/name)!=sha:
+            raise ValueError('G1_PHYSICS_OUTPUT_CHANGED: '+name)
+    return record
+
+
+def prepare(source, output, root=ROOT, description=None):
+    description=Path(description or root/'src/hardware/bindu_description').resolve()
+    if source is not None:
+        prepare_description(Path(source),description)
+    assets=verify_description(description)
+    robot=ET.parse(description/'urdf/g1_display.urdf').getroot()
+    robot.set('name','bindu_g1_physics')
+    cfg=json.loads((description/'physics.json').read_text())
+    resources={}
+    for mesh in robot.iter('mesh'):
+        uri=mesh.get('filename')
+        if not uri.startswith(PREFIX):raise ValueError('G1_PHYSICS_MESH_URI')
+        relative=uri.removeprefix(PREFIX)
+        if relative not in assets['files']:raise ValueError('G1_PHYSICS_MESH_NOT_REGISTERED')
+        # Isaac's standalone importer uses file paths without ROS package lookup.
+        # Absolute references are local generated data; source URDFs keep package URIs.
+        mesh.set('filename',str(description/relative))
+        resources[relative]=assets['files'][relative]['sha256']
+    output.mkdir(parents=True,exist_ok=True)
     for side, sign in [('left', 1), ('right', -1)]:
         name = f'sim_{side}_wheel'
         add_body(robot, name, cfg['wheel_mass'], cfg['wheel_radius'], cfg['wheel_width'])
@@ -88,11 +118,8 @@ def prepare(source, output, root=ROOT):
     ET.indent(robot, space='  ')
     path = output / 'g1_physics.urdf'
     path.write_text('<?xml version="1.0"?>\n<!-- Generated physics fixture; synthetic differential wheels/supports. Not calibrated hardware. -->\n'+ET.tostring(robot, encoding='unicode')+'\n')
-    shutil.copyfile(source / 'LICENSE', output / 'LICENSE')
-    # The local Isaac 6.0 RC importer leaves GLB visuals empty. Reuse the matching
-    # upstream USD visual payloads (including textures) instead of inventing meshes.
-    shutil.copytree(source / 'usd', output / 'upstream_usd', dirs_exist_ok=True)
-    shutil.copyfile(root / 'src/hardware/bindu_description/physics.json', output / 'physics.json')
+    shutil.copyfile(description/'LICENSE',output/'LICENSE')
+    shutil.copyfile(description/'physics.json',output/'physics.json')
     profile = json.loads((root / 'src/integration/bindu_runtime/config/g1_provisional_sim.json').read_text())
     profile['name'] = 'g1_physics_sim'
     # Simulation-only overrides stay with the body configuration. Public
@@ -112,31 +139,24 @@ def prepare(source, output, root=ROOT):
         'joint_position': .002, 'joint_velocity': .01,
         'base_linear_velocity': .003, 'base_angular_velocity': .005}
     (output / 'g1_physics_sim.json').write_text(json.dumps(profile, indent=2)+'\n')
-    (output / 'provenance.json').write_text(json.dumps({'revision': REVISION, 'urdf_sha256': SOURCE_SHA256,
-        'generated_urdf_sha256': hashlib.sha256(path.read_bytes()).hexdigest(), 'meshes': resources,
-        'assumptions': cfg, 'license': 'Apache-2.0'}, indent=2)+'\n')
+    outputs={name:digest(output/name) for name in ('g1_physics.urdf','g1_physics_sim.json','physics.json')}
+    (output/'provenance.json').write_text(json.dumps({'schema_version':2,
+        'revision':REVISION,'urdf_sha256':SOURCE_SHA256,'description':str(description),
+        'source_usd':str(description/assets['source_usd']),
+        'generated_urdf_sha256':outputs['g1_physics.urdf'],'meshes':resources,
+        'inputs':inputs(description,root),'outputs':outputs,
+        'assumptions':cfg,'license':'Apache-2.0'},indent=2)+'\n')
     return path
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--source', type=Path, help='Existing pinned upstream repository')
+    parser.add_argument('--source', type=Path, help='Optional pinned upstream import; normally use the packaged assets')
+    parser.add_argument('--description',type=Path,default=DESCRIPTION,help='Shared bindu_description asset directory')
     parser.add_argument('--output', type=Path, default=ROOT / 'artifacts/g1-physics-model',
                         help='Generated asset directory (default: artifacts/g1-physics-model)')
     args = parser.parse_args()
-    source = args.source
-    if source is None:
-        cache = args.output / 'upstream'
-        cache.mkdir(parents=True, exist_ok=True)
-        archive = cache / 'source.tar.gz'
-        if not archive.exists():
-            urllib.request.urlretrieve(f'https://codeload.github.com/GalaxyGeneralRobotics/galbot_one_golf_description/tar.gz/{REVISION}', archive)
-        if hashlib.sha256(archive.read_bytes()).hexdigest() != ARCHIVE_SHA256:
-            raise ValueError('G1_ARCHIVE_CHECKSUM_MISMATCH')
-        with tarfile.open(archive) as tar:
-            tar.extractall(cache, filter='data')
-        source = cache / f'galbot_one_golf_description-{REVISION}'
-    print(prepare(source.resolve(), args.output.resolve()))
+    print(prepare(args.source,args.output.resolve(),description=args.description))
 
 
 if __name__ == '__main__':
