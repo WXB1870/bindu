@@ -264,6 +264,20 @@ class VRContracts(unittest.TestCase):
         self.assertFalse(self.session.ingest(replace(self.frame,stamp=10.2),10.2))
         with self.assertRaisesRegex(ValueError,'TIMEOUT'):self.session.check(10.3)
 
+    def test_invalid_sequence_and_release_counter_are_rejected(self):
+        for change in ({'seq': True}, {'seq': -1}, {'seq': .5},
+                       {'clutch_seq': True}, {'clutch_seq': -1}):
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                TeleopSession(self.cfg, self.names).ingest(replace(self.frame, **change), 10.)
+
+    def test_unfiltered_input_clock_cannot_go_backwards(self):
+        first = replace(self.frame, stamp=10.1)
+        self.session.ingest(first, 10.1)
+        with self.assertRaisesRegex(ValueError, 'VR_INPUT_UNORDERED'):
+            self.session.ingest(replace(first, seq=1, stamp=10.05), 10.15)
+        self.assertEqual(self.session.frame, first)
+        self.assertTrue(self.session.ingest(replace(first, seq=1, stamp=10.15), 10.15))
+
     def test_coalesced_release_still_invalidates_anchor(self):
         self.follow()
         req=self.session.request(dict.fromkeys(self.names,0.),11.2,11.2)

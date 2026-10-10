@@ -43,6 +43,7 @@ class TeleopModeNode(RuntimeNode):
         self.frames = {}
         self.paired_frames = {}
         self.busy = False
+        self.waiters = set()
         group = ReentrantCallbackGroup()
         self.tool_client = self.create_client(Trigger, 'teleop/tool_ready', callback_group=group)
         self.single_client = self.create_client(Trigger, 'teleop/worker_ready', callback_group=group)
@@ -54,6 +55,7 @@ class TeleopModeNode(RuntimeNode):
                          durability=DurabilityPolicy.TRANSIENT_LOCAL)
         self.publisher = self.create_publisher(TeleopModeState,'teleop/mode_state',qos)
         self.create_timer(.05,self.publish)
+        self.create_timer(.01,self.wake_waiters)
         self.server = ActionServer(self,SelectTeleopMode,'teleop/select_mode',
             execute_callback=self.execute,goal_callback=self.goal,
             cancel_callback=lambda _:CancelResponse.ACCEPT,callback_group=group)
@@ -96,9 +98,15 @@ class TeleopModeNode(RuntimeNode):
 
     async def pause(self):
         future = Future(executor=self.executor)
-        timer = self.create_timer(.01, lambda:future.set_result(None) if not future.done() else None)
+        self.waiters.add(future)
         try: await future
-        finally: self.destroy_timer(timer)
+        finally: self.waiters.discard(future)
+
+    def wake_waiters(self):
+        # Keep the wait set stable during mode selection; per-await timer
+        # creation/destruction competes with the authority heartbeat.
+        for future in tuple(self.waiters):
+            if not future.done(): future.set_result(None)
 
     async def execute(self,goal):
         result = SelectTeleopMode.Result()
@@ -175,4 +183,6 @@ class TeleopModeNode(RuntimeNode):
 
 
 def main():
-    spin(TeleopModeNode)
+    # Selection waits yield and preflight computation is in the tool worker.
+    # Serialize small callbacks to avoid timer/subscription thread starvation.
+    spin(TeleopModeNode, threaded=False)

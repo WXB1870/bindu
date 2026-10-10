@@ -58,8 +58,11 @@ class ModeSelection:
         for key in sides:
             frame = frames.get(key)
             if (frame is None or not frame.valid or frame.stop or frame.init or
-                    not frame.source_id or not math.isfinite(frame.grip) or
-                    frame.stamp < self.changed_at or not 0 <= now-frame.stamp <= self.input_age or
+                    not frame.source_id or frame.side != key or
+                    type(frame.seq) is not int or frame.seq < 0 or
+                    type(frame.clutch_seq) is not int or frame.clutch_seq < 0 or
+                    not all(math.isfinite(v) and 0 <= v <= 1 for v in (frame.grip, frame.trigger)) or
+                    frame.stamp <= self.changed_at or not 0 <= now-frame.stamp <= self.input_age or
                     frame.grip >= .3):
                 return 'VR_RELEASE_REQUIRED'
             selected.append(frame)

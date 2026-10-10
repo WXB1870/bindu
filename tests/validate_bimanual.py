@@ -2,6 +2,7 @@
 """Synthetic two-arm ROS gate: manual mode, QP, shared execution, cancel."""
 import argparse
 import json
+import math
 import os
 import shutil
 import signal
@@ -140,7 +141,17 @@ def main():
     parser.add_argument('--shovel-cycle',action='store_true',help='Complete shovel input stream over the production ROS path')
     parser.add_argument('--pause-resume',action='store_true',help='Pause moving tool, drop input while held, then resume on fresh input')
     parser.add_argument('--tool-display',action='store_true',help='Verify the independent tool observer against execution feedback')
+    parser.add_argument('--input-period',type=float,default=.02,
+                        help='Synthetic ROS input period in seconds (default: 50 Hz)')
+    parser.add_argument('--input-jitter',type=float,default=0.,
+                        help='Deterministic interval variation in seconds; no network is simulated')
     args=parser.parse_args()
+    if (not math.isfinite(args.input_period) or not .005 <= args.input_period <= .05 or
+            not math.isfinite(args.input_jitter) or not 0 <= args.input_jitter < args.input_period or
+            args.input_period-args.input_jitter < .001):
+        parser.error('input period must be 5–50 ms; jitter must leave at least 1 ms per interval')
+    if args.websocket_input and (args.input_period != .02 or args.input_jitter):
+        parser.error('input period/jitter apply only to synthetic ROS input')
     if args.pause_resume and args.shovel_cycle: parser.error('pause-resume uses the short motion fixture')
     if args.tool_display and not args.tool_pose_input: parser.error('tool display check requires --tool-pose-input')
     if args.tool_pose_input and not args.axial_grasp: parser.error('tool input requires --axial-grasp')
@@ -224,6 +235,8 @@ def main():
            'tool_feedback':None,'display':None,'display_modes':[],'tool_inputs':[]}
     control={'grip':0.,'trigger':0.,'delta':0.,'enabled':True,'seq':0,'left_clutch_seq':0}
     source_timing={'last':None,'max_gap_s':0.}
+    mode_timing={'samples':0,'last_stamp':None,'last_received':None,
+                 'max_publish_gap_s':0.,'max_receive_gap_s':0.,'max_age_s':0.}
     try:
         if physics_model:
             log=(output/'isaac.log').open('w');logs.append(log)
@@ -271,8 +284,20 @@ def main():
                 'max_velocity':max(velocities.values(),default=0.),
                 'fastest_joint':max(velocities,key=velocities.get,default='')})
         node.create_subscription(ExecutionState,ns+'/execution/state',on_execution,10)
-        node.create_subscription(TeleopModeState,ns+'/teleop/mode_state',
-            lambda m:state.update(mode=m),10)
+        def on_mode(msg):
+            received=time.monotonic()
+            event_stamp=msg.stamp.sec+msg.stamp.nanosec*1e-9
+            if mode_timing['last_stamp'] is not None:
+                mode_timing['max_publish_gap_s']=max(mode_timing['max_publish_gap_s'],
+                    event_stamp-mode_timing['last_stamp'])
+                mode_timing['max_receive_gap_s']=max(mode_timing['max_receive_gap_s'],
+                    received-mode_timing['last_received'])
+            mode_timing['max_age_s']=max(mode_timing['max_age_s'],
+                node.get_clock().now().nanoseconds/1e9-event_stamp)
+            mode_timing.update(samples=mode_timing['samples']+1,last_stamp=event_stamp,
+                               last_received=received)
+            state['mode']=msg
+        node.create_subscription(TeleopModeState,ns+'/teleop/mode_state',on_mode,10)
         node.create_subscription(MotionCommand,ns+'/execution/accepted',
             lambda m:state['accepted'].append(m),100)
         node.create_subscription(RuntimeEvent,ns+'/events',
@@ -292,14 +317,23 @@ def main():
             tool_input=source.create_publisher(ToolPoseInput,ns+'/teleop/tool/input',10)
         vr=source.create_publisher(VRInput,ns+'/teleop/vr/input',10)
         health=source.create_publisher(RecorderHealth,ns+'/recorder/health',10)
+        jitter_steps=(-1.,0.,1.,0.)
+        publish_ticks=0
         def publish():
+            nonlocal publish_ticks
+            if args.input_jitter:
+                source_timer.timer_period_ns=int(1e9*(args.input_period+
+                    args.input_jitter*jitter_steps[publish_ticks % len(jitter_steps)]))
+            publish_ticks+=1
+            now=source.get_clock().now().to_msg()
+            health.publish(RecorderHealth(stamp=now,run_id=run,ready=True))
+            if not control['enabled'] or args.websocket_input: return
+            # Measure published input, excluding deliberate disabled periods
+            # after the final message and CPU-heavy offline validation.
             tick=time.monotonic()
             if source_timing['last'] is not None:
                 source_timing['max_gap_s']=max(source_timing['max_gap_s'],tick-source_timing['last'])
             source_timing['last']=tick
-            now=source.get_clock().now().to_msg()
-            health.publish(RecorderHealth(stamp=now,run_id=run,ready=True))
-            if not control['enabled'] or args.websocket_input: return
             control['seq']+=1
             if args.tool_pose_input:
                 pose=home.copy();pose[0,3]+=control['delta']
@@ -320,7 +354,7 @@ def main():
                     side=side,pose=pose.ravel().tolist(),grip=control['grip'],
                     trigger=control['trigger'] if side=='right' else 0.,valid=True,
                     clutch_seq=control['left_clutch_seq'] if side=='left' else 0))
-        source.create_timer(.02,publish)
+        source_timer=source.create_timer(args.input_period,publish)
         source_thread=threading.Thread(target=source_executor.spin,daemon=True)
         source_thread.start()
         if args.websocket_input:
@@ -399,7 +433,9 @@ def main():
                                       root/'src/hardware/bindu_description/urdf',output)
             result={'status':'passed','tracking':tracking,'input':'ToolPoseInput','scope':'production ROS, QP, executor, ideal simulated joints',
                     'code':ended.code,'accepted_commands':ended.accepted_commands,'grasp_transitions':transitions,
-                    'source_timing':motion_source_timing,'dynamic_contact_validated':False,'paired_vr_frames_published':False}
+                    'source_timing':motion_source_timing,'mode_timing':dict(mode_timing),
+                    'input_period_s':args.input_period,'input_jitter_s':args.input_jitter,
+                    'dynamic_contact_validated':False,'paired_vr_frames_published':False}
             (output/'result.json').write_text(json.dumps(result,indent=2)+'\n')
             print(json.dumps(result));return
         count=len(state['accepted'])
@@ -566,21 +602,26 @@ def main():
                 'coalesced_release_checked':reclutch_checked,
                 'axial_grasp_checked':axial_checked,
                 'tool_input_loss_checked':args.drop_tool_input,
-                'active_switch_generation':active_switch_generation}
+                'active_switch_generation':active_switch_generation,
+                'input_period_s':args.input_period,'input_jitter_s':args.input_jitter,
+                'mode_timing':dict(mode_timing)}
         assert not peer_errors,peer_errors
         (output/'result.json').write_text(json.dumps(result,indent=2)+'\n')
         print(json.dumps(result))
     finally:
         peer_stop.set()
         if peer: peer.join(timeout=3.)
+        source_executor.shutdown(timeout_sec=3.)
+        if source_thread: source_thread.join(timeout=3.)
         (output/'websocket_errors.json').write_text(json.dumps(peer_errors)+'\n')
         (output/'trace.json').write_text(json.dumps(state['trace'])+'\n')
         (output/'events.json').write_text(json.dumps(state['events'])+'\n')
         (output/'source_stats.json').write_text(json.dumps({
-            'published_pairs':control['seq'],
-            'max_publish_gap_s':source_timing['max_gap_s']})+'\n')
-        source_executor.shutdown(timeout_sec=3.)
-        if source_thread: source_thread.join(timeout=3.)
+            'published_pairs':0 if args.tool_pose_input else control['seq'],
+            'published_tool_inputs':len(state['tool_inputs']),
+            'input_period_s':args.input_period,'input_jitter_s':args.input_jitter,
+            'max_publish_gap_s':None if args.websocket_input else source_timing['max_gap_s'],
+            'mode_timing':dict(mode_timing)})+'\n')
         (output/'tool_inputs.json').write_text(json.dumps(state['tool_inputs'])+'\n')
         source.destroy_node()
         node.destroy_node();rclpy.shutdown()

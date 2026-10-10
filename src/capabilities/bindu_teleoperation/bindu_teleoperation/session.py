@@ -37,7 +37,7 @@ class TeleopSession:
 
     def _ingest(self, frame, now):
         if (frame.side != self.cfg['side'] or not frame.source_id or
-                not isinstance(frame.seq, int) or frame.seq < 0 or
+                type(frame.seq) is not int or frame.seq < 0 or not math.isfinite(now) or
                 not math.isfinite(frame.stamp) or not 0 <= now-frame.stamp <= self.cfg['input_max_age']):
             raise ValueError('VR_STALE_OR_INVALID_FRAME')
         if self.source is not None and frame.source_id != self.source:
@@ -60,7 +60,9 @@ class TeleopSession:
                 raise ValueError('VR_FILTER_TIME_ORDER')
             if self.mode == 'follow' and frame.stamp-self.frame.stamp > self.cfg['input_max_age']:
                 raise ValueError('VR_INPUT_TIMEOUT')
-        if frame.clutch_seq < self.clutch_seq:
+        if self.frame is not None and frame.stamp < self.frame.stamp:
+            raise ValueError('VR_INPUT_UNORDERED')
+        if type(frame.clutch_seq) is not int or frame.clutch_seq < self.clutch_seq:
             raise ValueError('VR_CLUTCH_UNORDERED')
         if frame.clutch_seq != self.clutch_seq:
             if self.pose_filter:

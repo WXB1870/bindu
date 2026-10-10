@@ -58,6 +58,7 @@ class BimanualSession:
         self.anchor_input = self.anchor_tool = None
         self.current_input = None
         self.stamp = 0.
+        self.input_stamps = None
         self.target = None
         self.clutch_seq = None
         self.grasp_mode = 'rigid'
@@ -93,22 +94,31 @@ class BimanualSession:
 
     def ingest(self, left, right, now):
         frames=(left,right)
-        if (any(f is None or not f.valid or f.stop or f.init or not f.source_id or
+        if (not math.isfinite(now) or
+                any(f is None or not f.valid or f.stop or f.init or not f.source_id or
+                type(f.seq) is not int or f.seq < 0 or not math.isfinite(f.stamp) or
                 not 0 <= now-f.stamp <= self.cfg['input_max_age'] or
                 f.stamp <= self.selected_at or
                 not all(math.isfinite(v) and 0 <= v <= 1 for v in (f.grip,f.trigger))
                 for f in frames) or left.source_id != right.source_id or
+                left.side != 'left' or right.side != 'right' or
                 left.seq != right.seq or abs(left.stamp-right.stamp) > .02):
             raise ValueError('VR_PAIR_INVALID')
         if self.source is not None and self.source != left.source_id:
             raise ValueError('VR_CONNECTION_CHANGED')
         if left.seq <= self.seq:
             return False
+        if self.input_stamps is not None and any(
+                f.stamp < previous for f, previous in zip(frames, self.input_stamps)):
+            raise ValueError('VR_INPUT_UNORDERED')
         clutch_seq = (left.clutch_seq, right.clutch_seq)
-        if (any(not isinstance(value, int) or value < 0 for value in clutch_seq) or
+        if (any(type(value) is not int or value < 0 for value in clutch_seq) or
                 self.clutch_seq is not None and
                 any(value < previous for value, previous in zip(clutch_seq, self.clutch_seq))):
             raise ValueError('VR_CLUTCH_UNORDERED')
+        # Validate geometry before changing clutch/grasp state. A rejected
+        # proposal must not consume a release counter or discard the anchor.
+        pose=self.paired_pose(left,right,left_orientation=self.axial is not None)
         # A nonzero counter on the first frame is historical, not a new release.
         if self.clutch_seq is not None and clutch_seq != self.clutch_seq:
             # The receiver can coalesce a brief release into the next pressed
@@ -130,9 +140,9 @@ class BimanualSession:
             self.grasp_mode = desired
             self.grasp_generation += 1
             self.reanchor()
-        pose=self.paired_pose(left,right,left_orientation=self.axial is not None)
         self.current_input=pose
         self.source,self.seq,self.stamp=left.source_id,left.seq,max(left.stamp,right.stamp)
+        self.input_stamps = (left.stamp, right.stamp)
         if min(left.grip,right.grip) < .3:
             self.released=True
             self.pressed_since=None

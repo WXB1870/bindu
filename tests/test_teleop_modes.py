@@ -122,8 +122,60 @@ class ModeTests(unittest.TestCase):
         self.frames['right'] = replace(self.frames['right'], grip=float('nan'))
         self.assertEqual(self.ready(), 'VR_RELEASE_REQUIRED')
 
+    def test_mode_switch_rejects_invalid_buttons_and_frame_identity(self):
+        right = self.frames['right']
+        for change in ({'grip': -.1}, {'grip': 1.1}, {'trigger': float('nan')},
+                       {'trigger': -.1}, {'trigger': 1.1}, {'side': 'left'},
+                       {'seq': -1}, {'seq': True}, {'seq': 1.5},
+                       {'clutch_seq': -1}, {'clutch_seq': True}, {'stamp': 11.}):
+            with self.subTest(change=change):
+                self.frames['right'] = replace(right, **change)
+                self.assertEqual(self.ready(), 'VR_RELEASE_REQUIRED')
+        self.frames['right'] = right
+        self.assertEqual(self.ready(), '')
+
 
 class BimanualSessionTests(unittest.TestCase):
+    def pair(self, sequence, when, **changes):
+        frames = []
+        for side, x in (('left', 0.), ('right', .3)):
+            pose = np.eye(4); pose[0,3] = x
+            frames.append(replace(VRFrame('source', sequence, when, side, tuple(pose.ravel())),
+                                  **changes))
+        return frames
+
+    def session(self):
+        return BimanualSession(dict(input_max_age=.25, engage_seconds=.2,
+            position_scale=1., operator_yaw_rad=0., right_axial_grasp={}), 2, 10.)
+
+    def test_invalid_pair_metadata_is_rejected(self):
+        for change in ({'seq': -1}, {'seq': True}, {'seq': 1.5},
+                       {'clutch_seq': True}, {'clutch_seq': -1}, {'side': 'left'}):
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                self.session().ingest(*self.pair(1, 10.1, **change), 10.1)
+
+    def test_new_sequence_cannot_move_either_hand_clock_backwards(self):
+        session = self.session()
+        session.ingest(*self.pair(1, 10.11), 10.12)
+        for side in (0, 1):
+            frames = self.pair(2, 10.115)
+            frames[side] = replace(frames[side], stamp=10.105)
+            with self.subTest(side=side), self.assertRaisesRegex(ValueError, 'VR_INPUT_UNORDERED'):
+                session.ingest(*frames, 10.12)
+            self.assertEqual(session.seq, 1)
+        self.assertTrue(session.ingest(*self.pair(2, 10.12), 10.12))
+
+    def test_invalid_pose_does_not_change_clutch_or_grasp(self):
+        session = self.session()
+        session.ingest(*self.pair(1, 10.1), 10.1)
+        frames = self.pair(2, 10.2, grip=1., trigger=1., clutch_seq=1)
+        frames[1] = replace(frames[1], pose=tuple([float('nan')]*16))
+        with self.assertRaises(ValueError):
+            session.ingest(*frames, 10.2)
+        self.assertEqual((session.seq, session.clutch_seq, session.grasp_generation),
+                         (1, (0, 0), 0))
+        self.assertTrue(session.ingest(*self.pair(2, 10.2), 10.2))
+
     def test_historical_clutch_counter_does_not_bypass_initial_release(self):
         cfg = dict(input_max_age=.25, engage_seconds=.2, position_scale=1., operator_yaw_rad=0.)
         session = BimanualSession(cfg, 2, 10.)

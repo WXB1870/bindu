@@ -41,7 +41,7 @@
 - 已验证开发环境：Ubuntu 24.04、ROS 2 Jazzy、Python 3.12、x86_64。
 - 基础依赖：colcon、rosdep、NumPy 和 PyZMQ。
 - 双臂原生 QP 构建还需 Pinocchio、Eigen3 和 ProxSuite CMake 开发包；单臂 IK / VR 有额外 Python 依赖。按[双臂运行说明](运行与验证.md#snowbot-双臂与两轴腰部遥操作)和[VR 依赖说明](运行与验证.md#vr-遥操作运行入口)配置相应环境。
-- 真机目标已确认 Ubuntu 22.04 / ROS 2 Humble。已调整 Python 3.10 依赖并通过隔离模块测试；完整 Humble 构建、Orin 和真实设备适配尚未验证，见[部署入口与风险](运行与验证.md#遥操作专用装配与暂停)。
+- 真机目标已确认 Ubuntu 22.04 / ROS 2 Humble。遥操作装配已在 Ubuntu 22.04 / Python 3.10 / x86_64 容器中完成 15 包构建及 ROS 模拟回归；可用[Humble 验证脚本](tools/validate_humble_teleop.sh)复现。Orin、现场 VR 和真实设备适配尚未验证，见[部署入口与风险](运行与验证.md#遥操作专用装配与暂停)。
 
 下列命令假定 ROS 2 Jazzy、colcon、已初始化的 rosdep 及所选能力依赖可用。新终端只加载当前使用的工作区，避免混用旧安装环境。
 
