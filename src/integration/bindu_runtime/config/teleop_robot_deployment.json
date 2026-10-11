@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "robot_launch": "robot_teleop.launch.py",
+  "arguments": {
+    "robot_config": "@runtime/config/robot_snowbot.json",
+    "namespace": "bindu_teleop",
+    "device_backend": "kinematic",
+    "side": "left",
+    "tool_input_source": "tool_pose",
+    "vr_enabled": false,
+    "description_enabled": false,
+    "tool_display_enabled": true,
+    "recording_mode": "compact"
+  }
+}

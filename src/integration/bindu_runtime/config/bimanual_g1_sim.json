@@ -1,5 +1,6 @@
 {
   "simulation_only": true,
+  "input_frame": "base_link",
   "collision_scope": "empty_scene_only",
   "urdf": "g1_provisional.urdf",
   "resource_groups": ["waist", "left_arm", "right_arm"],

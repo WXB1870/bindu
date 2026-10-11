@@ -44,13 +44,20 @@ class Profile:
     @classmethod
     def load(cls, path):
         raw = json.loads(Path(path).read_text())
+        if (not isinstance(raw['groups'], dict) or not raw['groups'] or
+                any(not isinstance(g, str) or not g or not isinstance(js, list) or not js or
+                    any(not isinstance(n, str) or not n for n in js)
+                    for g, js in raw['groups'].items())):
+            raise ValueError('invalid joint groups')
         names = [j for group in raw['groups'].values() for j in group]
         if len(names) != len(set(names)) or not names:
             raise ValueError('joint names must be unique and nonempty')
+        if set(raw['limits']) != set(names):
+            raise ValueError('joint limit layout must match groups')
         for name in names:
             lo, hi = raw['limits'][name]
-            if not all(math.isfinite(x) for x in (lo, hi)) or not lo <= 0 <= hi or lo >= hi:
-                raise ValueError('simulation limits must contain zero')
+            if not all(type(x) in (float, int) and math.isfinite(x) for x in (lo, hi)) or lo >= hi:
+                raise ValueError('invalid joint position limits')
         if not math.isfinite(raw['max_speed']) or raw['max_speed'] <= 0:
             raise ValueError('invalid maximum speed')
         digest = hashlib.sha256(json.dumps(raw, sort_keys=True).encode()).hexdigest()

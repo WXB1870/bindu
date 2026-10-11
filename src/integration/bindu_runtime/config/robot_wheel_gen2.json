@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "robot_id": "wheel_gen2",
+  "model": null,
+  "profile": null,
+  "teleop": null,
+  "position_mapping": "position_mapping_wheel_gen2.json"
+}

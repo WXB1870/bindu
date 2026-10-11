@@ -38,6 +38,15 @@ class RuntimeNode(Node):
             raise RuntimeError('Only simulated adapters are implemented; real operation is refused')
         self.profile_path = self.get_parameter('profile').value
         self.profile = Profile.load(self.profile_path)
+        self.declare_parameter('robot_config', '')
+        self.declare_parameter('robot_config_digest', '')
+        robot_config = self.get_parameter('robot_config').value
+        if robot_config:
+            from .robot_setup import RobotSetup
+            robot = RobotSetup.load(robot_config)
+            if (robot.profile.digest != self.profile.digest or
+                    robot.digest != self.get_parameter('robot_config_digest').value):
+                raise RuntimeError('ROBOT_CONFIG_CHANGED_SINCE_LAUNCH')
         self.run_id = self.get_parameter('run_id').value
         self.instance_id = uuid.uuid4().hex
         self.event_pub = self.create_publisher(RuntimeEvent, 'events', EVENT_QOS)

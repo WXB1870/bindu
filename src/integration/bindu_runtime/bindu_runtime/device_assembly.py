@@ -36,11 +36,13 @@ def assemble_devices(node, profile):
     for group, names in profile.groups.items():
         parameter = 'hand_driver_provider' if group == 'hand' else 'joint_driver_provider'
         provider = node.get_parameter(parameter).value
-        if initial:
-            if provider != DEFAULT_DRIVERS['joint_driver_provider']:
+        neutral = {n: min(profile.limits[n][1], max(profile.limits[n][0], initial.get(n, 0.)))
+                   for n in names}
+        if initial or any(neutral.values()):
+            if provider != DEFAULT_DRIVERS[parameter]:
                 raise ValueError('INITIAL_POSE_REQUIRES_SIM_JOINT_DRIVER')
             joints[group] = load_provider(provider, names, profile.max_speed,
-                                           {n:initial.get(n,0.) for n in names})
+                                           neutral)
         else:
             joints[group] = load_provider(provider, names, profile.max_speed)
     base = load_provider(node.get_parameter('base_driver_provider').value)

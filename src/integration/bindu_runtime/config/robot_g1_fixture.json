@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "robot_id": "g1_fixture",
+  "model": {
+    "urdf": "package://bindu_description/urdf/g1_provisional.urdf",
+    "display_urdf": "package://bindu_description/urdf/g1_display.urdf",
+    "base_frame": "base_link"
+  },
+  "profile": "g1_provisional_sim.json",
+  "teleop": {
+    "single_arm": {
+      "left": "teleop_g1_left.json",
+      "right": "teleop_g1_right.json"
+    },
+    "tool": "bimanual_g1_sim.json"
+  },
+  "position_mapping": null
+}

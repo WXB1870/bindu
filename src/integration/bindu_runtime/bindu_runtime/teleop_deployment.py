@@ -6,22 +6,26 @@ from pathlib import Path
 COMMON = {'namespace', 'profile', 'bimanual_config', 'side', 'tool_input_source',
           'vr_enabled', 'host', 'port', 'cert_file', 'key_file', 'recording_mode',
           'output', 'device_backend', 'description_enabled', 'tool_display_enabled'}
-PATHS = {'profile', 'bimanual_config', 'cert_file', 'key_file', 'output'}
+PATHS = {'profile', 'bimanual_config', 'robot_config', 'cert_file', 'key_file', 'output'}
 
 
 def load_deployment(path, share):
     path, share = Path(path).resolve(), Path(share).resolve()
     data = json.loads(path.read_text())
-    if set(data) != {'schema_version', 'robot_launch', 'arguments'} or data['schema_version'] != 1:
+    version = data.get('schema_version')
+    if (set(data) != {'schema_version', 'robot_launch', 'arguments'} or
+            type(version) is not int or version not in (1, 2)):
         raise ValueError('TELEOP_DEPLOYMENT_SCHEMA')
     launch = data['robot_launch']
     # Add robot assemblies when they expose the same bounded teleop contract.
-    if launch != 'snowbot_sim.launch.py':
+    if launch != ('snowbot_sim.launch.py' if version == 1 else 'robot_teleop.launch.py'):
         raise ValueError('TELEOP_DEPLOYMENT_ROBOT_UNSUPPORTED')
     args = data['arguments']
-    if not isinstance(args, dict) or set(args)-COMMON:
+    allowed = COMMON if version == 1 else COMMON-{'profile', 'bimanual_config'} | {'robot_config'}
+    if not isinstance(args, dict) or set(args)-allowed:
         raise ValueError('TELEOP_DEPLOYMENT_ARGUMENT')
-    if not {'profile', 'bimanual_config'} <= set(args):
+    required = {'profile', 'bimanual_config'} if version == 1 else {'robot_config'}
+    if not required <= set(args):
         raise ValueError('TELEOP_DEPLOYMENT_MODEL_REQUIRED')
     if args.get('device_backend', 'kinematic') not in ('kinematic', 'external_simulation'):
         raise ValueError('TELEOP_HARDWARE_ADAPTER_NOT_IMPLEMENTED')
@@ -31,6 +35,8 @@ def load_deployment(path, share):
         raise ValueError('TELEOP_DEPLOYMENT_RECORDING')
     result = {'tool_input_source': 'tool_pose', 'vr_enabled': 'false',
               'initialize_tool_pose': 'false'}
+    if version == 2:
+        del result['initialize_tool_pose']
     for key, value in args.items():
         if not isinstance(value, (str, bool, int)):
             raise ValueError('TELEOP_DEPLOYMENT_VALUE:'+key)
