@@ -5,6 +5,7 @@ import math
 from pathlib import Path
 import tempfile
 import unittest
+import xml.etree.ElementTree as ET
 from unittest.mock import Mock, patch
 
 from bindu_contracts.profile import Profile
@@ -129,6 +130,37 @@ class RobotConfigurationTests(unittest.TestCase):
                 p.write_text(json.dumps(data))
                 with self.assertRaisesRegex(ValueError, code): RobotSetup.load(path)
 
+    def test_display_model_cannot_change_control_kinematics(self):
+        for change in ('axis', 'origin', 'parent', 'type', 'extra_axis'):
+            with self.subTest(change=change), tempfile.TemporaryDirectory() as tmp:
+                folder = Path(tmp); path = fixture(folder)
+                tree = ET.parse(folder/'robot.urdf')
+                joint = tree.getroot().find("joint[@name='a0']")
+                if change == 'axis': joint.find('axis').set('xyz', '0 0 1')
+                elif change == 'origin': joint.find('origin').set('xyz', '0 .9 0')
+                elif change == 'parent': joint.find('parent').set('link', 'root')
+                elif change == 'type': joint.set('type', 'prismatic')
+                else:
+                    ET.SubElement(tree.getroot(), 'link', name='extra')
+                    extra = ET.SubElement(tree.getroot(), 'joint', name='extra_axis', type='revolute')
+                    ET.SubElement(extra, 'parent', link='root'); ET.SubElement(extra, 'child', link='extra')
+                    ET.SubElement(extra, 'limit', lower='-1', upper='1', velocity='1', effort='10')
+                tree.write(folder/'display.urdf')
+                raw = json.loads(path.read_text()); raw['model']['display_urdf'] = 'display.urdf'
+                path.write_text(json.dumps(raw))
+                with self.assertRaisesRegex(ValueError, 'ROBOT_DISPLAY_'):
+                    RobotSetup.load(path)
+
+    def test_tool_collision_model_must_match_selected_robot(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp); path = fixture(folder)
+            (folder/'other.urdf').write_bytes((folder/'robot.urdf').read_bytes())
+            tool_path = folder/'tool.json'; tool = json.loads(tool_path.read_text())
+            tool.update(collision_scope='configured_tool_geometry', demo={'display_urdf': 'other.urdf'})
+            tool_path.write_text(json.dumps(tool))
+            with self.assertRaisesRegex(ValueError, 'ROBOT_TOOL_COLLISION_MODEL'):
+                RobotSetup.load(path)
+
     def test_configuration_digest_changes_with_limits(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = fixture(Path(tmp)); before = RobotSetup.load(path)
@@ -194,6 +226,18 @@ class PositionMappingTests(unittest.TestCase):
         self.assertAlmostEqual(mapping.decode(encoded)['arm_l_joint_1'], math.pi/2)
         cfg['joints']['arm_l_joint_2']['channel'] = 'arm_l_joint_1'
         with self.assertRaisesRegex(ValueError, 'COVERAGE'): PositionMapping(cfg, cfg['joints'])
+
+    def test_calibration_overflow_invalidates_previous_capture(self):
+        config = copy.deepcopy(self.config)
+        config['joints']['arm_l_joint_1']['offset'] = 1e308
+        mapping = PositionMapping(config, config['joints'])
+        feedback = dict(self.feedback); feedback['arm_l_joint_1'] = 1e308
+        positions = mapping.capture(feedback)
+        feedback['arm_l_joint_1'] = -1e308
+        with self.assertRaisesRegex(ValueError, 'FEEDBACK'):
+            mapping.decode(feedback)
+        with self.assertRaisesRegex(ValueError, 'NOT_CAPTURED'):
+            mapping.encode(positions)
 
     def test_incomplete_feedback_and_partial_targets_rejected(self):
         q = self.mapping.capture(self.feedback)

@@ -41,11 +41,14 @@ class PositionMapping:
     def decode(self, feedback):
         try:
             self._feedback(feedback)
-        except ValueError:
+            decoded = {n: (feedback[channel]-offset)/scale
+                       for n, (channel, scale, offset) in self.transforms.items()}
+            if not all(math.isfinite(v) for v in decoded.values()):
+                raise ValueError('POSITION_MAPPING_FEEDBACK')
+        except (ValueError, OverflowError):
             self.invalidate()
-            raise
-        return {n: (feedback[channel]-offset)/scale
-                for n, (channel, scale, offset) in self.transforms.items()}
+            raise ValueError('POSITION_MAPPING_FEEDBACK') from None
+        return decoded
 
     def capture(self, feedback):
         # A failed recapture must invalidate the previous session's hold values.

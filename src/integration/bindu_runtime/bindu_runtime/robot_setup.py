@@ -40,10 +40,21 @@ def model_layout(path):
     links = [link.get('name') for link in root.findall('link')]
     joints = root.findall('joint')
     names = [joint.get('name') for joint in joints]
-    if (not links or None in links or len(set(links)) != len(links) or
-            None in names or len(set(names)) != len(names)):
+    if (not links or any(not n for n in links) or len(set(links)) != len(links) or
+            any(not n for n in names) or len(set(names)) != len(names)):
         raise ValueError('ROBOT_MODEL_NAMES')
-    parents, bounds = {}, {}
+    parents, bounds, kinematics = {}, {}, {}
+
+    def vector(element, attribute, default, name):
+        try:
+            values = tuple(float(x) for x in
+                           (element.get(attribute, default) if element is not None else default).split())
+            if len(values) != 3 or not all(math.isfinite(v) for v in values):
+                raise ValueError()
+        except (TypeError, ValueError) as exc:
+            raise ValueError('ROBOT_MODEL_GEOMETRY:' + name) from exc
+        return values
+
     for joint in joints:
         name, kind = joint.get('name'), joint.get('type')
         parent, child = joint.find('parent'), joint.find('child')
@@ -53,6 +64,17 @@ def model_layout(path):
         parents[child.get('link')] = parent.get('link')
         if joint.find('mimic') is not None:
             raise ValueError('ROBOT_MODEL_MIMIC_UNSUPPORTED:' + name)
+        origin = joint.find('origin')
+        xyz = vector(origin, 'xyz', '0 0 0', name)
+        rpy = vector(origin, 'rpy', '0 0 0', name)
+        axis = (0., 0., 0.)
+        if kind != 'fixed':
+            axis = vector(joint.find('axis'), 'xyz', '1 0 0', name)
+            norm = math.hypot(*axis)
+            if not math.isfinite(norm) or norm < 1e-6:
+                raise ValueError('ROBOT_MODEL_GEOMETRY:' + name)
+            axis = tuple(v/norm for v in axis)
+        kinematics[name] = (kind, parent.get('link'), child.get('link'), *xyz, *rpy, *axis)
         if kind == 'fixed':
             continue
         # Current Pinocchio/C ABI requires scalar q/v; reject rather than
@@ -62,12 +84,10 @@ def model_layout(path):
         limit = joint.find('limit')
         try:
             lo, hi, speed = (float(limit.get(k)) for k in ('lower', 'upper', 'velocity'))
-            axis = joint.find('axis')
-            vector = [float(x) for x in axis.get('xyz', '1 0 0').split()] if axis is not None else [1., 0., 0.]
         except (AttributeError, TypeError, ValueError) as exc:
             raise ValueError('ROBOT_MODEL_LIMIT:' + name) from exc
-        if (not all(math.isfinite(v) for v in (lo, hi, speed, *vector)) or
-                lo >= hi or speed <= 0 or len(vector) != 3 or sum(v*v for v in vector) < 1e-12):
+        if (not all(math.isfinite(v) for v in (lo, hi, speed)) or
+                lo >= hi or speed <= 0):
             raise ValueError('ROBOT_MODEL_LIMIT:' + name)
         bounds[name] = (lo, hi, speed)
     roots = set(links) - set(parents)
@@ -80,7 +100,7 @@ def model_layout(path):
                 raise ValueError('ROBOT_MODEL_CYCLE')
             seen.add(current)
             current = parents[current]
-    return links, bounds, next(iter(roots))
+    return links, bounds, next(iter(roots)), kinematics
 
 
 @dataclass(frozen=True)
@@ -123,7 +143,7 @@ class RobotSetup:
         profile = Profile.load(profile_path)
         urdf = resolve_file(model['urdf'], path, packages)
         display = resolve_file(model['display_urdf'], path, packages)
-        links, bounds, base = model_layout(urdf)
+        links, bounds, base, kinematics = model_layout(urdf)
         if model['base_frame'] != base:
             raise ValueError('ROBOT_BASE_FRAME_MISMATCH')
         names = {n for group in profile.groups.values() for n in group}
@@ -135,9 +155,17 @@ class RobotSetup:
             low, high = profile.limits[name]
             if low < lo-1e-6 or high > hi+1e-6 or profile.speed(name) > speed+1e-6:
                 raise ValueError('ROBOT_LIMIT_EXCEEDS_MODEL:' + name)
-        display_links, display_bounds, display_base = model_layout(display)
-        if base != display_base or not names <= set(display_bounds):
+        _, display_bounds, display_base, display_kinematics = model_layout(display)
+        if base != display_base or names != set(display_bounds):
             raise ValueError('ROBOT_DISPLAY_LAYOUT')
+        # Visual/collision meshes may differ; the joint tree and transforms must
+        # describe the same motion, including fixed flange/tool frame offsets.
+        for name, expected in kinematics.items():
+            actual = display_kinematics.get(name)
+            if (actual is None or expected[:3] != actual[:3] or
+                    any(not math.isclose(a, b, rel_tol=0., abs_tol=1e-10)
+                        for a, b in zip(expected[3:], actual[3:]))):
+                raise ValueError('ROBOT_DISPLAY_KINEMATICS:' + name)
         single = {side: resolve_file(value, path, packages)
                   for side, value in teleop['single_arm'].items()}
         for side, config_path in single.items():
@@ -151,6 +179,10 @@ class RobotSetup:
         tool = json.loads(tool_path.read_text())
         if ('input_frame' in tool and tool['input_frame'] != base):
             raise ValueError('ROBOT_TOOL_INPUT_FRAME')
+        if tool.get('collision_scope') == 'configured_tool_geometry':
+            collision_model = resolve_file(tool['demo']['display_urdf'], urdf, packages)
+            if collision_model != display:
+                raise ValueError('ROBOT_TOOL_COLLISION_MODEL')
         groups = tool['resource_groups']
         if (len(groups) not in (2, 3) or len(groups) != len(set(groups)) or
                 any(g not in profile.groups or not profile.groups[g] for g in groups)):
