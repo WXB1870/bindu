@@ -10,6 +10,7 @@ from unittest.mock import Mock, patch
 
 from bindu_contracts.profile import Profile
 from bindu_hardware.position_mapping import PositionMapping
+from bindu_hardware.soem_feedback import SoemFeedbackGate
 from bindu_runtime.device_assembly import assemble_devices
 from bindu_runtime.robot_setup import RobotSetup
 from bindu_runtime.teleop_deployment import load_deployment
@@ -246,6 +247,57 @@ class PositionMappingTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'NOT_CAPTURED'): self.mapping.encode(q)
         q = self.mapping.capture(self.feedback); del q['arm_l_joint_2']
         with self.assertRaisesRegex(ValueError, 'TARGET'): self.mapping.encode(q)
+
+
+class SoemFeedbackGateTests(unittest.TestCase):
+    def setUp(self):
+        self.config = json.loads((CONFIG/'position_mapping_wheel_gen2.json').read_text())
+        self.names = self.config['channels']
+        self.positions = [.01*i for i in range(48)]
+        self.gate = SoemFeedbackGate(self.config)
+        self.healthy = 'alive=1 state=1 error=0 ready=1 hand_held_mask=0 write_enable=0'
+
+    def test_read_only_frame_preserves_source_time_and_sign(self):
+        self.assertIsNone(self.gate.take(10.))
+        self.gate.observe_status(self.healthy, 10.)
+        self.gate.observe_joint_state(self.names, self.positions, 10.01, 10.02)
+        stamp, mapped = self.gate.take(10.03)
+        self.assertEqual(stamp, 10.01)
+        self.assertEqual(len(mapped), 16)
+        self.assertEqual(mapped['torso_joint'], -self.positions[14])
+        self.assertIsNone(self.gate.take(10.04))
+
+    def test_fault_or_stale_status_never_relabels_old_angles(self):
+        self.gate.observe_status(self.healthy, 10.)
+        self.gate.observe_joint_state(self.names, self.positions, 10.01, 10.02)
+        self.assertIsNone(self.gate.take(10.21))
+        self.gate.observe_status(self.healthy.replace('alive=1', 'alive=0'), 10.22)
+        self.assertIsNone(self.gate.take(10.22))
+        self.gate.observe_status(self.healthy, 10.23)
+        self.assertIsNone(self.gate.take(10.23))
+        self.gate.observe_joint_state(self.names, self.positions, 10.24, 10.25)
+        self.assertIsNotNone(self.gate.take(10.25))
+        with self.assertRaisesRegex(ValueError, 'DUPLICATE'):
+            self.gate.observe_status(self.healthy + ' alive=1', 10.26)
+        self.assertIsNone(self.gate.take(10.26))
+
+    def test_invalid_frames_and_hand_feedback_are_rejected(self):
+        self.gate.observe_status(self.healthy, 10.)
+        cases = [
+            (self.names[:-1] + [self.names[0]], self.positions, 10.01, 10.02),
+            (self.names, self.positions[:-1] + [float('nan')], 10.01, 10.02),
+            (self.names, self.positions, 9.7, 10.02),
+            (self.names, self.positions, 10.2, 10.02),
+        ]
+        for names, positions, stamp, received in cases:
+            with self.subTest(stamp=stamp, names=len(set(names)), finite=math.isfinite(positions[-1])):
+                with self.assertRaisesRegex(ValueError, 'SOEM_JOINT_STATE_INVALID'):
+                    self.gate.observe_joint_state(names, positions, stamp, received)
+                self.assertIsNone(self.gate.take(received))
+        self.gate.observe_joint_state(self.names, self.positions, 10.03, 10.04)
+        self.assertIsNotNone(self.gate.take(10.04))
+        with self.assertRaisesRegex(ValueError, 'SOEM_JOINT_STATE_INVALID'):
+            self.gate.observe_joint_state(self.names, self.positions, 10.02, 10.05)
 
 
 if __name__ == '__main__':
