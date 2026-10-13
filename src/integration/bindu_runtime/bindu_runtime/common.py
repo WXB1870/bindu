@@ -5,9 +5,12 @@ import rclpy
 from rclpy.node import Node
 from rclpy.executors import MultiThreadedExecutor, SingleThreadedExecutor
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
+from rclpy.parameter import Parameter
+from rcl_interfaces.msg import ParameterDescriptor
 from builtin_interfaces.msg import Time
 from ament_index_python.packages import get_package_share_directory
 from bindu_contracts.profile import Profile
+from bindu_contracts.runtime_mode import resolve_mode, message_matches, SIMULATION, REAL
 from bindu_interfaces.msg import RuntimeEvent
 
 EVENT_QOS = QoSProfile(depth=512, reliability=ReliabilityPolicy.RELIABLE,
@@ -28,15 +31,25 @@ def stamp(value):
 
 
 class RuntimeNode(Node):
-    def __init__(self, name, *, allow_hardware=False):
+    def __init__(self, name, *, allow_hardware=False, default_mode=None):
         super().__init__(name)
         default = str(Path(get_package_share_directory('bindu_runtime')) / 'config/wheel_sim.json')
         self.declare_parameter('profile', default)
         self.declare_parameter('run_id', 'manual')
-        self.declare_parameter('simulation', not allow_hardware)
-        self.simulation = self.get_parameter('simulation').value
+        self.declare_parameter('runtime_mode', '')
+        self.declare_parameter('simulation', None, descriptor=ParameterDescriptor(dynamic_typing=True))
+        self.runtime_mode = resolve_mode(self.get_parameter('runtime_mode').value,
+            self.get_parameter('simulation').value,
+            default=default_mode or (REAL if allow_hardware else SIMULATION))
+        self.simulation = self.runtime_mode == SIMULATION
+        self.set_parameters([Parameter('runtime_mode', value=self.runtime_mode),
+                             Parameter('simulation', value=self.simulation)])
+        for key in ('runtime_mode', 'simulation'):
+            self.set_descriptor(key, ParameterDescriptor(read_only=True,
+                type=self.get_parameter(key).type_.value,
+                description='Robot environment selected at startup; restart to change mode'))
         if not self.simulation and not allow_hardware:
-            raise RuntimeError('This entry only permits simulation; select a dedicated robot adapter')
+            raise RuntimeError('RUNTIME_REAL_BACKEND_NOT_IMPLEMENTED:'+name)
         self.profile_path = self.get_parameter('profile').value
         self.profile = Profile.load(self.profile_path)
         self.declare_parameter('robot_config', '')
@@ -55,10 +68,17 @@ class RuntimeNode(Node):
     def now(self):
         return self.get_clock().now().nanoseconds / 1e9
 
+    def matches_mode(self, message):
+        return message_matches(message, self.runtime_mode)
+
+    def store_mode_message(self, attribute, message):
+        setattr(self, attribute, message if self.matches_mode(message) else None)
+
     def event(self, state, code, task_id='', command_id='', observation_id=''):
         msg = RuntimeEvent(stamp=stamp(self.now()), run_id=self.run_id, task_id=task_id,
                            command_id=command_id, observation_id=observation_id,
-                           component=self.get_name(), state=state, code=code, simulated=self.simulation)
+                           component=self.get_name(), state=state, code=code, simulated=self.simulation,
+                           runtime_mode=self.runtime_mode)
         self.event_pub.publish(msg)
 
 

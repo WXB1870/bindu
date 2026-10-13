@@ -14,6 +14,9 @@ DEFAULT_DRIVERS = {
 def assemble_devices(node, profile):
     node.declare_parameter('device_backend', 'kinematic')
     backend = node.get_parameter('device_backend').value
+    if node.runtime_mode != 'simulation':
+        raise ValueError('RUNTIME_MODE_BACKEND_CONFLICT')
+    node.device_backend = backend
     node.declare_parameter('kinematic_initial_positions', '{}')
     initial = json.loads(node.get_parameter('kinematic_initial_positions').value)
     if (not isinstance(initial,dict) or set(initial)-set(profile.limits) or

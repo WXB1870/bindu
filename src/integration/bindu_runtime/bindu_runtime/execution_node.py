@@ -4,13 +4,14 @@ from bindu_execution.executor import Executor, Rejected
 from bindu_interfaces.msg import ExecutionState, MotionCommand
 from bindu_interfaces.srv import Lease, SubmitMotion, ControlExecution, InjectFault
 from .common import RuntimeNode, seconds, stamp, spin, EVENT_QOS
+from bindu_contracts.runtime_mode import command_mode
 
 
 class ExecutionNode(RuntimeNode):
     def __init__(self, *, allow_hardware=False, device_factory=assemble_devices, executor_factory=Executor):
         super().__init__('execution', allow_hardware=allow_hardware)
         self.robot_io, self.devices = device_factory(self, self.profile)
-        self.engine = executor_factory(self.profile, self.robot_io)
+        self.engine = executor_factory(self.profile, self.robot_io, runtime_mode=self.runtime_mode)
         self.engine.tick(self.now())
         # Default mutually exclusive group serializes every access to the engine.
         self.create_service(Lease, 'execution/lease', self.lease)
@@ -44,6 +45,7 @@ class ExecutionNode(RuntimeNode):
         return reply
 
     def accept(self, msg):
+        selected_mode = command_mode(msg.runtime_mode, self.runtime_mode)
         if any(v != 0. for v in (msg.velocity.linear.y, msg.velocity.linear.z,
                                 msg.velocity.angular.x, msg.velocity.angular.y)):
             raise Rejected('UNSUPPORTED_VELOCITY_AXIS')
@@ -57,8 +59,9 @@ class ExecutionNode(RuntimeNode):
                    (msg.velocity.linear.x, msg.velocity.angular.z), msg.duration, msg.schema_version,
                    tuple(tuple(p.velocities) for p in msg.points) if any(p.velocities for p in msg.points) else (),
                    tuple(tuple(p.accelerations) for p in msg.points) if any(p.accelerations for p in msg.points) else (),
-                   msg.expected_revision, tuple(msg.resource_groups))
+                   msg.expected_revision, tuple(msg.resource_groups), selected_mode)
         self.engine.submit(m, self.now())
+        msg.runtime_mode = selected_mode
         self.accepted_pub.publish(msg)
         return max(m.stamp, self.engine.last_tick)
 
@@ -113,7 +116,8 @@ class ExecutionNode(RuntimeNode):
         active = self.engine.active
         msg = ExecutionState(stamp=stamp(now), feedback_stamp=stamp(fb.stamp),
                              instance_id=self.instance_id, profile_hash=self.profile.digest,
-                             simulated=fb.simulated, base_x=fb.base_x, base_y=fb.base_y, base_yaw=fb.base_yaw)
+                             simulated=fb.simulated, runtime_mode=self.runtime_mode, device_backend=self.device_backend,
+                             base_x=fb.base_x, base_y=fb.base_y, base_yaw=fb.base_yaw)
         msg.joints.header.stamp = stamp(fb.stamp)
         msg.feedback_sources = list(self.robot_io.feedback.source_stamps)
         msg.source_stamps = [stamp(t) for t in self.robot_io.feedback.source_stamps.values()]

@@ -78,11 +78,11 @@ class TaskNode(RuntimeNode):
         return await self.execute_task(goal, navigation_only=True)
 
     def on_state(self, state):
-        self.state = state
+        self.store_mode_message('state', state)
 
     def on_health(self, health):
         if health.run_id == self.run_id:
-            self.health = health
+            self.store_mode_message('health', health)
 
     def goal(self, request):
         ready = (self.state and self.state.profile_hash == self.profile.digest and self.health and
@@ -145,6 +145,7 @@ class TaskNode(RuntimeNode):
 
     async def move(self, ctx, command):
         self.check(ctx)
+        command.runtime_mode = self.runtime_mode
         command.schema_version = 1
         command.command_id = uuid.uuid4().hex
         command.task_id, command.observation_id = ctx.task_id, ctx.observation_id
@@ -238,7 +239,7 @@ class TaskNode(RuntimeNode):
     async def execute_task(self, goal, navigation_only):
         ctx = Attempt(goal.request.task_id, goal)
         self.current = ctx
-        result = NavigateToSite.Result(simulated=True) if navigation_only else FetchDrink.Result(simulated=True)
+        result = NavigateToSite.Result(simulated=self.simulation) if navigation_only else FetchDrink.Result(simulated=self.simulation)
         try:
             lease = await self.wait(self.lease_client.call_async(Lease.Request(operation='acquire', owner=ctx.task_id,
                               resources=['base'] if navigation_only else ['arm','hand','base'])), 1., ctx)

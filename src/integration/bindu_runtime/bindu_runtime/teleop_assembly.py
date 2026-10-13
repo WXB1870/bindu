@@ -8,10 +8,14 @@ from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 from ament_index_python.packages import get_package_share_directory
 from bindu_runtime.robot_setup import RobotSetup
+from bindu_contracts.runtime_mode import resolve_mode
 
 
 def assemble(context):
     value = lambda name, default='': LaunchConfiguration(name, default=default).perform(context)
+    mode = resolve_mode(value('runtime_mode', 'simulation'))
+    if mode != 'simulation':
+        raise ValueError('ROBOT_TELEOP_REAL_BACKEND_NOT_IMPLEMENTED')
     legacy = not value('robot_config')
     selection = value('robot_config') or str(Path(get_package_share_directory('bindu_runtime'))/'config/robot_snowbot.json')
     overrides = {'profile': value('profile'), 'tool': value('bimanual_config')} if legacy else None
@@ -34,7 +38,7 @@ def assemble(context):
     if initial and (not legacy or backend != 'kinematic'):
         raise ValueError('INITIAL_POSE_ONLY_FOR_KINEMATIC_FIXTURE')
     ns = LaunchConfiguration('namespace')
-    common = {'profile': str(robot.profile_path), 'run_id': LaunchConfiguration('run_id'),
+    common = {'profile': str(robot.profile_path), 'run_id': LaunchConfiguration('run_id'), 'runtime_mode': mode,
               **({} if legacy else {'robot_config': str(robot.path), 'robot_config_digest': robot.digest})}
     model = {'model_root': str(robot.urdf.parent)}
     nodes = [LogInfo(msg=f'Robot {robot.robot_id}: {len(robot.active_joints)} tool DOF, '

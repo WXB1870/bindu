@@ -8,7 +8,7 @@ from bindu_runtime.teleop_assembly import assemble
 
 def generate_launch_description():
     share = Path(get_package_share_directory('bindu_runtime'))
-    defaults = {'robot_config': '', 'namespace': 'bindu_snowbot_sim', 'run_id': uuid.uuid4().hex,
+    defaults = {'runtime_mode': 'simulation', 'robot_config': '', 'namespace': 'bindu_snowbot_sim', 'run_id': uuid.uuid4().hex,
                 'output': '/tmp/bindu-snowbot-runs', 'recording_mode': 'compact',
                 'profile': str(share / 'config/snowbot_sim.json'),
                 'bimanual_config': str(share / 'config/bimanual_snowbot_sim.json'),

@@ -63,10 +63,10 @@ class BimanualToolNode(RuntimeNode):
                                  callback_group=MutuallyExclusiveCallbackGroup())
         self.create_subscription(ToolPoseInput,'teleop/tool/input',self.on_tool_frame,5,
                                  callback_group=MutuallyExclusiveCallbackGroup())
-        self.create_subscription(ExecutionState,'execution/state',lambda m:setattr(self,'state',m),1)
+        self.create_subscription(ExecutionState,'execution/state',lambda m:self.store_mode_message('state',m),1)
         self.create_subscription(RecorderHealth,'recorder/health',self.on_health,5)
         self.create_subscription(TeleopModeState,'teleop/mode_state',
-            lambda m:setattr(self,'mode_state',m),QoSProfile(depth=1,
+            lambda m:self.store_mode_message('mode_state',m),QoSProfile(depth=1,
                 reliability=ReliabilityPolicy.RELIABLE,durability=DurabilityPolicy.TRANSIENT_LOCAL))
         self.waiters=set()
         self.create_timer(.005,self.poll_worker)
@@ -93,15 +93,15 @@ class BimanualToolNode(RuntimeNode):
         return reply
 
     def on_health(self,msg):
-        if msg.run_id == self.run_id: self.health=msg
+        if msg.run_id == self.run_id: self.store_mode_message('health',msg)
 
     def on_frame(self,msg):
-        if msg.side in ('left','right'):
+        if self.matches_mode(msg) and msg.side in ('left','right'):
             self.frames[msg.side]=VRFrame(msg.source_id,msg.seq,seconds(msg.stamp),msg.side,
                 tuple(msg.pose),msg.grip,msg.trigger,msg.init,msg.stop,msg.valid,msg.clutch_seq)
 
     def on_tool_frame(self,msg):
-        if self.input_source == 'tool_pose':
+        if self.input_source == 'tool_pose' and self.matches_mode(msg):
             self.tool_frame=ToolPoseFrame(msg.source_id,msg.seq,seconds(msg.stamp),
                 msg.frame_id,tuple(msg.pose),msg.tight,msg.valid,msg.stop)
 
@@ -246,7 +246,7 @@ class BimanualToolNode(RuntimeNode):
         session_type=ToolPoseSession if self.input_source=='tool_pose' else BimanualSession
         session=session_type(self.cfg,mode.generation,seconds(mode.changed_at))
         reference=AcceptedReference(self.cfg.get('max_integration_interval',.1))
-        result=TeleopAction.Result(simulated=True)
+        result=TeleopAction.Result(simulated=self.simulation)
         lease=pending=renewal=None
         accepted=0
         stopped=True
@@ -412,7 +412,7 @@ class BimanualToolNode(RuntimeNode):
                                 if not 0 <= self.now()-work_sampled_at <= reference.max_interval:
                                     raise RuntimeError('BIMANUAL_RESULT_STALE')
                                 positions,metrics=value
-                                command=MotionCommand(schema_version=2,
+                                command=MotionCommand(schema_version=2, runtime_mode=self.runtime_mode,
                                     command_id=session.identity+'_'+str(token),
                                     task_id=goal.request.task_id,observation_id=str(token),
                                     profile_hash=self.profile.digest,lease_id=lease.lease_id,epoch=lease.epoch,

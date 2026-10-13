@@ -2,6 +2,7 @@
 # source_id changes on browser reconnect; seq increases only on input events.
 builtin_interfaces/Time stamp
 string source_id
+string runtime_mode
 uint64 seq
 string side
 float64[16] pose

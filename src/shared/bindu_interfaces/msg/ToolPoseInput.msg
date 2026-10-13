@@ -2,6 +2,7 @@
 # Only pose and tight are action inputs. The remaining fields fence stale data.
 builtin_interfaces/Time stamp
 string source_id
+string runtime_mode
 uint64 seq
 string frame_id
 float64[16] pose

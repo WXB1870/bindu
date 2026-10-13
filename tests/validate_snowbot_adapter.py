@@ -124,7 +124,7 @@ def main():
     submit = node.create_client(SubmitMotion, ns+'/execution/submit')
     control = node.create_client(ControlExecution, ns+'/execution/control')
 
-    def start(enabled, simulated):
+    def start(enabled):
         # Each phase uses a newly booted fake guard. A real guard deliberately
         # forbids a second session without an operator's driver recovery.
         config['guard_session'] = 0
@@ -139,7 +139,7 @@ def main():
             '-p', 'arm_receiver_node:=/'+node.get_name(),
             '-p', 'servo_receiver_node:=/'+node.get_name(),
             '-p', 'mid_receiver_node:=/'+node.get_name(),
-            '-p', 'simulation:='+str(simulated).lower()], stdout=handle, stderr=subprocess.STDOUT,
+            '-p', 'runtime_mode:=real'], stdout=handle, stderr=subprocess.STDOUT,
             start_new_session=True)
         processes.append(p); until(node, lease.service_is_ready); return p
 
@@ -169,13 +169,13 @@ def main():
         groups = ['waist', 'left_arm', 'right_arm']
         names = [n for g in groups for n in GROUPS[g]]
         positions = [q[n]+(.03 if n in ('body_joint_1', 'arm_l_joint_1') else 0.) for n in names]
-        return MotionCommand(command_id=identity, task_id='wire', lease_id=owner.lease_id,
+        return MotionCommand(command_id=identity, task_id='wire', runtime_mode='real', lease_id=owner.lease_id,
             epoch=owner.epoch, profile_hash=profile.digest, schema_version=2,
             mode='joint_target', resource_groups=groups, joint_names=names, positions=positions,
             stamp=stamp(node.get_clock().now().nanoseconds*1e-9), valid_for=.3)
 
     try:
-        p = start(False, False)
+        p = start(False)
         reply = acquire(); assert not reply.ok and 'COMMANDS_DISABLED' in reply.code
         config['feedback'] = True
         until(node, lambda: states and states[-1].feedback_stamp.sec > 0)
@@ -186,7 +186,7 @@ def main():
         until(node, retired)
         states.clear(); config['feedback'] = False
         config['health'] = False
-        p = start(True, True)
+        p = start(True)
         reply = acquire(); assert not reply.ok and 'FEEDBACK_UNAVAILABLE' in reply.code
         outcomes.append('cold_feedback_rejected')
         config['feedback'] = True
@@ -263,7 +263,7 @@ def main():
                 until(node, retired)
                 states.clear()
                 config.update(feedback=True, velocity=0., tracking=True)
-                p = start(True, True)
+                p = start(True)
                 until(node, lambda: states and states[-1].feedback_stamp.sec > 0)
                 owner = acquire_ready()
                 identity = 'shutdown_'+str(signum)

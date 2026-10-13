@@ -7,3 +7,4 @@ string component
 string state
 string code
 bool simulated
+string runtime_mode

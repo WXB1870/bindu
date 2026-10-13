@@ -1,4 +1,6 @@
 uint32 schema_version
+# Robot environment: simulation or real. Empty is legacy simulation only.
+string runtime_mode
 string command_id
 string task_id
 string observation_id

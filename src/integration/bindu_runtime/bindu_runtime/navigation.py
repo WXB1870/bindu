@@ -129,7 +129,7 @@ class Nav2Navigation:
                     if gate.sequence != last_sequence:
                         last_sequence = gate.sequence
                         source_stamp, (linear, angular) = gate.velocity
-                        command = MotionCommand(schema_version=1, command_id=uuid.uuid4().hex,
+                        command = MotionCommand(schema_version=1, runtime_mode=port.runtime_mode, command_id=uuid.uuid4().hex,
                             lease_id=context.lease_id, epoch=context.epoch, profile_hash=port.profile.digest,
                             task_id=context.task_id, observation_id=goal_id, mode='base_velocity',
                             resource_group='base', stamp=stamp(source_stamp),

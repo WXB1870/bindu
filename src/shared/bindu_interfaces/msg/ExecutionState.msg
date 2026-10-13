@@ -13,6 +13,8 @@ float64 base_y
 float64 base_yaw
 geometry_msgs/Twist base_velocity
 bool simulated
+string runtime_mode
+string device_backend
 string[] feedback_sources
 builtin_interfaces/Time[] source_stamps
 string[] stop_failures

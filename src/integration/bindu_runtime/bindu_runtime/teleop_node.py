@@ -43,9 +43,9 @@ class TeleopNode(RuntimeNode):
         self.create_subscription(VRInput, 'teleop/vr/input', self.on_frame, 5)
         if self.require_mode_selection:
             self.create_subscription(TeleopModeState, 'teleop/mode_state',
-                lambda m:setattr(self,'mode_state',m), QoSProfile(depth=1,
+                lambda m:self.store_mode_message('mode_state',m), QoSProfile(depth=1,
                     reliability=ReliabilityPolicy.RELIABLE,durability=DurabilityPolicy.TRANSIENT_LOCAL))
-        self.create_subscription(ExecutionState, 'execution/state', lambda m: setattr(self, 'state', m), 1)
+        self.create_subscription(ExecutionState, 'execution/state', lambda m: self.store_mode_message('state', m), 1)
         self.create_subscription(RecorderHealth, 'recorder/health', self.on_health, 5)
         self.create_timer(.005, self.poll_worker)
         self.create_service(Trigger, 'teleop/ready', self.ready)
@@ -56,10 +56,10 @@ class TeleopNode(RuntimeNode):
 
     def on_health(self, msg):
         if msg.run_id == self.run_id:
-            self.health = msg
+            self.store_mode_message('health', msg)
 
     def on_frame(self, msg):
-        if msg.side != self.cfg['side']:
+        if not self.matches_mode(msg) or msg.side != self.cfg['side']:
             return
         self.frame = VRFrame(msg.source_id, msg.seq, seconds(msg.stamp), msg.side, tuple(msg.pose),
                              msg.grip, msg.trigger, msg.init, msg.stop, msg.valid, msg.clutch_seq)
@@ -173,7 +173,7 @@ class TeleopNode(RuntimeNode):
 
     async def execute(self, goal):
         session = TeleopSession(self.cfg, self.profile.groups[self.cfg['resource_group']])
-        result = TeleopAction.Result(simulated=True)
+        result = TeleopAction.Result(simulated=self.simulation)
         lease = pending = renewal = None
         accepted = 0
         canceled = False
@@ -273,7 +273,7 @@ class TeleopNode(RuntimeNode):
                         'rotation_error':solution.rotation_error}), goal.request.task_id,
                         req.request_id, req.request_id)
                     if session.accept_result(solution, self.now()):
-                        command = MotionCommand(schema_version=1, command_id=req.request_id,
+                        command = MotionCommand(schema_version=1, runtime_mode=self.runtime_mode, command_id=req.request_id,
                             task_id=goal.request.task_id, observation_id=req.request_id,
                             profile_hash=self.profile.digest, lease_id=lease.lease_id, epoch=lease.epoch,
                             mode='joint_target', resource_group=goal.request.resource_group,

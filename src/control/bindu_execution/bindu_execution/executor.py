@@ -10,6 +10,7 @@ import math
 import uuid
 from bindu_contracts.contracts import Event
 from bindu_contracts.ports import ExecutionIO
+from bindu_contracts.runtime_mode import resolve_mode, command_mode, SIMULATION
 from .interpolation import State, Timeline, fit_online, fit_target, fit_timed, fit_stop, join, trim_before
 
 
@@ -18,8 +19,12 @@ class Rejected(ValueError):
 
 
 class Executor:
-    def __init__(self, profile, robot_io: ExecutionIO):
+    def __init__(self, profile, robot_io: ExecutionIO, *, runtime_mode=None):
         self.profile, self.io = profile, robot_io
+        self.runtime_mode = resolve_mode(runtime_mode or '', default=(
+            SIMULATION if robot_io.last_feedback.simulated else 'real'))
+        if type(robot_io.last_feedback.simulated) is not bool or robot_io.last_feedback.simulated != (self.runtime_mode == SIMULATION):
+            raise ValueError('FEEDBACK_RUNTIME_MODE_MISMATCH')
         self.lease_id = ''
         self.epoch = 0
         self.owner = ''
@@ -173,6 +178,10 @@ class Executor:
         return join(self.path, suffix, switch) if self.path and switch > now else suffix
 
     def submit(self, m, now):
+        try:
+            command_mode(m.runtime_mode, self.runtime_mode)
+        except ValueError as exc:
+            raise Rejected(str(exc)) from exc
         self.tick(now)
         self.check_lease(m.lease_id, m.epoch, now)
         if self.stopping:
@@ -268,7 +277,11 @@ class Executor:
         dt = 0. if self.last_tick is None else max(0., now-self.last_tick)
         self.last_tick = now
         try:
-            self.feedback = self.io.read_feedback(now, dt)
+            feedback = self.io.read_feedback(now, dt)
+            if type(feedback.simulated) is not bool or feedback.simulated != (self.runtime_mode == SIMULATION):
+                self.halt(now, 'FEEDBACK_RUNTIME_MODE_MISMATCH', revoke=True, emergency=True)
+                return
+            self.feedback = feedback
         except RuntimeError:
             self.halt(now, 'DEVICE_FEEDBACK_ERROR', revoke=True, emergency=True)
             return

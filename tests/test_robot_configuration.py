@@ -107,6 +107,7 @@ class RobotConfigurationTests(unittest.TestCase):
                     robot = RobotSetup.load(robot.path)
                 params = {}
                 node = Mock()
+                node.runtime_mode = 'simulation'
                 node.declare_parameter.side_effect = lambda key, value: params.setdefault(key, value)
                 node.get_parameter.side_effect = lambda key: Mock(value=params[key])
                 io, _ = assemble_devices(node, robot.profile)

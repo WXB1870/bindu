@@ -2,6 +2,7 @@
   "schema_version": 1,
   "robot_launch": "snowbot_sim.launch.py",
   "arguments": {
+    "runtime_mode": "simulation",
     "namespace": "bindu_teleop",
     "profile": "@runtime/config/snowbot_shovel_sim.json",
     "bimanual_config": "@runtime/config/bimanual_snowbot_shovel.json",

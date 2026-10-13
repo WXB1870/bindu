@@ -10,7 +10,7 @@ from .common import RuntimeNode, stamp, spin
 
 class VRInputNode(RuntimeNode):
     def __init__(self):
-        super().__init__('vr_input')
+        super().__init__('vr_input', allow_hardware=True, default_mode='simulation')
         defaults = {'host': '127.0.0.1', 'port': 8012, 'side': 'left', 'cert_file': '', 'key_file': ''}
         for key, value in defaults.items():
             self.declare_parameter(key, value)
@@ -31,6 +31,7 @@ class VRInputNode(RuntimeNode):
         try:
             view = json.loads(msg.data)
             if (view['run_id'] == self.run_id and view['profile_hash'] == self.profile.digest
+                    and view.get('runtime_mode') == self.runtime_mode
                     and 0 <= self.now()-view['stamp'] <= .6):
                 self.receiver.display(view)
         except (ValueError, KeyError, TypeError):
@@ -51,7 +52,8 @@ class VRInputNode(RuntimeNode):
             if age < 0 or age > 1.:
                 continue
             self.publisher.publish(VRInput(stamp=stamp(self.now()-age), source_id=item.source_id,
-                seq=item.seq, side=item.side, pose=list(item.pose) if item.valid else [0.]*16,
+                seq=item.seq, side=item.side, runtime_mode=self.runtime_mode,
+                pose=list(item.pose) if item.valid else [0.]*16,
                 grip=item.grip, trigger=item.trigger, init=item.init, stop=item.stop,
                 valid=item.valid, clutch_seq=item.clutch_seq))
 

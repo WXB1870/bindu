@@ -9,7 +9,7 @@ from .common import RuntimeNode, seconds, spin
 
 class DescriptionNode(RuntimeNode):
     def __init__(self):
-        super().__init__('description_state')
+        super().__init__('description_state', allow_hardware=True, default_mode='simulation')
         self.declare_parameter('base_frame', 'base_link')
         self.base_frame = self.get_parameter('base_frame').value
         if not self.base_frame or self.base_frame.startswith('/'):
@@ -20,7 +20,7 @@ class DescriptionNode(RuntimeNode):
         self.create_subscription(ExecutionState, 'execution/state', self.update, 1)
 
     def update(self, state):
-        if state.profile_hash != self.profile.digest or not state.simulated:
+        if state.profile_hash != self.profile.digest or not self.matches_mode(state):
             return
         now = self.now()
         joint_stamp = seconds(state.joints.header.stamp)

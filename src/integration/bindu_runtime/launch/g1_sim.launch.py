@@ -8,15 +8,19 @@ from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 from ament_index_python.packages import get_package_share_directory
+from bindu_contracts.runtime_mode import resolve_mode
 
 
 def assemble(context):
+    mode = resolve_mode(LaunchConfiguration('runtime_mode', default='simulation').perform(context))
+    if mode != 'simulation':
+        raise ValueError('G1_REAL_BACKEND_NOT_IMPLEMENTED')
     share = Path(get_package_share_directory('bindu_runtime'))
     model = Path(get_package_share_directory('bindu_description'))/'urdf/g1_provisional.urdf'
     side = LaunchConfiguration('side').perform(context)
     if side not in ('left', 'right'):
         raise ValueError('G1_SIDE_MUST_BE_LEFT_OR_RIGHT')
-    common = {'profile': LaunchConfiguration('profile'), 'run_id': LaunchConfiguration('run_id')}
+    common = {'profile': LaunchConfiguration('profile'), 'run_id': LaunchConfiguration('run_id'), 'runtime_mode': mode}
     nodes = [Node(package='bindu_runtime', executable=name, namespace=LaunchConfiguration('namespace'),
                   parameters=[{**common, **({'output':LaunchConfiguration('output'), 'recording_mode':ParameterValue(LaunchConfiguration('recording_mode'),value_type=str)} if name == 'recorder' else {}),
                                **({'device_backend': LaunchConfiguration('device_backend')} if name == 'execution' else {})}],
@@ -64,7 +68,7 @@ def assemble(context):
 
 def generate_launch_description():
     share = Path(get_package_share_directory('bindu_runtime'))
-    defaults = {'namespace':'bindu_g1_sim', 'run_id':uuid.uuid4().hex, 'output':'/tmp/bindu-runs', 'recording_mode':'compact',
+    defaults = {'runtime_mode':'simulation', 'namespace':'bindu_g1_sim', 'run_id':uuid.uuid4().hex, 'output':'/tmp/bindu-runs', 'recording_mode':'compact',
                 'profile':str(share/'config/g1_provisional_sim.json'), 'device_backend':'kinematic',
                 'teleop_enabled':'false', 'teleop_config':'', 'vr_enabled':'false', 'bimanual_enabled':'false',
                 'bimanual_config':str(share/'config/bimanual_g1_sim.json'),

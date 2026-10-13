@@ -1,11 +1,15 @@
 """Validate a small deployment recipe. No hardware enable or startup motion."""
 import json
 from pathlib import Path
+from bindu_contracts.runtime_mode import resolve_mode
 
 
 COMMON = {'namespace', 'profile', 'bimanual_config', 'side', 'tool_input_source',
           'vr_enabled', 'host', 'port', 'cert_file', 'key_file', 'recording_mode',
-          'output', 'device_backend', 'description_enabled', 'tool_display_enabled'}
+          'output', 'device_backend', 'description_enabled', 'tool_display_enabled', 'runtime_mode'}
+EXECUTION = {'runtime_mode', 'namespace', 'profile', 'device_backend', 'run_id', 'output',
+             'recording_mode', 'command_enabled', 'vendor_namespace', 'arm_receiver_node',
+             'servo_receiver_node', 'mid_receiver_node'}
 PATHS = {'profile', 'bimanual_config', 'robot_config', 'cert_file', 'key_file', 'output'}
 
 
@@ -18,24 +22,33 @@ def load_deployment(path, share):
         raise ValueError('TELEOP_DEPLOYMENT_SCHEMA')
     launch = data['robot_launch']
     # Add robot assemblies when they expose the same bounded teleop contract.
-    if launch != ('snowbot_sim.launch.py' if version == 1 else 'robot_teleop.launch.py'):
+    execution_only = version == 2 and launch == 'snowbot_adapter.launch.py'
+    if not execution_only and launch != ('snowbot_sim.launch.py' if version == 1 else 'robot_teleop.launch.py'):
         raise ValueError('TELEOP_DEPLOYMENT_ROBOT_UNSUPPORTED')
     args = data['arguments']
-    allowed = COMMON if version == 1 else COMMON-{'profile', 'bimanual_config'} | {'robot_config'}
+    allowed = EXECUTION if execution_only else (COMMON if version == 1 else COMMON-{'profile', 'bimanual_config'} | {'robot_config'})
     if not isinstance(args, dict) or set(args)-allowed:
         raise ValueError('TELEOP_DEPLOYMENT_ARGUMENT')
-    required = {'profile', 'bimanual_config'} if version == 1 else {'robot_config'}
+    required = {'runtime_mode'} if execution_only else ({'profile', 'bimanual_config'} if version == 1 else {'robot_config'})
     if not required <= set(args):
         raise ValueError('TELEOP_DEPLOYMENT_MODEL_REQUIRED')
-    if args.get('device_backend', 'kinematic') not in ('kinematic', 'external_simulation'):
-        raise ValueError('TELEOP_HARDWARE_ADAPTER_NOT_IMPLEMENTED')
+    if 'runtime_mode' in args and args['runtime_mode'] not in ('simulation', 'real'):
+        raise ValueError('RUNTIME_MODE_INVALID')
+    selected_mode = resolve_mode(args.get('runtime_mode', 'simulation'))
+    backend = args.get('device_backend', '') if execution_only else args.get('device_backend', 'kinematic')
+    allowed_backends = ('', 'snowbot_vendor') if execution_only and selected_mode == 'real' else ('', 'kinematic', 'external_simulation')
+    if backend not in allowed_backends:
+        raise ValueError('RUNTIME_MODE_BACKEND_CONFLICT')
+    if selected_mode == 'real' and not execution_only:
+        raise ValueError('TELEOP_REAL_BACKEND_NOT_IMPLEMENTED')
     if args.get('tool_input_source', 'tool_pose') not in ('vr', 'tool_pose'):
         raise ValueError('TELEOP_DEPLOYMENT_INPUT')
     if args.get('recording_mode', 'compact') not in ('off', 'compact', 'normal'):
         raise ValueError('TELEOP_DEPLOYMENT_RECORDING')
-    result = {'tool_input_source': 'tool_pose', 'vr_enabled': 'false',
-              'initialize_tool_pose': 'false'}
-    if version == 2:
+    result = {'runtime_mode': selected_mode} if execution_only else {
+        'runtime_mode': selected_mode, 'tool_input_source': 'tool_pose', 'vr_enabled': 'false',
+        'initialize_tool_pose': 'false'}
+    if version == 2 and not execution_only:
         del result['initialize_tool_pose']
     for key, value in args.items():
         if not isinstance(value, (str, bool, int)):

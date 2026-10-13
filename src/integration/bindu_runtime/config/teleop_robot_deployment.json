@@ -2,6 +2,7 @@
   "schema_version": 2,
   "robot_launch": "robot_teleop.launch.py",
   "arguments": {
+    "runtime_mode": "simulation",
     "robot_config": "@runtime/config/robot_snowbot.json",
     "namespace": "bindu_teleop",
     "device_backend": "kinematic",

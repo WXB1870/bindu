@@ -42,7 +42,7 @@ class SnowbotAdapterTests(unittest.TestCase):
         names = tuple(GROUPS['left_arm'])
         return replace(Motion('cmd', lease, epoch, self.profile.digest, 'test', '',
                               'joint_target', 'left_arm', self.now, .3, names=names,
-                              positions=(.3, .2, 0., 0., 0., 0., 0.)), **changes)
+                              positions=(.3, .2, 0., 0., 0., 0., 0.), runtime_mode='real'), **changes)
 
     def tick(self, dt=.02, *, observe=True):
         self.now += dt

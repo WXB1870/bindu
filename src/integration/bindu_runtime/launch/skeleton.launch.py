@@ -2,17 +2,25 @@
 from pathlib import Path
 import uuid
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, OpaqueFunction
 from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 from ament_index_python.packages import get_package_share_directory
 from bindu_runtime.device_assembly import DEFAULT_DRIVERS
+from bindu_contracts.runtime_mode import resolve_mode
+
+
+def validate_mode(context):
+    if resolve_mode(LaunchConfiguration('runtime_mode').perform(context)) != 'simulation':
+        raise ValueError('SKELETON_REAL_BACKEND_NOT_IMPLEMENTED')
+    return []
 
 
 def generate_launch_description():
     defaults = {
+        'runtime_mode': 'simulation',
         'pi_enabled': 'false',
         'pi_config': str(Path(get_package_share_directory('bindu_runtime'))/'config/pi_loopback.json'),
         'profile': str(Path(get_package_share_directory('bindu_runtime'))/'config/wheel_sim.json'),
@@ -31,7 +39,7 @@ def generate_launch_description():
         'perception_executable': 'perception',
     }
     args = [DeclareLaunchArgument(key, default_value=value) for key, value in defaults.items()]
-    common = {key: LaunchConfiguration(key) for key in ('profile', 'run_id')}
+    common = {key: LaunchConfiguration(key) for key in ('profile', 'run_id', 'runtime_mode')}
     extra = {'execution': tuple(DEFAULT_DRIVERS), 'recorder': ('output','recording_mode'),
              'task': ('planner_provider', 'chunk_provider', 'navigation_provider', 'navigation_config', 'navigation_backend'), 'perception': ('perception_provider',)}
     nodes = []
@@ -44,4 +52,4 @@ def generate_launch_description():
     nodes.append(Node(package='bindu_runtime', executable='pi_client', name='pi_client',
                       namespace=LaunchConfiguration('namespace'), condition=IfCondition(LaunchConfiguration('pi_enabled')),
                       parameters=[{**common, 'pi_config': LaunchConfiguration('pi_config')}], output='screen'))
-    return LaunchDescription(args+nodes)
+    return LaunchDescription(args+[OpaqueFunction(function=validate_mode)]+nodes)

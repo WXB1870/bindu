@@ -43,11 +43,11 @@ class PiNode(RuntimeNode):
                                    callback_group=self.group)
 
     def on_state(self, message):
-        self.state = message
+        self.store_mode_message('state', message)
 
     def on_health(self, message):
         if message.run_id == self.run_id:
-            self.health = message
+            self.store_mode_message('health', message)
 
     def on_observation(self, message):
         self.observation = message
@@ -154,7 +154,7 @@ class PiNode(RuntimeNode):
         task_id = goal.request.task_id
         lease = pending = renewal = None
         accepted = dropped = 0
-        result = PiSession.Result(simulated=True)
+        result = PiSession.Result(simulated=self.simulation)
         canceled = False
         try:
             lease = await self.wait(self.lease_client.call_async(Lease.Request(
@@ -222,7 +222,7 @@ class PiNode(RuntimeNode):
                         dropped += 1
                     else:
                         message, (names, values, source_time, correlated_obs) = latest
-                        command = MotionCommand(schema_version=1, command_id=session_id+'_'+str(message.seq),
+                        command = MotionCommand(schema_version=1, runtime_mode=self.runtime_mode, command_id=session_id+'_'+str(message.seq),
                             task_id=task_id, observation_id=correlated_obs, profile_hash=self.profile.digest,
                             lease_id=lease.lease_id, epoch=lease.epoch, mode='joint_target',
                             resource_group=goal.request.resource_group, stamp=stamp(source_time),

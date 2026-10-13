@@ -3,6 +3,7 @@ builtin_interfaces/Time changed_at
 string profile_hash
 uint64 generation
 string mode
+string runtime_mode
 string side
 string phase
 string code

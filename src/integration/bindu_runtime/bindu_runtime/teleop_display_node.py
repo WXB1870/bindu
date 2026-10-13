@@ -15,7 +15,7 @@ from .common import RuntimeNode, seconds, spin
 
 class TeleopDisplayNode(RuntimeNode):
     def __init__(self):
-        super().__init__('teleop_display')
+        super().__init__('teleop_display', allow_hardware=True, default_mode='simulation')
         self.declare_parameter('teleop_config', str(Path(get_package_share_directory('bindu_runtime'))/'config/teleop_v34.json'))
         self.declare_parameter('model_root', str(Path(get_package_share_directory('bindu_description'))/'urdf'))
         self.declare_parameter('tool_config', '')
@@ -39,17 +39,17 @@ class TeleopDisplayNode(RuntimeNode):
         self.state = self.frame = None
         latest = QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT)
         events = QoSProfile(depth=64, reliability=ReliabilityPolicy.BEST_EFFORT)
-        self.create_subscription(ExecutionState, 'execution/state', lambda m: setattr(self, 'state', m), latest)
+        self.create_subscription(ExecutionState, 'execution/state', lambda m: self.store_mode_message('state', m), latest)
         if self.tool_mode:
-            self.create_subscription(ToolPoseInput, 'teleop/tool/input', lambda m: setattr(self, 'frame', m), latest)
+            self.create_subscription(ToolPoseInput, 'teleop/tool/input', lambda m: self.store_mode_message('frame', m), latest)
         else:
-            self.create_subscription(VRInput, 'teleop/vr/input', lambda m: setattr(self, 'frame', m), latest)
+            self.create_subscription(VRInput, 'teleop/vr/input', lambda m: self.store_mode_message('frame', m), latest)
         self.create_subscription(RuntimeEvent, 'events', self.on_event, events)
         self.publisher = self.create_publisher(String, 'teleop/tool/display' if self.tool_mode else 'teleop/display', latest)
         self.create_timer(.1, self.publish)
 
     def on_event(self, msg):
-        if msg.run_id != self.run_id or msg.component != ('teleop_tool' if self.tool_mode else 'teleop') or not msg.simulated:
+        if msg.run_id != self.run_id or msg.component != ('teleop_tool' if self.tool_mode else 'teleop') or not self.matches_mode(msg):
             return
         try:
             self.feedback.event(msg.state, msg.code, msg.task_id, seconds(msg.stamp))
@@ -59,7 +59,7 @@ class TeleopDisplayNode(RuntimeNode):
     def publish(self):
         measured, feedback_stamp, error = None, float('-inf'), ''
         state = self.state
-        if state is not None and state.simulated and state.profile_hash == self.profile.digest:
+        if state is not None and self.matches_mode(state) and state.profile_hash == self.profile.digest:
             feedback_stamp = seconds(state.feedback_stamp)
             if 0 <= self.now()-feedback_stamp <= self.feedback.cfg['feedback_max_age']:
                 try:
@@ -84,6 +84,7 @@ class TeleopDisplayNode(RuntimeNode):
         if self.tool_mode and frame is None:
             input_valid = self.feedback.target is not None
         view = self.feedback.snapshot(self.now(), measured, feedback_stamp, input_stamp, input_valid, error)
+        view['runtime_mode'], view['simulated'] = self.runtime_mode, self.simulation
         if self.tool_mode:
             # Raw request may differ from the last target processed by the QP.
             view['requested'] = None

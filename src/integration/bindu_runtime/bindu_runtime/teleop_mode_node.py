@@ -47,7 +47,7 @@ class TeleopModeNode(RuntimeNode):
         group = ReentrantCallbackGroup()
         self.tool_client = self.create_client(Trigger, 'teleop/tool_ready', callback_group=group)
         self.single_client = self.create_client(Trigger, 'teleop/worker_ready', callback_group=group)
-        self.create_subscription(ExecutionState,'execution/state',lambda m:setattr(self,'state',m),1)
+        self.create_subscription(ExecutionState,'execution/state',lambda m:self.store_mode_message('state',m),1)
         self.create_subscription(RecorderHealth,'recorder/health',self.on_health,5)
         self.create_subscription(VRInput,'teleop/vr/input',self.on_frame,5)
         self.create_subscription(ToolPoseInput,'teleop/tool/input',self.on_tool_frame,5)
@@ -63,10 +63,10 @@ class TeleopModeNode(RuntimeNode):
 
     def on_health(self,msg):
         if msg.run_id == self.run_id:
-            self.health = msg
+            self.store_mode_message('health', msg)
 
     def on_frame(self,msg):
-        if msg.side not in ('left','right'):
+        if not self.matches_mode(msg) or msg.side not in ('left','right'):
             return
         self.frames[msg.side] = VRFrame(msg.source_id,msg.seq,seconds(msg.stamp),msg.side,
             tuple(msg.pose),msg.grip,msg.trigger,msg.init,msg.stop,msg.valid,msg.clutch_seq)
@@ -77,13 +77,14 @@ class TeleopModeNode(RuntimeNode):
             self.paired_frames={'left':left,'right':right}
 
     def on_tool_frame(self, msg):
+        if not self.matches_mode(msg): return
         self.tool_frame = ToolPoseFrame(msg.source_id, msg.seq, seconds(msg.stamp),
             msg.frame_id, tuple(msg.pose), msg.tight, msg.valid, msg.stop)
 
     def publish(self):
         m = self.selection
         self.publisher.publish(TeleopModeState(stamp=stamp(self.now()),changed_at=stamp(m.changed_at),
-            profile_hash=self.profile.digest,generation=m.generation,mode=m.mode,side=m.side,
+            profile_hash=self.profile.digest,runtime_mode=self.runtime_mode,generation=m.generation,mode=m.mode,side=m.side,
             phase=m.phase,code=m.code))
 
     def goal(self,request):

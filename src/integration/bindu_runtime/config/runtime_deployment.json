@@ -1,0 +1,11 @@
+{
+  "schema_version": 2,
+  "robot_launch": "snowbot_adapter.launch.py",
+  "arguments": {
+    "runtime_mode": "simulation",
+    "namespace": "bindu_snowbot",
+    "vendor_namespace": "/snowbot",
+    "command_enabled": false,
+    "recording_mode": "compact"
+  }
+}

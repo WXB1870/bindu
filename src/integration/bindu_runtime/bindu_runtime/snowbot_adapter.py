@@ -12,6 +12,9 @@ from .execution_node import ExecutionNode
 
 class SnowbotDevices:
     def __init__(self, node, profile):
+        if node.runtime_mode != 'real':
+            raise ValueError('SNOWBOT_VENDOR_REQUIRES_REAL_MODE')
+        node.device_backend = 'snowbot_vendor'
         # Optional message package: other robot assemblies do not import it.
         try:
             from snowbot_ctl_msgs.msg import JointPositionCommand, RetInformation
