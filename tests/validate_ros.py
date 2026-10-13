@@ -38,6 +38,21 @@ def until(node, predicate, seconds=10):
     assert predicate(), 'condition timed out'
 
 
+def wait_for_task_ready(node, namespace, navigation_only=False, seconds=8.):
+    from std_srvs.srv import Trigger
+    client = node.create_client(Trigger, namespace+('/navigation/ready' if navigation_only else '/tasks/ready'))
+    try:
+        assert client.wait_for_service(timeout_sec=seconds), 'readiness service unavailable'
+        deadline = time.monotonic()+seconds
+        reply = wait(node,client.call_async(Trigger.Request()),seconds=seconds)
+        while not reply.success and time.monotonic() < deadline:
+            rclpy.spin_once(node,timeout_sec=.02)
+            reply = wait(node,client.call_async(Trigger.Request()),seconds=max(.01,deadline-time.monotonic()))
+        assert reply.success, reply.message
+    finally:
+        node.destroy_client(client)
+
+
 def terminate(p):
     if p.poll() is None:
         os.killpg(p.pid,signal.SIGINT)
@@ -75,7 +90,7 @@ def scenario(root, output, case, strategy='planner', profile='wheel_sim', fault=
         action=ActionClient(node,FetchDrink,ns+'/tasks/fetch_drink')
         assert action.wait_for_server(timeout_sec=15),'no task server'
         until(node,lambda: seen['state'] and seen['health'] and seen['health'].ready)
-        time.sleep(.4)  # Task process must discover its separate capability services.
+        wait_for_task_ready(node,ns)
         if fault in ('delay','stale','reject','hand:reject'):
             path='/perception/sim_fault' if fault in ('delay','stale') else '/execution/sim_fault'
             client=node.create_client(InjectFault,ns+path)

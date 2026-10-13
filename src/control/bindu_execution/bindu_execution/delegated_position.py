@@ -49,29 +49,36 @@ class DelegatedPositionExecutor(Executor):
             if self.lease_id:
                 self.epoch += 1
             self.lease_id = self.owner = ''
+        if self.stop_fault:
+            return
+        if self.stopping and self.stop_expired(now):
+            self.io.stop_failures = tuple(sorted(set(self.io.stop_failures) | {'vendor_hold'}))
+            self.fail_stop(now, 'STOP_UNCONFIRMED:'+','.join(self.io.stop_failures))
+            return
         if self.stopping and not emergency:
             return
-        # Later faults must keep the first stop's absolute deadline. tick() can
-        # take the overrun branch repeatedly without ever reaching tick_stop().
-        deadline = self.stop_deadline if self.stopping else now+self.profile.stop_timeout
+        # Keep both original budgets across repeated faults and clock changes.
+        if not self.stopping:
+            self.stop_deadline = now+self.profile.stop_timeout
+            self.stop_steady_deadline = self.steady()+self.profile.stop_timeout
         motion = self.active or (self.stopping[0] if self.stopping else None)
         self.last_stamp = max(self.last_stamp, now if math.isfinite(now) else self.last_stamp)
         self.revision += 1
-        self.io.stop()
+        try:
+            self.io.stop()
+        except RuntimeError:
+            self.io.stop_failures = tuple(sorted(set(self.io.stop_failures) | {'vendor_hold'}))
         self.active = self.path = None
         self.held_references.clear()
         self.reference_names = tuple(self.io.stop_targets)
         self.reference = State.rest(self.io.stop_targets.values()) if self.reference_names else None
-        if self.reference_names and now >= deadline:
+        if self.reference_names and self.stop_expired(now):
             self.io.stop_failures = tuple(sorted(set(self.io.stop_failures) | {'vendor_hold'}))
         if self.io.stop_failures:
-            self.lease_id = self.owner = ''
-            self.stopping = self.reference = None
-            self.reference_names = ()
-            self.emit(now, motion, 'FAILED', 'STOP_UNCONFIRMED:'+','.join(self.io.stop_failures))
+            self.stopping = (motion, code)
+            self.fail_stop(now, 'STOP_UNCONFIRMED:'+','.join(self.io.stop_failures))
         elif self.reference_names:
             self.stopping = (motion, code)
-            self.stop_deadline = deadline
             self.emit(now, motion, 'STOPPING', code)
         else:
             self.stopping = None
@@ -79,12 +86,15 @@ class DelegatedPositionExecutor(Executor):
 
     def tick_stop(self, now):
         motion, code = self.stopping
+        # Late feedback must not erase an expired stop budget.
+        if self.stop_expired(now):
+            self.io.stop_failures = tuple(sorted(set(self.io.stop_failures) | {'vendor_hold'}))
+            self.fail_stop(now, 'STOP_UNCONFIRMED:'+','.join(self.io.stop_failures))
+            return
         # A sent hold is only a request. Require feedback newer than that request.
-        if self.feedback.stamp > self.io.stop_requested_at and self.references_arrived():
+        if (self.feedback.stamp > self.io.stop_requested_at and
+                0 <= now-self.feedback.stamp <= .2 and self.references_arrived()):
             self.io.stop_targets.clear()
             self.stopping = self.reference = None
             self.reference_names = ()
             self.emit(now, motion, 'CANCELED' if code == 'CANCELED' else 'FAILED', code)
-        elif now >= self.stop_deadline:
-            self.io.stop_failures = ('vendor_hold',)
-            self.halt(now, 'STOP_UNCONFIRMED', revoke=True, emergency=True)

@@ -190,6 +190,9 @@ class Interpolation(unittest.TestCase):
         self.e.submit(self.m,10.)
         self.e.halt(10.05)
         self.assertFalse(self.e.lease_id)
+        self.assertEqual(self.e.results['first'].state,'STOPPING')
+        self.assertIn('REFERENCE_GENERATION_FAILED',self.e.results['first'].code)
+        self.e.tick(10.06)  # Device stop still needs newer measured rest.
         self.assertEqual(self.e.results['first'].state,'FAILED')
         self.assertIn('REFERENCE_GENERATION_FAILED',self.e.results['first'].code)
 
@@ -394,24 +397,27 @@ class Interpolation(unittest.TestCase):
         m=replace(self.m,mode='finite_trajectory',positions=(),offsets=(.5,),points=((.3,),))
         self.e.submit(m,10.)
         self.tick_to(10.5)
+        self.assertNotEqual(self.e.results['first'].state,'SUCCEEDED')
+        self.tick_to(10.52)  # Read the post-endpoint stationary device sample.
         self.assertEqual(self.e.results['first'].state,'SUCCEEDED')
         self.d.positions['a']=.299
         self.d.target['a']=.299
-        self.e.submit(replace(self.m,command_id='next',stamp=10.5),10.5)
+        self.e.submit(replace(self.m,command_id='next',stamp=10.52),10.52)
         self.assertAlmostEqual(self.e.reference.q[0],.3)
 
     def test_release_after_finite_tolerance_waits_for_resting_reference(self):
         m=replace(self.m,mode='finite_trajectory',positions=(),offsets=(.5,),points=((.3,),))
         self.e.submit(m,10.)
-        self.tick_to(10.5)
+        self.tick_to(10.52)
+        self.assertEqual(self.e.results['first'].state,'SUCCEEDED')
         self.d.positions['a']=.29
-        self.e.tick(10.5)
-        self.e.halt(10.5,revoke=True)
+        self.e.tick(10.52)
+        self.e.halt(10.52,revoke=True)
         self.assertTrue(self.e.stopping)
         self.assertIsNone(self.e.path)
         self.assertAlmostEqual(self.d.target['a'],.3)
         with self.assertRaisesRegex(Rejected,'BUSY'):
-            self.e.acquire('new',['arm'],2.,10.5)
+            self.e.acquire('new',['arm'],2.,10.52)
         self.tick_to(10.6)
         self.assertIsNone(self.e.stopping)
         self.assertAlmostEqual(self.d.positions['a'],.3)

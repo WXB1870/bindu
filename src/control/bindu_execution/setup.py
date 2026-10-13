@@ -15,5 +15,5 @@ setup(
         sources=[str(native / name) for name in ('python_bindings.cpp', 'interpolation.cpp', 'adaptive_stream.cpp')],
         depends=[str(native / name) for name in ('interpolation.hpp', 'adaptive_stream.hpp', 'curve_math.hpp')],
         language='c++', extra_compile_args=['-std=c++17', '-O2', '-Wall', '-Wextra'])],
-    install_requires=['setuptools'], zip_safe=True,
+    install_requires=['setuptools'], tests_require=['pytest'], zip_safe=True,
 )

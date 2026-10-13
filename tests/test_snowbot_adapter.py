@@ -206,6 +206,44 @@ class SnowbotAdapterTests(unittest.TestCase):
         self.assertIn('STOP_UNCONFIRMED', self.engine.results['cmd'].code)
         self.assertTrue(self.io.stop_failures)
 
+    def test_frozen_clock_cannot_extend_vendor_hold_budget(self):
+        steady = [1.]
+        self.engine.steady = lambda: steady[0]
+        motion = self.command(); self.engine.submit(motion, self.now); self.tick()
+        self.engine.halt(self.now)
+        sent = len(self.sent)
+        steady[0] += self.profile.stop_timeout + .01
+        self.engine.tick(self.now)  # No new ROS time or measured stop evidence.
+        self.assertIsNone(self.engine.stopping)
+        self.assertIn('STOP_UNCONFIRMED', self.engine.results['cmd'].code)
+        self.assertFalse(self.engine.lease_id)
+        self.assertTrue(self.io.stop_failures)
+        self.assertEqual(len(self.sent), sent)
+
+    def test_late_rest_after_vendor_hold_deadline_cannot_report_cancel(self):
+        steady = [1.]
+        self.engine.steady = lambda: steady[0]
+        motion = self.command(); self.engine.submit(motion, self.now); self.tick()
+        self.engine.halt(self.now)
+        steady[0] += self.profile.stop_timeout + .01
+        self.tick()  # Fresh stationary feedback arrives after the steady budget.
+        self.assertIn('STOP_UNCONFIRMED', self.engine.results['cmd'].code)
+        self.assertEqual(self.engine.results['cmd'].state, 'FAILED')
+        with self.assertRaisesRegex(Rejected, 'STOP_UNCONFIRMED'): self.acquire()
+
+    def test_repeated_vendor_faults_preserve_both_stop_deadlines(self):
+        steady = [1.]
+        self.engine.steady = lambda: steady[0]
+        motion = self.command(); self.engine.submit(motion, self.now); self.tick()
+        self.engine.halt(self.now)
+        deadlines = (self.engine.stop_deadline, self.engine.stop_steady_deadline)
+        self.assertGreater(deadlines[1], steady[0])
+        self.v['arm_l_joint_1'] = .2
+        for _ in range(3):
+            steady[0] += .15
+            self.tick(.15)
+            self.assertEqual((self.engine.stop_deadline, self.engine.stop_steady_deadline), deadlines)
+
     def test_release_during_pending_stop_immediately_revokes_old_lease(self):
         motion = self.command(); self.engine.submit(motion, self.now); self.tick()
         self.engine.halt(self.now)

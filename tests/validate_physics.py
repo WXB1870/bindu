@@ -263,8 +263,23 @@ def main():
         assert reply.ok,reply;current[0]=reply;return reply
     def release():
         lease=current[0]
+        requested = node.get_clock().now().nanoseconds*1e-9
         reply=wait(node,lease_client.call_async(Lease.Request(operation='release',lease_id=lease.lease_id,epoch=lease.epoch)))
         assert reply.ok,reply;current[0]=None
+        # Release revokes authority immediately; the independent device stop
+        # acknowledgement can arrive later. Do not start the next case early.
+        def released_and_stationary():
+            state = seen['state']
+            if state.stop_failures:
+                raise AssertionError('RELEASE_STOP_UNCONFIRMED:'+','.join(state.stop_failures))
+            return (not state.lease_active and state.lease_epoch != lease.epoch and
+                state.state not in ('RUNNING','STOPPING') and
+                state.feedback_stamp.sec+state.feedback_stamp.nanosec/1e9 > requested and
+                len(state.joints.velocity) == len(profile.limits) and
+                all(abs(v) <= profile.feedback_tolerances['joint_velocity'] for v in state.joints.velocity) and
+                abs(state.base_velocity.linear.x) <= profile.feedback_tolerances['base_linear_velocity'] and
+                abs(state.base_velocity.angular.z) <= profile.feedback_tolerances['base_angular_velocity'])
+        until(node,released_and_stationary,seconds=profile.stop_timeout+1.)
     def command(group,mode):
         lease=acquire(group)
         return MotionCommand(schema_version=1,command_id=uuid.uuid4().hex,lease_id=lease.lease_id,epoch=lease.epoch,

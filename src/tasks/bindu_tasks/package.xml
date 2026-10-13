@@ -6,5 +6,5 @@
   <maintainer email="wxb1423@gmail.com">xavier</maintainer>
   <license>MIT</license>
   <buildtool_depend>ament_python</buildtool_depend>
-  <export><build_type>ament_python</build_type></export>
+  <test_depend>python3-pytest</test_depend><export><build_type>ament_python</build_type></export>
 </package>

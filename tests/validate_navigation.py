@@ -17,7 +17,7 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy
 from bindu_interfaces.action import FetchDrink, NavigateToSite
 from bindu_interfaces.msg import ExecutionState, RecorderHealth, RuntimeEvent, MotionCommand, NavigationPose
 from bindu_interfaces.srv import InjectFault, Lease
-from validate_ros import wait, until, terminate
+from validate_ros import wait, until, terminate, wait_for_task_ready
 
 
 CASES=('normal','differential_turn','false_yaw_success','late_old_goal','reject','cancel','abort','input_loss','pose_loss','source_change',
@@ -55,9 +55,8 @@ def run_case(root,output,case,g1=False):
         action=ActionClient(node,NavigateToSite if g1 else FetchDrink,ns+('/navigation/navigate_to_site' if g1 else '/tasks/fetch_drink'))
         assert action.wait_for_server(timeout_sec=15),'no task server'
         until(node,lambda:seen['state'] and seen['health'] and seen['health'].ready and seen['pose'],seconds=15)
-        # Discovery of task clients and the source action happens in other nodes.
-        deadline=time.monotonic()+.5
-        while time.monotonic()<deadline:rclpy.spin_once(node,timeout_sec=.02)
+        # The Action server can be discovered before its own service clients.
+        wait_for_task_ready(node,ns,navigation_only=g1)
         if case=='lease_busy':
             lease=node.create_client(Lease,ns+'/execution/lease')
             assert lease.wait_for_service(timeout_sec=5)

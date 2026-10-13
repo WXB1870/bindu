@@ -9,5 +9,5 @@
   <exec_depend>ament_index_python</exec_depend>
   <exec_depend>bindu_bimanual_qp</exec_depend>
   <exec_depend>python3-scipy</exec_depend>
-  <export><build_type>ament_python</build_type></export>
+  <test_depend>python3-pytest</test_depend><export><build_type>ament_python</build_type></export>
 </package>

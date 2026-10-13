@@ -8,6 +8,7 @@ from rclpy.action import ActionServer, GoalResponse, CancelResponse
 from rclpy.callback_groups import ReentrantCallbackGroup
 from trajectory_msgs.msg import JointTrajectoryPoint
 from builtin_interfaces.msg import Duration
+from std_srvs.srv import Trigger
 from bindu_interfaces.action import FetchDrink, NavigateToSite
 from bindu_interfaces.msg import ExecutionState, RecorderHealth, MotionCommand
 from bindu_interfaces.srv import Lease, SubmitMotion, ControlExecution, LocateObject
@@ -62,15 +63,42 @@ class TaskNode(RuntimeNode):
         self.nav_server = ActionServer(self, NavigateToSite, 'navigation/navigate_to_site',
             execute_callback=self.execute_site, goal_callback=self.goal_site,
             cancel_callback=lambda _:CancelResponse.ACCEPT, callback_group=self.group)
+        self.create_service(Trigger, 'tasks/ready', self.ready, callback_group=self.group)
+        self.create_service(Trigger, 'navigation/ready', self.navigation_ready, callback_group=self.group)
+
+    def readiness_reason(self, navigation_only=False):
+        state, health = self.state, self.health
+        if not state or state.profile_hash != self.profile.digest:
+            return 'EXECUTION_STATE_UNAVAILABLE'
+        if not 0 <= self.now()-seconds(state.feedback_stamp) <= .2:
+            return 'FEEDBACK_STALE'
+        if not health or not health.ready or not 0 <= self.now()-seconds(health.stamp) < .75:
+            return 'RECORDER_UNAVAILABLE'
+        if not all(c.service_is_ready() for c in (self.lease_client,self.submit_client,self.control_client)):
+            return 'EXECUTION_SERVICES_UNAVAILABLE'
+        if not navigation_only and not self.locate_client.service_is_ready():
+            return 'PERCEPTION_SERVICE_UNAVAILABLE'
+        return ''
+
+    def ready(self, request, reply):
+        reply.message = self.readiness_reason()
+        reply.success = not reply.message
+        reply.message = reply.message or 'READY'
+        return reply
+
+    def navigation_ready(self, request, reply):
+        reply.message = self.readiness_reason(navigation_only=True)
+        reply.success = not reply.message
+        reply.message = reply.message or 'READY'
+        return reply
 
     def goal_site(self, request):
-        ready = (self.state and self.state.profile_hash == self.profile.digest and self.health and
-                 self.health.ready and 0 <= self.now()-seconds(self.health.stamp) < .75 and
-                 all(c.service_is_ready() for c in (self.lease_client,self.submit_client,self.control_client)))
+        reason = self.readiness_reason(navigation_only=True)
         config = getattr(self.navigation, 'config', None)
         supported = (request.task_id and config and request.site in config.sites and
                      'base_velocity' in self.profile.capabilities)
-        if not ready or not supported or not self.busy.acquire(blocking=False):
+        if reason or not supported or not self.busy.acquire(blocking=False):
+            self.event('REJECTED', reason or ('TASK_BUSY' if supported else 'UNSUPPORTED_TASK'), request.task_id)
             return GoalResponse.REJECT
         return GoalResponse.ACCEPT
 
@@ -85,13 +113,13 @@ class TaskNode(RuntimeNode):
             self.store_mode_message('health', health)
 
     def goal(self, request):
-        ready = (self.state and self.state.profile_hash == self.profile.digest and self.health and
-                 self.health.ready and 0 <= self.now()-seconds(self.health.stamp) < .75 and
-                 all(c.service_is_ready() for c in (self.lease_client,self.submit_client,self.control_client,self.locate_client)))
+        reason = self.readiness_reason()
         supported = (request.strategy in self.strategies and request.object_id == 'drink' and request.task_id and
                      {'arm','hand'} <= set(self.profile.groups) and
                      {'joint_position','base_velocity','simulated_grasp'} <= set(self.profile.capabilities))
-        if not ready or not supported or self.scene.held_object or not self.busy.acquire(blocking=False):
+        if reason or not supported or self.scene.held_object or not self.busy.acquire(blocking=False):
+            self.event('REJECTED', reason or ('UNSUPPORTED_TASK' if not supported else
+                       'OBJECT_ALREADY_HELD' if self.scene.held_object else 'TASK_BUSY'), request.task_id)
             return GoalResponse.REJECT
         return GoalResponse.ACCEPT
 

@@ -118,6 +118,12 @@ def main():
         values=call(node,real_get,GetParameters.Request(names=['command_enabled'])).values
         assert not values[0].bool_value
         outcomes.append('hardware_write_permission_cannot_be_silently_changed_live')
+        reply=call(node,real_set,SetParameters.Request(parameters=[Parameter(name='use_sim_time',
+            value=ParameterValue(type=ParameterType.PARAMETER_BOOL,bool_value=True))]))
+        assert not reply.results[0].successful
+        values=call(node,real_get,GetParameters.Request(names=['use_sim_time'])).values
+        assert not values[0].bool_value
+        outcomes.append('real_execution_cannot_switch_to_simulation_clock_live')
         ns=contexts['real'][0]
         foreign=node.create_publisher(ExecutionState,ns+'/execution/state',1)
         foreign.publish(ExecutionState(runtime_mode='simulation',simulated=True,code='FOREIGN_SIMULATION'))
@@ -128,6 +134,7 @@ def main():
         executable=Path(get_package_prefix('bindu_runtime'))/'lib/bindu_runtime/snowbot_adapter'
         for label, parameters, reason in [
             ('conflict',['runtime_mode:=real','simulation:=true'],'RUNTIME_MODE_CONFLICT'),
+            ('real_sim_clock',['runtime_mode:=real','use_sim_time:=true'],'REAL_EXECUTION_REQUIRES_SYSTEM_TIME'),
             ('vendor_simulation',['runtime_mode:=simulation'],'SNOWBOT_VENDOR_REQUIRES_REAL_MODE')]:
             log=output/(label+'.log')
             with log.open('w') as f:
@@ -137,6 +144,7 @@ def main():
                 result=subprocess.run(command,stdout=f,stderr=subprocess.STDOUT,timeout=6.)
             assert result.returncode!=0 and reason in log.read_text()
         outcomes.append('conflicting_alias_and_vendor_simulation_exit_before_device_assembly')
+        outcomes.append('real_execution_rejects_simulation_clock_at_startup')
     finally:
         for process in processes:
             if process.poll() is None:os.killpg(process.pid,signal.SIGINT)

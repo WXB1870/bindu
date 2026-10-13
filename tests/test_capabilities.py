@@ -5,6 +5,9 @@ import xml.etree.ElementTree as ET
 import json
 from pathlib import Path
 import unittest
+import threading
+from types import SimpleNamespace as S
+from unittest.mock import Mock
 from bindu_contracts.profile import Profile
 from bindu_contracts.contracts import Motion
 from bindu_execution.executor import Executor
@@ -13,6 +16,54 @@ from bindu_hardware.drivers.simulated_base import SimBaseDriver
 from bindu_hardware.robot_io.system import RobotIO
 from bindu_planning.simulated import PlannerStrategy
 from bindu_vla.simulated import ChunkStrategy
+from bindu_runtime.task_node import TaskNode
+from rclpy.action import GoalResponse
+
+
+class TaskReadiness(unittest.TestCase):
+    def setUp(self):
+        ready = lambda:S(service_is_ready=lambda:True)
+        self.node = S(state=S(profile_hash='fixture',feedback_stamp=S(sec=10,nanosec=0)),
+            health=S(ready=True,stamp=S(sec=10,nanosec=0)),
+            profile=S(digest='fixture',capabilities=('base_velocity',)), now=lambda:10.1,
+            lease_client=ready(),submit_client=ready(),control_client=ready(),locate_client=ready(),
+            navigation=S(config=S(sites={'pickup':None})),busy=threading.Lock(),event=Mock())
+        self.node.readiness_reason = lambda navigation_only=False:TaskNode.readiness_reason(self.node,navigation_only)
+
+    def test_discovered_action_cannot_hide_missing_executor_service(self):
+        self.node.submit_client.service_is_ready=lambda:False
+        self.assertEqual(self.node.readiness_reason(),'EXECUTION_SERVICES_UNAVAILABLE')
+        self.assertEqual(TaskNode.goal_site(self.node,S(task_id='test',site='pickup')),GoalResponse.REJECT)
+        self.node.event.assert_called_once_with('REJECTED','EXECUTION_SERVICES_UNAVAILABLE','test')
+        self.assertFalse(self.node.busy.locked())
+
+    def test_cached_future_or_stale_feedback_is_not_ready(self):
+        for sec,ns in ((9,0),(10,300000000)):
+            with self.subTest(stamp=(sec,ns)):
+                self.node.state.feedback_stamp=S(sec=sec,nanosec=ns)
+                self.assertEqual(self.node.readiness_reason(),'FEEDBACK_STALE')
+        self.node.state=None
+        self.assertEqual(self.node.readiness_reason(),'EXECUTION_STATE_UNAVAILABLE')
+
+    def test_navigation_does_not_wait_for_unrelated_perception(self):
+        self.node.locate_client.service_is_ready=lambda:False
+        self.assertEqual(self.node.readiness_reason(),'PERCEPTION_SERVICE_UNAVAILABLE')
+        self.assertEqual(self.node.readiness_reason(navigation_only=True),'')
+        self.node.health.ready=False
+        self.assertEqual(self.node.readiness_reason(navigation_only=True),'RECORDER_UNAVAILABLE')
+
+    def test_readiness_query_does_not_acquire_authority(self):
+        reply=TaskNode.ready(self.node,None,S())
+        self.assertTrue(reply.success)
+        self.assertEqual(reply.message,'READY')
+        self.assertFalse(self.node.busy.locked())
+        self.node.event.assert_not_called()
+
+    def test_busy_goal_reports_reason_and_preserves_owner(self):
+        self.node.busy.acquire()
+        self.assertEqual(TaskNode.goal_site(self.node,S(task_id='test',site='pickup')),GoalResponse.REJECT)
+        self.node.event.assert_called_once_with('REJECTED','TASK_BUSY','test')
+        self.assertTrue(self.node.busy.locked())
 
 
 class CapabilityContract(unittest.TestCase):

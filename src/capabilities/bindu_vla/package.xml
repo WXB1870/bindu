@@ -9,5 +9,5 @@
   <exec_depend>bindu_contracts</exec_depend>
   <exec_depend>python3-numpy</exec_depend>
   <exec_depend>python3-zmq</exec_depend>
-  <export><build_type>ament_python</build_type></export>
+  <test_depend>python3-pytest</test_depend><export><build_type>ament_python</build_type></export>
 </package>

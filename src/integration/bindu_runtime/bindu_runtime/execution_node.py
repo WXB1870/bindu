@@ -3,6 +3,7 @@ import time
 import rclpy
 from rclpy.executors import SingleThreadedExecutor
 from rclpy.signals import SignalHandlerOptions
+from rcl_interfaces.msg import ParameterDescriptor
 from bindu_contracts.contracts import Motion
 from .device_assembly import assemble_devices, inject_simulated_fault
 from bindu_execution.executor import Executor, Rejected
@@ -15,6 +16,12 @@ from bindu_contracts.runtime_mode import command_mode
 class ExecutionNode(RuntimeNode):
     def __init__(self, *, allow_hardware=False, device_factory=assemble_devices, executor_factory=Executor):
         super().__init__('execution', allow_hardware=allow_hardware)
+        if self.runtime_mode == 'real':
+            if self.get_parameter('use_sim_time').value:
+                raise ValueError('REAL_EXECUTION_REQUIRES_SYSTEM_TIME')
+            self.set_descriptor('use_sim_time', ParameterDescriptor(read_only=True,
+                type=self.get_parameter('use_sim_time').type_.value,
+                description='Real execution requires the system clock'))
         self.closing = False
         self.robot_io, self.devices = device_factory(self, self.profile)
         self.engine = executor_factory(self.profile, self.robot_io, runtime_mode=self.runtime_mode)

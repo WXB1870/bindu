@@ -1,5 +1,6 @@
 """ROS message-level tests; real numerical LIO/ICP tests live separately."""
 import math
+import importlib.util
 import unittest
 try:
     import rclpy
@@ -8,6 +9,7 @@ except ImportError:
 
 
 @unittest.skipIf(rclpy is None, 'ROS 2 unavailable')
+@unittest.skipIf(importlib.util.find_spec('bindu_lio') is None, 'optional bindu_lio package not built')
 class LioProjectionTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

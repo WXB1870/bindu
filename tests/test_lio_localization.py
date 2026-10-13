@@ -1,12 +1,19 @@
 import math
 import unittest
 import numpy as np
-from bindu_lio.localization import (
-    RegistrationConfig, ScanMapRegistration, correction_distance,
-    initial_map_from_odom, inverse_se3, pose_matrix, rigid_transform,
-)
+LIO_AVAILABLE = True
+try:
+    from bindu_lio.localization import (
+        RegistrationConfig, ScanMapRegistration, correction_distance,
+        initial_map_from_odom, inverse_se3, pose_matrix, rigid_transform,
+    )
+except ModuleNotFoundError as exc:
+    if exc.name != 'bindu_lio':
+        raise
+    LIO_AVAILABLE = False
 
 
+@unittest.skipUnless(LIO_AVAILABLE, 'optional bindu_lio package not built')
 class LioGeometryTests(unittest.TestCase):
     def test_initial_pose_includes_current_odometry(self):
         odom = pose_matrix([2., 1., 0.], [0., 0., math.sin(.4), math.cos(.4)])
@@ -34,6 +41,7 @@ class LioGeometryTests(unittest.TestCase):
         self.assertAlmostEqual(angle, math.pi)
 
 
+@unittest.skipUnless(LIO_AVAILABLE, 'optional bindu_lio package not built')
 class ActualRegistrationTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
