@@ -4,6 +4,7 @@ from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace as S
 import unittest
+from unittest.mock import Mock
 
 from bindu_contracts.contracts import Motion
 from bindu_contracts.profile import Profile
@@ -167,8 +168,8 @@ class SnowbotAdapterTests(unittest.TestCase):
         target = dict.fromkeys(GROUPS['waist']+GROUPS['left_arm']+GROUPS['right_arm'], 0.)
         with self.assertRaises(RuntimeError): self.io.write_joints(target)
         self.io.stop()
-        self.assertEqual(len(calls), 2)
-        self.assertEqual(set(calls[-1][1]), set(target))
+        self.assertEqual(len(calls), 3)  # Failed batch, then independent arm and waist holds.
+        self.assertEqual(set().union(*(set(values) for _, values in calls[1:])), set(target))
         self.assertTrue(self.io.stop_failures)
 
     def test_feedback_loss_during_pending_hold_is_still_unconfirmed(self):
@@ -191,6 +192,85 @@ class SnowbotAdapterTests(unittest.TestCase):
         self.assertEqual(self.engine.results['cmd'].state, 'FAILED')
         self.assertEqual(self.engine.results['cmd'].code, 'EXECUTION_OVERRUN')
         self.assertFalse(self.io.stop_targets)
+
+    def test_continuous_overruns_cannot_extend_stop_timeout(self):
+        motion = self.command(); self.engine.submit(motion, self.now); self.tick()
+        self.engine.halt(self.now)
+        original_deadline = self.engine.stop_deadline
+        self.v['arm_l_joint_1'] = .2
+        for _ in range(40):
+            self.tick(.15)
+        self.assertGreater(self.now, original_deadline)
+        self.assertIsNone(self.engine.stopping)
+        self.assertIn('STOP_UNCONFIRMED', self.engine.results['cmd'].code)
+        self.assertTrue(self.io.stop_failures)
+
+    def test_release_during_pending_stop_immediately_revokes_old_lease(self):
+        motion = self.command(); self.engine.submit(motion, self.now); self.tick()
+        self.engine.halt(self.now)
+        self.engine.halt(self.now, revoke=True)
+        self.assertFalse(self.engine.lease_id)
+        self.assertGreater(self.engine.epoch, motion.epoch)
+        self.assertIsNotNone(self.engine.stopping)
+        with self.assertRaisesRegex(Rejected, 'INVALID_LEASE'):
+            self.engine.check_lease(motion.lease_id, motion.epoch, self.now)
+        with self.assertRaisesRegex(Rejected, 'BUSY'):
+            self.acquire()
+
+    def test_unready_vendor_is_rejected_before_acquiring_control(self):
+        def unready(groups):
+            raise RuntimeError('SNOWBOT_VENDOR_RECEIVER_UNAVAILABLE:arms')
+        self.io.check_ready = unready
+        with self.assertRaisesRegex(Rejected, 'RECEIVER_UNAVAILABLE'):
+            self.acquire()
+        self.assertFalse(self.engine.lease_id)
+        self.assertFalse(self.sent)
+        self.io.check_ready = lambda groups: None
+        self.acquire()
+
+    def test_failed_waist_hold_does_not_prevent_arm_and_head_holds(self):
+        self.acquire(('waist', 'head', 'left_arm', 'right_arm'))
+        target = {n: self.q[n] for g in ('waist', 'head', 'left_arm', 'right_arm') for n in GROUPS[g]}
+        self.io.write_joints(target)
+        attempts = []
+        def send(groups, values):
+            attempts.append((groups.copy(), values.copy()))
+            if 'waist' in groups:
+                raise RuntimeError('waist receiver unavailable')
+        self.io.send = send
+        self.io.stop()
+        self.assertEqual([g for g, _ in attempts], [{'left_arm', 'right_arm'}, {'waist'}, {'head'}])
+        self.assertEqual(self.io.stop_failures, ('waist',))
+        self.assertEqual(set(self.io.stop_targets), set(GROUPS['left_arm']+GROUPS['right_arm']+GROUPS['head']))
+
+    def test_passive_command_observers_are_allowed(self):
+        from bindu_runtime.snowbot_adapter import SnowbotDevices
+        transport = SnowbotDevices.__new__(SnowbotDevices)
+        transport.node = Mock()
+        transport.node.count_publishers.return_value = 1
+        transport.arm_type = S
+        transport.array_type = lambda data: S(data=data)
+        transport.command_topics = {g: '/test/'+g for g in ('arms', 'waist', 'head')}
+        transport.receivers = dict.fromkeys(transport.command_topics, '/test/vendor')
+        transport.node.get_subscriptions_info_by_topic.return_value = [
+            S(node_namespace='/test', node_name='vendor'), S(node_namespace='/', node_name='observer')]
+        transport.publishers = {g: Mock() for g in transport.command_topics}
+        for publisher in transport.publishers.values():
+            publisher.get_subscription_count.return_value = 2  # Vendor + passive observer.
+        target = {n: self.q[n] for g in ('waist', 'left_arm', 'right_arm') for n in GROUPS[g]}
+        transport.send({'waist', 'left_arm', 'right_arm'}, target)
+        transport.publishers['arms'].publish.assert_called_once()
+        transport.publishers['waist'].publish.assert_called_once()
+        for publisher in transport.publishers.values(): publisher.reset_mock()
+        transport.node.get_subscriptions_info_by_topic.return_value = [S(node_namespace='/', node_name='observer')]
+        with self.assertRaisesRegex(RuntimeError, 'RECEIVER_UNAVAILABLE'):
+            transport.send({'left_arm', 'right_arm'}, target)
+        transport.publishers['arms'].publish.assert_not_called()
+        transport.node.get_subscriptions_info_by_topic.return_value = [S(node_namespace='/test', node_name='vendor')]
+        transport.node.count_publishers.return_value = 2
+        with self.assertRaisesRegex(RuntimeError, 'PUBLISHER_CONFLICT'):
+            transport.send({'left_arm', 'right_arm'}, target)
+        transport.publishers['arms'].publish.assert_not_called()
 
     def test_feedback_wire_layout_and_j8_are_not_arm_axis_7(self):
         msg = S(header=S(stamp=S(sec=10, nanosec=20000000)),

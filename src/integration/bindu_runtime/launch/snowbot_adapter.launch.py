@@ -13,11 +13,15 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument('namespace', default_value='bindu_snowbot'),
         DeclareLaunchArgument('vendor_namespace', default_value='/snowbot'),
+        DeclareLaunchArgument('arm_receiver_node', default_value=''),
+        DeclareLaunchArgument('servo_receiver_node', default_value=''),
         DeclareLaunchArgument('command_enabled', default_value='false'),
         DeclareLaunchArgument('simulation', default_value='false'),
         Node(package='bindu_runtime', executable='snowbot_adapter',
              namespace=LaunchConfiguration('namespace'), output='screen', parameters=[{
                  'profile': profile, 'vendor_namespace': LaunchConfiguration('vendor_namespace'),
+                 'arm_receiver_node': ParameterValue(LaunchConfiguration('arm_receiver_node'), value_type=str),
+                 'servo_receiver_node': ParameterValue(LaunchConfiguration('servo_receiver_node'), value_type=str),
                  'command_enabled': ParameterValue(LaunchConfiguration('command_enabled'), value_type=bool),
                  'simulation': ParameterValue(LaunchConfiguration('simulation'), value_type=bool)}]),
     ])

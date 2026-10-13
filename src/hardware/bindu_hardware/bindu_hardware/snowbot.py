@@ -40,13 +40,14 @@ def decode_feedback(msg):
 
 class SnowbotIO:
     def __init__(self, profile, send, now, *, command_enabled=False,
-                 simulated=False, feedback_max_age=.2):
+                 simulated=False, feedback_max_age=.2, check_ready=None):
         if (profile.groups != GROUPS or set(profile.capabilities) != {'joint_position'} or
                 profile.name != 'snowbot_vendor_position'):
             raise ValueError('SNOWBOT_PROFILE_REQUIRED')
         self.profile, self.send, self.now = profile, send, now
         self.command_enabled, self.simulated = command_enabled, simulated
         self.feedback_max_age = feedback_max_age
+        self.check_ready = check_ready
         self.writable_groups = WRITABLE
         self.coupled_group_sets = (frozenset(('left_arm', 'right_arm')),)
         self.last_feedback = Feedback(0., dict.fromkeys(profile.limits, 0.),
@@ -88,12 +89,14 @@ class SnowbotIO:
                 not 0 <= now-self.received_at <= self.feedback_max_age):
             raise RuntimeError(self.invalid or 'SNOWBOT_FEEDBACK_UNAVAILABLE')
 
-    def capture(self):
+    def capture(self, groups):
         if not self.command_enabled:
             raise RuntimeError('SNOWBOT_COMMANDS_DISABLED')
         if self.stop_failures:
             raise RuntimeError('SNOWBOT_STOP_UNCONFIRMED_RESTART_REQUIRED')
         self.require_feedback()
+        if self.check_ready is not None:
+            self.check_ready(groups)
         self.targets.clear()
         self.reference.clear()
         self.stop_targets.clear()
@@ -155,14 +158,26 @@ class SnowbotIO:
         self.stop_targets = {}
         try:
             self.require_feedback()
-            hold = {n: self.last_feedback.positions[n] for n in self.targets}
-            if any(not self.profile.limits[n][0] <= q <= self.profile.limits[n][1]
-                   for n, q in hold.items()):
-                raise RuntimeError('SNOWBOT_HOLD_OUTSIDE_LIMIT')
-            self._send(hold)
-            self.stop_targets = hold
         except RuntimeError:
             self.stop_failures = tuple(sorted(self._groups(self.targets)))
+            self.targets.clear()
+            return
+        involved = self._groups(self.targets)
+        failures = set(self.stop_failures)
+        # Normal multi-topic writes check the whole batch before sending.
+        # Stops instead try every independent endpoint, even if one is lost.
+        for coupled in (('left_arm', 'right_arm'), ('waist',), ('head',)):
+            groups = set(coupled) & involved
+            if not groups:
+                continue
+            hold = {n: self.last_feedback.positions[n] for g in coupled if g in groups for n in GROUPS[g]}
+            try:
+                self._send(hold)
+            except RuntimeError:
+                failures.update(groups)
+            else:
+                self.stop_targets.update(hold)
+        self.stop_failures = tuple(sorted(failures))
         self.targets.clear()
 
     def read_feedback(self, now, dt):

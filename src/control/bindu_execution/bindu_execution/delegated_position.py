@@ -29,7 +29,7 @@ class DelegatedPositionExecutor(Executor):
         if self.lease_id or self.stopping:
             raise Rejected('BUSY')
         try:
-            self.io.capture()
+            self.io.capture(groups)
         except RuntimeError as exc:
             raise Rejected(str(exc)) from exc
         return super().acquire(owner, groups, ttl, now)
@@ -45,13 +45,16 @@ class DelegatedPositionExecutor(Executor):
         return DirectTarget(State.rest(motion.positions))
 
     def halt(self, now, code='CANCELED', revoke=False, emergency=False, effective_at=None):
-        if self.stopping and not emergency:
-            return
-        motion = self.active or (self.stopping[0] if self.stopping else None)
         if revoke or emergency:
             if self.lease_id:
                 self.epoch += 1
             self.lease_id = self.owner = ''
+        if self.stopping and not emergency:
+            return
+        # Later faults must keep the first stop's absolute deadline. tick() can
+        # take the overrun branch repeatedly without ever reaching tick_stop().
+        deadline = self.stop_deadline if self.stopping else now+self.profile.stop_timeout
+        motion = self.active or (self.stopping[0] if self.stopping else None)
         self.last_stamp = max(self.last_stamp, now if math.isfinite(now) else self.last_stamp)
         self.revision += 1
         self.io.stop()
@@ -59,6 +62,8 @@ class DelegatedPositionExecutor(Executor):
         self.held_references.clear()
         self.reference_names = tuple(self.io.stop_targets)
         self.reference = State.rest(self.io.stop_targets.values()) if self.reference_names else None
+        if self.reference_names and now >= deadline:
+            self.io.stop_failures = tuple(sorted(set(self.io.stop_failures) | {'vendor_hold'}))
         if self.io.stop_failures:
             self.lease_id = self.owner = ''
             self.stopping = self.reference = None
@@ -66,7 +71,7 @@ class DelegatedPositionExecutor(Executor):
             self.emit(now, motion, 'FAILED', 'STOP_UNCONFIRMED:'+','.join(self.io.stop_failures))
         elif self.reference_names:
             self.stopping = (motion, code)
-            self.stop_deadline = now+self.profile.stop_timeout
+            self.stop_deadline = deadline
             self.emit(now, motion, 'STOPPING', code)
         else:
             self.stopping = None

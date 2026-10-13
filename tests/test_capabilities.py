@@ -56,6 +56,9 @@ class DependencyBoundaries(unittest.TestCase):
             'bindu_teleoperation': {'bindu_contracts'},
             'bindu_kinematics': {'bindu_contracts', 'bindu_bimanual_qp'},
         }
+        # This declared sensor transport is a ROS adapter, not navigation core.
+        # Keep the exception at a specific path; all core files stay ROS-free.
+        ros_adapters = {'bindu_navigation': {'bindu_navigation/airy_scan.py'}}
         for manifest in source.rglob('package.xml'):
             xml = ET.parse(manifest).getroot()
             name = xml.findtext('name')
@@ -75,7 +78,11 @@ class DependencyBoundaries(unittest.TestCase):
                 self.assertLessEqual(project_imports, declared, str(file))
                 if name in allowed:
                     self.assertLessEqual(project_imports, allowed[name], str(file))
-                    self.assertNotIn('rclpy', imports, str(file))
+                    relative = file.relative_to(manifest.parent).as_posix()
+                    if relative in ros_adapters.get(name, set()):
+                        self.assertTrue(any(e.text == 'rclpy' and 'depend' in e.tag for e in xml), str(file))
+                    else:
+                        self.assertNotIn('rclpy', imports, str(file))
 
 
 if __name__ == '__main__': unittest.main()
