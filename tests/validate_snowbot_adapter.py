@@ -14,8 +14,8 @@ import time
 import uuid
 
 import rclpy
-from std_msgs.msg import Float64MultiArray
-from snowbot_ctl_msgs.msg import JointPositionCommand, RetInformation
+from std_msgs.msg import Float64MultiArray, String, UInt64MultiArray
+from snowbot_ctl_msgs.msg import JointPositionCommand, RetInformation, CtlInformation, MidNodeCtlMsgSend
 from bindu_interfaces.msg import MotionCommand, ExecutionState
 from bindu_interfaces.srv import Lease, SubmitMotion, ControlExecution
 from bindu_runtime.common import stamp
@@ -68,9 +68,17 @@ def main():
     vendor, ns = '/snowbot_fixture_'+token, '/bindu_adapter_'+token
     rclpy.init(); node = rclpy.create_node('snowbot_verifier_'+token)
     source = node.create_publisher(RetInformation, vendor+'/dualArmCtl_fdback', 1)
+    health_pub = node.create_publisher(String, vendor+'/bindu/servo_health', 1)
+    source_pub = node.create_publisher(String, vendor+'/bindu/control_source', 1)
+    # Graph fixtures for the two internal vendor hops; no control is executed.
+    bridge_pubs = [node.create_publisher(MidNodeCtlMsgSend, vendor+'/upperMonitor_msg_send', 1),
+                   node.create_publisher(CtlInformation, vendor+'/ctl_data_pub', 1)]
+    node.create_subscription(MidNodeCtlMsgSend, vendor+'/upperMonitor_msg_send', lambda m: None, 1)
+    node.create_subscription(CtlInformation, vendor+'/ctl_data_pub', lambda m: None, 1)
     q = dict.fromkeys(profile.limits, 0.)
     q['arm_l_joint_2'], q['arm_r_joint_2'] = .2, -.2
-    config = {'feedback': False, 'velocity': 0., 'tracking': True}
+    config = {'feedback': False, 'velocity': 0., 'tracking': True,
+              'health': True, 'source': 'topic', 'pdo': 0, 'pdo_progress': True, 'guard_session': 0}
     packets, states, outcomes, processes, handles = [], [], [], [], []
 
     def feedback():
@@ -83,6 +91,15 @@ def main():
             setattr(msg, prefix+'_position', [float(q[n]) for n in names])
             setattr(msg, prefix+'_speed', [float(config['velocity'])]*len(names))
         source.publish(msg)
+        if config['health']:
+            if config['pdo_progress']: config['pdo'] += 1
+            now = node.get_clock().now().nanoseconds*1e-9
+            source_pub.publish(String(data=json.dumps(dict(schema=1, stamp=now, source=config['source']))))
+            health_pub.publish(String(data=json.dumps(dict(schema=1, stamp=now,
+                sample=config['pdo'], sample_age=.001, operational=True, ready=True,
+                guard_enabled=True, guard_armed=bool(config['guard_session']), guard_latched=False,
+                wkc=40, expected_wkc=40, fault_mask=0, present_mask=0xfffff,
+                enable_requested_mask=0, operation_enabled_mask=0, guard_session=config['guard_session']))))
 
     def arm(msg):
         values = dict(zip(GROUPS['left_arm']+GROUPS['right_arm'],
@@ -97,12 +114,20 @@ def main():
     node.create_timer(.01, feedback)
     node.create_subscription(JointPositionCommand, vendor+'/joint_position_cmd', arm, 10)
     node.create_subscription(Float64MultiArray, vendor+'/body/motor_cmd', waist, 10)
+    heartbeats = []
+    def heartbeat(m):
+        heartbeats.append(m)
+        if len(m.data) == 3: config['guard_session'] = m.data[2]
+    node.create_subscription(UInt64MultiArray, vendor+'/bindu/heartbeat', heartbeat, 1)
     node.create_subscription(ExecutionState, ns+'/execution/state', lambda m: states.append(m), 10)
     lease = node.create_client(Lease, ns+'/execution/lease')
     submit = node.create_client(SubmitMotion, ns+'/execution/submit')
     control = node.create_client(ControlExecution, ns+'/execution/control')
 
     def start(enabled, simulated):
+        # Each phase uses a newly booted fake guard. A real guard deliberately
+        # forbids a second session without an operator's driver recovery.
+        config['guard_session'] = 0
         handle = (output/(('enabled' if enabled else 'readonly')+f'-{len(processes)}.log')).open('w')
         handles.append(handle)
         # Signal the actual entry process, not a ros2 run wrapper. Both call
@@ -113,6 +138,7 @@ def main():
             '-p', 'vendor_namespace:='+vendor, '-p', 'command_enabled:='+str(enabled).lower(),
             '-p', 'arm_receiver_node:=/'+node.get_name(),
             '-p', 'servo_receiver_node:=/'+node.get_name(),
+            '-p', 'mid_receiver_node:=/'+node.get_name(),
             '-p', 'simulation:='+str(simulated).lower()], stdout=handle, stderr=subprocess.STDOUT,
             start_new_session=True)
         processes.append(p); until(node, lease.service_is_ready); return p
@@ -133,6 +159,8 @@ def main():
             if reply.ok:
                 return reply
             assert any(code in reply.code for code in ('FEEDBACK_UNAVAILABLE', 'RECEIVER_UNAVAILABLE',
+                                                       'HEALTH_UNAVAILABLE', 'SERVO_NOT_READY',
+                                                       'HEARTBEAT_UNAVAILABLE',
                                                        'PUBLISHER_CONFLICT')), reply.code
             rclpy.spin_once(node, timeout_sec=.01)
         raise AssertionError('Vendor ROS route not ready: '+reply.code)
@@ -157,11 +185,33 @@ def main():
         terminate(p, node)
         until(node, retired)
         states.clear(); config['feedback'] = False
+        config['health'] = False
         p = start(True, True)
         reply = acquire(); assert not reply.ok and 'FEEDBACK_UNAVAILABLE' in reply.code
         outcomes.append('cold_feedback_rejected')
         config['feedback'] = True
         until(node, lambda: states and states[-1].feedback_stamp.sec > 0)
+        reply = acquire(); assert not reply.ok and 'HEALTH_UNAVAILABLE' in reply.code, reply.code
+        assert not packets and not heartbeats
+        outcomes.append('unpatched_vendor_health_missing_rejects_takeover')
+        config['health'], config['source'] = True, 'demo'
+        def rejects(code):
+            reply = acquire()
+            assert not reply.ok, 'Unsafe acquisition while expecting '+code
+            return code in reply.code
+        until(node, lambda: rejects('CONTROL_SOURCE_NOT_TOPIC'))
+        assert not packets and not heartbeats
+        outcomes.append('actual_demo_control_source_rejects_takeover_and_heartbeat')
+        config['source'] = 'topic'
+        until(node, lambda: bool(heartbeats))
+        assert len(heartbeats[-1].data) == 3 and heartbeats[-1].data[1] > 0
+        config['pdo_progress'] = False
+        freeze_deadline = time.monotonic()+.09
+        until(node, lambda: time.monotonic() >= freeze_deadline)
+        until(node, lambda: rejects('SERVO_NOT_READY'))
+        assert not packets
+        outcomes.append('fresh_ros_messages_with_frozen_pdo_reject_takeover')
+        config['pdo_progress'] = True
         reply = acquire(('left_arm',)); assert not reply.ok and 'COUPLED_OWNERSHIP' in reply.code
         owner = acquire_ready()
         assert not packets  # Acquisition is also motionless.

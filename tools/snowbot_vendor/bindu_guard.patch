@@ -1,0 +1,431 @@
+--- a/robot_control/include/robot_control/msgPublisher.h
++++ b/robot_control/include/robot_control/msgPublisher.h
+@@ -173,6 +173,8 @@
+         };
+ 
+         ControlSource control_source_;
++        rclcpp::Publisher<std_msgs::msg::String>::SharedPtr bindu_source_pub_;
++        rclcpp::TimerBase::SharedPtr bindu_source_timer_;
+ 
+         //----------通讯变量----------
+ 
+--- a/robot_control/src/robot_control/msgPublisher.cpp
++++ b/robot_control/src/robot_control/msgPublisher.cpp
+@@ -1,3 +1,4 @@
++#include <sstream>
+ #include "robot_control/msgPublisher.h"
+ #include <ament_index_cpp/get_package_share_directory.hpp>
+ #include <limits>
+@@ -61,6 +62,15 @@
+ 
+     RCLCPP_INFO(this->get_logger(), "control_source=%s", control_source.c_str());
+ 
++    bindu_source_pub_ = create_publisher<std_msgs::msg::String>("bindu/control_source", 1);
++    bindu_source_timer_ = create_wall_timer(std::chrono::milliseconds(20), [this]() {
++        const char* source = control_source_ == ControlSource::Topic ? "topic" :
++            (control_source_ == ControlSource::Vr ? "vr" : "demo");
++        std::ostringstream out;
++        out << std::setprecision(17) << "{\"schema\":1,\"stamp\":" << this->now().seconds()
++            << ",\"source\":\"" << source << "\"}";
++        std_msgs::msg::String msg; msg.data = out.str(); bindu_source_pub_->publish(msg);
++    });
+     //初始化发布与接受的消息类型
+     upperMointor_Msg_send = this->create_publisher<snowbot_ctl_msgs::msg::MidNodeCtlMsgSend>(
+         "upperMonitor_msg_send",
+--- a/servo_control/include/ros_controller/rosLoop.h
++++ b/servo_control/include/ros_controller/rosLoop.h
+@@ -13,6 +13,8 @@
+ #include <chrono>
+ #include "rclcpp/rclcpp.hpp"
+ #include "std_msgs/msg/float64_multi_array.hpp"
++#include "std_msgs/msg/string.hpp"
++#include "std_msgs/msg/u_int64_multi_array.hpp"
+ #include "geometry_msgs/msg/wrench_stamped.hpp"
+ 
+ #include "servo_control/zero_pos_config.h"
+@@ -297,6 +299,10 @@
+ 
+         //关机回零模式标志 (Ctrl+C 后在主循环内按 shutdownpos.yaml 回零)
+         bool shutdown_mode_ = false;
++        bool bindu_guard_mode_ = false, bindu_startup_ready_ = false;
++        rclcpp::Publisher<std_msgs::msg::String>::SharedPtr bindu_health_pub_;
++        rclcpp::Subscription<std_msgs::msg::UInt64MultiArray>::SharedPtr bindu_heartbeat_sub_;
++        std::chrono::steady_clock::time_point bindu_last_health_{};
+ 
+         //-----动力学补偿-----
+         
+--- a/servo_control/include/servo_control/ethercat_driver.h
++++ b/servo_control/include/servo_control/ethercat_driver.h
+@@ -12,6 +12,7 @@
+ #include <atomic>
+ #include <chrono>
+ #include <thread>
++#include "servo_control/bindu_watchdog.h"
+ 
+ #ifdef __cplusplus
+ extern "C" {
+@@ -142,6 +143,10 @@
+     bool isOperational() const { return inOP_; }
+     int  getWkc() const { return wkc_; }
+     bool communicationHealthy() const { return expectedWKC_ > 0 && wkc_.load() == expectedWKC_; }
++    void enableBinduGuard() { bindu_guard_.enable(); }
++    bool binduHeartbeat(uint64_t session, uint64_t seq, int64_t now_ns) { return bindu_guard_.heartbeat(session, seq, now_ns); }
++    bool binduGuardReady() const { return bindu_guard_.enabled() && bindu_guard_.armed() && !bindu_guard_.latched(); }
++    std::string binduHealthJson(double stamp, bool ready) const;
+     void printCommunicationStatus() const; // Cached values only; call outside RT thread.
+ 
+ private:
+@@ -153,6 +158,10 @@
+     void motorEnable(int motorIndex, int step);
+     void processCycle();
+ 
++    BinduWatchdog bindu_guard_;
++    bool bindu_hold_active_ = false; // RT thread only
++    float bindu_hold_position_[TOTAL_SLAVES]{}, bindu_hold_kp_[TOTAL_SLAVES]{},
++          bindu_hold_kd_[TOTAL_SLAVES]{}, bindu_hold_torque_[TOTAL_SLAVES]{};
+     char ifname_[64];
+     char IOmap_[16384];
+     int  expectedWKC_;
+--- a/servo_control/include/servo_control/transmit.h
++++ b/servo_control/include/servo_control/transmit.h
+@@ -31,6 +31,10 @@
+ void EtherCAT_EndArmShutdownHandoff();
+ bool EtherCAT_isOperational();
+ bool EtherCAT_communicationHealthy();
++void EtherCAT_enableBinduGuard();
++bool EtherCAT_binduHeartbeat(uint64_t session, uint64_t sequence, int64_t now_ns);
++bool EtherCAT_binduGuardReady();
++std::string EtherCAT_binduHealthJson(double stamp, bool ready);
+ void EtherCAT_Run();
+ void EtherCAT_Command_Set();
+ void EtherCAT_direGetFdback();
+--- a/servo_control/src/ros_controller/rosLoop.cpp
++++ b/servo_control/src/ros_controller/rosLoop.cpp
+@@ -1,3 +1,4 @@
++#include <algorithm>
+ #include "ros_controller/rosLoop.h"
+ #include "servo_control/ethercat_driver.h"
+ #include "define.h"
+@@ -11,6 +12,9 @@
+ #include <unistd.h>
+ 
+ namespace {
++double steady_seconds() {
++    return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
++}
+ // 启动回零时零位姿态的重力前馈初值（Nm）。
+ // 这是力矩偏置，不改变关节位置、速度或反馈符号定义。
+ constexpr float kLeftArmRetzeroGravityTorque[LARMDOF] = {
+@@ -76,6 +80,21 @@
+     has_received_command_(false),
+     ifFirstTemp(true)
+ {
++    bindu_guard_mode_ = declare_parameter<bool>("bindu_guard", false);
++    bindu_health_pub_ = create_publisher<std_msgs::msg::String>("bindu/servo_health", 1);
++    bindu_heartbeat_sub_ = create_subscription<std_msgs::msg::UInt64MultiArray>(
++        "bindu/heartbeat", 1, [this](std_msgs::msg::UInt64MultiArray::SharedPtr msg) {
++            if (!bindu_guard_mode_ || !bindu_startup_ready_ || shutdown_mode_ ||
++                msg->data.size() != 3 || count_publishers("bindu/heartbeat") != 1) return;
++            const int64_t ros_ns = this->now().nanoseconds();
++            // [source ROS nanoseconds, strictly increasing sequence, session]. Prevent
++            // old queued messages from extending the monotonic RT deadline.
++            if (ros_ns <= 0 || msg->data[0] == 0 || msg->data[0] > static_cast<uint64_t>(ros_ns) ||
++                ros_ns-static_cast<int64_t>(msg->data[0]) > 100000000) return;
++            const int64_t steady_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
++                std::chrono::steady_clock::now().time_since_epoch()).count();
++            EtherCAT_binduHeartbeat(msg->data[2], msg->data[1], steady_ns);
++        });
+     //反馈值发送器初始化
+     RetData_pub = this->create_publisher<snowbot_ctl_msgs::msg::RetInformation>(
+         "dualArmCtl_fdback",
+@@ -252,8 +271,8 @@
+ 
+     temp_len = 0;
+ 
+-    time_res = this->now().seconds() + this->now().nanoseconds() * 1e-9;
+-    time_last = this->now().seconds() + this->now().nanoseconds() * 1e-9;
++    time_res = steady_seconds();
++    time_last = steady_seconds();
+ 
+     //-----插补器变量初始化-----
+     l_posReceive_atRuninSt.assign(LARMDOF, 0.0);
+@@ -324,6 +343,14 @@
+     }
+ 
+     RetData_pub->publish(tempRetData_pub);
++    const auto steady_now = std::chrono::steady_clock::now();
++    if (steady_now-bindu_last_health_ >= std::chrono::milliseconds(20)) {
++        std_msgs::msg::String health;
++        health.data = EtherCAT_binduHealthJson(this->now().seconds(),
++            bindu_startup_ready_ && !shutdown_mode_);
++        bindu_health_pub_->publish(health);
++        bindu_last_health_ = steady_now;
++    }
+ }
+ 
+ //ros消息参量发送模块 -- 反馈值发送函数
+@@ -683,6 +710,8 @@
+     }
+ 
+     if (arm_startup_ready && head_torso_startup_ready && !sigInterrupt.load()) {
++        bindu_startup_ready_ = true;
++        if (bindu_guard_mode_) EtherCAT_enableBinduGuard();
+         notify_systemd("READY=1\nSTATUS=Startup homing complete; arm brakes engaged");
+         std::cout << "[systemd] Servo startup ready; downstream services may start." << std::endl;
+     } else {
+@@ -700,6 +729,9 @@
+     //开启ros2循环
+     while (rclcpp::ok()){
+         //----- Ctrl+C 关机回零: 像上位机下发一样, 检测需要回零的关节并单独使能 -----
++        // Bindu mode does not run a shutdown homing trajectory. RT keeps the
++        // watchdog hold until the existing disable/close sequence below.
++        if (sigInterrupt.load() && bindu_guard_mode_) break;
+         if (sigInterrupt.load() && !shutdown_mode_) {
+             shutdown_mode_ = true;
+             shutdown_start_time = std::chrono::steady_clock::now();
+@@ -1059,7 +1091,7 @@
+         };
+ 
+         auto m_now = this->now();
+-        double m_timeSpot = m_now.seconds() + m_now.nanoseconds() * 1e-9;
++        double m_timeSpot = m_now.seconds();
+         performance_test->comprehensive_msg_pub->ctl_res_pub_PVTmod(
+             lArm_posOrig, rArm_posOrig,
+             pos_ftrRes[0], pos_ftrRes[1],
+@@ -1157,7 +1189,7 @@
+ void ServoNode::message_callback(const snowbot_ctl_msgs::msg::CtlInformation::SharedPtr msg){
+ 
+     // 关机回零独占目标、插补和使能控制，不能被排队的上位机消息重新覆盖。
+-    if (shutdown_mode_) {
++    if (shutdown_mode_ || (bindu_guard_mode_ && !EtherCAT_binduGuardReady())) {
+         return;
+     }
+ 
+@@ -1280,8 +1312,8 @@
+         temp_len = 0;
+ 
+         //获取插补长度
+-        time_res = this->now().seconds() + this->now().nanoseconds() * 1e-9;
+-        winlen = std::round((time_res - time_last) / 0.002) + 2;
++        time_res = steady_seconds();
++        winlen = std::clamp(static_cast<int>(std::round((time_res - time_last) / 0.001)) + 2, 2, 100);
+         if(winlen > 100){
+             winlen = 100;
+         }
+@@ -1407,7 +1439,7 @@
+         }
+     }
+ 
+-    double time_now = this->now().seconds() + this->now().nanoseconds() * 1e-9;
++    double time_now = steady_seconds();
+ 
+     if(is_left){
+         g_left_pos_target = pos;
+@@ -1512,6 +1544,8 @@
+ // ========== 躯干/头部电机回调 & runin (纯位置模式) ==========
+ 
+ void ServoNode::torso_cmd_callback(const std_msgs::msg::Float64MultiArray::SharedPtr msg){
++    if (bindu_guard_mode_ && (!EtherCAT_binduGuardReady() || msg->data.size() != 2 ||
++        !std::isfinite(msg->data[0]) || !std::isfinite(msg->data[1]))) return;
+     if (shutdown_mode_) return;   // 关机回零期间忽略外部指令
+     // 支持纯位置格式 [pos0, pos1] 以及旧版 [pos,spd,tor,kp,kd] x 2
+     if (msg->data.size() == 2) {
+@@ -1534,7 +1568,7 @@
+     EtherCAT_setSingleMotorEnable(18, true);
+     EtherCAT_setSingleMotorEnable(19, true);
+ 
+-    double now = this->now().seconds() + this->now().nanoseconds() * 1e-9;
++    double now = steady_seconds();
+ 
+     // 起点处理：若首次收到指令，以当前实际反馈为起点；否则以上一次指令值/规划连续位置为起点，杜绝反馈滞后跳变！
+     if (!t_inited) {
+@@ -1565,6 +1599,8 @@
+ }
+ 
+ void ServoNode::head_cmd_callback(const std_msgs::msg::Float64MultiArray::SharedPtr msg){
++    if (bindu_guard_mode_ && (!EtherCAT_binduGuardReady() || msg->data.size() != 2 ||
++        !std::isfinite(msg->data[0]) || !std::isfinite(msg->data[1]))) return;
+     if (shutdown_mode_) return;   // 关机回零期间忽略外部指令
+     if (msg->data.size() == 2) {
+         h_pos_target[0] = msg->data[0];
+@@ -1586,7 +1622,7 @@
+     EtherCAT_setSingleMotorEnable(16, true);
+     EtherCAT_setSingleMotorEnable(17, true);
+ 
+-    double now = this->now().seconds() + this->now().nanoseconds() * 1e-9;
++    double now = steady_seconds();
+ 
+     // 起点处理：若首次收到指令，以当前实际反馈为起点；否则以上一次指令值/规划连续位置为起点，杜绝反馈滞后跳变！
+     if (!h_inited) {
+--- a/servo_control/src/servo_control/ethercat_driver.cpp
++++ b/servo_control/src/servo_control/ethercat_driver.cpp
+@@ -1,3 +1,5 @@
++#include <sstream>
++#include <iomanip>
+ /*
+  * @brief EtherCAT 直接驱动实现
+  *        基于 SNOWBOT_SOEM_Demo/sensor_motor_test.c
+@@ -549,6 +551,29 @@
+ void EtherCATDriver::cycle() {
+     if (!inOP_) return;
+     cycle_count_++;
++    const int64_t guard_now = std::chrono::duration_cast<std::chrono::nanoseconds>(
++        std::chrono::steady_clock::now().time_since_epoch()).count();
++    const int64_t good_ns = last_good_pdo_ns_.load();
++    bool drive_fault = false;
++    for (int m = 0; m < 20; ++m) {
++        if (m != 7 && m != 15 && (motor_fb_status_[m].load() & 8)) drive_fault = true;
++    }
++    const bool healthy = communicationHealthy() && !drive_fault && good_ns > 0 && guard_now-good_ns < 20000000;
++    const bool blocked = bindu_guard_.blocked(guard_now, healthy);
++    if (blocked && !bindu_hold_active_) {
++        // Cache is updated only by successful PDO cycles. Freeze once, rather
++        // than following a moving encoder on every subsequent hold cycle.
++        for (int m = 0; m < 20; ++m) {
++            bindu_hold_position_[m] = motor_fb_pos_[m].load();
++            if (is_csp_motor_[m] && csp_rx_[m]) bindu_hold_torque_[m] = csp_rx_[m]->torque;
++            else if (m_rx_[m]) {
++                bindu_hold_kp_[m] = m_rx_[m]->KP;
++                bindu_hold_kd_[m] = m_rx_[m]->KD;
++                bindu_hold_torque_[m] = m_rx_[m]->target_torque;
++            }
++        }
++    }
++    bindu_hold_active_ = blocked;
+ 
+     static int enable_step[TOTAL_SLAVES] = {0};
+ 
+@@ -571,6 +596,16 @@
+ 
+     // --- 电机 CiA402 使能 + 命令下发 (per-motor mask) ---
+     for (int m = 0; m < TOTAL_SLAVES; m++) {
++        if (blocked && m < 20 && m != 7 && m != 15) {
++            // Do not advance an enable sequence or automatically reset a drive
++            // fault during the latched hold. Explicit disable still takes effect.
++            const bool off = !motor_enable_.load() || !motor_enable_mask_[m].load() ||
++                (motor_fb_status_[m].load() & 8);
++            if (is_csp_motor_[m] && csp_rx_[m]) {
++                if (off) csp_rx_[m]->controlword = 0x0006;
++            } else if (m_rx_[m] && off) m_rx_[m]->controlword = 0x0006;
++            continue;
++        }
+         if (is_csp_motor_[m]) {
+             // ==================== CSP 模式 (头/腰) ====================
+             if (!csp_rx_[m] || !csp_tx_[m]) continue;
+@@ -677,6 +712,27 @@
+         }
+     }
+ 
++    // Independent of ROS callbacks and the 50 Hz intermediate controller.
++    // Preserve enable state, PT gains and last torque feedforward; never enable
++    // an idle motor here. J8 grippers are outside the Bindu position contract.
++    if (blocked) {
++        for (int m = 0; m < 20; ++m) {
++            if (m == 7 || m == 15) continue;
++            if (is_csp_motor_[m] && csp_rx_[m]) {
++                csp_rx_[m]->position = static_cast<int32_t>(std::round(
++                    bindu_hold_position_[m] * (65536.0 / (2.0 * M_PI))));
++                csp_rx_[m]->velocity = 0;
++                csp_rx_[m]->torque = static_cast<int16_t>(bindu_hold_torque_[m]);
++                motor_fb_target_pos_[m].store(bindu_hold_position_[m]);
++            } else if (m_rx_[m]) {
++                m_rx_[m]->target_position = bindu_hold_position_[m];
++                m_rx_[m]->target_speed = 0;
++                m_rx_[m]->KP = bindu_hold_kp_[m];
++                m_rx_[m]->KD = bindu_hold_kd_[m];
++                m_rx_[m]->target_torque = bindu_hold_torque_[m];
++            }
++        }
++    }
+     // --- PDO 收发 ---
+     const auto io_start = std::chrono::steady_clock::now();
+     if (pdo_timing_initialized_) {
+@@ -702,13 +758,11 @@
+         first_rt_pdo_ns_.store(std::chrono::duration_cast<std::chrono::nanoseconds>(
+             io_start.time_since_epoch()).count());
+     }
+-    if (wkc_.load() == expectedWKC_ && expectedWKC_ > 0) {
+-        last_good_pdo_ns_.store(std::chrono::duration_cast<std::chrono::nanoseconds>(
+-            io_end.time_since_epoch()).count());
+-    } else {
+-        ++bad_wkc_cycles_;
+-    }
+-
++    const bool valid_pdo = wkc_.load() == expectedWKC_ && expectedWKC_ > 0;
++    if (!valid_pdo) ++bad_wkc_cycles_;
++
++    // Only a successful exchange can advance the measured cache and sample ID.
++    if (valid_pdo) {
+     // 只在实时线程读取 PDO，并发布到无锁反馈快照。
+     for (int m = 0; m < TOTAL_SLAVES; ++m) {
+         if (is_csp_motor_[m] && csp_rx_[m])
+@@ -739,7 +793,10 @@
+             sensor_fb_[a][5].store(s_tx_[a]->Mz);
+         }
+     }
++    last_good_pdo_ns_.store(std::chrono::duration_cast<std::chrono::nanoseconds>(
++        io_end.time_since_epoch()).count());
+     ++completed_pdo_cycles_;
++    }
+ 
+     const auto io_us = static_cast<uint64_t>(
+         std::chrono::duration_cast<std::chrono::microseconds>(
+@@ -750,6 +807,36 @@
+     timing_io_max_us_ = std::max(timing_io_max_us_, io_us);
+     timing_io_sum_us_ += io_us;
+ 
++}
++
++std::string EtherCATDriver::binduHealthJson(double stamp, bool ready) const {
++    // Load the concurrent sample before reading time; the RT thread may publish
++    // a newer sample between these reads, but this age can never be negative.
++    const int64_t good_ns = last_good_pdo_ns_.load();
++    const int64_t now_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
++        std::chrono::steady_clock::now().time_since_epoch()).count();
++    uint32_t fault_mask = 0, enabled_mask = 0, operation_mask = 0, present_mask = 0;
++    for (int m = 0; m < 20; ++m) {
++        if ((is_csp_motor_[m] && csp_tx_[m]) || (!is_csp_motor_[m] && m_tx_[m])) present_mask |= (1u << m);
++        if ((motor_fb_status_[m].load() & 0x6f) == 0x27) operation_mask |= (1u << m);
++        if (motor_fb_status_[m].load() & 8) fault_mask |= (1u << m);
++        if (motor_enable_.load() && motor_enable_mask_[m].load()) enabled_mask |= (1u << m);
++    }
++    std::ostringstream out;
++    out << std::setprecision(17) << "{\"schema\":1,\"stamp\":" << stamp
++        << ",\"sample\":" << completed_pdo_cycles_.load()
++        << ",\"sample_age\":" << (good_ns > 0 ? (now_ns-good_ns)*1e-9 : -1.)
++        << ",\"operational\":" << (isOperational() ? "true" : "false")
++        << ",\"wkc\":" << wkc_.load() << ",\"expected_wkc\":" << expectedWKC_
++        << ",\"ready\":" << (ready ? "true" : "false")
++        << ",\"guard_enabled\":" << (bindu_guard_.enabled() ? "true" : "false")
++        << ",\"guard_session\":" << bindu_guard_.session()
++        << ",\"guard_armed\":" << (bindu_guard_.armed() ? "true" : "false")
++        << ",\"guard_latched\":" << (bindu_guard_.latched() ? "true" : "false")
++        << ",\"fault_mask\":" << fault_mask << ",\"present_mask\":" << present_mask
++        << ",\"enable_requested_mask\":" << enabled_mask
++        << ",\"operation_enabled_mask\":" << operation_mask << "}";
++    return out.str();
+ }
+ 
+ void EtherCATDriver::printCommunicationStatus() const {
+--- a/servo_control/src/servo_control/transmit.cpp
++++ b/servo_control/src/servo_control/transmit.cpp
+@@ -41,6 +41,19 @@
+ 
+ bool EtherCAT_communicationHealthy() {
+     return g_ecat_driver && g_ecat_driver->communicationHealthy();
++}
++
++void EtherCAT_enableBinduGuard() {
++    if (g_ecat_driver) g_ecat_driver->enableBinduGuard();
++}
++bool EtherCAT_binduHeartbeat(uint64_t session, uint64_t sequence, int64_t now_ns) {
++    return g_ecat_driver && g_ecat_driver->binduHeartbeat(session, sequence, now_ns);
++}
++bool EtherCAT_binduGuardReady() {
++    return g_ecat_driver && g_ecat_driver->binduGuardReady();
++}
++std::string EtherCAT_binduHealthJson(double stamp, bool ready) {
++    return g_ecat_driver ? g_ecat_driver->binduHealthJson(stamp, ready) : "{}";
+ }
+ 
+ void EtherCAT_Stop() {

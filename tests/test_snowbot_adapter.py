@@ -1,5 +1,6 @@
 """Vendor boundary and delegated stop semantics; never touches hardware."""
 import copy
+import json
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace as S
@@ -10,7 +11,7 @@ from bindu_contracts.contracts import Motion
 from bindu_contracts.profile import Profile
 from bindu_execution.delegated_position import DelegatedPositionExecutor
 from bindu_execution.executor import Rejected
-from bindu_hardware.snowbot import GROUPS, SnowbotIO, decode_feedback
+from bindu_hardware.snowbot import GROUPS, VendorHealth, SnowbotIO, decode_feedback
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG = ROOT/'src/integration/bindu_runtime/config'
@@ -247,11 +248,15 @@ class SnowbotAdapterTests(unittest.TestCase):
         from bindu_runtime.snowbot_adapter import SnowbotDevices
         transport = SnowbotDevices.__new__(SnowbotDevices)
         transport.node = Mock()
+        transport.check_health = Mock()
         transport.node.count_publishers.return_value = 1
         transport.arm_type = S
         transport.array_type = lambda data: S(data=data)
         transport.command_topics = {g: '/test/'+g for g in ('arms', 'waist', 'head')}
+        transport.heartbeat_topic = '/test/heartbeat'
         transport.receivers = dict.fromkeys(transport.command_topics, '/test/vendor')
+        transport.bridge_routes = (('/test/ctl', '/test/vendor', '/test/vendor'),)
+        transport.node.get_publishers_info_by_topic.return_value = [S(node_namespace='/test', node_name='vendor')]
         transport.node.get_subscriptions_info_by_topic.return_value = [
             S(node_namespace='/test', node_name='vendor'), S(node_namespace='/', node_name='observer')]
         transport.publishers = {g: Mock() for g in transport.command_topics}
@@ -263,14 +268,83 @@ class SnowbotAdapterTests(unittest.TestCase):
         transport.publishers['waist'].publish.assert_called_once()
         for publisher in transport.publishers.values(): publisher.reset_mock()
         transport.node.get_subscriptions_info_by_topic.return_value = [S(node_namespace='/', node_name='observer')]
-        with self.assertRaisesRegex(RuntimeError, 'RECEIVER_UNAVAILABLE'):
+        with self.assertRaisesRegex(RuntimeError, 'UNAVAILABLE'):
             transport.send({'left_arm', 'right_arm'}, target)
         transport.publishers['arms'].publish.assert_not_called()
+
         transport.node.get_subscriptions_info_by_topic.return_value = [S(node_namespace='/test', node_name='vendor')]
-        transport.node.count_publishers.return_value = 2
+        transport.node.count_publishers.side_effect = lambda topic: 2 if topic in transport.command_topics.values() else 1
         with self.assertRaisesRegex(RuntimeError, 'PUBLISHER_CONFLICT'):
             transport.send({'left_arm', 'right_arm'}, target)
         transport.publishers['arms'].publish.assert_not_called()
+        transport.node.count_publishers.side_effect = None
+        transport.node.count_publishers.return_value = 1
+        transport.node.get_publishers_info_by_topic.return_value = []
+        with self.assertRaisesRegex(RuntimeError, 'RECEIVER_UNAVAILABLE'):
+            transport.send({'left_arm', 'right_arm'}, target)
+        transport.publishers['arms'].publish.assert_not_called()
+
+    def test_health_requires_real_source_mode_and_successful_pdo_progress(self):
+        steady = [1.]
+        health = VendorHealth(lambda: self.now, lambda: steady[0])
+        servo = dict(schema=1, stamp=self.now, sample=5, sample_age=.001,
+                     operational=True, ready=True, guard_enabled=True, guard_armed=True,
+                     guard_latched=False, wkc=40, expected_wkc=40, fault_mask=0,
+                     present_mask=0xfffff, enable_requested_mask=0, operation_enabled_mask=0, guard_session=123)
+        def publish(**changes):
+            self.now += .01
+            health.receive('source', json.dumps(dict(schema=1, stamp=self.now, source='topic')))
+            health.receive('servo', json.dumps(dict(servo, stamp=self.now, **changes)))
+        with self.assertRaisesRegex(RuntimeError, 'HEALTH_UNAVAILABLE'):
+            health.require({'waist'})
+        publish()
+        health.require({'left_arm', 'right_arm', 'waist'})
+        steady[0] += .06
+        publish()  # New ROS timestamp, same successful PDO sample.
+        with self.assertRaisesRegex(RuntimeError, 'SERVO_NOT_READY'):
+            health.require({'waist'})
+        publish(sample=6)
+        health.require({'waist'})
+        health.expected_session = 456
+        with self.assertRaisesRegex(RuntimeError, 'GUARD_SESSION_CONFLICT'): health.require({'waist'})
+        health.expected_session = 123
+        publish(sample=7, guard_latched=True)
+        with self.assertRaisesRegex(RuntimeError, 'SERVO_NOT_READY'):
+            health.require({'waist'})
+        publish(sample=8)
+        self.now += .01
+        health.receive('source', json.dumps(dict(schema=1, stamp=self.now, source='demo')))
+        with self.assertRaisesRegex(RuntimeError, 'CONTROL_SOURCE_NOT_TOPIC'):
+            health.require({'waist'})
+
+    def test_health_rejects_fault_missing_drive_and_malformed_feedback(self):
+        health = VendorHealth(lambda: self.now, lambda: 1.)
+        health.receive('source', json.dumps(dict(schema=1, stamp=self.now, source='topic')))
+        servo = dict(schema=1, stamp=self.now, sample=5, sample_age=.001,
+                     operational=True, ready=True, guard_enabled=True, guard_armed=True,
+                     guard_latched=False, wkc=40, expected_wkc=40, fault_mask=0,
+                     present_mask=0xfffff, enable_requested_mask=0, operation_enabled_mask=0, guard_session=123)
+        for field, value, code in [('wkc', 39, 'SERVO_NOT_READY'), ('ready', False, 'SERVO_NOT_READY'),
+                                   ('guard_enabled', False, 'SERVO_NOT_READY'),
+                                   ('fault_mask', 1 << 18, 'DRIVE_UNAVAILABLE'),
+                                   ('present_mask', 0, 'DRIVE_UNAVAILABLE')]:
+            self.now += .01
+            health.receive('servo', json.dumps(dict(servo, stamp=self.now, **{field: value})))
+            with self.assertRaisesRegex(RuntimeError, code): health.require({'waist'})
+        for value in ('{}', '{bad', json.dumps(dict(servo, stamp=self.now+1.)),
+                      json.dumps(dict(servo, stamp=self.now, sample=True)),
+                      json.dumps(dict(servo, stamp=self.now, operational='true'))):
+            with self.assertRaisesRegex(ValueError, 'HEALTH_INVALID'): health.receive('servo', value)
+        with self.assertRaisesRegex(RuntimeError, 'HEALTH_UNAVAILABLE'): health.require({'waist'})
+
+    def test_health_loss_during_hold_cannot_confirm_arrival(self):
+        self.io.write_joints(dict.fromkeys(GROUPS['waist'], .1))
+        self.engine.halt(self.now, 'CANCELED')
+        self.io.check_health = Mock(side_effect=RuntimeError('SNOWBOT_SERVO_NOT_READY'))
+        self.now += .02
+        self.observe()
+        self.engine.tick(self.now)
+        self.assertTrue(self.io.stop_failures)
 
     def test_feedback_wire_layout_and_j8_are_not_arm_axis_7(self):
         msg = S(header=S(stamp=S(sec=10, nanosec=20000000)),
@@ -286,6 +360,17 @@ class SnowbotAdapterTests(unittest.TestCase):
         self.assertEqual(stamp, 10.02)
         bad = copy.deepcopy(msg); bad.r_position = [0.]*7
         with self.assertRaises(ValueError): decode_feedback(bad)
+
+    def test_feedback_from_an_observer_cannot_confirm_a_physical_hold(self):
+        from bindu_runtime.snowbot_adapter import SnowbotDevices
+        transport = SnowbotDevices.__new__(SnowbotDevices)
+        transport.node, transport.io = Mock(), Mock()
+        transport.feedback_topic = '/test/feedback'
+        transport.health_receivers = {'servo': '/test/servo'}
+        transport.node.get_publishers_info_by_topic.return_value = [S(node_namespace='/test', node_name='observer')]
+        transport.receive(S())
+        transport.io.observe.assert_not_called()
+        self.assertEqual(transport.io.invalid, 'SNOWBOT_FEEDBACK_PUBLISHER_IDENTITY')
 
 
 if __name__ == '__main__': unittest.main()
