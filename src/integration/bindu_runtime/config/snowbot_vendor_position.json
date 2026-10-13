@@ -1,0 +1,135 @@
+{
+  "name": "snowbot_vendor_position",
+  "groups": {
+    "waist": [
+      "body_joint_1",
+      "body_joint_2"
+    ],
+    "head": [
+      "head_joint_1",
+      "head_joint_2"
+    ],
+    "left_arm": [
+      "arm_l_joint_1",
+      "arm_l_joint_2",
+      "arm_l_joint_3",
+      "arm_l_joint_4",
+      "arm_l_joint_5",
+      "arm_l_joint_6",
+      "arm_l_joint_7"
+    ],
+    "right_arm": [
+      "arm_r_joint_1",
+      "arm_r_joint_2",
+      "arm_r_joint_3",
+      "arm_r_joint_4",
+      "arm_r_joint_5",
+      "arm_r_joint_6",
+      "arm_r_joint_7"
+    ],
+    "left_tool_axis": [
+      "arm_l_joint_8"
+    ],
+    "right_tool_axis": [
+      "arm_r_joint_8"
+    ]
+  },
+  "limits": {
+    "body_joint_1": [
+      -1.17,
+      1.17
+    ],
+    "body_joint_2": [
+      -0.79,
+      0.55
+    ],
+    "head_joint_1": [
+      -0.791,
+      0.791
+    ],
+    "head_joint_2": [
+      -0.791,
+      0.791
+    ],
+    "arm_r_joint_1": [
+      -3.14,
+      3.14
+    ],
+    "arm_r_joint_2": [
+      -3.14,
+      0.0
+    ],
+    "arm_r_joint_3": [
+      -0.58,
+      2.61
+    ],
+    "arm_r_joint_4": [
+      -1.57,
+      1.57
+    ],
+    "arm_r_joint_5": [
+      -3.14,
+      3.14
+    ],
+    "arm_r_joint_6": [
+      -1.309,
+      1.274
+    ],
+    "arm_r_joint_7": [
+      -1.274,
+      1.449
+    ],
+    "arm_r_joint_8": [
+      -0.524,
+      1.484
+    ],
+    "arm_l_joint_1": [
+      -3.14,
+      3.14
+    ],
+    "arm_l_joint_2": [
+      0.0,
+      3.14
+    ],
+    "arm_l_joint_3": [
+      -2.61,
+      0.58
+    ],
+    "arm_l_joint_4": [
+      -1.57,
+      1.57
+    ],
+    "arm_l_joint_5": [
+      -3.14,
+      3.14
+    ],
+    "arm_l_joint_6": [
+      -1.309,
+      1.274
+    ],
+    "arm_l_joint_7": [
+      -1.274,
+      1.449
+    ],
+    "arm_l_joint_8": [
+      -1.484,
+      0.524
+    ]
+  },
+  "max_speed": 0.75,
+  "capabilities": [
+    "joint_position"
+  ],
+  "execution": {
+    "control_period": 0.02,
+    "max_tick_gap": 0.1,
+    "stop_timeout": 5.0,
+    "max_acceleration": 9.0,
+    "max_jerk": 162.0,
+    "feedback_tolerances": {
+      "joint_position": 0.002,
+      "joint_velocity": 0.01
+    },
+    "joint_target_interpolation": "adaptive"
+  }
+}

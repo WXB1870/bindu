@@ -7,10 +7,10 @@ from .common import RuntimeNode, seconds, stamp, spin, EVENT_QOS
 
 
 class ExecutionNode(RuntimeNode):
-    def __init__(self):
-        super().__init__('execution')
-        self.robot_io, self.devices = assemble_devices(self, self.profile)
-        self.engine = Executor(self.profile, self.robot_io)
+    def __init__(self, *, allow_hardware=False, device_factory=assemble_devices, executor_factory=Executor):
+        super().__init__('execution', allow_hardware=allow_hardware)
+        self.robot_io, self.devices = device_factory(self, self.profile)
+        self.engine = executor_factory(self.profile, self.robot_io)
         self.engine.tick(self.now())
         # Default mutually exclusive group serializes every access to the engine.
         self.create_service(Lease, 'execution/lease', self.lease)
@@ -113,7 +113,7 @@ class ExecutionNode(RuntimeNode):
         active = self.engine.active
         msg = ExecutionState(stamp=stamp(now), feedback_stamp=stamp(fb.stamp),
                              instance_id=self.instance_id, profile_hash=self.profile.digest,
-                             simulated=True, base_x=fb.base_x, base_y=fb.base_y, base_yaw=fb.base_yaw)
+                             simulated=fb.simulated, base_x=fb.base_x, base_y=fb.base_y, base_yaw=fb.base_yaw)
         msg.joints.header.stamp = stamp(fb.stamp)
         msg.feedback_sources = list(self.robot_io.feedback.source_stamps)
         msg.source_stamps = [stamp(t) for t in self.robot_io.feedback.source_stamps.values()]

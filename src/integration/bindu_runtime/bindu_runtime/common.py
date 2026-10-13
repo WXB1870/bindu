@@ -28,14 +28,15 @@ def stamp(value):
 
 
 class RuntimeNode(Node):
-    def __init__(self, name):
+    def __init__(self, name, *, allow_hardware=False):
         super().__init__(name)
         default = str(Path(get_package_share_directory('bindu_runtime')) / 'config/wheel_sim.json')
         self.declare_parameter('profile', default)
         self.declare_parameter('run_id', 'manual')
-        self.declare_parameter('simulation', True)
-        if not self.get_parameter('simulation').value:
-            raise RuntimeError('Only simulated adapters are implemented; real operation is refused')
+        self.declare_parameter('simulation', not allow_hardware)
+        self.simulation = self.get_parameter('simulation').value
+        if not self.simulation and not allow_hardware:
+            raise RuntimeError('This entry only permits simulation; select a dedicated robot adapter')
         self.profile_path = self.get_parameter('profile').value
         self.profile = Profile.load(self.profile_path)
         self.declare_parameter('robot_config', '')
@@ -57,7 +58,7 @@ class RuntimeNode(Node):
     def event(self, state, code, task_id='', command_id='', observation_id=''):
         msg = RuntimeEvent(stamp=stamp(self.now()), run_id=self.run_id, task_id=task_id,
                            command_id=command_id, observation_id=observation_id,
-                           component=self.get_name(), state=state, code=code, simulated=True)
+                           component=self.get_name(), state=state, code=code, simulated=self.simulation)
         self.event_pub.publish(msg)
 
 
