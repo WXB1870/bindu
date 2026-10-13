@@ -15,7 +15,7 @@ from bindu_kinematics.bimanual_worker import BimanualWorker
 from bindu_interfaces.action import TeleopSession as TeleopAction
 from bindu_interfaces.msg import VRInput, ExecutionState, RecorderHealth, MotionCommand, TeleopModeState, ToolPoseInput
 from bindu_interfaces.srv import Lease, SubmitMotion, ControlExecution
-from .common import MODE_STATE_MAX_AGE, RuntimeNode, seconds, stamp, spin
+from .common import MODE_STATE_MAX_AGE, RuntimeNode, seconds, stamp, spin, joints_at_rest
 
 
 class BimanualToolNode(RuntimeNode):
@@ -221,12 +221,10 @@ class BimanualToolNode(RuntimeNode):
                 s=self.state
                 if s and ('EMERGENCY_STOP' in s.code or s.code == 'STOP_FEEDBACK_TIMEOUT'):
                     return False
-                velocities=dict(zip(s.joints.name,s.joints.velocity)) if s else {}
-                if (s and not s.stop_failures and seconds(s.feedback_stamp)>=requested and
+                if (s and s.state not in ('RUNNING','STOPPING') and not s.stop_failures and seconds(s.feedback_stamp)>=requested and
                         0 <= self.now()-seconds(s.feedback_stamp)<self.cfg['feedback_max_age'] and
                         not s.reference.name and
-                        all(n in velocities and math.isfinite(velocities[n]) and
-                            abs(velocities[n])<.005 for n in self.names) and
+                        joints_at_rest(s.joints, self.names, .005) and
                         (not release or not s.lease_active)):
                     return True
                 await self.pause()

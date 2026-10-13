@@ -5,7 +5,8 @@ class CommandRouter:
             raise ValueError('DRIVER_GROUP_LAYOUT')
         self.groups = profile.groups
         self.joints, self.base = joint_drivers, base_driver
-        self.reference = {j: 0. for names in profile.groups.values() for j in names}
+        self.reference = {}
+        self.stop_failures = ()
 
     def write_joints(self, target):
         selected = [(g, names) for g, names in self.groups.items() if names and set(names) <= set(target)]
@@ -35,4 +36,6 @@ class CommandRouter:
                 driver.request_stop()
             except RuntimeError:
                 failures.append(name)
-        return tuple(failures)
+        self.reference.clear()
+        self.stop_failures = tuple(sorted(set(self.stop_failures) | set(failures)))
+        return self.stop_failures

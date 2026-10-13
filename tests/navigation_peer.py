@@ -115,7 +115,9 @@ class Peer(RuntimeNode):
                     goal.canceled()
                     return result
                 if self.case=='abort' and elapsed>.3:
-                    result.error_code=1; result.error_msg='fixture_failure'; goal.abort(); return result
+                    if hasattr(result,'error_code'):result.error_code=1
+                    if hasattr(result,'error_msg'):result.error_msg='fixture_failure'
+                    goal.abort();return result
                 if self.case in ('false_success','false_yaw_success') and elapsed>.05:
                     goal.succeed(); return result
                 if self.case not in ('timeout','input_loss','pose_loss','source_change','invalid_axis','wrong_map','cancel','backend_loss','feedback_loss') and self.state:
@@ -126,7 +128,8 @@ class Peer(RuntimeNode):
                     if elapsed>.3 and error<.025 and yaw<.03 and abs(self.state.base_velocity.linear.x)<.02 and abs(self.state.base_velocity.angular.z)<.02:
                         goal.succeed(); return result
                 if elapsed>15:
-                    result.error_code=1; goal.abort(); return result
+                    if hasattr(result,'error_code'):result.error_code=1
+                    goal.abort();return result
                 await self.pause()
         finally:
             self.previous=bytes(goal.goal_id.uuid).hex()

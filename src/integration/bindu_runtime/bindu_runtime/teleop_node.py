@@ -17,7 +17,7 @@ from bindu_kinematics.worker import KinematicsWorker
 from bindu_interfaces.action import TeleopSession as TeleopAction
 from bindu_interfaces.msg import VRInput, ExecutionState, RecorderHealth, MotionCommand, TeleopModeState
 from bindu_interfaces.srv import Lease, SubmitMotion, ControlExecution
-from .common import MODE_STATE_MAX_AGE, RuntimeNode, seconds, stamp, spin
+from .common import MODE_STATE_MAX_AGE, RuntimeNode, seconds, stamp, spin, joints_at_rest
 
 
 class TeleopNode(RuntimeNode):
@@ -162,9 +162,9 @@ class TeleopNode(RuntimeNode):
                 s = self.state
                 if s and (s.code == 'STOP_FEEDBACK_TIMEOUT' or 'EMERGENCY_STOP' in s.code):
                     return False
-                if (s and not s.stop_failures and seconds(s.feedback_stamp) >= requested and
+                if (s and s.state not in ('RUNNING','STOPPING') and not s.stop_failures and seconds(s.feedback_stamp) >= requested and
                         0 <= self.now()-seconds(s.feedback_stamp) < self.cfg['feedback_max_age'] and
-                        not s.reference.name and all(abs(v) < .01 for v in s.joints.velocity)):
+                        not s.reference.name and joints_at_rest(s.joints, self.profile.limits)):
                     return True
                 await self.pause()
         except RuntimeError:

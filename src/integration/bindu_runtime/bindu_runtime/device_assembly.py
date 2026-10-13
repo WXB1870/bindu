@@ -3,6 +3,7 @@ import json
 import math
 from bindu_runtime.plugins import load_provider
 from bindu_hardware.robot_io.system import RobotIO
+from rcl_interfaces.msg import ParameterDescriptor
 
 DEFAULT_DRIVERS = {
     'joint_driver_provider': 'bindu_hardware.drivers.simulated_joints:SimJointDriver',
@@ -12,7 +13,7 @@ DEFAULT_DRIVERS = {
 
 
 def assemble_devices(node, profile):
-    node.declare_parameter('device_backend', 'kinematic')
+    node.declare_parameter('device_backend', 'kinematic', descriptor=ParameterDescriptor(read_only=True))
     backend = node.get_parameter('device_backend').value
     if node.runtime_mode != 'simulation':
         raise ValueError('RUNTIME_MODE_BACKEND_CONFLICT')

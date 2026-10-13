@@ -1,15 +1,21 @@
+import signal
+import time
+import rclpy
+from rclpy.executors import SingleThreadedExecutor
+from rclpy.signals import SignalHandlerOptions
 from bindu_contracts.contracts import Motion
 from .device_assembly import assemble_devices, inject_simulated_fault
 from bindu_execution.executor import Executor, Rejected
 from bindu_interfaces.msg import ExecutionState, MotionCommand
 from bindu_interfaces.srv import Lease, SubmitMotion, ControlExecution, InjectFault
-from .common import RuntimeNode, seconds, stamp, spin, EVENT_QOS
+from .common import RuntimeNode, seconds, stamp, EVENT_QOS
 from bindu_contracts.runtime_mode import command_mode
 
 
 class ExecutionNode(RuntimeNode):
     def __init__(self, *, allow_hardware=False, device_factory=assemble_devices, executor_factory=Executor):
         super().__init__('execution', allow_hardware=allow_hardware)
+        self.closing = False
         self.robot_io, self.devices = device_factory(self, self.profile)
         self.engine = executor_factory(self.profile, self.robot_io, runtime_mode=self.runtime_mode)
         self.engine.tick(self.now())
@@ -26,6 +32,8 @@ class ExecutionNode(RuntimeNode):
 
     def lease(self, request, reply):
         try:
+            if self.closing:
+                raise Rejected('SHUTDOWN')
             if request.operation == 'acquire':
                 self.engine.acquire(request.owner, request.resources, 2., self.now())
             elif request.operation == 'renew':
@@ -45,6 +53,8 @@ class ExecutionNode(RuntimeNode):
         return reply
 
     def accept(self, msg):
+        if self.closing:
+            raise Rejected('SHUTDOWN')
         selected_mode = command_mode(msg.runtime_mode, self.runtime_mode)
         if any(v != 0. for v in (msg.velocity.linear.y, msg.velocity.linear.z,
                                 msg.velocity.angular.x, msg.velocity.angular.y)):
@@ -87,6 +97,8 @@ class ExecutionNode(RuntimeNode):
 
     def control(self, request, reply):
         try:
+            if self.closing:
+                raise Rejected('SHUTDOWN')
             self.engine.check_lease(request.lease_id, request.epoch, self.now())
             if request.operation not in ('stop', 'hold'):
                 raise Rejected('INVALID_OPERATION')
@@ -107,7 +119,6 @@ class ExecutionNode(RuntimeNode):
 
     def tick(self):
         now = self.now()
-        previous = self.engine.feedback
         self.engine.tick(now)
         while self.engine.events:
             self.last_event = e = self.engine.events.popleft()
@@ -128,9 +139,10 @@ class ExecutionNode(RuntimeNode):
         reference = self.robot_io.reference_positions
         msg.reference.name = list(reference)
         msg.reference.position = list(reference.values())
-        dt = fb.stamp - previous.stamp
-        msg.joints.velocity = [fb.joint_velocities.get(j, (q-previous.positions[j])/dt if dt > 0 else 0.)
-                               for j,q in fb.positions.items()]
+        # An empty JointState velocity vector explicitly means unavailable.
+        # Untagged finite differences must not masquerade as measured rest.
+        msg.joints.velocity = ([fb.joint_velocities[j] for j in msg.joints.name]
+                               if all(j in fb.joint_velocities for j in msg.joints.name) else [])
         msg.base_velocity.linear.x, msg.base_velocity.angular.z = fb.base_velocity
         msg.revision = self.engine.revision
         msg.lease_active = bool(self.engine.lease_id)
@@ -160,9 +172,66 @@ class ExecutionNode(RuntimeNode):
         self.state_pub.publish(msg)
 
     def destroy_node(self):
-        self.engine.halt(self.now(), 'SHUTDOWN', revoke=True, emergency=True)
+        if not self.closing:
+            self.begin_shutdown()
         return super().destroy_node()
+
+    def begin_shutdown(self):
+        self.closing = True
+        self.engine.halt(self.now(), 'SHUTDOWN', revoke=True, emergency=True)
+
+    def abort_shutdown(self):
+        self.engine.fail_stop(self.now(), 'STOP_FEEDBACK_TIMEOUT')
 
 
 def main():
-    spin(ExecutionNode, threaded=False)
+    run_execution(ExecutionNode)
+
+
+def run_execution(factory):
+    """Keep DDS alive for a bounded stop handshake on SIGINT and SIGTERM."""
+    rclpy.init(signal_handler_options=SignalHandlerOptions.NO)
+    requested = False
+    node, deadline, exit_code = None, None, 0
+    def request_shutdown(signum, frame):
+        nonlocal requested
+        requested = True
+        if node is not None:
+            node.closing = True  # Fence callbacks as soon as the signal arrives.
+    previous = {s: signal.signal(s, request_shutdown) for s in (signal.SIGINT, signal.SIGTERM)}
+    executor = SingleThreadedExecutor()
+    try:
+        node = factory()
+        executor.add_node(node)
+        while rclpy.ok():
+            if requested and deadline is None:
+                node.begin_shutdown()
+                deadline = time.monotonic()+node.profile.stop_timeout+.5
+            if requested:
+                if not node.engine.stopping:
+                    break
+                if time.monotonic() >= deadline:
+                    node.abort_shutdown()
+                    break
+            executor.spin_once(timeout_sec=.02)
+            if requested:
+                if deadline is None:
+                    node.begin_shutdown()
+                    deadline = time.monotonic()+node.profile.stop_timeout+.5
+                # ROS timers may stop when /clock is paused; the stop budget
+                # and feedback handshake must still progress during teardown.
+                node.tick()
+        if node.robot_io.stop_failures or node.engine.stop_fault:
+            node.get_logger().error('Shutdown: device stop unconfirmed')
+            exit_code = 1
+        elif requested:
+            node.get_logger().info('Shutdown: stop confirmed or no commanded axes')
+    finally:
+        executor.shutdown(timeout_sec=1.)
+        if node is not None:
+            node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
+        for signum, handler in previous.items():
+            signal.signal(signum, handler)
+    raise SystemExit(exit_code)

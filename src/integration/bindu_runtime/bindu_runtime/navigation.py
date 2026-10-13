@@ -115,8 +115,11 @@ class Nav2Navigation:
                 gate.check(port.now(), require_velocity=False)
                 if result.done():
                     response = result.result()
-                    if response.status != GoalStatus.STATUS_SUCCEEDED or response.result.error_code:
-                        raise RuntimeError('NAV_ACTION_FAILED:'+str(response.result.error_code))
+                    # Humble's result has no error_code; action status and the
+                    # existing pose/stop gates remain mandatory in both schemas.
+                    error_code = getattr(response.result, 'error_code', 0)
+                    if response.status != GoalStatus.STATUS_SUCCEEDED or error_code:
+                        raise RuntimeError('NAV_ACTION_FAILED:'+str(error_code))
                     if not gate.at_site(target):
                         raise RuntimeError('NAV_GOAL_POSE_MISMATCH')
                     succeeded = True
@@ -200,7 +203,7 @@ class Nav2Navigation:
             end = time.monotonic()+self.config.stop_timeout
             while time.monotonic() < end:
                 s = port.state
-                if s and s.instance_id == instance and not s.stop_failures and s.state != 'STOPPING':
+                if s and s.instance_id == instance and not s.stop_failures and s.state not in ('RUNNING','STOPPING'):
                     if gate.stopped(seconds(s.feedback_stamp), (s.base_velocity.linear.x, s.base_velocity.angular.z),
                                     port.now(), requested_at):
                         return True

@@ -1,13 +1,9 @@
 """Opt-in Snowbot execution endpoint; vendor nodes are never launched here."""
-import signal
-import time
 import secrets
-import rclpy
-from rclpy.executors import SingleThreadedExecutor
-from rclpy.signals import SignalHandlerOptions
+from rcl_interfaces.msg import ParameterDescriptor
 from bindu_execution.delegated_position import DelegatedPositionExecutor
 from bindu_hardware.snowbot import GROUPS, WRITABLE, VendorHealth, SnowbotIO, decode_feedback
-from .execution_node import ExecutionNode
+from .execution_node import ExecutionNode, run_execution
 
 
 class SnowbotDevices:
@@ -29,8 +25,8 @@ class SnowbotDevices:
         self.heartbeat_running = False
         self.heartbeat_type = UInt64MultiArray
         self.arm_type, self.array_type = JointPositionCommand, Float64MultiArray
-        node.declare_parameter('command_enabled', False)
-        node.declare_parameter('vendor_namespace', '/snowbot')
+        node.declare_parameter('command_enabled', False, descriptor=ParameterDescriptor(read_only=True))
+        node.declare_parameter('vendor_namespace', '/snowbot', descriptor=ParameterDescriptor(read_only=True))
         prefix = node.get_parameter('vendor_namespace').value
         if (not isinstance(prefix, str) or not prefix.startswith('/') or
                 (prefix != '/' and prefix != prefix.rstrip('/')) or '//' in prefix):
@@ -43,9 +39,9 @@ class SnowbotDevices:
         self.feedback_topic = topic('dualArmCtl_fdback')
         self.command_topics = {'arms': topic('joint_position_cmd'),
                                'waist': topic('body/motor_cmd'), 'head': topic('head/motor_cmd')}
-        node.declare_parameter('arm_receiver_node', '')
-        node.declare_parameter('servo_receiver_node', '')
-        node.declare_parameter('mid_receiver_node', '')
+        node.declare_parameter('arm_receiver_node', '', descriptor=ParameterDescriptor(read_only=True))
+        node.declare_parameter('servo_receiver_node', '', descriptor=ParameterDescriptor(read_only=True))
+        node.declare_parameter('mid_receiver_node', '', descriptor=ParameterDescriptor(read_only=True))
         arm_receiver = node.get_parameter('arm_receiver_node').value or topic('robot_upperMonitor')
         servo_receiver = node.get_parameter('servo_receiver_node').value or topic('servo_node')
         mid_receiver = node.get_parameter('mid_receiver_node').value or topic('dual_arm_control_node')
@@ -179,49 +175,18 @@ class SnowbotAdapter(ExecutionNode):
         reply.ok, reply.code = False, 'SNOWBOT_SIM_FAULT_UNAVAILABLE'
         return reply
 
+    def begin_shutdown(self):
+        self.robot_io.command_enabled = False
+        super().begin_shutdown()
+
+    def abort_shutdown(self):
+        self.robot_io.stop_failures = ('vendor_hold',)
+        self.engine.halt(self.now(), 'STOP_UNCONFIRMED', revoke=True, emergency=True)
+
+    def destroy_node(self):
+        self.snowbot_devices.heartbeat_running = False
+        return super().destroy_node()
+
 
 def main():
-    # rclpy's default SIGINT handling shuts down DDS before destroy_node();
-    # then a final hold cannot be delivered. Keep this entry's context alive
-    # through the bounded hold/feedback handshake. Other entries use spin().
-    rclpy.init(signal_handler_options=SignalHandlerOptions.NO)
-    requested = False
-    def request_shutdown(signum, frame):
-        nonlocal requested
-        requested = True
-    previous = {s: signal.signal(s, request_shutdown) for s in (signal.SIGINT, signal.SIGTERM)}
-    executor = SingleThreadedExecutor()
-    node = None
-    deadline = None
-    exit_code = 0
-    try:
-        node = SnowbotAdapter()
-        executor.add_node(node)
-        while rclpy.ok():
-            if requested and deadline is None:
-                node.robot_io.command_enabled = False  # Fence new acquisitions and writes.
-                node.engine.halt(node.now(), 'SHUTDOWN', revoke=True, emergency=True)
-                deadline = time.monotonic()+node.profile.stop_timeout+.5
-            if requested:
-                if not node.engine.stopping:
-                    break
-                if time.monotonic() >= deadline:
-                    node.robot_io.stop_failures = ('vendor_hold',)
-                    node.engine.halt(node.now(), 'STOP_UNCONFIRMED', revoke=True, emergency=True)
-                    break
-            executor.spin_once(timeout_sec=.02)
-        if node.robot_io.stop_failures:
-            node.get_logger().error('Snowbot shutdown: physical hold unconfirmed')
-            exit_code = 1
-        elif requested:
-            node.get_logger().info('Snowbot shutdown: hold confirmed or no commanded axes')
-    finally:
-        executor.shutdown(timeout_sec=1.)
-        if node is not None:
-            node.snowbot_devices.heartbeat_running = False
-            node.destroy_node()
-        if rclpy.ok():
-            rclpy.shutdown()
-        for signum, handler in previous.items():
-            signal.signal(signum, handler)
-    raise SystemExit(exit_code)
+    run_execution(SnowbotAdapter)

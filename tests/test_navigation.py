@@ -123,10 +123,13 @@ class BaseStreamTests(unittest.TestCase):
     def test_revision_stop_and_new_lease_fence_late_commands(self):
         stale=replace(self.m,expected_revision=self.e.revision)
         self.e.halt(10.)
-        with self.assertRaisesRegex(Rejected,'STALE_REVISION'): self.e.submit(stale,10.)
-        self.e.halt(10.,revoke=True)
-        self.e.acquire('new',['base'],2.,10.)
-        with self.assertRaisesRegex(Rejected,'INVALID_LEASE'): self.e.submit(self.m,10.)
+        with self.assertRaisesRegex(Rejected,'STOPPING'): self.e.submit(stale,10.)
+        self.e.tick(10.01)
+        with self.assertRaisesRegex(Rejected,'STALE_REVISION'): self.e.submit(stale,10.01)
+        self.e.halt(10.01,revoke=True)
+        with self.assertRaisesRegex(Rejected,'BUSY'): self.e.acquire('new',['base'],2.,10.01)
+        self.e.acquire('new',['base'],2.,10.02)
+        with self.assertRaisesRegex(Rejected,'INVALID_LEASE'): self.e.submit(self.m,10.02)
 
     def test_invalid_base_profile_limits(self):
         raw=json.loads((ROOT/'src/integration/bindu_runtime/config/wheel_sim.json').read_text())
@@ -143,9 +146,9 @@ class BaseStreamTests(unittest.TestCase):
         with self.assertRaisesRegex(Rejected,'BASE_LIMIT'): self.e.submit(self.m,10.)
         self.e.submit(replace(self.m,velocity=(.08,.45)),10.)
         self.e.halt(10.,revoke=True)
-        lease,epoch=self.e.acquire('arm',['arm'],2.,10.)
+        lease,epoch=self.e.acquire('arm',['arm'],2.,10.01)
         with self.assertRaisesRegex(Rejected,'RESOURCE_NOT_OWNED'):
-            self.e.submit(replace(self.m,command_id='other',lease_id=lease,epoch=epoch),10.)
+            self.e.submit(replace(self.m,command_id='other',lease_id=lease,epoch=epoch),10.01)
 
     def test_differential_arc_and_reverse(self):
         self.base.write_velocity((.2, .4))

@@ -24,7 +24,7 @@ class RobotIO:
         self.commands.write_base(velocity)
 
     def stop(self):
-        self.stop_failures = self.commands.request_stop()
+        self.stop_failures = tuple(sorted(set(self.stop_failures) | set(self.commands.request_stop())))
         # Stop is a separate operation; no position reference remains active.
         self.commands.reference.clear()
 

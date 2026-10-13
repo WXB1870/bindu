@@ -20,7 +20,7 @@ from bindu_interfaces.msg import ExecutionState, RecorderHealth, PiObservation, 
 from bindu_interfaces.srv import Lease, SubmitMotion
 from bindu_vla.pi.adapter import load_config, observation_payload, CommandAdapter, IMAGE_KEYS
 from bindu_vla.pi.transport import PiTransport
-from .common import RuntimeNode, seconds, stamp, spin
+from .common import RuntimeNode, seconds, stamp, spin, joints_at_rest
 
 
 class PiNode(RuntimeNode):
@@ -139,10 +139,10 @@ class PiNode(RuntimeNode):
                 state = self.state
                 if state and (state.code == 'STOP_FEEDBACK_TIMEOUT' or 'EMERGENCY_STOP' in state.code):
                     return False
-                if (state and state.state != 'STOPPING' and not state.reference.name and not state.stop_failures and seconds(state.feedback_stamp) >= requested and
+                if (state and state.state not in ('RUNNING','STOPPING') and not state.reference.name and not state.stop_failures and seconds(state.feedback_stamp) >= requested and
                         0 <= self.now()-seconds(state.feedback_stamp) < .2 and
                         abs(state.base_velocity.linear.x) < 1e-6 and abs(state.base_velocity.angular.z) < 1e-6 and
-                        all(abs(v) < .01 for v in state.joints.velocity)):
+                        joints_at_rest(state.joints, self.profile.limits)):
                     return True
                 await self.pause()
         except RuntimeError:

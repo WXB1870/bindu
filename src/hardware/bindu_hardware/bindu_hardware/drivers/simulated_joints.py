@@ -8,7 +8,8 @@ class SimJointDriver:
         self.target = dict(self.positions)
         self.max_speed = max_speed
         self.fault = ''
-        self.reading = JointReading(0., dict(self.positions), True)
+        self.velocities = dict.fromkeys(self.positions, 0.)
+        self.reading = JointReading(0., dict(self.positions), True, dict(self.velocities))
 
     def write_positions(self, target):
         if set(target) != set(self.positions):
@@ -19,14 +20,17 @@ class SimJointDriver:
 
     def request_stop(self):
         self.target = dict(self.positions)
+        self.velocities = dict.fromkeys(self.positions, 0.)
 
     def read(self, now, dt):
         dt = max(0., min(dt, .05))
         for joint, target in self.target.items():
             delta = max(-self.max_speed*dt, min(self.max_speed*dt, target-self.positions[joint]))
             self.positions[joint] += delta
+            if dt > 0:
+                self.velocities[joint] = delta/dt
         if self.fault != 'feedback_loss':
-            self.reading = JointReading(now, dict(self.positions), True)
+            self.reading = JointReading(now, dict(self.positions), True, dict(self.velocities))
         return self.reading
 
     def inject_fault(self, fault):

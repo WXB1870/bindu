@@ -201,7 +201,18 @@
          return;
      }
  
-@@ -1280,8 +1312,8 @@
+@@ -1188,6 +1220,8 @@
+         for (int i = 0; i < LARMDOF; i++) EtherCAT_setSingleMotorEnable(i, msg->l_motor_enable[i] != 0);
+         for (int i = 0; i < RARMDOF; i++) EtherCAT_setSingleMotorEnable(8 + i, msg->r_motor_enable[i] != 0);
+-        EtherCAT_setSingleMotorEnable(7, true);   // 左夹爪
+-        EtherCAT_setSingleMotorEnable(15, true);  // 右夹爪
++        if (!bindu_guard_mode_) {  // J8 is feedback-only in the Bindu arm contract.
++            EtherCAT_setSingleMotorEnable(7, true);   // 左夹爪
++            EtherCAT_setSingleMotorEnable(15, true);  // 右夹爪
++        }
+         EtherCAT_setMotorEnable(true);
+     }
+@@ -1280,8 +1314,8 @@
          temp_len = 0;
  
          //获取插补长度

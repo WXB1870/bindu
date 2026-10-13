@@ -6,10 +6,11 @@ from types import SimpleNamespace as S
 import unittest
 from dataclasses import replace
 import tempfile
+from unittest.mock import patch
 from bindu_contracts.contracts import Motion
 from bindu_contracts.devices import JointReading, BaseReading
 from bindu_contracts.profile import Profile
-from bindu_execution.executor import Executor
+from bindu_execution.executor import Executor, Rejected
 from bindu_hardware.drivers.physics import PhysicsCommandGate
 from bindu_hardware.robot_io.system import RobotIO
 
@@ -88,19 +89,25 @@ class PhysicsGateTests(unittest.TestCase):
 class MeasuredCompletionTests(unittest.TestCase):
     """Command/reference arrival cannot substitute for measured rest."""
     def setUp(self):
-        self.q, self.dq, self.v = 0., .1, .04
+        self.q, self.dq, self.v = 0., 0., 0.
+        self.sample_stamp = None
+        self.velocity_known = True
         self.profile = Profile('physical', {'arm':['j']}, {'j':[-1.,1.]}, 1.,
             ('joint_position','base_velocity'), 'hash', feedback_tolerances={
                 'joint_position':.002, 'joint_velocity':.01,
                 'base_linear_velocity':.003, 'base_angular_velocity':.005})
-        joints = S(read=lambda now, dt:JointReading(now, {'j':self.q}, True, {'j':self.dq}),
+        self.joints = joints = S(read=lambda now, dt:JointReading(
+            now if self.sample_stamp is None else self.sample_stamp, {'j':self.q}, True,
+            {'j':self.dq} if self.velocity_known else {}),
             write_positions=lambda q:None, request_stop=lambda:None)
-        base = S(read=lambda now, dt:BaseReading(now, 0., 0., (self.v,0.), True),
+        self.base = base = S(read=lambda now, dt:BaseReading(
+            now if self.sample_stamp is None else self.sample_stamp, 0., 0., (self.v,0.), True),
             write_velocity=lambda v:None, request_stop=lambda:None)
         self.executor = Executor(self.profile, RobotIO(self.profile, {'arm':joints}, base))
         lease, epoch = self.executor.acquire('test', ['arm','base'], 5., 10.)
         self.motion = Motion('test', lease, epoch, 'hash', 'test', '', 'finite_trajectory',
             'arm', 10., 4., names=('j',), points=((.1,),), offsets=(1.,))
+        self.dq,self.v = .1,.04
 
     def advance(self, end):
         while self.executor.last_tick < end-1e-8:
@@ -129,6 +136,114 @@ class MeasuredCompletionTests(unittest.TestCase):
         self.v = .002
         self.advance(10.6)
         self.assertIsNone(self.executor.active)
+
+    def base_motion(self):
+        return replace(self.motion, mode='base_velocity', group='base', names=(), points=(), offsets=(),
+                       velocity=(.1,0.), duration=1.)
+
+    def test_cancel_waits_for_base_and_joint_rest_before_new_lease(self):
+        self.executor.submit(self.base_motion(),10.)
+        self.executor.halt(10.,revoke=True)
+        self.assertIsNotNone(self.executor.stopping)
+        self.assertEqual(self.executor.results['test'].state,'STOPPING')
+        with self.assertRaisesRegex(Rejected,'BUSY'):
+            self.executor.acquire('new',['base'],2.,10.01)
+        self.v = 0.  # Other stopped endpoints still need confirmation.
+        self.executor.tick(10.02)
+        self.assertIsNotNone(self.executor.stopping)
+        self.dq = 0.
+        self.executor.tick(10.03)
+        self.assertEqual(self.executor.results['test'].state,'CANCELED')
+        self.executor.acquire('new',['base'],2.,10.04)
+
+    def test_stop_cannot_use_a_sample_from_before_request(self):
+        self.dq,self.v = 0.,0.
+        self.executor.submit(self.base_motion(),10.)
+        self.executor.halt(10.,revoke=True)
+        self.sample_stamp=10.
+        self.executor.tick(10.01)
+        self.assertIsNotNone(self.executor.stopping)
+        self.sample_stamp=10.02
+        self.executor.tick(10.02)
+        self.assertIsNone(self.executor.stopping)
+
+    def test_unknown_velocity_cannot_complete_finite_goal_or_stop(self):
+        self.executor.submit(self.motion,10.)
+        self.velocity_known=False
+        self.q=.1
+        self.advance(11.1)
+        self.assertIsNone(self.executor.active)
+        self.assertIsNotNone(self.executor.stopping)
+        self.assertEqual(self.executor.results['test'].code,'FEEDBACK_VELOCITY_UNAVAILABLE')
+        self.executor.halt(11.1,revoke=True,emergency=True)
+        self.v=0.
+        self.executor.tick(11.11)
+        self.assertIsNotNone(self.executor.stopping)
+        self.velocity_known=True;self.dq=0.
+        self.executor.tick(11.12)
+        self.assertIsNone(self.executor.stopping)
+
+    def test_stop_failure_latches_even_after_a_successful_retry(self):
+        with patch.object(self.joints,'request_stop',side_effect=RuntimeError('offline')):
+            self.executor.halt(10.,revoke=True,emergency=True)
+        self.executor.io.stop()
+        self.dq,self.v = 0.,0.
+        with self.assertRaisesRegex(Rejected,'STOP_UNCONFIRMED'):
+            self.executor.acquire('new',['base'],2.,10.01)
+
+    def test_repeated_faults_do_not_resend_or_extend_the_stop_deadline(self):
+        self.executor.profile=replace(self.profile,stop_timeout=.3)
+        self.executor.submit(self.base_motion(),10.)
+        with patch.object(self.executor.io,'stop',wraps=self.executor.io.stop) as stop:
+            self.executor.halt(10.,revoke=True,emergency=True)
+            deadline=self.executor.stop_deadline
+            epoch=self.executor.epoch
+            for now in (10.15,10.3,10.45):self.executor.tick(now)
+            self.assertEqual(self.executor.stop_deadline,deadline)
+            self.assertEqual(self.executor.epoch,epoch)
+            stop.assert_called_once()
+        self.assertIsNone(self.executor.stopping)
+        self.assertEqual(self.executor.results['test'].state,'FAILED')
+        with self.assertRaisesRegex(Rejected,'STOP_UNCONFIRMED'):
+            self.executor.acquire('new',['base'],2.,10.46)
+
+    def test_monotonic_stop_budget_expires_with_frozen_ros_time(self):
+        clock=[0.]
+        self.executor.steady=lambda:clock[0]
+        self.executor.profile=replace(self.profile,stop_timeout=.3)
+        self.executor.submit(self.base_motion(),10.)
+        self.executor.halt(10.,revoke=True,emergency=True)
+        clock[0]=.31
+        self.executor.tick(10.)
+        self.assertIsNone(self.executor.stopping)
+        self.assertEqual(self.executor.results['test'].code,'STOP_FEEDBACK_TIMEOUT')
+
+    def test_idle_acquisition_requires_fresh_feedback(self):
+        self.executor.halt(10.,revoke=True,emergency=True)
+        self.dq,self.v=0.,0.
+        self.executor.tick(10.01)
+        self.sample_stamp=10.01
+        with self.assertRaisesRegex(Rejected,'FEEDBACK_STALE'):
+            self.executor.acquire('new',['base'],2.,10.3)
+
+    def test_finite_goal_requires_feedback_at_or_after_the_end(self):
+        self.executor.submit(self.motion,10.)
+        self.q,self.dq= .1,0.
+        self.advance(10.99)
+        self.sample_stamp=10.99
+        self.advance(11.1)
+        self.assertIsNotNone(self.executor.active)
+        self.sample_stamp=11.11
+        self.executor.tick(11.11)
+        self.assertEqual(self.executor.results['test'].state,'SUCCEEDED')
+
+    def test_new_owner_requires_stationary_measured_feedback(self):
+        self.executor.halt(10.,revoke=True,emergency=True)
+        self.dq,self.v=0.,0.
+        self.executor.tick(10.01)
+        self.v=.02
+        with self.assertRaisesRegex(Rejected,'FEEDBACK_NOT_STATIONARY'):
+            self.executor.acquire('new',['base'],2.,10.02)
 
 
 if __name__ == '__main__':unittest.main()

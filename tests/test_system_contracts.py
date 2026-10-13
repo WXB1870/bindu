@@ -44,11 +44,55 @@ class Contracts(unittest.TestCase):
         self.assertEqual(self.e.results['cmd'].state,'SUCCEEDED')
         self.assertAlmostEqual(self.e.feedback.positions['a'],.3)
 
+    def test_simulated_velocity_is_measured_and_goal_is_not_completed_while_moving(self):
+        self.e.submit(self.m,10.)
+        self.drivers['arm'].max_speed=.4
+        for i in range(1,101):
+            self.e.tick(10+i/100)
+            velocity=self.e.feedback.joint_velocities.get('a')
+            self.assertIsNotNone(velocity)
+            if self.e.results['cmd'].state=='SUCCEEDED':
+                self.assertLessEqual(abs(velocity),.01)
+                break
+        else:self.fail('goal was never confirmed')
+
+    def test_unsent_initial_reference_is_empty_with_nonzero_measured_pose(self):
+        self.assertFalse(self.io.reference_positions)
+        self.drivers['arm'].positions.update(a=.4,b=.4)
+        self.drivers['arm'].target.update(a=.4,b=.4)
+        self.io.read_feedback(10.01,.01)
+        self.assertEqual(self.io.last_feedback.positions['a'],.4)
+        self.assertFalse(self.io.reference_positions)
+
+    def test_mixed_simulated_and_real_feedback_is_rejected(self):
+        for group in ('arm','hand'):
+            original=self.drivers[group].read
+            with self.subTest(group=group), patch.object(self.drivers[group],'read',
+                    side_effect=lambda now,dt:replace(original(now,dt),simulated=False)):
+                with self.assertRaisesRegex(RuntimeError,'FEEDBACK_ENVIRONMENT_MISMATCH'):
+                    self.io.read_feedback(10.01,.01)
+
+    def test_invalid_base_velocity_dimension_is_rejected(self):
+        original=self.base.read
+        for velocity in (None,(),(.1,),(.1,0.,0.)):
+            with self.subTest(velocity=velocity), patch.object(self.base,'read',
+                    side_effect=lambda now,dt:replace(original(now,dt),velocity=velocity)):
+                with self.assertRaisesRegex(RuntimeError,'FEEDBACK_BASE_VELOCITY_LAYOUT'):
+                    self.io.read_feedback(10.01,.01)
+
+    def test_malformed_feedback_fails_as_device_error_instead_of_crashing(self):
+        original=self.drivers['arm'].read
+        for changes in ({'velocities':None},{'positions':None},{'positions':{'a':'bad','b':0.}}):
+            with self.subTest(changes=changes), patch.object(self.drivers['arm'],'read',
+                    side_effect=lambda now,dt:replace(original(now,dt),**changes)):
+                with self.assertRaises(RuntimeError):self.io.read_feedback(10.01,.01)
+
     def test_exclusive_and_epoch_fencing(self):
         with self.assertRaisesRegex(Rejected,'BUSY'): self.e.acquire('other',['hand'],2.,10.)
         self.e.halt(10.,revoke=True)
-        self.e.acquire('new',['arm'],2.,10.)
-        with self.assertRaisesRegex(Rejected,'INVALID_LEASE'): self.e.submit(self.m,10.)
+        with self.assertRaisesRegex(Rejected,'BUSY'): self.e.acquire('new',['arm'],2.,10.)
+        self.e.acquire('new',['arm'],2.,10.01)
+        with self.assertRaisesRegex(Rejected,'INVALID_LEASE'): self.e.submit(self.m,10.01)
 
     def test_invalid_inputs(self):
         cases = [dict(names=('b','a')),dict(points=((float('nan'),0.),)),dict(points=((2.,0.),)),

@@ -7,6 +7,7 @@ Device adapters only accept references.
 """
 from collections import OrderedDict, deque
 import math
+import time
 import uuid
 from bindu_contracts.contracts import Event
 from bindu_contracts.ports import ExecutionIO
@@ -19,9 +20,9 @@ class Rejected(ValueError):
 
 
 class Executor:
-    def __init__(self, profile, robot_io: ExecutionIO, *, runtime_mode=None):
+    def __init__(self, profile, robot_io: ExecutionIO, *, runtime_mode=None, steady=time.monotonic):
         self.profile, self.io = profile, robot_io
-        self.runtime_mode = resolve_mode(runtime_mode or '', default=(
+        self.runtime_mode = resolve_mode('' if runtime_mode is None else runtime_mode, default=(
             SIMULATION if robot_io.last_feedback.simulated else 'real'))
         if type(robot_io.last_feedback.simulated) is not bool or robot_io.last_feedback.simulated != (self.runtime_mode == SIMULATION):
             raise ValueError('FEEDBACK_RUNTIME_MODE_MISMATCH')
@@ -42,9 +43,15 @@ class Executor:
         self.reference_names = ()
         self.stopping = None
         self.stop_deadline = 0.
+        self.steady = steady
+        self.stop_steady_deadline = 0.
+        self.device_stop_pending = False
+        self.stop_after_stamp = 0.
+        self.stop_fault = ''
         self.revision = 1
         self.held_references = {}
         self.base_reference = (0., 0.)
+        self.base_zero_requested_at = None
 
     def emit(self, now, motion, state, code):
         event = Event(now, motion.task_id if motion else '', motion.command_id if motion else '',
@@ -58,8 +65,18 @@ class Executor:
 
     def acquire(self, owner, groups, ttl, now):
         self.tick(now)
+        if self.stop_fault or self.io.stop_failures:
+            raise Rejected('STOP_UNCONFIRMED')
         if self.lease_id or self.stopping:
             raise Rejected('BUSY')
+        if not 0 <= now-self.feedback.stamp <= .2:
+            raise Rejected('FEEDBACK_STALE')
+        if any(j not in self.feedback.joint_velocities for j in self.profile.limits):
+            raise Rejected('FEEDBACK_VELOCITY_UNAVAILABLE')
+        if (any(not self.joint_at_rest(j) for j in self.profile.limits) or
+                any(abs(v) > self.profile.feedback_tolerances.get('base_'+axis+'_velocity', 0.)
+                    for axis,v in zip(('linear','angular'),self.feedback.base_velocity))):
+            raise Rejected('FEEDBACK_NOT_STATIONARY')
         if not owner or not 0 < ttl <= 5 or not groups or len(groups) != len(set(groups)):
             raise Rejected('INVALID_LEASE')
         if any(g not in set(self.profile.groups) | {'base'} for g in groups):
@@ -83,13 +100,22 @@ class Executor:
         self.expires = now + 2.
 
     def halt(self, now, code='CANCELED', revoke=False, emergency=False, effective_at=None):
-        if revoke:
+        if (revoke or emergency) and self.lease_id:
             self.lease_id = ''
             self.owner = ''
             self.epoch += 1
         if self.stopping and not emergency:
             return
+        if self.stop_fault:
+            return
+        if self.device_stop_pending:
+            if self.stop_expired(now):
+                self.fail_stop(now, 'STOP_FEEDBACK_TIMEOUT')
+            return
         motion = self.active or (self.stopping[0] if self.stopping else None)
+        if not self.stopping:
+            self.stop_deadline = now+self.profile.stop_timeout
+            self.stop_steady_deadline = self.steady()+self.profile.stop_timeout
         self.last_stamp = max(self.last_stamp, now)
         self.revision += 1
         stop_start = now if effective_at is None else effective_at
@@ -109,7 +135,6 @@ class Executor:
             try:
                 self.path = fit_stop(self.profile, self.reference_names, self.reference, stop_start)
                 self.stopping = (motion, code)
-                self.stop_deadline = now+self.profile.stop_timeout
                 self.active = None
                 self.emit(now, motion, 'STOPPING', code)
                 return
@@ -127,7 +152,6 @@ class Executor:
             try:
                 self.io.write_base((0., 0.))
                 self.stopping = (motion, code)
-                self.stop_deadline = now+self.profile.stop_timeout
                 self.active = None
                 self.emit(now, motion, 'STOPPING', code)
                 return
@@ -136,15 +160,40 @@ class Executor:
         self.finish_stop(now, motion, code)
 
     def finish_stop(self, now, motion, code):
-        self.io.stop()
+        """Request a device stop once, then await independent measured rest."""
+        try:
+            self.io.stop()
+        except RuntimeError:
+            self.io.stop_failures = tuple(sorted(set(self.io.stop_failures) | {'device_stop'}))
+        self.device_stop_pending = True
+        self.stop_after_stamp = max(now, self.feedback.stamp)
+        self.stopping = (motion, code)
         self.base_reference = (0., 0.)
+        self.active = self.path = self.reference = None
+        self.reference_names = ()
+        self.held_references.clear()
         if self.io.stop_failures:
-            code = 'STOP_REQUEST_FAILED:' + ','.join(self.io.stop_failures)
-            self.lease_id = ''
-            self.owner = ''
+            self.fail_stop(now, 'STOP_REQUEST_FAILED:'+','.join(self.io.stop_failures))
+        elif self.stop_expired(now):
+            self.fail_stop(now, 'STOP_FEEDBACK_TIMEOUT')
+        else:
+            self.emit(now, motion, 'STOPPING', code)
+
+    def stop_expired(self, now):
+        # Preserve both budgets across repeated faults; ROS time can stall/reset.
+        return now >= self.stop_deadline or self.steady() >= self.stop_steady_deadline
+
+    def fail_stop(self, now, code):
+        motion = self.active or (self.stopping[0] if self.stopping else None)
+        self.stop_fault = code
+        if not self.io.stop_failures:
+            self.io.stop_failures = ('stop_feedback',)
+        if self.lease_id:
             self.epoch += 1
-        self.emit(now, motion, 'CANCELED' if code == 'CANCELED' else 'FAILED', code)
+        self.lease_id = self.owner = ''
+        self.emit(now, motion, 'FAILED', code)
         self.active = self.stopping = self.path = self.reference = None
+        self.device_stop_pending = False
         self.reference_names = ()
         self.held_references.clear()
 
@@ -259,6 +308,7 @@ class Executor:
         if self.active:
             self.emit(now, self.active, 'SUPERSEDED', 'REPLACED')
         self.active, self.started = m, m.stamp
+        self.base_zero_requested_at = None
         self.last_stamp = m.stamp
         self.path = candidate
         self.reference_names = m.names
@@ -288,7 +338,10 @@ class Executor:
         if (self.active or self.stopping) and now-self.feedback.stamp > .2:
             self.halt(now, 'FEEDBACK_STALE', revoke=True, emergency=True)
             return
-        if (self.active or self.stopping) and dt > self.profile.max_tick_gap+1e-9:
+        if self.active and any(j not in self.feedback.joint_velocities for j in self.profile.limits):
+            self.halt(now, 'FEEDBACK_VELOCITY_UNAVAILABLE', revoke=True, emergency=True)
+            return
+        if (self.active or self.stopping) and not self.device_stop_pending and dt > self.profile.max_tick_gap+1e-9:
             self.halt(now, 'EXECUTION_OVERRUN', revoke=True, emergency=True)
             return
         if self.lease_id and now >= self.expires:
@@ -315,7 +368,10 @@ class Executor:
                     min(self.profile.base_acceleration(axis)*dt, t-v))
                     for axis, v, t in zip(("linear", "angular"), self.base_reference, target))
                 self.io.write_base(self.base_reference)
+                if elapsed >= m.duration and self.base_reference == (0., 0.) and self.base_zero_requested_at is None:
+                    self.base_zero_requested_at = now
                 done = (elapsed >= m.duration and self.base_reference == (0., 0.) and
+                        self.base_zero_requested_at is not None and self.feedback.stamp > self.base_zero_requested_at and
                         all(abs(v) <= self.profile.feedback_tolerances.get('base_'+axis+'_velocity', 0.)
                             for axis, v in zip(('linear', 'angular'), self.feedback.base_velocity)))
             else:
@@ -325,13 +381,14 @@ class Executor:
                 if m.mode == 'joint_reference_segment' and elapsed >= m.offsets[-1]:
                     self.stopping = (m, 'BUFFER_EXHAUSTED')
                     self.stop_deadline = now+self.profile.stop_timeout
+                    self.stop_steady_deadline = self.steady()+self.profile.stop_timeout
                     self.active = None
                     self.emit(now, m, 'STOPPING', 'BUFFER_EXHAUSTED')
                     return
                 target = m.points[-1] if m.mode == 'finite_trajectory' else m.positions
-                done = (m.mode == 'finite_trajectory' and now >= self.path.end and
+                done = (m.mode == 'finite_trajectory' and now >= self.path.end and self.feedback.stamp >= self.path.end and
                         all(abs(self.feedback.positions[j]-q) < self.profile.feedback_tolerances.get('joint_position', .015)
-                            and abs(self.feedback.joint_velocities.get(j, 0.)) <= self.profile.feedback_tolerances.get('joint_velocity', .01)
+                            and self.joint_at_rest(j)
                             for j, q in zip(m.names, target)))
             if done:
                 self.emit(now, m, 'SUCCEEDED', 'FEEDBACK_CONFIRMED')
@@ -351,14 +408,27 @@ class Executor:
 
     def tick_stop(self, now):
         motion, code = self.stopping
+        if self.stop_expired(now):
+            if self.device_stop_pending:
+                self.fail_stop(now, 'STOP_FEEDBACK_TIMEOUT')
+            else:
+                self.finish_stop(now, motion, 'STOP_FEEDBACK_TIMEOUT')
+            return
+        if self.device_stop_pending:
+            if (self.feedback.stamp > self.stop_after_stamp and 0 <= now-self.feedback.stamp <= .2
+                    and all(self.joint_at_rest(j) for j in self.profile.limits)
+                    and all(abs(v) <= self.profile.feedback_tolerances.get('base_'+axis+'_velocity', 0.)
+                            for axis, v in zip(('linear','angular'), self.feedback.base_velocity))):
+                self.emit(now, motion, 'CANCELED' if code == 'CANCELED' else 'FAILED', code)
+                self.stopping = None
+                self.device_stop_pending = False
+            return
         try:
             if self.path:
                 self.reference = self.path.sample(now)
                 self.io.write_joints(dict(zip(self.reference_names, self.reference.q)))
             if (not self.path or now >= self.path.end) and self.references_arrived():
                 self.finish_stop(now, motion, code)
-            elif now >= self.stop_deadline:
-                self.halt(now, 'STOP_FEEDBACK_TIMEOUT', revoke=True, emergency=True)
         except ValueError:
             self.halt(now, 'REFERENCE_GENERATION_FAILED', revoke=True, emergency=True)
         except RuntimeError as exc:
@@ -371,6 +441,10 @@ class Executor:
         if self.reference:
             targets.update(zip(self.reference_names, self.reference.q))
         tolerance = self.profile.feedback_tolerances.get('joint_position', 1e-5)
-        velocity = self.profile.feedback_tolerances.get('joint_velocity', .01)
         return all(abs(self.feedback.positions[j]-q) < tolerance and
-                   abs(self.feedback.joint_velocities.get(j, 0.)) <= velocity for j, q in targets.items())
+                   self.joint_at_rest(j) for j, q in targets.items())
+
+    def joint_at_rest(self, name):
+        velocity = self.feedback.joint_velocities.get(name)
+        return (velocity is not None and math.isfinite(velocity) and
+                abs(velocity) <= self.profile.feedback_tolerances.get('joint_velocity', .01))

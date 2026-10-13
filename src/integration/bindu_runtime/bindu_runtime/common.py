@@ -1,5 +1,6 @@
 import uuid
 import signal
+import math
 from pathlib import Path
 import rclpy
 from rclpy.node import Node
@@ -30,12 +31,21 @@ def stamp(value):
     return Time(sec=ns // 1000000000, nanosec=ns % 1000000000)
 
 
+def joints_at_rest(joints, names, tolerance=.01):
+    """Require complete, finite velocity feedback for the named joints."""
+    if len(joints.name) != len(joints.velocity) or len(set(joints.name)) != len(joints.name):
+        return False
+    velocities = dict(zip(joints.name, joints.velocity))
+    return bool(names) and all(n in velocities and math.isfinite(velocities[n]) and
+                               abs(velocities[n]) <= tolerance for n in names)
+
+
 class RuntimeNode(Node):
     def __init__(self, name, *, allow_hardware=False, default_mode=None):
         super().__init__(name)
         default = str(Path(get_package_share_directory('bindu_runtime')) / 'config/wheel_sim.json')
-        self.declare_parameter('profile', default)
-        self.declare_parameter('run_id', 'manual')
+        self.declare_parameter('profile', default, descriptor=ParameterDescriptor(read_only=True))
+        self.declare_parameter('run_id', 'manual', descriptor=ParameterDescriptor(read_only=True))
         self.declare_parameter('runtime_mode', '')
         self.declare_parameter('simulation', None, descriptor=ParameterDescriptor(dynamic_typing=True))
         self.runtime_mode = resolve_mode(self.get_parameter('runtime_mode').value,
@@ -52,8 +62,8 @@ class RuntimeNode(Node):
             raise RuntimeError('RUNTIME_REAL_BACKEND_NOT_IMPLEMENTED:'+name)
         self.profile_path = self.get_parameter('profile').value
         self.profile = Profile.load(self.profile_path)
-        self.declare_parameter('robot_config', '')
-        self.declare_parameter('robot_config_digest', '')
+        self.declare_parameter('robot_config', '', descriptor=ParameterDescriptor(read_only=True))
+        self.declare_parameter('robot_config_digest', '', descriptor=ParameterDescriptor(read_only=True))
         robot_config = self.get_parameter('robot_config').value
         if robot_config:
             from .robot_setup import RobotSetup

@@ -1,5 +1,6 @@
 """Environment selection and provenance gates; no hardware or ROS processes."""
 import importlib.util
+from collections import deque
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace as S
@@ -8,7 +9,9 @@ from unittest.mock import Mock, patch
 
 from bindu_contracts.runtime_mode import resolve_mode, command_mode, message_matches
 from bindu_runtime.teleop_deployment import load_deployment
-from bindu_runtime.common import RuntimeNode
+from bindu_runtime.common import RuntimeNode, joints_at_rest
+from bindu_runtime.execution_node import ExecutionNode
+from bindu_contracts.contracts import Feedback
 from bindu_runtime.recorder_node import RecorderNode
 from bindu_interfaces.msg import ExecutionState, MotionCommand
 import test_system_contracts as contracts_fixture
@@ -97,6 +100,29 @@ class RuntimeModeTests(unittest.TestCase):
         self.assertEqual(args['command_enabled'], 'false')
         self.assertEqual(args['recording_mode'], 'compact')
         self.assertNotIn('device_backend', args)
+
+    def test_unknown_partial_duplicate_and_nonfinite_velocities_are_not_rest(self):
+        self.assertTrue(joints_at_rest(S(name=['j'],velocity=[0.]),['j']))
+        for joints in (S(name=['j'],velocity=[]),S(name=['j','k'],velocity=[0.]),
+                       S(name=['j','j'],velocity=[0.,0.]),S(name=['k'],velocity=[0.]),
+                       S(name=['j'],velocity=[float('nan')]),S(name=['j'],velocity=[.1])):
+            with self.subTest(joints=joints):self.assertFalse(joints_at_rest(joints,['j']))
+
+    def test_published_unknown_velocity_is_empty_and_shutdown_rejects_input(self):
+        node=ExecutionNode.__new__(ExecutionNode)
+        node.engine=S(feedback=Feedback(10.,{'j':.3},0.,0.,(0.,0.)),tick=lambda now:None,
+                      events=deque(),active=None,revision=1,lease_id='',epoch=1,groups=(),reference=None,stopping=None)
+        node.robot_io=S(feedback=S(source_stamps={'arm':10.}),reference_positions={},stop_failures=())
+        node.profile=S(digest='hash');node.instance_id='test'
+        node.runtime_mode='simulation';node.device_backend='external_simulation'
+        node.state_pub=Mock();node.last_event=None
+        with patch.object(node,'now',return_value=10.):node.tick()
+        state=node.state_pub.publish.call_args.args[0]
+        self.assertEqual(list(state.joints.velocity),[])
+        self.assertEqual(list(state.reference.name),[])
+        node.closing=True
+        with self.assertRaisesRegex(ValueError,'SHUTDOWN'):
+            node.accept(MotionCommand(runtime_mode='simulation'))
 
 
 if __name__ == '__main__':

@@ -109,6 +109,15 @@ def main():
         values=call(node,get_client,GetParameters.Request(names=['runtime_mode','simulation'])).values
         assert values[0].string_value=='simulation' and values[1].bool_value
         outcomes.append('runtime_mode_cannot_change_while_execution_is_active')
+        real_ns=contexts['real'][0]
+        real_set=node.create_client(SetParameters,real_ns+'/execution/set_parameters')
+        reply=call(node,real_set,SetParameters.Request(parameters=[Parameter(name='command_enabled',
+            value=ParameterValue(type=ParameterType.PARAMETER_BOOL,bool_value=True))]))
+        assert not reply.results[0].successful
+        real_get=node.create_client(GetParameters,real_ns+'/execution/get_parameters')
+        values=call(node,real_get,GetParameters.Request(names=['command_enabled'])).values
+        assert not values[0].bool_value
+        outcomes.append('hardware_write_permission_cannot_be_silently_changed_live')
         ns=contexts['real'][0]
         foreign=node.create_publisher(ExecutionState,ns+'/execution/state',1)
         foreign.publish(ExecutionState(runtime_mode='simulation',simulated=True,code='FOREIGN_SIMULATION'))

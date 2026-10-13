@@ -15,7 +15,7 @@ from bindu_tasks.scene import Scene
 from bindu_contracts.contracts import Observation
 from bindu_runtime.plugins import load_provider
 from bindu_tasks.fetch_drink import fetch_drink
-from .common import RuntimeNode, seconds, stamp, spin
+from .common import RuntimeNode, seconds, stamp, spin, joints_at_rest
 
 
 class Canceled(Exception):
@@ -199,10 +199,10 @@ class TaskNode(RuntimeNode):
                 s = self.state
                 if s and (s.code == 'STOP_FEEDBACK_TIMEOUT' or 'EMERGENCY_STOP' in s.code):
                     return False
-                if (response.ok and s and s.state != 'STOPPING' and not s.reference.name and not s.stop_failures and seconds(s.feedback_stamp) >= requested_at and 0 <= self.now()-seconds(s.feedback_stamp) < .2 and
+                if (response.ok and s and s.state not in ('RUNNING','STOPPING') and not s.reference.name and not s.stop_failures and seconds(s.feedback_stamp) >= requested_at and 0 <= self.now()-seconds(s.feedback_stamp) < .2 and
                     abs(s.base_velocity.linear.x)<self.profile.feedback_tolerances.get('base_linear_velocity',1e-6) and
                     abs(s.base_velocity.angular.z)<self.profile.feedback_tolerances.get('base_angular_velocity',1e-6) and
-                    all(abs(v)<self.profile.feedback_tolerances.get('joint_velocity',.01) for v in s.joints.velocity)):
+                    joints_at_rest(s.joints, self.profile.limits, self.profile.feedback_tolerances.get('joint_velocity',.01))):
                     return True
                 await self.pause()
         except RuntimeError:
