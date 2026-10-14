@@ -42,6 +42,7 @@ class BimanualQP:
             raise ValueError('BIMANUAL_FEEDFORWARD_CONFIG')
         self.tracking = self.feedforward or self.reference_kinematics
         self.target_sample = None
+        self.last_timing = None
         self.grasp_reference = None
         self.handle = None
         self.groups = tuple(config['resource_groups'])
@@ -224,7 +225,12 @@ class BimanualQP:
 
     @staticmethod
     def _ptr(values):
-        return values.ctypes.data_as(c.POINTER(c.c_double))
+        # data_as casts a c_void_p whose _objects dictionary refers back to
+        # itself. Every call leaves cyclic garbage and can trigger a full GC
+        # inside a timed solve. Cast the address and retain the array explicitly.
+        pointer = c.cast(values.ctypes.data, c.POINTER(c.c_double))
+        pointer._arr = values
+        return pointer
 
     def _error(self):
         return self.lib.bq_error(self.handle).decode()
@@ -353,6 +359,7 @@ class BimanualQP:
         """
         if not self.captured:
             raise ValueError('BIMANUAL_NOT_CAPTURED')
+        self.last_timing = None
         try:
             return self._solve(feedback, target, reference, float(dt), target_stamp)
         except (ValueError, TypeError):
@@ -360,6 +367,8 @@ class BimanualQP:
             raise
 
     def _solve(self, feedback, target, reference, dt, target_stamp):
+        started = time.perf_counter()
+        cpu_started = time.thread_time()
         if not math.isfinite(dt) or not 0 < dt <= self.max_interval:
             raise ValueError('BIMANUAL_INTEGRATION_INTERVAL')
         q = self._q(feedback)
@@ -394,7 +403,6 @@ class BimanualQP:
         target = np.ascontiguousarray(target, dtype=np.float64).reshape(4,4)
         out = np.empty(len(self.names), dtype=np.float64)
         metrics = np.empty(3, dtype=np.float64)
-        started = time.perf_counter()
         if self.tracking:
             target = self._transform(target)
         args = (self.handle, self._ptr(q), self.nq, self._ptr(reference), len(self.names), self._ptr(target))
@@ -412,14 +420,16 @@ class BimanualQP:
                         import pinocchio as pin
                         velocity[:3] = (target[:3,3]-previous[:3,3])/gap
                         velocity[3:] = pin.log3(target[:3,:3] @ previous[:3,:3].T)/gap
+            native_started = time.perf_counter()
             ok = self.lib.bq_solve_tracking(*args, self._ptr(velocity),
                 None if measured_tool is None else self._ptr(measured_tool), dt, self._ptr(out), self._ptr(metrics))
         else:
+            native_started = time.perf_counter()
             ok = self.lib.bq_solve(*args, dt, self._ptr(out), self._ptr(metrics))
+        native_us = (time.perf_counter()-native_started)*1e6
         if not ok:
             raise ValueError('BIMANUAL_QP:'+self._error())
-        if (time.perf_counter()-started)*1e6 > float(self.cfg['solve_timeout_us']):
-            raise ValueError('BIMANUAL_QP_TIMEOUT')
+        self._check_solve_budget('native', started, cpu_started, native_us, metrics[0])
         if not np.isfinite(out).all() or not np.isfinite(metrics).all():
             raise ValueError('BIMANUAL_NONFINITE_RESULT')
         if self.reference_kinematics:
@@ -444,9 +454,27 @@ class BimanualQP:
         if self.posture_policy is not None and (np.any(out<self.posture_lower-1e-9) or
                                                 np.any(out>self.posture_upper+1e-9)):
             raise ValueError('BIMANUAL_POSTURE_LIMIT')
+        geometry_started = time.perf_counter()
         self.check_path(feedback,reference,out)
-        if (time.perf_counter()-started)*1e6 > float(self.cfg['solve_timeout_us']):
-            raise ValueError('BIMANUAL_QP_TIMEOUT')
+        geometry_us = (time.perf_counter()-geometry_started)*1e6
+        result = tuple(float(v) for v in out), tuple(float(v) for v in metrics)
+        next_target_sample = None
+        if self.feedforward and target_stamp is not None:
+            next_target_sample = (target_stamp, target.copy())
+        self._check_solve_budget('validation', started, cpu_started, native_us, metrics[0], geometry_us)
         if self.feedforward:
-            self.target_sample = None if target_stamp is None else (target_stamp, target.copy())
-        return tuple(float(v) for v in out), tuple(float(v) for v in metrics)
+            self.target_sample = next_target_sample
+        return result
+
+    def _check_solve_budget(self, stage, started, cpu_started, native_us, qp_us, geometry_us=0.):
+        # Read the deadline after building diagnostics/output, so a collection
+        # during result packing cannot turn a late result into an accepted one.
+        timing = dict(stage=stage, wall_us=0., thread_cpu_us=0., native_wall_us=native_us,
+                      qp_internal_us=float(qp_us), geometry_wall_us=geometry_us)
+        timing['thread_cpu_us'] = (time.thread_time()-cpu_started)*1e6
+        timing['wall_us'] = (time.perf_counter()-started)*1e6
+        self.last_timing = timing
+        if timing['wall_us'] > float(self.cfg['solve_timeout_us']):
+            raise ValueError(f"BIMANUAL_QP_TIMEOUT:{stage}:wall_us={timing['wall_us']:.0f}:"
+                             f"cpu_us={timing['thread_cpu_us']:.0f}:native_us={native_us:.0f}:"
+                             f"qp_us={timing['qp_internal_us']:.0f}:geometry_us={geometry_us:.0f}")

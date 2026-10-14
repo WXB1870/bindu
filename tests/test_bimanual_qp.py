@@ -10,6 +10,10 @@ from bindu_kinematics.bimanual import BimanualQP, NativeConfig, check_abi
 from unittest.mock import Mock, patch
 from dataclasses import replace
 import queue
+import gc
+import weakref
+import time
+from types import SimpleNamespace as S
 from bindu_kinematics.bimanual_worker import BimanualWorker
 
 ROOT=Path(__file__).resolve().parents[1]
@@ -22,6 +26,48 @@ def propose(solver, feedback, target, dt=.01, reference=None):
 
 
 class AbiLoadingTests(unittest.TestCase):
+    def test_pointer_retains_temporary_array_without_cyclic_garbage(self):
+        values=np.arange(4,dtype=np.float64)
+        retained=weakref.ref(values)
+        pointer=BimanualQP._ptr(values)
+        del values
+        gc.collect()
+        self.assertIsNotNone(retained())
+        pointer[2]=7.
+        self.assertEqual(retained()[2],7.)
+        del pointer
+        gc.collect()
+        self.assertIsNone(retained())
+        values=np.ones(4)
+        BimanualQP._ptr(values)  # Warm the ctypes pointer type cache.
+        gc.collect()
+        enabled=gc.isenabled()
+        gc.disable()
+        try:
+            before=gc.get_count()[0]
+            for _ in range(2000):BimanualQP._ptr(values)
+            first=gc.get_count()[0]-before
+            for _ in range(2000):BimanualQP._ptr(values)
+            second=gc.get_count()[0]-before
+            # Allow fixed ctypes bookkeeping, but no garbage growth per call.
+            self.assertLess(first,16)
+            self.assertLess(second-first,5)
+        finally:
+            if enabled:gc.enable()
+
+    def test_worker_gc_preparation_precedes_ready_and_closes_native_handle(self):
+        from bindu_kinematics.bimanual_worker import _run
+        events=[]
+        requests=Mock();requests.get.return_value=None
+        results=S(put=lambda item:events.append(item[0]))
+        solver=S(close=lambda:events.append('close'))
+        with patch('bindu_kinematics.bimanual.BimanualQP',
+                   side_effect=lambda *args:events.append('construct') or solver), \
+                patch('bindu_kinematics.bimanual_worker.gc.collect',side_effect=lambda:events.append('collect')), \
+                patch('bindu_kinematics.bimanual_worker.gc.freeze',side_effect=lambda:events.append('freeze')):
+            _run({},None,requests,results)
+        self.assertEqual(events,['construct','collect','freeze','ready','close'])
+
     def test_missing_and_incompatible_abi_rejected_before_binding(self):
         with self.assertRaisesRegex(ValueError, 'ABI_MISSING'):
             check_abi(object())
@@ -66,6 +112,73 @@ class NativeBimanual(unittest.TestCase):
         self.addCleanup(self.qp.close)
         self.feedback=dict.fromkeys(self.qp.model_names,0.)
         self.feedback.update(self.pose)
+
+    def test_preparation_native_and_geometry_timeout_have_separate_diagnostics(self):
+        for component,stage in (('input','native'),('native','native'),('geometry','validation')):
+            with self.subTest(component=component):
+                self.feedback.update(self.pose)
+                target=self.qp.capture(self.feedback)
+                if component=='input':
+                    original=self.qp._q
+                    def delayed(*args):
+                        time.sleep(.04);return original(*args)
+                    guard=patch.object(self.qp,'_q',side_effect=delayed)
+                elif component=='native':
+                    name='bq_solve_tracking' if self.qp.tracking else 'bq_solve'
+                    original=getattr(self.qp.lib,name)
+                    def delayed(*args):
+                        ok=original(*args);time.sleep(.04);return ok
+                    guard=patch.object(self.qp.lib,name,side_effect=delayed)
+                else:
+                    guard=patch.object(self.qp,'check_path',side_effect=lambda *args:time.sleep(.04))
+                with guard,self.assertRaisesRegex(ValueError,'BIMANUAL_QP_TIMEOUT:'+stage):
+                    propose(self.qp,self.feedback,target)
+                timing=self.qp.last_timing
+                self.assertFalse(self.qp.captured)
+                self.assertEqual(timing['stage'],stage)
+                self.assertGreater(timing['wall_us'],self.config['solve_timeout_us'])
+                self.assertGreater(timing['wall_us']-timing['thread_cpu_us'],30000.)
+                if component!='input':
+                    self.assertGreater(timing['native_wall_us'] if stage=='native' else timing['geometry_wall_us'],40000.)
+
+    def test_late_result_packing_cannot_commit_feedforward_or_succeed(self):
+        self.qp.close()
+        self.qp=BimanualQP(dict(self.config,tool_velocity_feedforward=True),self.profile)
+        self.addCleanup(self.qp.close)
+        self.feedback.update(self.pose)
+        target=self.qp.capture(self.feedback)
+        class SlowPacking(np.ndarray):
+            iterations=0
+            def __iter__(self):
+                self.iterations+=1
+                if self.iterations==2:time.sleep(.04)
+                return super().__iter__()
+        allocate=np.empty
+        def output(shape,*args,**kw):
+            array=allocate(shape,*args,**kw)
+            return array.view(SlowPacking) if shape==len(self.qp.names) else array
+        with patch('bindu_kinematics.bimanual.np.empty',side_effect=output), \
+                self.assertRaisesRegex(ValueError,'BIMANUAL_QP_TIMEOUT:validation'):
+            self.qp.solve(self.feedback,target,reference=[self.feedback[n] for n in self.qp.names],
+                          dt=.01,target_stamp=1.)
+        self.assertFalse(self.qp.captured)
+        self.assertIsNone(self.qp.target_sample)
+
+    def test_late_feedforward_copy_is_checked_before_committing_sample(self):
+        solver=BimanualQP(dict(self.config,tool_velocity_feedforward=True),self.profile)
+        self.addCleanup(solver.close)
+        target=solver.capture(self.feedback)
+        class SlowCopy(np.ndarray):
+            def copy(self,*args,**kw):
+                time.sleep(.04)
+                return super().copy(*args,**kw)
+        transform=solver._transform
+        with patch.object(solver,'_transform',side_effect=lambda value:transform(value).view(SlowCopy)), \
+                self.assertRaisesRegex(ValueError,'BIMANUAL_QP_TIMEOUT:validation'):
+            solver.solve(self.feedback,target,reference=[self.feedback[n] for n in solver.names],
+                         dt=.01,target_stamp=1.)
+        self.assertFalse(solver.captured)
+        self.assertIsNone(solver.target_sample)
 
     def test_feedforward_uses_source_time_and_resets_on_recapture(self):
         solver=BimanualQP({**self.config,'tool_velocity_feedforward':True},self.profile)

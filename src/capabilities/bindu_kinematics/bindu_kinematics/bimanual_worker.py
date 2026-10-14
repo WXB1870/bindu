@@ -3,12 +3,19 @@ import multiprocessing as mp
 import math
 import queue
 import time
+import gc
 
 
 def _run(config, profile, requests, results):
+    solver = None
     try:
         from .bimanual import BimanualQP
         solver=BimanualQP(config,profile)
+        # This is the private spawned child, never the caller's interpreter.
+        # Initialization has a separate startup budget. Leave GC enabled for
+        # later garbage without rescanning this stable model/import graph.
+        gc.collect()
+        gc.freeze()
         results.put(('ready',0,None))
         while True:
             item=requests.get()
@@ -24,6 +31,9 @@ def _run(config, profile, requests, results):
                 results.put(('error',token,str(exc)))
     except Exception as exc:
         results.put(('fatal',0,type(exc).__name__+': '+str(exc)))
+    finally:
+        if solver is not None:
+            solver.close()
 
 
 class BimanualWorker:
