@@ -318,6 +318,10 @@ def simulate(app, args, motion, cfg):
     max_axial_couple = 0.
     max_projected_effort = np.zeros(len(names))
     npz_path = output/'samples.npz'
+    recorder = None
+    if args.record_video:
+        from shovel_video import ViewportRecorder
+        recorder = ViewportRecorder(output, args.video_fps)
     try:
         for step in range(count+1):
             if not app.is_running():
@@ -325,6 +329,8 @@ def simulate(app, args, motion, cfg):
             elapsed = step*dt
             control_t = round(max(0., elapsed-settle),9)
             t = round(control_t-warmup,9)
+            if recorder and 0. <= t <= duration and recorder.due(t):
+                recorder.capture(world, t)
             q = body.get_joint_positions()
             qd = body.get_joint_velocities()
             if online and elapsed >= settle:
@@ -431,6 +437,8 @@ def simulate(app, args, motion, cfg):
             online.close()
         if rows:
             np.savez_compressed(npz_path, samples=np.array(rows), joint_names=names)
+        if recorder:
+            recorder.close()
     data = np.array(rows)
     active = data[:, 0] >= 0
     steady = np.mean(static_forces, axis=0)
@@ -545,8 +553,14 @@ def main():
     parser.add_argument('--cancel-at', type=float, help='Request a latched shared-executor stop')
     parser.add_argument('--wrench-stop-at', type=float, help='Freeze virtual force sensor packets and timestamps')
     parser.add_argument('--keep-open', action='store_true', help='Keep the completed GUI scene paused for inspection')
+    parser.add_argument('--record-video', action='store_true', help='Embed no overlays: record the live viewport at simulation-time intervals')
+    parser.add_argument('--video-fps', type=int, default=20, help='Recording rate; must divide the physics step grid (default 20)')
     # Kit portable arguments are supplied by an isolated SDK launcher.
     args, kit_args = parser.parse_known_args()
+    if args.record_video and not args.gui:
+        parser.error('--record-video requires --gui')
+    if not 1 <= args.video_fps <= 60:
+        parser.error('--video-fps must be between 1 and 60')
     for name in ('motion', 'output', 'config'):
         setattr(args, name, getattr(args, name).resolve())
     if args.duration is not None and (not np.isfinite(args.duration) or args.duration <= 0):
@@ -567,6 +581,9 @@ def main():
         raise ValueError('SIMULATION_CASE_REQUIRED')
     override = cfg.pop('cases')[args.case]
     cfg.update({k:v for k,v in override.items() if k not in ('density_kg_m3', 'grip_stiffness_scale')})
+    frame_steps = 1/(args.video_fps*cfg['physics_dt_s'])
+    if args.record_video and not np.isclose(frame_steps, round(frame_steps)):
+        parser.error('video frame interval must be an integer number of physics steps')
     if 'density_kg_m3' in override:
         cfg['material']['density_kg_m3'] = override['density_kg_m3']
     for name in ('translation', 'rotation'):
@@ -581,6 +598,8 @@ def main():
     snapshots = args.output/'sources';snapshots.mkdir()
     for path in (Path(__file__),ROOT/'tools/shovel_physics.py',args.config):
         (snapshots/path.name).write_bytes(path.read_bytes())
+    if args.record_video:
+        (snapshots/'shovel_video.py').write_bytes((ROOT/'tools/shovel_video.py').read_bytes())
     from isaacsim import SimulationApp
     sys.argv = [sys.argv[0]]+kit_args
     app = SimulationApp({'headless':not args.gui, 'fast_shutdown':True, 'width':1280, 'height':900})
