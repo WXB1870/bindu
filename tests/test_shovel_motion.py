@@ -19,7 +19,8 @@ from bindu_kinematics.tool_geometry import tracking_acceptance, coupling_metrics
 class ShovelGeometryTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.config = json.loads((ROOT/'src/integration/bindu_runtime/config/robots/snowbot/bimanual_snowbot_shovel.json').read_text())
+        cls.config_path = ROOT/'src/integration/bindu_runtime/config/robots/snowbot/bimanual_snowbot_shovel.json'
+        cls.config = json.loads(cls.config_path.read_text())
         cls.urdf = ROOT/'src/hardware/bindu_description/urdf/snowbot_display.urdf'
         cls.recipe = copy.deepcopy(cls.config['demo'])
         positions = cls.recipe['initial_positions_rad']
@@ -296,8 +297,50 @@ if __name__ == '__main__':
 
 class OnlineGeometryTests(unittest.TestCase):
     setUpClass = classmethod(ShovelGeometryTests.setUpClass.__func__)
-    # Check the conservative online representation against a real CAD fixture.
+    def test_fast_recipe_tracks_both_grips_without_losing_coupling(self):
+        from bindu_contracts.profile import Profile
+        from bindu_contracts.teleoperation import ToolPoseFrame
+        from bindu_kinematics.bimanual import BimanualQP
+        cfg=copy.deepcopy(self.config)
+        cfg['urdf']=str(ROOT/'src/hardware/bindu_description/urdf'/cfg['urdf'])
+        profile=Profile.load(self.config_path.parent/cfg['demo']['profile'])
+        solver=BimanualQP(cfg,profile);self.addCleanup(solver.close)
+        initial=cfg['demo']['initial_positions_rad'];home=solver.capture(initial)
+        recipe=cfg['demo'];dt=profile.control_period
+        pivot=np.asarray(recipe['pivot_in_tool_m']);axis=recipe['shaft_axis_in_tool']
+        targets=[]
+        def frames():
+            for step in range(round(recipe['keyframes'][-1]['t']/dt)+1):
+                t=round(step*dt,9);pose=target_at(recipe['keyframes'],home,pivot,t,axis)
+                targets.append(pose)
+                yield ToolPoseFrame('fast_recipe_regression',step,t,cfg['input_frame'],
+                    tuple(pose.ravel()),grasp_mode_at(recipe,t)=='rigid')
+        records,events,_,_=run_input_stream(solver,profile,cfg,initial,frames())
+        model=pin.buildModelFromUrdf(cfg['urdf']);data=model.createData()
+        offsets={s:np.r_[recipe.get(s+'_grip_offset_m',recipe['grip_offset_m']),1.]
+                 for s in ('left','right')}
+        nominal={s:np.linalg.inv(np.asarray(cfg[s+'_to_tool']).reshape(4,4)) @ p
+                 for s,p in offsets.items()}
+        peaks=dict(left=0.,right=0.);samples=[]
+        for row in records:
+            q=pin.neutral(model)
+            for n,v in row['q'].items():q[model.joints[model.getJointId(n)].idx_q]=v
+            pin.framesForwardKinematics(model,data,q)
+            poses={s:data.oMf[model.getFrameId(cfg[s+'_frame'])].homogeneous.copy()
+                   for s in ('left','right')}
+            target=targets[min(round(row['t']/dt),len(targets)-1)]
+            for s in peaks:
+                peaks[s]=max(peaks[s],float(np.linalg.norm((poses[s] @ offsets[s]-target @ nominal[s])[:3])))
+            samples.append(dict(t=row['t'],flanges={cfg[s+'_frame']:p for s,p in poses.items()}))
+        # Capture the former 0.18 m lag independently of report_only policy;
+        # this does not reinstate the old 20 mm task acceptance gate.
+        for side,error in peaks.items():self.assertLess(error,.04,side+' tracking lag')
+        captures=[dict(t=e['t'],mode=e['mode']) for e in events if e['event']=='grasp_applied']
+        self.assertTrue(coupling_metrics(samples,cfg,captures)['passed'])
+        self.assertEqual(events[-1]['event'],'input_timeout_stop')
+
     def test_online_outer_guard_preserves_ready_and_rejects_body_overlap(self):
+        # Check the conservative online representation against a real CAD fixture.
         from bindu_kinematics.tool_geometry import make_collision_checker
         check=make_collision_checker(self.urdf,self.recipe,conservative_convex=True)
         result=check([self.sample])

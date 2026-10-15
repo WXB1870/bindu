@@ -84,6 +84,10 @@ def check_tool_trace(rows, inputs, config, description, output, captures=None):
     model=pin.buildModelFromUrdf(str(config['urdf']));data=model.createData()
     frame=model.getFrameId(config['left_frame']);mount=np.array(config['left_to_tool']).reshape(4,4)
     right_frame=model.getFrameId(config['right_frame'])
+    grip_offsets={side:np.r_[config['demo'].get(side+'_grip_offset_m',
+        config['demo']['grip_offset_m']),1.] for side in ('left','right')}
+    target_grips={side:np.linalg.inv(np.array(config[side+'_to_tool']).reshape(4,4)) @ offset
+                  for side,offset in grip_offsets.items()}
     required=set(model.names[1:])
     dense=[];errors=[];previous=float('-inf')
     for row in rows:
@@ -104,7 +108,10 @@ def check_tool_trace(rows, inputs, config, description, output, captures=None):
         if index<0:continue
         target=np.array(inputs[index]['pose']).reshape(4,4)
         if not np.isfinite(target).all():raise ValueError('NONFINITE_TOOL_REQUEST')
-        errors.append({'stamp':stamp,'input_stamp':stamps[index],
+        grip_errors={side+'_grip_position_m':float(np.linalg.norm((
+            data.oMf[frame_id].homogeneous @ grip_offsets[side]-target @ target_grips[side])[:3]))
+            for side,frame_id in (('left',frame),('right',right_frame))}
+        errors.append({'stamp':stamp,'input_stamp':stamps[index],**grip_errors,
                        'position_m':float(np.linalg.norm(tool[:3,3]-target[:3,3])),
                        'rotation_rad':float(np.linalg.norm(pin.log3(tool[:3,:3].T @ target[:3,:3])))})
     if not errors:raise ValueError('EMPTY_TOOL_TRACKING_MATCHES')
@@ -112,6 +119,9 @@ def check_tool_trace(rows, inputs, config, description, output, captures=None):
             'input_max_gap_s':max((b-a for a,b in zip(stamps,stamps[1:])),default=0.),
             'max_position_m':max(e['position_m'] for e in errors),
             'max_rotation_rad':max(e['rotation_rad'] for e in errors)}
+    result['endpoints']={side:dict(max_position_m=max(e[side+'_grip_position_m'] for e in errors),
+        rms_position_m=float(np.sqrt(np.mean([e[side+'_grip_position_m']**2 for e in errors]))),
+        final_position_m=errors[-1][side+'_grip_position_m']) for side in ('left','right')}
     positions=np.asarray([s['tool'] for s in dense])[:,:3,3]
     result['motion_extent_m']=float(np.max(np.linalg.norm(positions-positions[0],axis=1)))
     result['max_lift_m']=float(positions[:,2].max()-positions[0,2])
