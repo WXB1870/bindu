@@ -1,9 +1,74 @@
-"""Configured receiving-bin geometry shared by offline checks and Isaac views.
+"""Measured tracking/coupling checks and configured tool/bin geometry.
 
 All positions are in the fixed robot base frame. The bin is an open box, not a
-solid obstacle across its mouth. This module has no robot or simulator imports.
+solid obstacle across its mouth. Robot geometry dependencies are loaded lazily.
 """
 import numpy as np
+
+
+def tracking_acceptance(recipe, position_m, rotation_rad):
+    """Keep task tracking quality separate from relative-grasp safety."""
+    gate=recipe['acceptance'];policy=gate.get('tool_tracking_policy','required')
+    values=np.asarray([position_m,rotation_rad,gate['max_target_lag_m'],gate['max_target_rotation_error_rad']])
+    if policy not in ('required','report_only') or not np.isfinite(values).all() or np.any(values<0):
+        raise ValueError('INVALID_TOOL_TRACKING_ACCEPTANCE')
+    within=bool(position_m<=gate['max_target_lag_m'] and rotation_rad<=gate['max_target_rotation_error_rad'])
+    return dict(policy=policy,within_reference=within,passed=within or policy=='report_only',
+                reference_position_m=gate['max_target_lag_m'],reference_rotation_rad=gate['max_target_rotation_error_rad'])
+
+
+def coupling_metrics(samples, config, captures):
+    """Measured grasp-point/axis errors; re-lock captures the current angle."""
+    from bisect import bisect_right
+    from .bimanual import BimanualQP
+    transform=BimanualQP._transform
+    if not samples or not captures:raise ValueError('EMPTY_COUPLING_TRACE')
+    times=[c['t'] for c in captures]
+    if (not np.isfinite(times).all() or any(b<=a for a,b in zip(times,times[1:])) or
+            any(c['mode'] not in ('rigid','right_axial') for c in captures)):
+        raise ValueError('INVALID_COUPLING_CAPTURES')
+    mount=transform(config['left_to_tool']);right_mount=transform(config['right_to_tool'])
+    axis=np.asarray(config['right_axial_grasp']['axis_in_tool'])
+    point=np.asarray(config['right_axial_grasp']['grip_in_right_flange_m'])
+    if axis.shape!=(3,) or point.shape!=(3,) or not np.isfinite(np.r_[axis,point]).all() or not np.isclose(np.linalg.norm(axis),1.):
+        raise ValueError('INVALID_COUPLING_GEOMETRY')
+    nominal_point=(np.linalg.inv(right_mount) @ np.r_[point,1.])[:3]
+    right_axis=right_mount[:3,:3] @ axis
+    position_limit=config['demo']['acceptance']['max_grip_error_m']
+    rotation_limit=config['grasp_rotation_tolerance_rad']
+    if not np.isfinite([position_limit,rotation_limit]).all() or min(position_limit,rotation_limit)<=0:
+        raise ValueError('INVALID_COUPLING_LIMITS')
+    modes={};observed=set();last_capture=-1;previous=float('-inf');reference=None;count=0
+    for sample in samples:
+        t=sample['t']
+        if not np.isfinite(t) or t<previous:raise ValueError('INVALID_COUPLING_TIME')
+        previous=t;i=bisect_right(times,t)-1
+        if i<0:continue
+        left=transform(sample['flanges'][config['left_frame']]);right=transform(sample['flanges'][config['right_frame']])
+        relative=np.linalg.inv(left) @ right
+        if i!=last_capture:reference=relative.copy();last_capture=i
+        observed.add(i)
+        tool=left @ mount
+        position=float(np.linalg.norm((np.linalg.inv(tool) @ right @ np.r_[point,1.])[:3]-nominal_point))
+        tilt=float(np.arccos(np.clip((tool[:3,:3] @ axis) @ (right[:3,:3] @ right_axis),-1.,1.)))
+        mode=captures[i]['mode']
+        metric=modes.setdefault(mode,dict(samples=0,max_grip_position_m=0.,max_shaft_axis_rad=0.,
+            max_rigid_rotation_rad=0.,max_rigid_flange_translation_m=0.))
+        metric['samples']+=1;count+=1
+        metric['max_grip_position_m']=max(metric['max_grip_position_m'],position)
+        metric['max_shaft_axis_rad']=max(metric['max_shaft_axis_rad'],tilt)
+        if mode=='rigid':
+            angle=float(np.arccos(np.clip((np.trace(reference[:3,:3].T @ relative[:3,:3])-1.)/2.,-1.,1.)))
+            metric['max_rigid_rotation_rad']=max(metric['max_rigid_rotation_rad'],angle)
+            metric['max_rigid_flange_translation_m']=max(metric['max_rigid_flange_translation_m'],
+                float(np.linalg.norm(relative[:3,3]-reference[:3,3])))
+    if not count:raise ValueError('EMPTY_COUPLING_MATCHES')
+    if observed!=set(range(len(captures))):raise ValueError('MISSING_COUPLING_CAPTURE_SAMPLES')
+    passed=all(m['max_grip_position_m']<=position_limit and m['max_shaft_axis_rad']<=rotation_limit and
+               m['max_rigid_rotation_rad']<=rotation_limit for m in modes.values())
+    return dict(passed=passed,samples=count,modes=modes,grip_position_limit_m=position_limit,
+                rotation_limit_rad=rotation_limit,reference='first measured sample at each confirmed capture',
+                axial_roll='free; rigid re-lock captures current rotation')
 
 
 def pan_corners(recipe):

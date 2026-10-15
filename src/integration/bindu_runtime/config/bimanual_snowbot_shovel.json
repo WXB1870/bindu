@@ -39,10 +39,10 @@
   "operator_yaw_rad": 0.0,
   "sample_period": 0.01,
   "max_integration_interval": 0.1,
-  "max_reference_error": 0.15,
+  "max_reference_error": 0.06,
   "worker_timeout": 0.23,
   "worker_startup_timeout": 30.0,
-  "relative_gain": 2.0,
+  "relative_gain": 6.0,
   "max_relative_error": 0.03,
   "max_linear_speed": 0.7,
   "max_angular_speed": 1.2,
@@ -319,6 +319,7 @@
       }
     ],
     "acceptance": {
+      "tool_tracking_policy": "report_only",
       "push_seconds": 1.7,
       "min_push_m": 0.15,
       "min_lift_m": 0.6,

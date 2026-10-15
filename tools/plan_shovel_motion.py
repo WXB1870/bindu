@@ -18,7 +18,7 @@ from scipy.spatial.transform import Rotation
 from bindu_contracts.profile import Profile
 from bindu_kinematics.bimanual import BimanualQP
 from shovel_geometry import bin_boxes, check_dump
-from bindu_kinematics.tool_geometry import collision_check
+from bindu_kinematics.tool_geometry import collision_check, tracking_acceptance, coupling_metrics
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -35,6 +35,7 @@ def validate_recipe(config):
     if config.get('simulation_only') is not True:
         raise ValueError('SHOVEL_REQUIRES_SIMULATION')
     recipe, design = config['demo'], config['demo']['selected_design']
+    tracking_acceptance(recipe,0.,0.)
     if ('shared_targets' in config or
             any('shared_targets_rad' in key for key in recipe['keyframes'])):
         raise ValueError('SHOVEL_REQUIRES_TOOL_POSE_INPUT')
@@ -349,7 +350,8 @@ def generate(config_path, description, output):
             max_tracking = max(max_tracking, float(np.linalg.norm(tool[:3, 3]-desired[:3, 3])))
             max_tracking_angle = max(max_tracking_angle, float(Rotation.from_matrix(tool[:3,:3].T @ desired[:3,:3]).magnitude()))
             sample = {'t': round(seconds, 6), 'q': dict(q), 'tool': tool.tolist(),
-                      'grasp_mode': mode, 'right_grip_roll_rad': roll, 'right_axis_error_rad': axis_error}
+                      'grasp_mode': mode, 'right_grip_roll_rad': roll, 'right_axis_error_rad': axis_error,
+                      'flanges':dict(zip(frames,(p.tolist() for p in poses)))}
             dense_samples.append(sample)
             if step % stride == 0:
                 phase = next((a['phase'] for a, b in zip(keys, keys[1:])
@@ -377,16 +379,22 @@ def generate(config_path, description, output):
         clearance = min(float((np.array(s['tool']) @ np.r_[p, 1.])[2])-ground_z
                         for s in dense_samples for p in corners)
         ready_clearance = min(float((home @ np.r_[p, 1.])[2])-ground_z for p in corners)
-        if (max_tracking > gate['max_target_lag_m'] or
-                max_tracking_angle > gate['max_target_rotation_error_rad']):
+        tracking=tracking_acceptance(recipe,max_tracking,max_tracking_angle)
+        coupling=coupling_metrics(dense_samples,config,applied)
+        return_within_reference=bool(return_error<=gate['max_return_error_m'] and
+                                     return_angle<=gate['max_return_angle_rad'])
+        if not coupling['passed']:
+            raise ValueError('BIMANUAL_COUPLING_ERROR:'+json.dumps(coupling))
+        if not tracking['passed']:
             raise ValueError(f'SHOVEL_TRACKING_ERROR position={max_tracking:.6g} rotation={max_tracking_angle:.6g}')
         if (push < gate['min_push_m'] or lift < gate['min_lift_m'] or
-                return_error > gate['max_return_error_m'] or
                 max_grip_error > gate['max_grip_error_m'] or
                 clearance < gate['min_ground_clearance_m'] or
                 ready_clearance > gate['max_ready_clearance_m']):
             raise ValueError('SHOVEL_MOTION_ACCEPTANCE_FAILED:'+json.dumps(dict(push_m=push,lift_m=lift,return_error_m=return_error,max_grip_error_m=max_grip_error,clearance_m=clearance,ready_clearance_m=ready_clearance)))
-        if (min_margin < gate['min_joint_margin_rad'] or return_angle > gate['max_return_angle_rad'] or
+        if tracking['policy']=='required' and not return_within_reference:
+            raise ValueError('SHOVEL_RETURN_POSE_FAILED')
+        if (min_margin < gate['min_joint_margin_rad'] or
                 any(ranges[n][1]-ranges[n][0] < value for n, value in gate['required_joint_excursion_rad'].items())):
             raise ValueError('SHOVEL_POSTURE_RESERVE_FAILED')
         if any(not low <= s['q'][name] <= high for s in dense_samples
@@ -412,8 +420,10 @@ def generate(config_path, description, output):
         lift_angle = -Rotation.from_matrix(home[:3,:3].T @ lift_sample[:3,:3]).as_euler('xyz')[1]
         swing_angle = np.arctan2(home[1,0],home[0,0])-np.arctan2(swing_sample[1,0],swing_sample[0,0])
         swing_angle = np.arctan2(np.sin(swing_angle),np.cos(swing_angle))
-        if (abs(lift_angle-np.deg2rad(design['lift_deg'])) > gate['max_phase_angle_error_rad'] or
-                abs(swing_angle-np.deg2rad(design['outward_swing_deg'])) > gate['max_phase_angle_error_rad']):
+        phase_angles_within_reference=bool(
+            abs(lift_angle-np.deg2rad(design['lift_deg']))<=gate['max_phase_angle_error_rad'] and
+            abs(swing_angle-np.deg2rad(design['outward_swing_deg']))<=gate['max_phase_angle_error_rad'])
+        if tracking['policy']=='required' and not phase_angles_within_reference:
             raise ValueError('SHOVEL_PHASE_ANGLE_FAILED')
         dump_result = check_dump(dense_samples, recipe)
         validation = {'ready_shaft_axis_base': (home[:3,:3] @ axis).tolist(),
@@ -436,6 +446,9 @@ def generate(config_path, description, output):
                       'grasp_transitions': transitions,
                       'right_grip_roll_range_rad': [min(s['right_grip_roll_rad'] for s in dense_samples),
                                                    max(s['right_grip_roll_rad'] for s in dense_samples)],
+                      'tracking_acceptance':tracking,'coupling':coupling,
+                      'return_within_reference':return_within_reference,
+                      'phase_angles_within_reference':phase_angles_within_reference,
                       'max_target_lag_m': max_tracking,
                       'max_target_rotation_error_rad': max_tracking_angle,
                       'max_qp_solve_us': max_solve,

@@ -162,7 +162,9 @@ def run_shovel_cycle(node,source,views,states,events,trace,raw,projected,tool_in
     (out/'operator_targets.json').write_text(json.dumps(desired)+'\n')
     (out/'mapping_anchors.json').write_text(json.dumps([dict(a,tool=a['tool'].tolist(),input=a['input'].tolist(),
         hands=[p.tolist() for p in a['hands']]) for a in anchors],indent=2)+'\n')
-    tracking=check_tool_trace(trace[start_index:end_index],requests,cfg,model_root,out)
+    tracking=check_tool_trace(trace[start_index:end_index],requests,cfg,model_root,out,
+                             captures=[dict(t=a['stamp'],mode=a['mode']) for a in anchors])
+    assert tracking['max_lift_m']>=recipe['acceptance']['min_lift_m'],'Shovel must actually lift, not only preserve a static grasp'
     assert [a['mode'] for a in anchors]==['rigid','right_axial','rigid']
     assert all(f['runtime_mode']=='simulation' for f in raw+projected)
     result['shovel_cycle']=dict(recipe_duration_s=recipe['keyframes'][-1]['t'],operator_speed=operator_speed,wall_s=motion_wall,

@@ -13,6 +13,7 @@ sys.path.insert(0, str(ROOT/'tools'))
 from plan_shovel_motion import collision_check, validate_recipe, target_at, grasp_mode_at, run_input_stream
 from shovel_geometry import bin_boxes, check_dump
 from scipy.spatial.transform import Rotation
+from bindu_kinematics.tool_geometry import tracking_acceptance, coupling_metrics
 
 
 class ShovelGeometryTests(unittest.TestCase):
@@ -33,6 +34,58 @@ class ShovelGeometryTests(unittest.TestCase):
         cls.recipe['left_grip_in_tool_m'] = (np.linalg.inv(tool) @ flange @ np.r_[cls.recipe['grip_offset_m'],1.])[:3].tolist()
         cls.sample = {'t':0., 'q':positions, 'tool':tool.tolist()}
         cls.body_point = data.oMf[model.getFrameId('body_link_2')].translation.copy()
+
+    def coupling_sample(self,t,right=None,world=None):
+        world=np.eye(4) if world is None else world
+        left=np.linalg.inv(np.array(self.config['left_to_tool']).reshape(4,4))
+        right=np.linalg.inv(np.array(self.config['right_to_tool']).reshape(4,4)) if right is None else right
+        return dict(t=t,flanges={self.config['left_frame']:world @ left,self.config['right_frame']:world @ right})
+
+    def right_roll(self,angle):
+        axis=np.array(self.config['right_axial_grasp']['axis_in_tool'])
+        mount=np.array(self.config['right_to_tool']).reshape(4,4)
+        point=(np.linalg.inv(mount) @ np.r_[self.config['right_axial_grasp']['grip_in_right_flange_m'],1.])[:3]
+        spin=np.eye(4);spin[:3,:3]=Rotation.from_rotvec(axis*angle).as_matrix()
+        spin[:3,3]=point-spin[:3,:3] @ point
+        return spin @ np.linalg.inv(mount)
+
+    def test_tracking_is_report_only_for_coordination_and_required_by_default(self):
+        recipe=copy.deepcopy(self.recipe)
+        recipe['acceptance']['tool_tracking_policy']='report_only'
+        report=tracking_acceptance(recipe,.05,.1)
+        self.assertTrue(report['passed']);self.assertFalse(report['within_reference'])
+        del recipe['acceptance']['tool_tracking_policy']
+        self.assertFalse(tracking_acceptance(recipe,.05,.1)['passed'])
+        for policy,value in [('report_only',float('nan')),('unknown',.05)]:
+            recipe['acceptance']['tool_tracking_policy']=policy
+            with self.assertRaisesRegex(ValueError,'INVALID_TOOL_TRACKING'):
+                tracking_acceptance(recipe,value,.1)
+
+    def test_coupling_accepts_common_motion_but_rejects_one_hand_drift(self):
+        world=np.eye(4);world[:3,:3]=Rotation.from_euler('z',.5).as_matrix();world[:3,3]=[.12,-.3,.2]
+        rows=[self.coupling_sample(0.),self.coupling_sample(1.,world=world)]
+        self.assertTrue(coupling_metrics(rows,self.config,[dict(t=0.,mode='rigid')])['passed'])
+        rows[-1]['flanges'][self.config['right_frame']][0,3]+=.002
+        self.assertFalse(coupling_metrics(rows,self.config,[dict(t=0.,mode='rigid')])['passed'])
+
+    def test_coupling_allows_axial_roll_but_checks_axis_and_rigid_rotation(self):
+        rows=[self.coupling_sample(0.),self.coupling_sample(1.,right=self.right_roll(2.))]
+        self.assertTrue(coupling_metrics(rows,self.config,[dict(t=0.,mode='right_axial')])['passed'])
+        self.assertFalse(coupling_metrics(rows,self.config,[dict(t=0.,mode='rigid')])['passed'])
+        tilt=np.eye(4);tilt[:3,:3]=Rotation.from_rotvec([0.,.04,0.]).as_matrix()
+        rows[-1]=self.coupling_sample(1.,right=tilt @ self.right_roll(0.))
+        result=coupling_metrics(rows,self.config,[dict(t=0.,mode='right_axial')])
+        self.assertFalse(result['passed']);self.assertGreater(result['modes']['right_axial']['max_shaft_axis_rad'],.02)
+
+    def test_coupling_relocks_current_angle_and_requires_capture_coverage(self):
+        rows=[self.coupling_sample(0.),self.coupling_sample(1.,right=self.right_roll(2.)),
+              self.coupling_sample(2.,right=self.right_roll(2.)),self.coupling_sample(3.,right=self.right_roll(2.))]
+        captures=[dict(t=0.,mode='rigid'),dict(t=1.,mode='right_axial'),dict(t=2.,mode='rigid')]
+        self.assertTrue(coupling_metrics(rows,self.config,captures)['passed'])
+        rows[-1]=self.coupling_sample(3.)
+        self.assertFalse(coupling_metrics(rows,self.config,captures)['passed'])
+        with self.assertRaisesRegex(ValueError,'MISSING_COUPLING_CAPTURE'):
+            coupling_metrics(rows[:1]+rows[2:],self.config,captures)
 
     def test_selected_ready_pose_has_real_ground_and_tool_clearance(self):
         validate_recipe(self.config)
