@@ -13,11 +13,11 @@
     0.761790085656489,
     0.1052449297774336,
     0.6392177799088683,
-    0.07500000000000011,
+    0.1190000000000001,
     -0.08062229362245008,
     0.9944463307570415,
     -0.06765013684326422,
-    -1.3800715164505893e-17,
+    0.008499999999999987,
     -0.6427876096865393,
     0.0,
     0.7660444431189779,
@@ -48,35 +48,35 @@
   "max_angular_speed": 0.6,
   "solve_timeout_us": 30000,
   "demo": {
-    "description": "Simulation fixture: sideways shaft, head to robot right. Raise while bringing the grip 8 cm closer and 6 cm higher, transfer over the receiving bin, then roll to dump. Grips are not calibrated.",
+    "description": "Simulation fixture: sideways shaft, head to robot right; CAD-derived jaw opening and separate left/right grip centres. Contact geometry is checked; jaw drive and friction remain simulation assumptions.",
     "display_urdf": "snowbot_display.urdf",
     "profile": "snowbot_shovel_sim.json",
     "initial_positions_rad": {
-      "body_joint_1": 0.12250454056408677,
-      "body_joint_2": 0.06448419856404265,
-      "arm_l_joint_1": 0.03136253892354486,
-      "arm_l_joint_2": 0.298874571846036,
-      "arm_l_joint_3": 0.3985623971891745,
-      "arm_l_joint_4": -0.43320848541271034,
-      "arm_l_joint_5": -0.885410861427233,
-      "arm_l_joint_6": 0.06051466273267877,
-      "arm_l_joint_7": -1.0440804439451763,
+      "body_joint_1": 0.11854734088355395,
+      "body_joint_2": 0.06670601088026042,
+      "arm_l_joint_1": 0.08319824481706696,
+      "arm_l_joint_2": 0.34747107534971666,
+      "arm_l_joint_3": 0.3598080980756058,
+      "arm_l_joint_4": -0.40365238607947634,
+      "arm_l_joint_5": -0.9242173099194144,
+      "arm_l_joint_6": 0.11455462309468209,
+      "arm_l_joint_7": -1.1216991813508184,
       "arm_l_joint_8": 0.0,
-      "arm_r_joint_1": -0.01999396883376636,
-      "arm_r_joint_2": -0.6028876625972315,
-      "arm_r_joint_3": -0.3911319188981278,
-      "arm_r_joint_4": 0.33529828365961656,
-      "arm_r_joint_5": -0.08304797391296453,
-      "arm_r_joint_6": 0.3807631251068034,
-      "arm_r_joint_7": 1.415915832519211,
+      "arm_r_joint_1": -0.017841109583066388,
+      "arm_r_joint_2": -0.6954558752045735,
+      "arm_r_joint_3": -0.35873860354919834,
+      "arm_r_joint_4": 0.3838661557416227,
+      "arm_r_joint_5": 0.007394726406845764,
+      "arm_r_joint_6": 0.39310896958095465,
+      "arm_r_joint_7": 1.4199999992848775,
       "arm_r_joint_8": 0.0,
       "head_joint_1": 0.0,
       "head_joint_2": 0.0
     },
     "grip_offset_m": [
-      0.075,
-      0,
-      0
+      0.119,
+      0.0085,
+      0.0
     ],
     "shaft_axis_in_tool": [
       -0.6427876096865394,
@@ -478,17 +478,24 @@
         "t": 34.0,
         "mode": "rigid"
       }
-    ]
+    ],
+    "right_grip_offset_m": [
+      0.119,
+      -0.0085,
+      0.0
+    ],
+    "check_grasp_contacts": true,
+    "max_grasp_penetration_m": 0.0005
   },
   "right_to_tool": [
     -0.7180654330047566,
     -0.34834108704019817,
     -0.6025284399954449,
-    0.07500000000000002,
+    0.11900000000000002,
     0.26684475403716806,
     -0.9373678504619479,
     0.2239093346941797,
-    0.0,
+    -0.0085,
     -0.6427876096865393,
     0.0,
     0.7660444431189779,
@@ -506,9 +513,9 @@
   "damper_gain": 2.0,
   "right_axial_grasp": {
     "grip_in_right_flange_m": [
-      0.075,
-      0,
-      0
+      0.119,
+      -0.0085,
+      0.0
     ],
     "axis_in_tool": [
       -0.6427876096865394,

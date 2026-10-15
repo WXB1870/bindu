@@ -60,7 +60,8 @@ def search(config_path, description):
             approach /= np.linalg.norm(approach)
             transform = np.eye(4)
             transform[:3, :3] = np.column_stack((approach, np.cross(axis, approach), axis))
-            transform[:3, 3] = point-transform[:3, :3] @ np.array(recipe['grip_offset_m'])
+            transform[:3, 3] = point-transform[:3, :3] @ np.array(
+                recipe.get(side+'_grip_offset_m', recipe['grip_offset_m']))
             relative.append(transform)
         anchor = np.array([settings['rear_grip_x_m'],
                            np.sign(azimuth)*settings['rear_grip_side_offset_m'],

@@ -18,9 +18,9 @@ import xml.etree.ElementTree as ET
 def verify(motion_path, output):
     import numpy as np
     from scipy.spatial.transform import Rotation
-    from pxr import Gf, PhysicsSchemaTools, Usd, UsdPhysics
+    from pxr import Gf, PhysicsSchemaTools, Usd, UsdGeom, UsdPhysics
     from isaacsim.core.api import World
-    from isaacsim.core.prims import SingleArticulation, SingleRigidPrim
+    from isaacsim.core.prims import SingleArticulation, SingleXFormPrim
     from isaacsim.core.utils.extensions import enable_extension
     from isaacsim.core.utils.types import ArticulationAction
 
@@ -66,18 +66,27 @@ def verify(motion_path, output):
     enable_extension('isaacsim.asset.importer.urdf')
     from isaacsim.asset.importer.urdf import URDFImporter, URDFImporterConfig
     usd = URDFImporter(URDFImporterConfig(urdf_path=str(absolute), usd_path=str(output/'usd'),
+                                        fix_base=True, merge_fixed_joints=False,
                                         allow_self_collision=False)).import_urdf()
     world = World(stage_units_in_meters=1., physics_dt=.01, rendering_dt=.05)
     model = world.stage.DefinePrim('/World/Robot', 'Xform')
     model.GetReferences().AddReference(str(usd))
+    variant = model.GetVariantSets().GetVariantSet('Physics')
+    if variant.IsValid() and not variant.SetVariantSelection('physx'):
+        raise ValueError('PHYSX_ASSET_VARIANT_REQUIRED')
     links = {prim.GetName(): prim for prim in Usd.PrimRange(model)
-             if prim.HasAPI(UsdPhysics.RigidBodyAPI)}
+             if prim.IsA(UsdGeom.Xform)}
     root = roots.pop()
     frames = (motion['left_frame'], motion['right_frame'])
     if not {root, *frames}.issubset(links):
         raise ValueError('ISAAC_LINK_LAYOUT')
-    body = world.scene.add(SingleArticulation(str(links[root].GetPath()), name='robot'))
-    flanges = {name: world.scene.add(SingleRigidPrim(str(links[name].GetPath()), name=name))
+    articulation_roots = [p for p in Usd.PrimRange(model) if p.HasAPI(UsdPhysics.ArticulationRootAPI)]
+    if len(articulation_roots) != 1:
+        raise ValueError('ISAAC_ARTICULATION_LAYOUT')
+    body = world.scene.add(SingleArticulation(str(articulation_roots[0].GetPath()), name='robot'))
+    # Massless fixed flanges are Xforms in 6.2; never add a rigid body to
+    # those frames just to read their pose.
+    flanges = {name: world.scene.add(SingleXFormPrim(str(links[name].GetPath()), name=name))
                for name in frames}
     ground_z = float(motion['recipe']['ground']['z_in_base_m'])
     if not np.isfinite(ground_z):
@@ -90,7 +99,7 @@ def verify(motion_path, output):
     names = body.dof_names
     maximum = dict(joint_rad=0., flange_translation_m=0., flange_rotation_rad=0., right_grip_m=0.)
     left_to_tool = np.array(motion['left_to_tool']).reshape(4, 4)
-    grip_offset = np.r_[motion['recipe']['grip_offset_m'], 1.]
+    grip_offset = np.r_[motion['recipe'].get('right_grip_offset_m', motion['recipe']['grip_offset_m']), 1.]
     right_in_tool = np.r_[motion['recipe']['right_grip_in_tool_m'], 1.]
     config = json.loads(Path(motion['config_path']).read_text())
     axis = np.array(motion['recipe']['shaft_axis_in_tool'])
@@ -122,7 +131,9 @@ def verify(motion_path, output):
         body.set_joint_velocities(np.zeros_like(q))
         body.apply_action(ArticulationAction(joint_positions=q))
         # A joint-buffer readback alone does not propagate poses to links.
-        world.step(render=index % 20 == 0)
+        world.step(render=False)
+        if index % 20 == 0:
+            world.render()
         measured_q = body.get_joint_positions()
         if not np.isfinite(measured_q).all():
             raise ValueError('NONFINITE_ISAAC_JOINTS')
@@ -191,7 +202,7 @@ def verify(motion_path, output):
     return world, body, flanges, motion
 
 
-def preview(app, context, output, record_video=False):
+def preview(app, context, output, record_video=False, playback_once=False):
     """Play checked samples at their configured trajectory timing."""
     import time
     import asyncio
@@ -254,7 +265,7 @@ def preview(app, context, output, record_video=False):
     cube('/World/RightPalmMarker/Pointer',[.12,.014,.014],[.06,0.,0.],(.1,1.,.45))
     pointer_color=UsdGeom.Gprim(stage.GetPrimAtPath('/World/RightPalmMarker/Pointer')).GetDisplayColorAttr()
     right_grip=np.eye(4);right_grip[:3,:3]=right_mount[:3,:3] @ rotation
-    right_grip[:3,3]=recipe['grip_offset_m']
+    right_grip[:3,3]=recipe.get('right_grip_offset_m', recipe['grip_offset_m'])
     playback={'t':0.,'playing':True,'seek':True}
     samples=motion['samples'];fps=recipe['sample_hz'];duration=samples[-1]['t']
     positions=np.asarray([[s['q'][n] for n in body.dof_names] for s in samples])
@@ -358,6 +369,11 @@ def preview(app, context, output, record_video=False):
             if name not in captured and playback['t'] >= t:
                 capture_viewport_to_file(get_active_viewport(),str(output/(name+'.png')))
                 captured.add(name)
+        if playback_once and not record_video and playback['t'] >= duration:
+            world.pause()
+            for _ in range(3):
+                world.render()
+            break
         if record_video:
             path = frames_dir/f'{video_index:06d}.png'
             capture = capture_viewport_to_file(viewport, str(path))
@@ -411,17 +427,21 @@ def main():
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--gui', action='store_true', help='After verification, keep an interactive 1x playback window open')
     parser.add_argument('--video', action='store_true', help='Capture every checked sample at 1x timing to MP4, then exit')
-    args = parser.parse_args()
+    parser.add_argument('--playback-once', action='store_true', help='Close the GUI after one checked playback')
+    args, kit_args = parser.parse_known_args()
+    if args.playback_once and not args.gui:
+        parser.error('--playback-once requires --gui')
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=True)
     if any(output.iterdir()):
         raise FileExistsError(output)
     from isaacsim import SimulationApp
+    sys.argv = [sys.argv[0]]+kit_args
     app = SimulationApp({'headless': not args.gui, 'fast_shutdown': True, 'window_width':1600, 'window_height':1000})
     try:
         context = verify(args.motion.resolve(), output)
         if args.gui or args.video:
-            preview(app, context, output, record_video=args.video)
+            preview(app, context, output, record_video=args.video, playback_once=args.playback_once)
     except BaseException:
         # Kit's atexit fast shutdown replaces uncaught exceptions with exit 0.
         # Preserve the diagnostic and failure status before that handler runs.

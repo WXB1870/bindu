@@ -135,6 +135,11 @@ def make_collision_checker(urdf, recipe, conservative_convex=False):
         geometry = pin.buildGeomFromUrdf(model, str(absolute), pin.GeometryType.COLLISION)
     # Outer convex hulls contain every mesh triangle. Used only for online
     # tool/body and bin queries; mesh self-collision pairs stay unchanged.
+    check_grasp_contacts = recipe.get('check_grasp_contacts', False)
+    grasp_penetration = float(recipe.get('max_grasp_penetration_m', 0.0005))
+    if type(check_grasp_contacts) is not bool or not 0 <= grasp_penetration <= .001:
+        raise ValueError('INVALID_GRASP_CONTACT_CHECK')
+    contact_names = set(recipe['shaft_contacts'])
     query_shapes = []
     for obj in geometry.geometryObjects:
         shape=obj.geometry
@@ -207,12 +212,14 @@ def make_collision_checker(urdf, recipe, conservative_convex=False):
                 raise ValueError('INVALID_SHAFT_CONTACT_BAND')
             # Cylinder cut faces bound each allowed contact band precisely;
             # unlike skipping a hand mesh this still checks the rest of the rod.
-            spans = [(ends[0], center-half_length), (center+half_length, ends[1])]
+            if not check_grasp_contacts:
+                spans = [(ends[0], center-half_length), (center+half_length, ends[1])]
         segments[name] = []
         for a, b in spans:
             key = (a, b, name in contacts)
             if key not in segment_cache:
-                segment_cache[key] = (fcl.Cylinder(radius, b-a) if name in contacts else fcl.Capsule(radius, b-a),
+                query_radius = radius-grasp_penetration if check_grasp_contacts and name in contacts else radius
+                segment_cache[key] = (fcl.Cylinder(query_radius, b-a) if name in contacts else fcl.Capsule(radius, b-a),
                     np.array(recipe['left_grip_in_tool_m'])+shaft_axis*(a+b)/2)
             segments[name].append(segment_cache[key])
     pan = fcl.Box(*recipe['pan_size_m'])
@@ -254,8 +261,15 @@ def make_collision_checker(urdf, recipe, conservative_convex=False):
         failures, worst = [], None
         exact_queries, bounded_queries = 0, 0
         minimum = float('inf')
+        grasp_minimum = float('inf')
         support_heights = {}
         distance_request = fcl.DistanceRequest()
+        intersection_request = fcl.CollisionRequest()
+        intersection_request.enable_contact = False
+        # Only intersection is consumed here. GJK can stop after proving
+        # positive separation; full closest-point refinement on every CAD
+        # triangle is unnecessary. The inner cylinder/tolerance is unchanged.
+        intersection_request.distance_upper_bound = 0.
         for sample_index, sample in enumerate(samples):
             if set(sample['q']) != set(index):
                 raise ValueError('COLLISION_JOINT_LAYOUT')
@@ -304,21 +318,39 @@ def make_collision_checker(urdf, recipe, conservative_convex=False):
                 np.abs(part_centers[part_indices]-body_centers[body_indices])-
                 part_halves[part_indices]-body_halves[body_indices], 0.), axis=1)-1e-9
             for (body_index, part_index), lower_bound in zip(body_queries, lower_bounds):
-                if lower_bound >= max(clearance_limit, minimum):
+                name = bodies[body_index][0]
+                grasp_query = check_grasp_contacts and name in contacts and parts[part_index][0] == 'SHAFT'
+                limit = -grasp_penetration if grasp_query else clearance_limit
+                current_minimum = grasp_minimum if grasp_query else minimum
+                if lower_bound >= max(limit, current_minimum):
                     bounded_queries += 1
                     continue
                 exact_queries += 1
                 name, body_shape, body_pose, _ = bodies[body_index]
                 part, shape, pose = parts[part_index]
-                result = fcl.DistanceResult()
-                distance = float(fcl.distance(shape, pose, body_shape, body_pose, distance_request, result))
+                if grasp_query:
+                    body_shape = geometry.geometryObjects[body_index].geometry
+                    # Mesh signed-distance depth depends on which triangle is
+                    # returned and can miss a palm intersecting the rod core.
+                    # An inner cylinder robustly rejects overlap deeper than
+                    # the configured radial contact tolerance, without a band
+                    # exemption or a convex hull sealing the jaw opening.
+                    result = fcl.CollisionResult()
+                    fcl.collide(shape,pose,body_shape,body_pose,intersection_request,result)
+                    distance = -grasp_penetration-1e-9 if result.isCollision() else 0.
+                else:
+                    result = fcl.DistanceResult()
+                    distance = float(fcl.distance(shape, pose, body_shape, body_pose, distance_request, result))
                 if not np.isfinite(distance):
                     raise ValueError('NONFINITE_COLLISION_DISTANCE')
-                if distance < minimum:
+                if grasp_query:
+                    grasp_minimum = min(grasp_minimum, distance)
+                elif distance < minimum:
                     minimum = distance
                     worst = {'part': part, 'link': name, 't': sample['t']}
-                if distance < clearance_limit and failure is None:
-                    failure = f'{part}_CLEARANCE: {name} distance={distance:.6g}'
+                if distance < limit and failure is None:
+                    kind = 'GRASP_PENETRATION' if grasp_query else part+'_CLEARANCE'
+                    failure = f'{kind}: {name} distance={distance:.6g}'
             pan_bounds = part_bounds[0]
             # No grip exemptions apply to the receiving bin. Check every body mesh,
             # the full shaft and the pan against its four walls and floor.
@@ -350,6 +382,9 @@ def make_collision_checker(urdf, recipe, conservative_convex=False):
         return {'samples': len(samples), 'tool_body_representation':'convex_outer' if conservative_convex else 'cad_mesh',
                 'mesh_pairs': len(geometry.collisionPairs),
                 'excluded_tree_distance': 2, 'shaft_contacts': contacts,
+                'grasp_contact_checked': check_grasp_contacts,
+                'grasp_contact_test': 'inner_cylinder_mesh_intersection' if check_grasp_contacts else 'legacy_band_exemption',
+                'grasp_penetration_limit_m': grasp_penetration if check_grasp_contacts else None,
                 'empty_mesh_proxies': proxies, 'support_heights_m': support_heights,
                 'min_tool_robot_clearance_m': minimum, 'closest_tool_robot_pair': worst,
                 'exact_distance_queries': exact_queries, 'aabb_bounded_queries': bounded_queries,

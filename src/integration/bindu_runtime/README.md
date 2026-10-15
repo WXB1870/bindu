@@ -18,7 +18,8 @@
 | 目的 | 当前入口 | 反馈与验证范围 |
 |---|---|---|
 | 工具位姿输入、模式切换与暂停／恢复 | [teleop_only.launch.py](launch/teleop_only.launch.py)，默认加载 [teleop_robot_deployment.json](config/teleop_robot_deployment.json) | ROS 运动学模拟；默认 `tool_pose` 输入，现场 VR 待接入 |
-| 重力、握持变形、双臂载荷与内力 | [run_shovel_physics.sh](../../../tools/run_shovel_physics.sh)，启用 `--closed-loop --load-feedback` | Isaac Sim 6.2；私有 IPC 复用求解／会话／执行核心，逐包消费已保存的工具输入，不启动 ROS 节点 |
+| 整段双臂协调、CAD几何与实时回放 | [run_shovel_physics.sh](../../../tools/run_shovel_physics.sh)，使用 `--kinematic ... --gui` | 日常运动学检查；生产QP／执行器生成输入，Isaac 6.2核对关节和法兰并回放，无承载／接触验收 |
+| 短时重力、夹爪接触与载荷 | 同一入口，使用 `--closed-loop` | 默认contact，有限力矩J8与CAD接触；私有IPC复用求解／会话／执行核心；旧弹簧观测须显式选proxy，不启动ROS节点 |
 | Snowbot 底层位置接口联调 | [snowbot_adapter.launch.py](launch/snowbot_adapter.launch.py) | 独立位置入口，默认真实模式且只读；真实工具会话尚未联通 |
 
 `runtime.launch.py` 的默认 [runtime_deployment.json](config/runtime_deployment.json) 选择位置适配入口的仿真模式。运行扫雪工具会话从 `teleop_only.launch.py` 进入；ROS 装配切换 `runtime_mode` 不会自动接通真机遥操作。
@@ -30,7 +31,7 @@
 | [robot_snowbot.json](config/robot_snowbot.json) | 绑定本体模型、执行 profile、单臂与工具配置 |
 | [snowbot_shovel_sim.json](config/snowbot_shovel_sim.json) | 资源组、动态限制和同步位置执行；联合控制两轴腰部与双臂各七轴 |
 | [bimanual_snowbot_shovel.json](config/bimanual_snowbot_shovel.json) | 工具安装、握持约束、姿态策略、几何与输入时效 |
-| [snowbot_shovel_physics.json](config/snowbot_shovel_physics.json) | 空铲物理实验的木质质量模型、握持弹簧阻尼及载荷观测参数 |
+| [snowbot_shovel_physics.json](config/snowbot_shovel_physics.json) | 空铲木质质量、接触夹持、Fabric与GUI刷新；保留显式proxy对照参数 |
 
 1. 构建并加载匹配的 ROS、Python 与原生 QP／执行库，检查本体配置；具体命令见[环境准备](../../../运行与验证.md#环境准备与构建)。
 2. 启动遥操作装配。默认从零位等待，不自动取铲或运动到准备姿态；工具模式需要有效握姿和新鲜反馈。测试夹具初始化仅由专用模拟入口／验证器显式设置。

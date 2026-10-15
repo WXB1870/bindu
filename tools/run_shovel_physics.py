@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Isaac Sim 6.2 / PhysX: dynamic Snowbot with a wooden compliant-grasp shovel.
+"""Isaac Sim 6.2 / PhysX: dynamic Snowbot with a contact-grasped wooden shovel.
 
 Replays verified references or runs the production QP/executor on measured joints.
 Only the initial state is set; every subsequent state comes from physics.
 No ROS/hardware transport is created. This is an empty-shovel load experiment,
-not validation of real finger contacts or low-level compliance parameters.
+using CAD jaw contacts by default. Jaw effort, friction and low-level drive
+parameters are simulation assumptions, not measured hardware parameters.
 """
 import argparse
 import hashlib
@@ -39,6 +40,23 @@ def pose(position, wxyz):
 def quaternion(matrix):
     xyzw = Rotation.from_matrix(matrix).as_quat()
     return np.r_[xyzw[3], xyzw[:3]]
+
+
+def validate_grasp_config(cfg):
+    model = cfg.get('grasp_model', 'proxy')
+    if model not in ('proxy', 'contact'):
+        raise ValueError('UNKNOWN_GRASP_MODEL')
+    if model == 'contact':
+        settings = cfg['contact_grasp']
+        fields = ('joint_stiffness_nm_rad','joint_damping_nm_s_rad','max_effort_nm','axial_effort_nm','contact_offset_m')
+        if (any(not np.isfinite(settings[k]) or settings[k] <= 0 for k in fields) or
+                settings['axial_effort_nm'] > settings['max_effort_nm'] or
+                settings['contact_offset_m'] > .001):
+            raise ValueError('INVALID_CONTACT_GRASP_DRIVE')
+        for key in ('closed_positions_rad','open_positions_rad'):
+            if (set(settings[key]) != {'arm_l_joint_8','arm_r_joint_8'} or
+                    not np.isfinite(list(settings[key].values())).all()):
+                raise ValueError('INVALID_CONTACT_GRASP_JOINTS')
 
 
 def build_scene(motion, cfg, output):
@@ -79,10 +97,33 @@ def build_scene(motion, cfg, output):
     art.CreateSolverPositionIterationCountAttr(cfg['solver_position_iterations'])
     art.CreateSolverVelocityIterationCountAttr(cfg['solver_velocity_iterations'])
     body = world.scene.add(SingleArticulation(str(roots[0].GetPath()), name='snowbot'))
-    # Self-collision off is explicit. Tool collisions against the ground/bin
-    # remain enabled; tool/robot contact is filtered because modeled grasp
-    # anchors replace fingers and the CAD does not contain calibrated jaws.
+    # Robot self-collision is checked independently against CAD. Tool/robot
+    # contact stays enabled in contact mode; legacy proxy mode is explicit.
     links = {p.GetName(): p for p in Usd.PrimRange(model) if p.HasAPI(UsdPhysics.RigidBodyAPI)}
+    contact_grasp = cfg.get('grasp_model', 'proxy') == 'contact'
+    grip_colliders = []
+    if contact_grasp:
+        # Edit only generated USD. Keep the original CAD and URDF unchanged.
+        jaw_names = {f'arm_{s}_link_{n}' for s in 'lr' for n in (7, 8)}
+        for prim in list(Usd.PrimRange(model)):
+            if prim.IsInstance() and any(n in str(prim.GetPath()).split('/') for n in jaw_names):
+                prim.SetInstanceable(False)
+        for prim in Usd.PrimRange(model):
+            if (prim.HasAPI(UsdPhysics.CollisionAPI) and prim.IsA(UsdGeom.Mesh) and
+                    any(n in str(prim.GetPath()).split('/') for n in jaw_names)):
+                UsdPhysics.MeshCollisionAPI.Apply(prim).CreateApproximationAttr('convexDecomposition')
+                decomp = PhysxSchema.PhysxConvexDecompositionCollisionAPI.Apply(prim)
+                decomp.CreateMaxConvexHullsAttr(64)
+                decomp.CreateHullVertexLimitAttr(64)
+                decomp.CreateVoxelResolutionAttr(500000)
+                decomp.CreateErrorPercentageAttr(.1)
+                decomp.CreateShrinkWrapAttr(True)
+                contact = PhysxSchema.PhysxCollisionAPI.Apply(prim)
+                contact.CreateContactOffsetAttr(cfg['contact_grasp']['contact_offset_m'])
+                contact.CreateRestOffsetAttr(0.)
+                grip_colliders.append(str(prim.GetPath()))
+        if len(grip_colliders) != 4:
+            raise ValueError('GRIP_COLLIDER_LAYOUT:'+str(grip_colliders))
     # Massless URDF frames remain Xforms in 6.2. Apply each grasp to its
     # physical ancestor and retain the exact fixed-frame transform.
     joints_by_child = {j.find('child').get('link'):j for j in tree.findall('joint')}
@@ -147,9 +188,12 @@ def build_scene(motion, cfg, output):
         contact.CreateContactOffsetAttr(.001)
         contact.CreateRestOffsetAttr(0.)
         UsdShade.MaterialBindingAPI.Apply(shape.GetPrim()).Bind(material, materialPurpose='physics')
-    UsdPhysics.FilteredPairsAPI.Apply(tool_prim).CreateFilteredPairsRel().SetTargets(
-        [link.GetPath() for link in links.values()])
-    z = motion['recipe']['ground']['z_in_base_m']
+    for path in grip_colliders:
+        UsdShade.MaterialBindingAPI.Apply(stage.GetPrimAtPath(path)).Bind(material, materialPurpose='physics')
+    if not contact_grasp:
+        UsdPhysics.FilteredPairsAPI.Apply(tool_prim).CreateFilteredPairsRel().SetTargets(
+            [link.GetPath() for link in links.values()])
+    z = motion['recipe']['ground']['z_in_base_m']-cfg.get('diagnostic_ground_drop_m',0.)
     PhysicsSchemaTools.addGroundPlane(stage, '/World/Ground', 'Z', 5., Gf.Vec3f(0., 0., z), Gf.Vec3f(.5))
     from shovel_geometry import bin_boxes
     for name, size, center in bin_boxes(motion['recipe']):
@@ -163,13 +207,19 @@ def build_scene(motion, cfg, output):
     contact_paths = [str(p.GetPath()) for p in stage.Traverse()
                      if p.HasAPI(UsdPhysics.CollisionAPI) and
                      (str(p.GetPath()).startswith('/World/Ground/') or str(p.GetPath()).startswith('/World/Bin/'))]
-    contacts = world.scene.add(RigidPrim('/World/Shovel', name='tool_contacts',
-        contact_filter_prim_paths_expr=contact_paths, max_contact_count=256, disable_stablization=False))
+    contacts = {'environment': world.scene.add(RigidPrim('/World/Shovel', name='tool_contacts',
+        contact_filter_prim_paths_expr=contact_paths, max_contact_count=1024, disable_stablization=False))}
+    if contact_grasp:
+        for side, short in (('left', 'l'), ('right', 'r')):
+            contacts[side] = world.scene.add(RigidPrim('/World/Shovel', name=side+'_contacts',
+                contact_filter_prim_paths_expr=[str(links[f'arm_{short}_link_{n}'].GetPath()) for n in (7,8)],
+                max_contact_count=2048, disable_stablization=False))
     UsdLux.DomeLight.Define(stage, '/World/Light').CreateIntensityAttr(1000.)
     set_camera_view(eye=[3., 2.4, 2.1], target=[.6, -.3, .8])
     world.get_physics_context().set_gravity(-9.81)
-    world.reset()
     from isaacsim.core.simulation_manager import SimulationManager
+    SimulationManager.enable_fabric(cfg.get('use_fabric', True))
+    world.reset()
     if SimulationManager.get_active_physics_engine() != 'physx':
         raise ValueError('PHYSX_BACKEND_REQUIRED')
     names = body.dof_names
@@ -183,6 +233,20 @@ def build_scene(motion, cfg, output):
     gains = controller.get_gains()
     if not np.allclose(gains[0], cfg['joint_stiffness_nm_rad']) or not np.allclose(gains[1], cfg['joint_damping_nm_s_rad']):
         raise ValueError('DRIVE_GAIN_READBACK')
+    if contact_grasp:
+        settings = cfg['contact_grasp']
+        kp, kd = np.array(gains[0]), np.array(gains[1])
+        efforts = np.array([float(limits[n].get('effort')) for n in names])
+        for n in settings['closed_positions_rad']:
+            i = names.index(n)
+            for key in ('closed_positions_rad','open_positions_rad'):
+                if not float(limits[n].get('lower')) <= settings[key][n] <= float(limits[n].get('upper')):
+                    raise ValueError('GRIP_JOINT_LIMIT:'+n)
+            kp[i], kd[i] = settings['joint_stiffness_nm_rad'], settings['joint_damping_nm_s_rad']
+            efforts[i] = min(efforts[i], settings['max_effort_nm'])
+        controller.set_gains(kp, kd)
+        controller.set_max_efforts(efforts)
+        gains = controller.get_gains()
     if not np.isclose(view.get_masses()[2], mass, rtol=1e-5):
         raise ValueError('TOOL_MASS_READBACK')
     if list(view.prim_paths) != [str(p.GetPath()) for p in flanges]+['/World/Shovel']:
@@ -195,7 +259,10 @@ def build_scene(motion, cfg, output):
                   flange_from_physical_body=[m.tolist() for m in flange_mounts],
                   environment_contact_paths=contact_paths)
     source['native_mass_kg'] = float(view.get_masses()[2])
+    source['fabric_enabled'] = SimulationManager.is_fabric_enabled()
     source['native_com_in_tool_m'] = np.asarray(view.get_coms()[0]).reshape(-1,3)[2].tolist()
+    source['grip_colliders'] = grip_colliders
+    source['tool_robot_contacts_enabled'] = contact_grasp
     if not np.allclose(source['native_com_in_tool_m'], com, atol=1e-6):
         raise ValueError('TOOL_COM_READBACK')
     return world, body, view, contacts, source
@@ -218,6 +285,20 @@ def contact_wrench(contacts, com, dt):
     torque = (np.cross(normal_points-com, normal).sum(axis=0)+
               np.cross(friction_points-com, friction).sum(axis=0))
     return fn+ft, torque, fn, ft
+
+
+def grasp_contact_wrenches(contacts, tool, offsets, com, dt):
+    """Actual PhysX contact loads on the tool, expressed at the grasp points."""
+    forces, torques, points, separation = [], [], [], []
+    for side, offset in zip(('left', 'right'), offsets):
+        point = tool[:3,3]+tool[:3,:3] @ offset
+        force, moment, _, _ = contact_wrench(contacts[side], com, dt)
+        forces.append(force); torques.append(moment-np.cross(point-com,force)); points.append(point)
+        _, _, _, gaps, counts, starts = contacts[side].get_contact_force_data(dt=dt)
+        for count, start in zip(np.ravel(counts), np.ravel(starts)):
+            if count:
+                separation.extend(np.ravel(gaps)[int(start):int(start+count)].tolist())
+    return forces, torques, points, min(separation, default=0.)
 
 
 def simulate(app, args, motion, cfg):
@@ -250,9 +331,11 @@ def simulate(app, args, motion, cfg):
     source_config = json.loads(Path(motion['config_path']).read_text())
     mounts = [np.array(source_config[side+'_to_tool']).reshape(4, 4)[:3, :3] for side in ('left', 'right')]
     recipe = motion['recipe']
+    contact_grasp = cfg.get('grasp_model', 'proxy') == 'contact'
     cfg['shaft_axis_in_tool'] = np.array(recipe['shaft_axis_in_tool'])
     tool_offsets = [np.array(recipe[side+'_grip_in_tool_m']) for side in ('left', 'right')]
-    hand_offsets = [np.array(recipe['grip_offset_m']) for _ in range(2)]
+    hand_offsets = [np.array(recipe.get(side+'_grip_offset_m', recipe['grip_offset_m']))
+                    for side in ('left', 'right')]
     # A known axial grip calibration error is carried with the right flange.
     hand_offsets[1] += mounts[1] @ cfg['shaft_axis_in_tool']*cfg.get('right_grip_axial_offset_m', 0.)
     body.set_joint_positions(plan[0])
@@ -272,9 +355,9 @@ def simulate(app, args, motion, cfg):
     if SimulationManager.get_num_physics_steps()-native_start != 1:
         raise ValueError('CALIBRATION_STEP_COUNT')
     freefall_acceleration = view.get_velocities()[2, :3]/cfg['physics_dt_s']
-    if not np.allclose(freefall_acceleration, [0., 0., -9.81], atol=.01):
+    if not contact_grasp and not np.allclose(freefall_acceleration, [0., 0., -9.81], atol=.01):
         raise ValueError('FREE_FALL_CALIBRATION:'+str(freefall_acceleration))
-    source['freefall_acceleration_m_s2'] = freefall_acceleration.tolist()
+    source['initial_native_acceleration_m_s2' if contact_grasp else 'freefall_acceleration_m_s2'] = freefall_acceleration.tolist()
     dt, settle = cfg['physics_dt_s'], cfg['settle_s']
     warmup = cfg.get('control_warmup_s',0.) if args.closed_loop else 0.
     duration = min(args.duration, times[-1]) if args.duration is not None else times[-1]
@@ -312,13 +395,19 @@ def simulate(app, args, motion, cfg):
     com_local = np.asarray(com_local).reshape(-1, 3)
     rows = []
     previous_mode = 'rigid'
+    last_drive_mode = None
     static_forces, static_torques = [], []
     started = time.monotonic()
     max_step_residual = 0.
     max_axial_couple = 0.
+    minimum_contact_separation = 0.
+    initial_tool = None
     max_projected_effort = np.zeros(len(names))
     npz_path = output/'samples.npz'
     recorder = None
+    step_times, render_times, render_stamps = [], [], []
+    idle_wall = 0.
+    next_gui_render = started
     if args.record_video:
         from shovel_video import ViewportRecorder
         recorder = ViewportRecorder(output, args.video_fps)
@@ -345,6 +434,23 @@ def simulate(app, args, motion, cfg):
                         stopped_since = None
             elif not online:
                 qref = np.array([np.interp(t, times, plan[:, j]) for j in range(len(names))])
+                mode = next(k['mode'] for k in reversed(recipe['grasp_schedule']) if t+1e-9 >= k['t'])
+            if getattr(args, 'grasp_test', None) == 'hold':
+                qref = plan[0].copy()
+            if contact_grasp:
+                settings = cfg['contact_grasp']
+                released = getattr(args, 'grasp_test', None) == 'release' and t >= 1.
+                positions = settings['open_positions_rad'] if released else settings['closed_positions_rad']
+                for n, value in positions.items():
+                    qref[names.index(n)] = value
+                if last_drive_mode != mode:
+                    limits = np.array(source['drive_effort_limits_nm'])
+                    for n in settings['closed_positions_rad']:
+                        limits[names.index(n)] = min(limits[names.index(n)], settings['max_effort_nm'])
+                    if mode == 'right_axial':
+                        limits[names.index('arm_r_joint_8')] = settings['axial_effort_nm']
+                    body.get_articulation_controller().set_max_efforts(limits)
+                    last_drive_mode = mode
             body.apply_action(ArticulationAction(joint_positions=qref))
             xyz, quat = view.get_world_poses()
             transforms = [pose(p, q) for p, q in zip(xyz, quat)]
@@ -357,15 +463,23 @@ def simulate(app, args, motion, cfg):
                 # Re-lock the current physical relative angle, no pose write.
                 mounts[1] = hands[1][:3, :3].T @ transforms[2][:3, :3]
             previous_mode = mode
-            forces, torques, points, errors = [], [], [], []
-            for side in range(2):
-                f, tau, point, error = grip_wrench(hands[side], transforms[2], velocities[side], velocities[2],
-                    coms[side], coms[2], hand_offsets[side], tool_offsets[side], mounts[side], cfg,
-                    axial=side == 1 and mode == 'right_axial')
-                forces.append(f); torques.append(tau); points.append(point); errors.append(error)
+            if initial_tool is None and t >= 0:
+                initial_tool = transforms[2].copy()
+            errors = [float(np.linalg.norm(hand[:3,3]+hand[:3,:3] @ ho-
+                transforms[2][:3,3]-transforms[2][:3,:3] @ to))
+                for hand,ho,to in zip(hands,hand_offsets,tool_offsets)]
+            forces, torques, points = [], [], []
+            if contact_grasp:
+                forces, torques, points, _ = grasp_contact_wrenches(contacts, transforms[2], tool_offsets, coms[2], dt)
+            else:
+                for side in range(2):
+                    f, tau, point, _ = grip_wrench(hands[side], transforms[2], velocities[side], velocities[2],
+                        coms[side], coms[2], hand_offsets[side], tool_offsets[side], mounts[side], cfg,
+                        axial=side == 1 and mode == 'right_axial')
+                    forces.append(f); torques.append(tau); points.append(point)
             shaft_world = transforms[2][:3,:3] @ cfg['shaft_axis_in_tool']
             decomposition = internal_wrench(forces, torques, points, coms[2],
-                released_axis=shaft_world if mode=='right_axial' else None)
+                released_axis=shaft_world if mode=='right_axial' and not contact_grasp else None)
             if args.wrench_stop_at is None or t < args.wrench_stop_at:
                 sensor_readings = {}
                 for i,side in enumerate(('left','right')):
@@ -393,20 +507,37 @@ def simulate(app, args, motion, cfg):
             applied_torques = np.vstack(([-tau+np.cross(point-com, -f)
                 for f, tau, point, com in zip(forces, torques, points, coms[:2])],
                 decomposition['net_torque']))
-            view.apply_forces_and_torques_at_pos(forces=applied_forces.astype(np.float32),
-                torques=applied_torques.astype(np.float32), positions=coms.astype(np.float32), is_global=True)
+            if not contact_grasp:
+                view.apply_forces_and_torques_at_pos(forces=applied_forces.astype(np.float32),
+                    torques=applied_torques.astype(np.float32), positions=coms.astype(np.float32), is_global=True)
             joint_error = float(np.max(abs(q-qref)))
             if not np.isfinite(np.r_[q, velocities.ravel(), applied_forces.ravel(), applied_torques.ravel()]).all():
                 raise ValueError('NONFINITE_PHYSICS')
-            if max(errors) > cfg['max_grip_error_m'] or joint_error > cfg['max_joint_error_rad']:
+            # Jaw error is expected while squeezing a blocked rigid rod. Arm
+            # servo tracking and tool loss remain separate checks.
+            if contact_grasp:
+                arm_indices = [i for i,n in enumerate(names) if n not in cfg['contact_grasp']['closed_positions_rad']]
+                joint_error = float(np.max(abs(q[arm_indices]-qref[arm_indices])))
+            diagnostic_release = getattr(args, 'grasp_test', None) == 'release'
+            if joint_error > cfg['max_joint_error_rad'] or (not diagnostic_release and max(errors) > cfg['max_grip_error_m']):
                 raise ValueError(f'PHYSICS_TRACKING_LOST:t={t:.4f},grip={max(errors)},joint={joint_error}')
             native_before = SimulationManager.get_num_physics_steps()
+            step_started = time.monotonic()
             world.step(render=False)
-            if args.gui and step % max(1, round(1/(cfg['gui_render_hz']*dt))) == 0:
+            step_times.append(time.monotonic()-step_started)
+            now = time.monotonic()
+            if args.gui and now >= next_gui_render:
                 # World.step(render=True) advances rendering_dt/physics_dt
                 # steps in 6.2. Render separately without advancing physics.
+                render_stamps.append(time.monotonic())
                 world.render()
-                time.sleep(max(0., elapsed-(time.monotonic()-started)))
+                render_times.append(time.monotonic()-render_stamps[-1])
+                # UI refresh follows wall time. A slow physics/diagnostic
+                # loop must not reduce a 30 Hz viewport to a few frames/s.
+                next_gui_render = render_stamps[-1]+1/cfg['gui_render_hz']
+                idle_started = time.monotonic()
+                time.sleep(max(0., elapsed-(idle_started-started)))
+                idle_wall += time.monotonic()-idle_started
             if SimulationManager.get_num_physics_steps()-native_before != 1:
                 raise ValueError('UNEXPECTED_NATIVE_STEP_COUNT')
             effort = body.get_measured_joint_efforts()
@@ -414,7 +545,11 @@ def simulate(app, args, motion, cfg):
                 raise ValueError('MISSING_PHYSICS_JOINT_EFFORT')
             max_projected_effort = np.maximum(max_projected_effort, abs(effort))
             next_velocity = view.get_velocities()[2]
-            cf, ct, cn, friction = contact_wrench(contacts, coms[2], dt)
+            cf, ct, cn, friction = contact_wrench(contacts['environment'], coms[2], dt)
+            if contact_grasp:
+                forces, torques, points, gap = grasp_contact_wrenches(contacts, transforms[2], tool_offsets, coms[2], dt)
+                minimum_contact_separation = min(minimum_contact_separation, gap)
+                decomposition = internal_wrench(forces, torques, points, coms[2])
             balance = decomposition['net_force']+cf+np.array([0., 0., -9.81*source['mass_kg']])
             residual = np.linalg.norm(source['mass_kg']*(next_velocity[:3]-velocities[2, :3])/dt-balance)
             max_step_residual = max(max_step_residual, float(residual))
@@ -450,12 +585,23 @@ def simulate(app, args, motion, cfg):
     def stats(values):
         return dict(mean=float(np.mean(values)), rms=float(np.sqrt(np.mean(values**2))),
                     p95=float(np.percentile(values, 95)), peak=float(np.max(values)))
+    loop_wall = time.monotonic()-started
+    performance = dict(loop_wall_s=loop_wall, simulated_s=len(rows)*dt,
+        real_time_factor=len(rows)*dt/loop_wall,
+        physics_step_wall_s=stats(np.array(step_times)),
+        physics_wall_total_s=float(sum(step_times)),
+        render_wall_total_s=float(sum(render_times)), idle_wall_s=idle_wall,
+        python_and_io_wall_s=loop_wall-sum(step_times)-sum(render_times)-idle_wall,
+        render_frames=len(render_times),
+        render_interval_wall_s=stats(np.diff(render_stamps)) if len(render_stamps)>1 else None)
     result = dict(status=status, case=args.case, duration_s=duration,
+        grasp_model=cfg.get('grasp_model','proxy'), minimum_contact_separation_m=minimum_contact_separation,
         controller_mode=('measured_qp_load' if args.load_feedback else 'measured_qp') if online else 'reference_replay',
         control_warmup_s=warmup,
         physics_steps=SimulationManager.get_num_physics_steps()-native_start,
         calibration_steps=1, recorded_grasp_steps=len(rows),
         wall_s=time.monotonic()-started, physics_dt_s=dt, source=source,
+        performance=performance,
         static_force_balance_error_n=float(static_error), static_torque_balance_error_nm=float(static_torque_error),
         max_discrete_newton_residual_n=max_step_residual,
         grip_force_n={side:stats(np.linalg.norm(data[active, 1+3*i:4+3*i], axis=1)) for i, side in enumerate(('left', 'right'))},
@@ -493,6 +639,23 @@ def simulate(app, args, motion, cfg):
     # Config contains a NumPy axis only for spring calculations.
     result['columns']['qd_rad_s'] = [62+2*len(names),62+3*len(names)]
     result['configuration'] = {k:v for k,v in cfg.items() if k != 'shaft_axis_in_tool'}
+    if contact_grasp:
+        result['assumptions'].update(grips='force-limited jaw joints; native mesh-decomposition contact and Coulomb friction; no grasp springs',
+            robot_collision='self-collision off; all tool-robot contacts enabled; jaw CAD convex decomposition',
+            internal_metric='full grasp-map nullspace of measured contact wrenches; actual friction couples retained')
+        if args.grasp_test:
+            pose_data = data[data[:,0]>=0,29:32]
+            held = data[(data[:,0]>=0)&(data[:,0]<(1. if args.grasp_test=='release' else duration+dt))]
+            held_error = float(np.linalg.norm(held[:,29:32]-home[:3,3],axis=1).max())
+            drift = float(np.linalg.norm(held[:,29:32]-held[0,29:32],axis=1).max())
+            drop = float(pose_data[0,2]-pose_data[-1,2])
+            passed = (held_error < .006 and drift < .002 and minimum_contact_separation > -.001 and
+                      (args.grasp_test != 'release' or drop > .05))
+            result['grasp_test'] = dict(kind=args.grasp_test,
+                held_position_error_m=held_error, held_position_drift_m=drift,
+                final_vertical_drop_m=drop, passed=passed)
+            if not passed:
+                result['status'] = status = 'failed_grasp_test'
     if online:
         result['controller'] = dict(last=responses[-1] if responses else None,
             replies=len(responses), max_ipc_wall_s=max((r['ipc_wall_s'] for r in responses),default=None),
@@ -555,6 +718,8 @@ def main():
     parser.add_argument('--keep-open', action='store_true', help='Keep the completed GUI scene paused for inspection')
     parser.add_argument('--record-video', action='store_true', help='Embed no overlays: record the live viewport at simulation-time intervals')
     parser.add_argument('--video-fps', type=int, default=20, help='Recording rate; must divide the physics step grid (default 20)')
+    parser.add_argument('--grasp-test', choices=('hold','release'), help='Static contact diagnostic; release opens both jaws at t=1 s')
+    parser.add_argument('--grasp-model', choices=('contact','proxy'), help='Explicit contact model or legacy spring comparison')
     # Kit portable arguments are supplied by an isolated SDK launcher.
     args, kit_args = parser.parse_known_args()
     if args.record_video and not args.gui:
@@ -575,6 +740,17 @@ def main():
     if args.wrench_stop_at is not None and not args.load_feedback:
         parser.error('wrench faults require --load-feedback')
     cfg = json.loads(args.config.read_text())
+    if args.grasp_model:
+        cfg['grasp_model'] = args.grasp_model
+    validate_grasp_config(cfg)
+    if cfg.get('grasp_model') == 'contact' and args.load_feedback:
+        parser.error('contact grasps cannot use the spring inverse load observer')
+    if args.grasp_test and (args.closed_loop or cfg.get('grasp_model') != 'contact'):
+        parser.error('--grasp-test requires contact grasps and reference mode')
+    if args.grasp_test:
+        # The ready blade is only 13 mm above the normal floor. Lower the
+        # diagnostic floor so a release can demonstrate actual free fall.
+        cfg['diagnostic_ground_drop_m'] = .3
     if cfg.get('feedback_velocity_source','native') not in ('native','position_difference'):
         raise ValueError('PHYSICS_VELOCITY_SOURCE')
     if cfg.get('simulation_only') is not True or args.case not in cfg['cases']:
@@ -589,6 +765,8 @@ def main():
     for name in ('translation', 'rotation'):
         cfg[f'grip_{name}_stiffness_'+('n_m' if name == 'translation' else 'nm_rad')] *= override.get('grip_stiffness_scale', 1.)
     motion = load_motion(args.motion)
+    if cfg.get('grasp_model') == 'contact' and not motion['recipe'].get('check_grasp_contacts'):
+        raise ValueError('CONTACT_GRASP_REQUIRES_CHECKED_GRIP_GEOMETRY')
     args.output.mkdir(parents=True, exist_ok=True)
     if any(args.output.iterdir()):
         raise FileExistsError(args.output)

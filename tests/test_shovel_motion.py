@@ -42,6 +42,22 @@ class ShovelGeometryTests(unittest.TestCase):
         self.assertGreater(result['aabb_bounded_queries'],0)
         self.assertEqual(len(result['support_heights_m']),4)
 
+    def test_contact_check_does_not_skip_the_shaft_at_the_grip(self):
+        # Put the shaft centre through the actual palm. The legacy contact
+        # band used to hide this region; the contact path must reject it.
+        recipe = copy.deepcopy(self.recipe)
+        recipe['check_grasp_contacts'] = True
+        sample = copy.deepcopy(self.sample)
+        tool = np.array(sample['tool'])
+        model = pin.buildModelFromUrdf(str(self.urdf)); data = model.createData(); q = pin.neutral(model)
+        for name,value in sample['q'].items():q[model.joints[model.getJointId(name)].idx_q]=value
+        pin.framesForwardKinematics(model,data,q)
+        palm = data.oMf[model.getFrameId('arm_l_link_7')].homogeneous @ np.array([.151,0,0,1.])
+        tool[:3,3] += palm[:3]-(tool @ np.r_[recipe['left_grip_in_tool_m'],1.])[:3]
+        sample['tool'] = tool.tolist()
+        with self.assertRaisesRegex(ValueError,'GRASP_PENETRATION'):
+            collision_check(self.urdf,[sample],recipe)
+
     def test_wrong_ground_empty_mesh_and_empty_motion_fail(self):
         with self.assertRaisesRegex(ValueError,'EMPTY_COLLISION'):
             collision_check(self.urdf, [], self.recipe)
@@ -59,6 +75,7 @@ class ShovelGeometryTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'CLEARANCE'):
             collision_check(self.urdf,[sample],self.recipe)
         recipe = copy.deepcopy(self.recipe)
+        recipe['check_grasp_contacts'] = False
         for contact in recipe['shaft_contacts'].values():
             contact['half_length_m'] = .01
         with self.assertRaisesRegex(ValueError,'SHAFT_CLEARANCE'):

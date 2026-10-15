@@ -600,7 +600,7 @@ class AxialShovelTests(unittest.TestCase):
         np.testing.assert_allclose(self.cfg['right_axial_grasp']['axis_in_tool'],
                                    self.cfg['demo']['shaft_axis_in_tool'])
         np.testing.assert_allclose(self.cfg['right_axial_grasp']['grip_in_right_flange_m'],
-                                   self.cfg['demo']['grip_offset_m'])
+                                   self.cfg['demo'].get('right_grip_offset_m', self.cfg['demo']['grip_offset_m']))
 
     def test_native_failed_axial_capture_cannot_reuse_rigid_reference(self):
         import ctypes as c

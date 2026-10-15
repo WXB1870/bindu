@@ -40,8 +40,8 @@ def validate_recipe(config):
         raise ValueError('SHOVEL_REQUIRES_TOOL_POSE_INPUT')
     axis = np.asarray(recipe['shaft_axis_in_tool'])
     ends = recipe['shaft_from_left_grip_m']
-    offset = np.r_[recipe['grip_offset_m'], 1.]
-    grips = [(np.linalg.inv(BimanualQP._transform(config[side+'_to_tool'])) @ offset)[:3]
+    grips = [(np.linalg.inv(BimanualQP._transform(config[side+'_to_tool'])) @
+              np.r_[recipe.get(side+'_grip_offset_m', recipe['grip_offset_m']), 1.])[:3]
              for side in ('left', 'right')]
     if (not np.isclose(ends[1]-ends[0], design['shaft_length_m']) or
             not np.isclose(np.linalg.norm(axis), 1.) or
@@ -64,7 +64,8 @@ def validate_recipe(config):
         raise ValueError('INVALID_SHOVEL_GRASP_SCHEDULE')
     if 'right_axial_grasp' in config and (
             not np.allclose(config['right_axial_grasp']['axis_in_tool'], axis) or
-            not np.allclose(config['right_axial_grasp']['grip_in_right_flange_m'], recipe['grip_offset_m'])):
+            not np.allclose(config['right_axial_grasp']['grip_in_right_flange_m'],
+                            recipe.get('right_grip_offset_m', recipe['grip_offset_m']))):
         raise ValueError('SHOVEL_AXIAL_GEOMETRY_MISMATCH')
     forbidden = {'planning_limits','joint_filter_sigma_s','grasp_switch_hold_s',
                  'grasp_switch_ramp_s','finish_hold_s','finish_ramp_s'}
@@ -249,7 +250,8 @@ def generate(config_path, description, output):
         pivot = np.array(recipe['pivot_in_tool_m'])
         index = {n: model.joints[model.getJointId(n)].idx_q for n in q}
         left_to_tool = np.array(config['left_to_tool']).reshape(4, 4)
-        grip_offset = np.r_[recipe['grip_offset_m'], 1.]
+        grip_offsets = [np.r_[recipe.get(side+'_grip_offset_m', recipe['grip_offset_m']), 1.]
+                        for side in ('left', 'right')]
         samples, dense_samples = [], []
         max_speed, max_relative, max_tracking, max_solve = 0., 0., 0., 0.
         max_tracking_angle = 0.
@@ -339,7 +341,8 @@ def generate(config_path, description, output):
                     raise ValueError('SHOVEL_EXECUTED_SHAFT_AXIS')
                 relative_grip = np.linalg.inv(solver.tool_grip) @ grip
                 roll = float(np.arctan2(relative_grip[1,0],relative_grip[0,0]))
-            grips = [(np.linalg.inv(tool) @ pose @ grip_offset)[:3] for pose in poses]
+            grips = [(np.linalg.inv(tool) @ pose @ offset)[:3]
+                     for pose, offset in zip(poses, grip_offsets)]
             if start_grips is None:
                 start_grips = np.array(grips)
             max_grip_error = max(max_grip_error, float(np.max(np.linalg.norm(grips-start_grips, axis=1))))

@@ -48,6 +48,7 @@ def load_motion(path):
         if hashlib.sha256(Path(name).read_bytes()).hexdigest() != digest:
             raise ValueError('MOTION_SOURCE_IDENTITY:'+name)
     for source, digest in ((motion['display_urdf'], motion['display_sha256']),
+                           (motion['config_path'], motion['config_sha256']),
                            (motion['tool_input_path'], motion['tool_input_sha256'])):
         if hashlib.sha256(Path(source).read_bytes()).hexdigest() != digest:
             raise ValueError('MOTION_SOURCE_IDENTITY:'+source)

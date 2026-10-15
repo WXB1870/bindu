@@ -6,6 +6,8 @@ from pathlib import Path
 import sys
 import unittest
 import time
+import tempfile
+import hashlib
 from types import SimpleNamespace
 
 import numpy as np
@@ -13,12 +15,48 @@ from scipy.spatial.transform import Rotation
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT/'tools'))
-from shovel_physics import wooden_parts, compound_mass, grip_wrench, internal_wrench, MeasuredJointVelocity
-from run_shovel_physics import contact_wrench
+from shovel_physics import wooden_parts, compound_mass, grip_wrench, internal_wrench, MeasuredJointVelocity, load_motion
+from run_shovel_physics import contact_wrench, validate_grasp_config
 from shovel_control import GripLoadObserver, ControlClient
 
 
 class ShovelPhysicsTests(unittest.TestCase):
+    def test_contact_parameters_reject_negative_effort_or_malformed_joints(self):
+        cfg = copy.deepcopy(self.cfg)
+        validate_grasp_config(cfg)
+        for key,value in [('axial_effort_nm',-1.),('max_effort_nm',0.),('contact_offset_m',.1)]:
+            bad=copy.deepcopy(cfg);bad['contact_grasp'][key]=value
+            with self.assertRaisesRegex(ValueError,'INVALID_CONTACT_GRASP'):
+                validate_grasp_config(bad)
+        cfg['contact_grasp']['closed_positions_rad']['arm_l_joint_1']=.2
+        with self.assertRaisesRegex(ValueError,'INVALID_CONTACT_GRASP_JOINTS'):
+            validate_grasp_config(cfg)
+
+    def test_old_motion_cannot_silently_load_a_changed_grasp_config(self):
+        with tempfile.TemporaryDirectory() as directory:
+            p=Path(directory);config=p/'config.json';config.write_text('{}')
+            digest=hashlib.sha256(config.read_bytes()).hexdigest()
+            motion=dict(schema=2,source_sha256={},display_urdf=str(config),display_sha256=digest,
+                tool_input_path=str(config),tool_input_sha256=digest,config_path=str(config),config_sha256=digest,
+                samples=[dict(t=0.,q={'a':0.}),dict(t=1.,q={'a':0.})],duration_s=1.)
+            path=p/'motion.json';path.write_text(json.dumps(motion));load_motion(path)
+            config.write_text('{"changed":true}')
+            # Keep the display/input digests current to isolate the config guard.
+            motion.update(display_sha256=hashlib.sha256(config.read_bytes()).hexdigest(),tool_input_sha256=hashlib.sha256(config.read_bytes()).hexdigest())
+            path.write_text(json.dumps(motion))
+            with self.assertRaisesRegex(ValueError,'MOTION_SOURCE_IDENTITY'):
+                load_motion(path)
+    def test_grasp_center_clears_actual_jaws_and_old_center_intersects(self):
+        import coal as fcl
+        rod = fcl.Cylinder(.018, .4)
+        for short, y in (('l', .0085), ('r', -.0085)):
+            for link in (7, 8):
+                mesh = fcl.MeshLoader().load(str(ROOT/f'src/hardware/bindu_description/meshes/snowbot/arm_{short}_link_{link}.STL'),np.ones(3))
+                jaw = fcl.Transform3s(np.eye(3),np.array([.122 if link==8 else 0.,0.,0.]))
+                for center, expected in (([.151,0,0], True), ([.195,y,0], False)):
+                    result = fcl.CollisionResult()
+                    fcl.collide(mesh,jaw,rod,fcl.Transform3s(np.eye(3),np.array(center)),fcl.CollisionRequest(),result)
+                    self.assertEqual(result.isCollision(),expected,(short,link,center))
     def test_velocity_uses_measured_positions_and_actual_sample_time(self):
         estimator=MeasuredJointVelocity()
         np.testing.assert_allclose(estimator.update(0.,[1.,2.],[.1,.2]),[.1,.2])
