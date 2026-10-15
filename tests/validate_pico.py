@@ -180,6 +180,7 @@ def main():
     parser=argparse.ArgumentParser();parser.add_argument('--output',required=True);parser.add_argument('--crash-coordinator',action='store_true');parser.add_argument('--reject-virtual',action='store_true');parser.add_argument('--tool-config')
     parser.add_argument('--websocket-input',action='store_true',help='Send raw CONTROLLER_MOVE events through the real Vuer receiver')
     parser.add_argument('--shovel-cycle',action='store_true',help='Complete the shovel recipe using paired poses, Squeeze and X')
+    parser.add_argument('--minimal',action='store_true',help='No recorder or single-arm worker; verify optional recording is absent')
     parser.add_argument('--operator-speed',type=float,default=1.,help='Scale synthetic controller movement speed, not robot limits')
     parser.add_argument('--input-period',type=float,default=.01,help='Raw VR event period in seconds')
     args=parser.parse_args()
@@ -277,15 +278,17 @@ def main():
     def check(name):result['checks'].append(name);print('PASS',name,flush=True)
     try:
         start('execution',['-p','kinematic_initial_positions:='+json.dumps(json.dumps(initial))])
-        start('recorder',['-p','output:='+str(out/'recording')])
+        if not args.minimal:
+            start('recorder',['-p','output:='+str(out/'recording')])
         common=['-p','tool_config:='+str(tool)]
-        start('teleop_mode',common+['-p','supported_sides:=[left,right]','-p','input_source:=vr'])
-        start('teleop_tool',common+['-p','model_root:='+str(model),'-p','input_source:=vr'])
+        requirements=['-p','require_recording:=false'] if args.minimal else []
+        start('teleop_mode',common+requirements+['-p','single_arm_enabled:='+str(not args.minimal).lower(),'-p','supported_sides:=[left,right]','-p','input_source:=vr'])
+        start('teleop_tool',common+requirements+['-p','model_root:='+str(model),'-p','input_source:=vr'])
         pico_config=cfg/'pico_snowbot_sim.json'
         if args.reject_virtual:
             settings=json.loads(pico_config.read_text());settings['grippers']['right']['virtual']=-.08
             pico_config=out/'invalid_virtual_config.json';pico_config.write_text(json.dumps(settings))
-        start('pico_control',common+['-p','model_root:='+str(model),'-p','pico_config:='+str(pico_config)])
+        start('pico_control',common+['-p','model_root:='+str(model),'-p','pico_config:='+str(pico_config),'-p','recording_enabled:='+str(not args.minimal).lower()])
         coordinator_process=procs[-1]
         if args.websocket_input:
             with socket.socket() as sock:sock.bind(('127.0.0.1',0));port=sock.getsockname()[1]
@@ -379,11 +382,20 @@ def main():
         assert not states[-1].reference.name
         source['enabled']=True;pump(.3);before=len(accepted);pump(.3);assert len(accepted)==before
         check('input timeout physically stops; reconnect input does not auto-resume')
-        wait(lambda:views[-1]['recording'] is not None,2.,'recording health')
-        old_recording=views[-1]['recording']
         source['grip']=[0.,0.];pump(.15);click(1,1);phase('standby')
-        click(1,2);wait(lambda:views[-1]['recording']!=old_recording,3.,'record toggle')
-        check('right stick toggles actual recorder capture')
+        if args.minimal:
+            click(1,2);pump(.3)
+            assert views[-1]['recording_enabled'] is False and views[-1]['recording'] is None
+            assert node.count_publishers(ns+'/recorder/health')==0
+            assert node.count_subscribers(ns+'/recorder/health')==0
+            assert ('recorder',ns) not in node.get_node_names_and_namespaces()
+            assert views[-1]['phase']=='standby'
+            check('no recorder node or health dependency; record key is inactive')
+        else:
+            wait(lambda:views[-1]['recording'] is not None,2.,'recording health')
+            old_recording=views[-1]['recording']
+            click(1,2);wait(lambda:views[-1]['recording']!=old_recording,3.,'record toggle')
+            check('right stick toggles actual recorder capture')
         click(1,1);phase('tool_standby');pump(.1);source['grip']=[1.,1.];phase('following',timeout=12.)
         paused=pause_client.call_async(SetBool.Request(data=True));wait(paused.done,2.,'external pause reply')
         assert paused.result().success
@@ -392,7 +404,7 @@ def main():
         old_id=views[-1]['coordinator_id'];old_source=views[-1]['source_id'];old=coordinator_process;expected_exits.add(old.pid)
         os.killpg(old.pid,signal.SIGINT);wait(lambda:old.poll() is not None,8.,'old coordinator exit')
         source['buttons']=[0,0];source['grip']=[0.,0.]
-        start('pico_control',common+['-p','model_root:='+str(model),'-p','pico_config:='+str(pico_config)],suffix='_restart')
+        start('pico_control',common+['-p','model_root:='+str(model),'-p','pico_config:='+str(pico_config),'-p','recording_enabled:='+str(not args.minimal).lower()],suffix='_restart')
         wait(lambda:views[-1]['coordinator_id']!=old_id and views[-1]['phase']=='standby' and views[-1]['handoff_complete'],20.,'held restart standby')
         assert views[-1]['load_state']=='unknown' and not views[-1]['external_support']
         stale=client.call_async(PicoContext.Request(source_id=old_source,expected_generation=views[-1]['generation'],

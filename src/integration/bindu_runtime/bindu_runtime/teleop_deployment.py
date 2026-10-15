@@ -6,6 +6,8 @@ from bindu_contracts.runtime_mode import resolve_mode
 
 COMMON = {'namespace', 'profile', 'bimanual_config', 'side', 'tool_input_source',
           'vr_enabled', 'pico_enabled', 'pico_config', 'host', 'port', 'cert_file', 'key_file', 'recording_mode',
+          'single_arm_enabled','recorder_enabled','command_enabled','vendor_namespace',
+          'arm_receiver_node','servo_receiver_node','mid_receiver_node',
           'output', 'device_backend', 'description_enabled', 'tool_display_enabled', 'runtime_mode'}
 EXECUTION = {'runtime_mode', 'namespace', 'profile', 'device_backend', 'run_id', 'output',
              'recording_mode', 'command_enabled', 'vendor_namespace', 'arm_receiver_node',
@@ -36,11 +38,14 @@ def load_deployment(path, share):
         raise ValueError('RUNTIME_MODE_INVALID')
     selected_mode = resolve_mode(args.get('runtime_mode', 'simulation'))
     backend = args.get('device_backend', '') if execution_only else args.get('device_backend', 'kinematic')
-    allowed_backends = ('', 'snowbot_vendor') if execution_only and selected_mode == 'real' else ('', 'kinematic', 'external_simulation')
+    allowed_backends = ('', 'snowbot_vendor') if selected_mode == 'real' else ('', 'kinematic', 'external_simulation')
     if backend not in allowed_backends:
         raise ValueError('RUNTIME_MODE_BACKEND_CONFLICT')
-    if selected_mode == 'real' and not execution_only:
-        raise ValueError('TELEOP_REAL_BACKEND_NOT_IMPLEMENTED')
+    if selected_mode == 'real' and not execution_only and (
+            version!=2 or args.get('single_arm_enabled',True) or args.get('pico_enabled',False)):
+        raise ValueError('REAL_REQUIRES_SNOWBOT_BIMANUAL_POSITION')
+    if args.get('recorder_enabled',True) is False and args.get('recording_mode','compact')!='off':
+        raise ValueError('RECORDER_DISABLED_REQUIRES_OFF')
     if args.get('tool_input_source', 'tool_pose') not in ('vr', 'tool_pose'):
         raise ValueError('TELEOP_DEPLOYMENT_INPUT')
     if args.get('pico_enabled', False) and (args.get('tool_input_source') != 'vr' or backend != 'kinematic'):

@@ -116,7 +116,7 @@ class SnowbotIO:
     def __init__(self, profile, send, now, *, command_enabled=False,
                  simulated=False, feedback_max_age=.2, check_ready=None, check_health=None):
         if (profile.groups != GROUPS or set(profile.capabilities) != {'joint_position'} or
-                profile.name != 'snowbot_vendor_position'):
+                profile.name not in ('snowbot_vendor_position','snowbot_real_position')):
             raise ValueError('SNOWBOT_PROFILE_REQUIRED')
         self.profile, self.send, self.now = profile, send, now
         self.command_enabled, self.simulated = command_enabled, simulated

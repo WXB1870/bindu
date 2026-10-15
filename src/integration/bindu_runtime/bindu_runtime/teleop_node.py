@@ -5,6 +5,7 @@ import math
 import time
 from pathlib import Path
 from ament_index_python.packages import get_package_share_directory
+from rcl_interfaces.msg import ParameterDescriptor
 from rclpy.action import ActionServer, GoalResponse, CancelResponse
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
@@ -27,6 +28,8 @@ class TeleopNode(RuntimeNode):
         self.declare_parameter('model_root', str(Path(get_package_share_directory('bindu_description'))/'urdf'))
         self.declare_parameter('require_mode_selection', False)
         self.require_mode_selection = self.get_parameter('require_mode_selection').value
+        self.declare_parameter('require_recording',True,descriptor=ParameterDescriptor(read_only=True))
+        self.require_recording=self.get_parameter('require_recording').value
         self.cfg = load_config(self.get_parameter('teleop_config').value, self.profile,
                                self.get_parameter('model_root').value)
         self.worker = KinematicsWorker(self.cfg['kinematics'])
@@ -46,7 +49,8 @@ class TeleopNode(RuntimeNode):
                 lambda m:self.store_mode_message('mode_state',m), QoSProfile(depth=1,
                     reliability=ReliabilityPolicy.RELIABLE,durability=DurabilityPolicy.TRANSIENT_LOCAL))
         self.create_subscription(ExecutionState, 'execution/state', lambda m: self.store_mode_message('state', m), 1)
-        self.create_subscription(RecorderHealth, 'recorder/health', self.on_health, 5)
+        if self.require_recording:
+            self.create_subscription(RecorderHealth, 'recorder/health', self.on_health, 5)
         self.create_timer(.005, self.poll_worker)
         self.create_service(Trigger, 'teleop/ready', self.ready)
         self.create_service(Trigger, 'teleop/worker_ready', self.worker_ready)
@@ -90,7 +94,7 @@ class TeleopNode(RuntimeNode):
         if (self.state is None or self.state.profile_hash != self.profile.digest or
                 not self.state.simulated or not 0 <= now-seconds(self.state.feedback_stamp) <= self.cfg['feedback_max_age']):
             raise RuntimeError('TELEOP_FEEDBACK_STALE')
-        if self.health is None or not self.health.ready or not 0 <= now-seconds(self.health.stamp) < .75:
+        if getattr(self,'require_recording',True) and (self.health is None or not self.health.ready or not 0 <= now-seconds(self.health.stamp) < .75):
             raise RuntimeError('RECORDER_UNAVAILABLE')
         if self.frame is None or not 0 <= now-self.frame.stamp <= self.cfg['input_max_age']:
             raise RuntimeError('VR_INPUT_TIMEOUT')

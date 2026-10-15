@@ -82,6 +82,14 @@ class MappingTests(unittest.TestCase):
         self.assertIn('PICO',text);self.assertIn('Triggers open',text);self.assertIn('X virtual',text)
         self.assertNotIn('SINGLE ARM',text)
 
+    def test_real_position_panel_only_advertises_supported_controls(self):
+        from bindu_teleoperation.vr.display import status_lines
+        text=' '.join(line for line,_ in status_lines(dict(runtime_mode='real')))
+        self.assertIn('REAL',text);self.assertIn('Squeeze',text)
+        self.assertIn('stop only',text)
+        self.assertNotIn('SIMULATION',text);self.assertNotIn('Triggers open',text)
+        self.assertNotIn('X virtual',text)
+
     def test_unknown_tool_presence_cannot_disable_collision_checks(self):
         from bindu_kinematics.tool_geometry import make_collision_checker
         with self.assertRaisesRegex(ValueError,'INVALID_TOOL_PRESENCE'):

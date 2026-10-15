@@ -137,7 +137,7 @@ class RobotSetup:
         model, teleop = raw['model'], raw['teleop']
         if (set(model) != {'urdf', 'display_urdf', 'base_frame'} or
                 set(teleop) != {'single_arm', 'tool'} or
-                not teleop['single_arm'] or set(teleop['single_arm']) - {'left', 'right'}):
+                not isinstance(teleop['single_arm'],dict) or set(teleop['single_arm']) - {'left', 'right'}):
             raise ValueError('ROBOT_CONFIG_SCHEMA')
         profile_path = resolve_file(raw['profile'], path, packages)
         profile = Profile.load(profile_path)

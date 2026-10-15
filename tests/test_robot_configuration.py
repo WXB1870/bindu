@@ -4,6 +4,7 @@ import json
 import math
 from pathlib import Path
 import tempfile
+from types import SimpleNamespace
 import unittest
 import xml.etree.ElementTree as ET
 from unittest.mock import Mock, patch
@@ -68,6 +69,75 @@ def fixture(folder, arms=7, waist=2, positive_limit=False):
 
 
 class RobotConfigurationTests(unittest.TestCase):
+    def test_real_bimanual_deployment_uses_only_required_modules_without_recorder(self):
+        from launch import LaunchContext
+        from bindu_runtime.teleop_assembly import assemble
+        launch,args=load_deployment(CONFIG/'deployments/snowbot_real_teleop.json',RUNTIME)
+        robot=RobotSetup.load(args['robot_config'],PACKAGES)
+        self.assertEqual(robot.profile.name,'snowbot_real_position')
+        self.assertEqual(robot.single_arm,{})
+        self.assertIs(json.loads(robot.tool_config.read_text())['simulation_only'],False)
+        self.assertEqual((args['command_enabled'],args['recorder_enabled'],args['recording_mode']),('false','false','off'))
+        context=LaunchContext();context.launch_configurations.update(args,run_id='real-test')
+        with patch('bindu_runtime.teleop_assembly.RobotSetup') as loader, \
+                patch('bindu_runtime.teleop_assembly.Node',side_effect=lambda **kw:kw):
+            loader.load.return_value=robot;nodes=[a for a in assemble(context) if isinstance(a,dict)]
+        self.assertEqual([a['executable'] for a in nodes],
+                         ['snowbot_adapter','teleop_mode','teleop_tool','teleop_display','vr_input'])
+        self.assertFalse(nodes[0]['parameters'][0]['command_enabled'])
+        self.assertFalse(nodes[1]['parameters'][0]['require_recording'])
+        self.assertFalse(nodes[2]['parameters'][0]['require_recording'])
+        self.assertFalse(nodes[3]['condition'].evaluate(context))
+        self.assertTrue(nodes[4]['condition'].evaluate(context))
+
+    def test_real_position_input_cannot_actuate_unadapted_pico_operations(self):
+        from bindu_interfaces.msg import VRInput, ToolPoseInput
+        from bindu_runtime.bimanual_tool_node import BimanualToolNode
+        node=SimpleNamespace(simulation=False,matches_mode=lambda _:True,frames={},input_source='tool_pose',busy=False)
+        for side in ('left','right'):
+            msg=VRInput(side=side,mapping='pico_snowbot_v1',grip=1.,valid=True)
+            BimanualToolNode.on_frame(node,msg)
+            self.assertFalse(node.frames[side].stop)
+            for key,value in (('mapping','v34'),('trigger',.7),('virtual_grip',True),('init',True),
+                              ('buttons',1),('buttons',2),('buttons',4),('button_edges',[1,0,0]),('stop',True)):
+                blocked=VRInput(side=side,mapping='pico_snowbot_v1',valid=True)
+                setattr(blocked,key,value)
+                BimanualToolNode.on_frame(node,blocked)
+                self.assertTrue(node.frames[side].stop,(side,key,value))
+        # Coalesced press/release must stop an active session, but historical
+        # cumulative counters must not permanently block a fresh session.
+        node.frames={};node.busy=True
+        def raw(edges):return VRInput(side='left',source_id='pico',mapping='pico_snowbot_v1',button_edges=edges)
+        BimanualToolNode.on_frame(node,raw([0]*8))
+        BimanualToolNode.on_frame(node,raw([1,1]+[0]*6))
+        self.assertTrue(node.frames['left'].stop)
+        BimanualToolNode.on_frame(node,raw([1,1]+[0]*6))
+        self.assertTrue(node.frames['left'].stop)
+        node.busy=False
+        BimanualToolNode.on_frame(node,raw([1,1]+[0]*6))
+        self.assertFalse(node.frames['left'].stop)
+        BimanualToolNode.on_tool_frame(node,ToolPoseInput(tight=False,valid=True))
+        self.assertTrue(node.tool_frame.stop)
+        node.simulation=True
+        BimanualToolNode.on_frame(node,VRInput(side='right',mapping='pico_snowbot_v1',trigger=.7))
+        self.assertFalse(node.frames['right'].stop)
+
+    def test_real_assembly_rejects_simulation_geometry_and_pico_actuator_proxy(self):
+        from launch import LaunchContext
+        from bindu_runtime.teleop_assembly import assemble
+        _,args=load_deployment(CONFIG/'deployments/snowbot_real_teleop.json',RUNTIME)
+        for changes,code in (({'pico_enabled':'true'},'REAL_REQUIRES'),
+                             ({'robot_config':str(CONFIG/'robots/snowbot/robot_snowbot.json')},'CONFIG_RUNTIME_MODE_MISMATCH')):
+            context=LaunchContext();context.launch_configurations.update({**args,**changes})
+            with self.subTest(changes=changes),self.assertRaisesRegex(ValueError,code):
+                assemble(context)
+
+    def test_missing_recorder_cannot_be_hidden_while_recording_is_requested(self):
+        from launch import LaunchContext
+        from bindu_runtime.teleop_assembly import assemble
+        context=LaunchContext();context.launch_configurations.update(recorder_enabled='false',recording_mode='compact')
+        with self.assertRaisesRegex(ValueError,'RECORDER_DISABLED_REQUIRES_OFF'):assemble(context)
+
     def test_existing_models_and_second_real_robot_are_distinct(self):
         snow = RobotSetup.load(CONFIG/'robots/snowbot/robot_snowbot.json', PACKAGES)
         g1 = RobotSetup.load(CONFIG/'robots/g1/robot_g1_fixture.json', PACKAGES)

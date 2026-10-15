@@ -12,6 +12,13 @@ def viewer_matrix(pose):
 
 
 def status_lines(view):
+    if view.get('runtime_mode')=='real':
+        return [('BINDU | REAL | BIMANUAL POSITION','#f1f5f9'),
+                ('Session status: check ROS feedback','#ffffff'),
+                ('Squeeze: relative follow | Y: stop','#cbd5e1'),
+                ('Triggers / X / A / B / sticks: stop only','#fbbf24'),
+                ('Gripper controls unavailable in this entry','#cbd5e1'),
+                ('Startup: no automatic preparation','#cbd5e1')]
     if view.get('pico'):
         return [('BINDU | PICO | KINEMATIC SIMULATION','#f1f5f9'),
                 ('State: '+view['mode'],'#ffffff'),
@@ -62,4 +69,4 @@ def render(view):
     children.append(Group(CoordsMarker(key='robotBaseAxes', scale=.2),
                           key='robotBase', matrix=viewer_matrix(np.eye(4))))
     return Group(*children, key='teleopFeedback',
-                 userData={'mode': view['mode'], 'reason': view['reason'], 'simulated': True})
+                 userData={'mode': view['mode'], 'reason': view['reason'], 'simulated': view.get('runtime_mode')!='real'})

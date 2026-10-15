@@ -1,4 +1,4 @@
-"""Simulation-only dual-hand tool teleop through the shared position executor."""
+"""Dual-hand tool teleop through an explicitly selected position executor."""
 import json
 import math
 import time
@@ -9,6 +9,7 @@ from rclpy.callback_groups import ReentrantCallbackGroup, MutuallyExclusiveCallb
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
 from rclpy.task import Future
 from std_srvs.srv import Trigger, SetBool
+from rcl_interfaces.msg import ParameterDescriptor
 from bindu_contracts.teleoperation import VRFrame, ToolPoseFrame
 from bindu_teleoperation.bimanual_session import BimanualSession, ToolPoseSession, AcceptedReference, ToolPause
 from bindu_kinematics.bimanual_worker import BimanualWorker
@@ -20,13 +21,18 @@ from .common import MODE_STATE_MAX_AGE, RuntimeNode, seconds, stamp, spin, joint
 
 class BimanualToolNode(RuntimeNode):
     def __init__(self):
-        super().__init__('teleop_tool')
+        super().__init__('teleop_tool',allow_hardware=True,default_mode='simulation')
+        self.declare_parameter('require_recording',True,descriptor=ParameterDescriptor(read_only=True))
+        self.require_recording=self.get_parameter('require_recording').value
         share=Path(get_package_share_directory('bindu_runtime'))
         self.declare_parameter('tool_config',str(share/'config/robots/g1/bimanual_g1_sim.json'))
         self.declare_parameter('model_root',str(Path(get_package_share_directory('bindu_description'))/'urdf'))
         self.cfg=json.loads(Path(self.get_parameter('tool_config').value).read_text())
-        if not self.cfg.get('simulation_only') or self.cfg.get('collision_scope') not in ('empty_scene_only','configured_tool_geometry'):
-            raise ValueError('BIMANUAL_REQUIRES_EMPTY_SCENE_SIMULATION')
+        if (self.cfg.get('simulation_only') is not self.simulation or
+                self.cfg.get('collision_scope') not in ('empty_scene_only','configured_tool_geometry')):
+            raise ValueError('BIMANUAL_CONFIG_RUNTIME_MODE_MISMATCH')
+        if not self.simulation and self.cfg.get('collision_scope')!='configured_tool_geometry':
+            raise ValueError('BIMANUAL_REAL_REQUIRES_CONFIGURED_GEOMETRY')
         urdf=Path(self.cfg['urdf'])
         self.cfg['urdf']=str(urdf if urdf.is_absolute() else
                              Path(self.get_parameter('model_root').value)/urdf)
@@ -65,7 +71,8 @@ class BimanualToolNode(RuntimeNode):
         self.create_subscription(ToolPoseInput,'teleop/tool/input',self.on_tool_frame,5,
                                  callback_group=MutuallyExclusiveCallbackGroup())
         self.create_subscription(ExecutionState,'execution/state',lambda m:self.store_mode_message('state',m),1)
-        self.create_subscription(RecorderHealth,'recorder/health',self.on_health,5)
+        if self.require_recording:
+            self.create_subscription(RecorderHealth,'recorder/health',self.on_health,5)
         self.create_subscription(TeleopModeState,'teleop/mode_state',
             lambda m:self.store_mode_message('mode_state',m),QoSProfile(depth=1,
                 reliability=ReliabilityPolicy.RELIABLE,durability=DurabilityPolicy.TRANSIENT_LOCAL))
@@ -98,14 +105,24 @@ class BimanualToolNode(RuntimeNode):
 
     def on_frame(self,msg):
         if self.matches_mode(msg) and msg.side in ('left','right'):
+            # Physical gripper operations need a device acknowledgement adapter.
+            # The initial real position chain accepts PICO pose/clutch/Y only.
+            previous=self.frames.get(msg.side)
+            edges=tuple(int(v) for v in msg.button_edges)
+            edge_changed=bool(previous and previous.source_id==msg.source_id and
+                len(edges)==len(previous.button_edges)==8 and edges!=previous.button_edges)
+            blocked=not self.simulation and (msg.mapping!='pico_snowbot_v1' or msg.init or
+                msg.trigger>=.3 or msg.virtual_grip or bool(msg.buttons) or len(edges) not in (0,8) or
+                edge_changed or bool(self.busy and previous and previous.stop))
             self.frames[msg.side]=VRFrame(msg.source_id,msg.seq,seconds(msg.stamp),msg.side,
-                tuple(msg.pose),msg.grip,msg.trigger,msg.init,msg.stop,msg.valid,msg.clutch_seq,
+                tuple(msg.pose),msg.grip,msg.trigger,msg.init,msg.stop or blocked,msg.valid,msg.clutch_seq,
                 msg.mapping or "v34",msg.buttons,tuple(int(v) for v in msg.button_edges),msg.virtual_grip)
 
     def on_tool_frame(self,msg):
         if self.input_source == 'tool_pose' and self.matches_mode(msg):
             self.tool_frame=ToolPoseFrame(msg.source_id,msg.seq,seconds(msg.stamp),
-                msg.frame_id,tuple(msg.pose),msg.tight,msg.valid,msg.stop)
+                msg.frame_id,tuple(msg.pose),msg.tight,msg.valid,msg.stop or (not self.simulation and
+                    (not msg.tight or bool(self.busy and self.tool_frame and self.tool_frame.stop))))
 
     def poll_worker(self):
         # Reuse one timer: creating/destroying a ROS timer at every await
@@ -130,7 +147,7 @@ class BimanualToolNode(RuntimeNode):
         reason=self.worker_error or ('' if self.worker.ready else 'BIMANUAL_WORKER_NOT_READY')
         s=self.state
         if not reason and (self.busy or s is None or s.profile_hash!=self.profile.digest or
-                not s.simulated or not 0<=self.now()-seconds(s.feedback_stamp)<=self.cfg['feedback_max_age']):
+                s.simulated != self.simulation or not 0<=self.now()-seconds(s.feedback_stamp)<=self.cfg['feedback_max_age']):
             reason='BIMANUAL_PREFLIGHT_FEEDBACK'
         if not reason:
             if self.preflight_status=='ready' and self.now()-self.preflight_at<=self.cfg['feedback_max_age']:
@@ -159,10 +176,10 @@ class BimanualToolNode(RuntimeNode):
         if self.worker_error or not self.worker.ready:
             raise RuntimeError(self.worker_error or 'BIMANUAL_WORKER_NOT_READY')
         s=self.state
-        if (s is None or s.profile_hash != self.profile.digest or not s.simulated or
+        if (s is None or s.profile_hash != self.profile.digest or s.simulated != self.simulation or
                 not 0 <= now-seconds(s.feedback_stamp) <= self.cfg['feedback_max_age']):
             raise RuntimeError('BIMANUAL_FEEDBACK_STALE')
-        if self.health is None or not self.health.ready or not 0 <= now-seconds(self.health.stamp)<.75:
+        if getattr(self,'require_recording',True) and (self.health is None or not self.health.ready or not 0 <= now-seconds(self.health.stamp)<.75):
             raise RuntimeError('RECORDER_UNAVAILABLE')
         if not require_input:
             if self.tool_frame is not None and self.tool_frame.stop and self.input_source == 'tool_pose':
@@ -376,7 +393,7 @@ class BimanualToolNode(RuntimeNode):
                     last_grasp_generation=session.grasp_generation
                     self.event('BIMANUAL_GRASP_REQUESTED',json.dumps({
                         'mode':session.grasp_mode,'generation':last_grasp_generation,
-                        'simulated':True,'physical_gripper_command':False}),goal.request.task_id)
+                        'simulated':self.simulation,'physical_gripper_command':False}),goal.request.task_id)
                     continue
                 if session.mode != last_mode:
                     if session.mode == 'idle':

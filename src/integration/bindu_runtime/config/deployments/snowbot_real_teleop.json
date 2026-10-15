@@ -1,0 +1,25 @@
+{
+  "schema_version": 2,
+  "robot_launch": "robot_teleop.launch.py",
+  "arguments": {
+    "runtime_mode": "real",
+    "robot_config": "@runtime/config/robots/snowbot/robot_snowbot_real.json",
+    "namespace": "bindu_snowbot",
+    "device_backend": "snowbot_vendor",
+    "command_enabled": false,
+    "vendor_namespace": "/snowbot",
+    "side": "left",
+    "tool_input_source": "vr",
+    "vr_enabled": true,
+    "host": "127.0.0.1",
+    "port": 8012,
+    "cert_file": "",
+    "key_file": "",
+    "single_arm_enabled": false,
+    "pico_enabled": false,
+    "recorder_enabled": false,
+    "recording_mode": "off",
+    "description_enabled": false,
+    "tool_display_enabled": false
+  }
+}

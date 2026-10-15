@@ -8,7 +8,7 @@
 
 - 负责消息转换、依赖选择、设备／遥操作装配、本体校验与进程生命周期。
 - 启动时明确仿真／真实环境，检查指令和反馈模式一致性；环境选择与设备后端、写权限分别配置。
-- 当前真实模式主要覆盖 Snowbot 专用适配的只读接入，运动写入另有使能条件；不代表完整真机遥操作、Pi 或导航已验收。
+- 真实模式支持 Snowbot 双臂／腰部位置遥操作装配，默认只读；实体开合／虚握、完整PICO流程、Pi和导航未完成真机接入。
 - 配置选择不替代真实模型标定、设备能力核实和现场验证。
 
 ## 配置目录
@@ -22,7 +22,9 @@
 | [config/simulation/](config/simulation/) | 通用模拟执行参数 |
 | [tests/config/](../../../tests/config/) | 验证专用夹具，不安装到运行包 |
 
-正式运行配置共35份，安装时保持相同目录结构。旧`teleop_snowbot_deployment.json`并入统一`deployments/teleop_robot_deployment.json`；schema 1读取能力仍兼容。旧平铺路径已迁移，升级需重建运行包并更新外部脚本中的配置路径。
+Snowbot真机最小配方为`snowbot_real_teleop.json`，使用独立的真实本体、位置运行profile和工具几何配置；默认只读且不启动记录器。
+
+正式运行配置共39份，安装时保持相同目录结构。旧`teleop_snowbot_deployment.json`并入统一`deployments/teleop_robot_deployment.json`；schema 1读取能力仍兼容。旧平铺路径已迁移，升级需重建运行包并更新外部脚本中的配置路径。
 
 ## 扫雪遥操作
 
@@ -33,9 +35,10 @@
 | 工具位姿输入、模式切换与暂停／恢复 | [teleop_only.launch.py](launch/teleop_only.launch.py)，默认加载 [teleop_robot_deployment.json](config/deployments/teleop_robot_deployment.json) | ROS 运动学模拟；默认 `tool_pose` 输入，现场 VR 待接入 |
 | 整段双臂协调、CAD几何与实时回放 | [run_shovel_physics.sh](../../../tools/run_shovel_physics.sh)，使用 `--kinematic ... --gui` | 日常运动学检查；生产QP／执行器生成输入，Isaac 6.2核对关节和法兰并回放，无承载／接触验收 |
 | 短时重力、夹爪接触与载荷 | 同一入口，使用 `--closed-loop` | 默认contact，有限力矩J8与CAD接触；私有IPC复用求解／会话／执行核心；旧弹簧观测须显式选proxy，不启动ROS节点 |
-| Snowbot 底层位置接口联调 | [snowbot_adapter.launch.py](launch/snowbot_adapter.launch.py) | 独立位置入口，默认真实模式且只读；真实工具会话尚未联通 |
+| Snowbot 真机最小遥操作 | 同一launch，选择[snowbot_real_teleop.json](config/deployments/snowbot_real_teleop.json) | VR接收、模式、双臂QP、位置适配共4节点；不启动记录、单臂、显示和任务模块，默认只读；[操作边界](../../../运行与验证.md#snowbot-真机最小遥操作) |
+| Snowbot 底层位置接口联调 | [snowbot_adapter.launch.py](launch/snowbot_adapter.launch.py) | 独立位置入口，默认真实模式且只读；不包含遥操作节点 |
 
-`runtime.launch.py` 的默认 [runtime_deployment.json](config/deployments/runtime_deployment.json) 选择位置适配入口的仿真模式。运行扫雪工具会话从 `teleop_only.launch.py` 进入；ROS 装配切换 `runtime_mode` 不会自动接通真机遥操作。
+`runtime.launch.py` 的默认 [runtime_deployment.json](config/deployments/runtime_deployment.json) 选择位置适配入口的仿真模式。运行扫雪工具会话从 `teleop_only.launch.py` 进入；真实位置遥操作须配套选择`snowbot_real_teleop.json`，不能只切换`runtime_mode`。
 
 ### 配套配置与流程
 
@@ -43,6 +46,9 @@
 |---|---|
 | [robot_snowbot.json](config/robots/snowbot/robot_snowbot.json) | 绑定本体模型、执行 profile、单臂与工具配置 |
 | [snowbot_shovel_sim.json](config/robots/snowbot/snowbot_shovel_sim.json) | 资源组、动态限制和同步位置执行；联合控制两轴腰部与双臂各七轴 |
+| [robot_snowbot_real.json](config/robots/snowbot/robot_snowbot_real.json) | 真机模型／profile／工具索引，不包含单臂配置或模拟初始姿态 |
+| [snowbot_real_position.json](config/robots/snowbot/snowbot_real_position.json) | 真实位置运行限制；头部第2轴取源接口与CAD交集±0.79 rad，其余沿用源接口，仍需现场核实 |
+| [bimanual_snowbot_real.json](config/robots/snowbot/bimanual_snowbot_real.json) | 真机位置链的名义工具安装／CAD几何／QP与时效参数；不包含演示轨迹，安装尺寸和地面需标定 |
 | [bimanual_snowbot_shovel.json](config/robots/snowbot/bimanual_snowbot_shovel.json) | 工具安装、握持约束、姿态策略、几何与输入时效 |
 | [snowbot_shovel_physics.json](config/robots/snowbot/snowbot_shovel_physics.json) | 空铲木质质量、接触夹持、Fabric与GUI刷新；保留显式proxy对照参数 |
 
@@ -57,6 +63,8 @@
 工具输入与 `tight` 语义见[遥操作模块](../../capabilities/bindu_teleoperation/README.md#扫雪输入与握持)。`tight=false` 只释放右手绕杆轴转动，实体夹爪动作与握持确认仍待接入。
 
 真机 VR 使用接合基准下的相对位姿增量，再生成机器人基座系工具目标。当前 `tool_pose` 接口消费该映射结果，模拟输入也在这一层注入；`vr` 会话已在内部实现相对映射，现场 VR 到统一工具消息的转接仍待接入。接入头显时需落实坐标标定、比例和松握重接基准，详见上面的输入说明。
+
+真机最小配方仅接位姿／Squeeze／Y，须显式管理模式和工具Action；实体操作键停止会话，`tight=false`在真实模式下也会停止。完整边界见[真机最小遥操作](../../../运行与验证.md#snowbot-真机最小遥操作)。
 
 ### 物理反馈与柔顺
 
@@ -99,7 +107,7 @@ PICO运行节点：[pico_node.py](bindu_runtime/pico_node.py)；模拟开合参�
 
 - 环境切换：[统一仿真与真实模式选择](../../../运行与验证.md#统一仿真与真实模式选择)。
 - 本体与装配检查：[本体配置](../../../tests/test_robot_configuration.py)、[模式](../../../tests/test_runtime_mode.py)、[遥操作装配](../../../tests/test_teleop_deployment.py)。
-- ROS 检查：[示例任务](../../../tests/validate_ros.py)、[环境一致性](../../../tests/validate_runtime_mode.py)、[遥操作](../../../tests/validate_teleop.py)、[底层适配](../../../tests/validate_snowbot_adapter.py)。验证脚本依赖相应已启动的测试装配。
+- ROS 检查：[示例任务](../../../tests/validate_ros.py)、[环境一致性](../../../tests/validate_runtime_mode.py)、[遥操作](../../../tests/validate_teleop.py)、[底层适配](../../../tests/validate_snowbot_adapter.py)。各脚本是否自行启动装配见其参数；[真机位置链合成验证](../../../tests/validate_real_teleop.py)自带替身控制器，不接硬件。
 
 ## 关联模块
 

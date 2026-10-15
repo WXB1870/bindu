@@ -1,4 +1,5 @@
-# One configured arm, simulation execution only in this implementation.
+# A configured single-arm or bimanual teleoperation session.
+# Actual device mode is reported in the result; the selected worker enforces support.
 string task_id
 string resource_group
 float64 duration

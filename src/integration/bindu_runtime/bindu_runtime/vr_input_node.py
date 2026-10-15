@@ -21,7 +21,7 @@ class VRInputNode(RuntimeNode):
         cfg['cert_file'] = cfg['cert_file'] or None
         cfg['key_file'] = cfg['key_file'] or None
         self.mapping=cfg['mapping']
-        self.receiver = VuerReceiver(cfg)
+        self.receiver = VuerReceiver({**cfg,'runtime_mode':self.runtime_mode})
         # Both sides share one receiver event; retain both messages until DDS
         # delivers the pair to mode, single-arm and bimanual subscribers.
         self.publisher = self.create_publisher(VRInput, 'teleop/vr/input', 5)

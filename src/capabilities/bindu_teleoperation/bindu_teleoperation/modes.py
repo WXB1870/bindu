@@ -5,16 +5,23 @@ from .vr.mapping import pose_matrix
 
 
 class ModeSelection:
-    def __init__(self, profile, initial_side, now, input_age=.25, feedback_age=.2, left_orientation=False, tool_config=None):
+    def __init__(self, profile, initial_side, now, input_age=.25, feedback_age=.2, left_orientation=False, tool_config=None,
+                 require_recording=True, enabled_modes=('single_arm','bimanual_tool')):
         if initial_side not in ('left','right'):
             raise ValueError('INVALID_SIDE')
         self.profile = profile
         self.left_orientation = left_orientation
         self.tool_config = tool_config
+        if type(require_recording) is not bool or not enabled_modes or set(enabled_modes)-{'single_arm','bimanual_tool'}:
+            raise ValueError('INVALID_TELEOP_REQUIREMENTS')
+        self.require_recording = require_recording
+        self.enabled_modes = tuple(enabled_modes)
         self.mode, self.side, self.phase = 'single_arm', initial_side, 'READY'
         self.generation, self.changed_at = 1, now
         self.target = None
         self.code = 'OK'
+        if 'single_arm' not in self.enabled_modes:
+            self.mode,self.side,self.phase,self.code = '','','SAFE','MODE_NOT_SELECTED'
         self.input_age, self.feedback_age = input_age, feedback_age
 
     def begin(self, mode, side, generation, now):
@@ -22,7 +29,7 @@ class ModeSelection:
             raise ValueError('MODE_SWITCH_BUSY')
         if generation != self.generation:
             raise ValueError('STALE_MODE_GENERATION')
-        if mode not in ('single_arm','bimanual_tool') or (mode == 'single_arm' and side not in ('left','right')) or (mode == 'bimanual_tool' and side):
+        if mode not in self.enabled_modes or (mode == 'single_arm' and side not in ('left','right')) or (mode == 'bimanual_tool' and side):
             raise ValueError('INVALID_MODE_SELECTION')
         if self.phase == 'READY' and (mode,side) == (self.mode,self.side):
             return False
@@ -42,7 +49,7 @@ class ModeSelection:
         if any(name not in velocities or not math.isfinite(velocities[name]) or abs(velocities[name]) > .01
                for group in resources for name in self.profile.groups[group]):
             return 'TELEOP_NOT_STOPPED'
-        if health is None or not health.ready or not 0 <= now-health.stamp < .75:
+        if self.require_recording and (health is None or not health.ready or not 0 <= now-health.stamp < .75):
             return 'RECORDER_UNAVAILABLE'
         mode, side = self.target
         if mode == 'bimanual_tool' and self.tool_config is not None:

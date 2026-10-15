@@ -33,6 +33,8 @@ class Superseded(RuntimeError):
 class PicoNode(RuntimeNode):
     def __init__(self):
         super().__init__('pico_control')
+        self.declare_parameter('recording_enabled',True,descriptor=ParameterDescriptor(read_only=True))
+        self.recording_enabled=self.get_parameter('recording_enabled').value
         share=Path(get_package_share_directory('bindu_runtime'))
         self.declare_parameter('pico_config',str(share/'config/robots/snowbot/pico_snowbot_sim.json'),descriptor=ParameterDescriptor(read_only=True))
         self.declare_parameter('tool_config',str(share/'config/robots/snowbot/bimanual_snowbot_shovel.json'),descriptor=ParameterDescriptor(read_only=True))
@@ -75,14 +77,15 @@ class PicoNode(RuntimeNode):
         self.submit=self.create_client(SubmitMotion,'execution/submit')
         self.stop_client=self.create_client(ControlExecution,'execution/control')
         self.ready_client=self.create_client(Trigger,'teleop/tool_ready')
-        self.record_client=self.create_client(SetBool,'recorder/capture')
+        self.record_client=self.create_client(SetBool,'recorder/capture') if self.recording_enabled else None
         self.modes=ActionClient(self,SelectTeleopMode,'teleop/select_mode')
         self.tools=ActionClient(self,TeleopSession,'teleop/tool_session')
         self.projected=self.create_publisher(VRInput,'teleop/vr/input',10)
         self.display=self.create_publisher(String,'teleop/pico/state',10)
         self.create_subscription(VRInput,'teleop/vr/raw',self.on_frame,10)
         self.create_subscription(ExecutionState,'execution/state',self.on_state,10)
-        self.create_subscription(RecorderHealth,'recorder/health',self.on_recording,5)
+        if self.recording_enabled:
+            self.create_subscription(RecorderHealth,'recorder/health',self.on_recording,5)
         self.create_subscription(TeleopModeState,'teleop/mode_state',self.on_mode,
             QoSProfile(depth=1,reliability=ReliabilityPolicy.RELIABLE,durability=DurabilityPolicy.TRANSIENT_LOCAL))
         self.create_service(PicoContext,'teleop/pico/context',self.on_context)
@@ -404,7 +407,9 @@ class PicoNode(RuntimeNode):
             self.control.lock('PICO_TOOL_SESSION_ENDED:'+self.tool_result.result().result.code,self.now())
         for intent in self.control.drain():
             if intent.operation=='record':
-                if self.record_future is None and self.record_client.service_is_ready():
+                if not self.recording_enabled:
+                    self.event('PICO_RECORDING','RECORDING_DISABLED')
+                elif self.record_future is None and self.record_client.service_is_ready():
                     self.record_future=self.record_client.call_async(SetBool.Request(data=not self.recording))
                 continue
             self.pending_intent=intent
@@ -421,7 +426,7 @@ class PicoNode(RuntimeNode):
             view=dict(self.control.snapshot(),run_id=self.run_id,profile_hash=self.profile.digest,vr_source_id=self.control.source,
                 source_id=(self.control.source+':'+self.instance_id) if self.control.source else None,
                 coordinator_id=self.instance_id,stamp=self.now(),simulated=True,runtime_mode=self.runtime_mode,
-                handoff_complete=self.handoff_complete,gripper_modes=list(self.feedback().modes),tool_phase=self.tool_phase,recording=self.recording,
+                handoff_complete=self.handoff_complete,gripper_modes=list(self.feedback().modes),tool_phase=self.tool_phase,recording=self.recording,recording_enabled=self.recording_enabled,
                 physical_gripper_confirmed=None,actuator_feedback='simulated_joint_position')
             self.display.publish(String(data=json.dumps(view)))
             if self.last_phase!=(self.control.phase,self.control.reason):

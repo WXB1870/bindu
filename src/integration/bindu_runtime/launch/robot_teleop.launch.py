@@ -15,6 +15,9 @@ def generate_launch_description():
                 'output': '/tmp/bindu-runs', 'recording_mode': 'compact',
                 'description_enabled': 'false', 'tool_display_enabled': 'true',
                 'pico_enabled': 'false', 'pico_config': str(share/'config/robots/snowbot/pico_snowbot_sim.json'),
+                'single_arm_enabled':'true','recorder_enabled':'true',
+                'command_enabled':'false','vendor_namespace':'/snowbot',
+                'arm_receiver_node':'','servo_receiver_node':'','mid_receiver_node':'',
                 'vr_enabled': 'false', 'host': '127.0.0.1', 'port': '8012',
                 'cert_file': '', 'key_file': ''}
     return LaunchDescription([DeclareLaunchArgument(k, default_value=v) for k, v in defaults.items()]

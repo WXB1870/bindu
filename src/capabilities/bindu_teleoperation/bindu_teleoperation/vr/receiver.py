@@ -151,6 +151,8 @@ def _serve(config, output, feedback):
                         except queue.Empty:
                             break
                     view = display_snapshot(latest_display, time.time()-display_received)
+                    if config.get('runtime_mode')=='real':
+                        view=dict(view,runtime_mode='real',simulated=False)
                     try:
                         scene = await asyncio.to_thread(render, view)
                         session.upsert(scene, to='bgChildren')

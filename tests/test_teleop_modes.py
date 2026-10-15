@@ -56,6 +56,21 @@ class ModeTests(unittest.TestCase):
     def ready(self):
         return self.m.ready(self.state,self.health,self.frames,11.15,tuple(self.profile.groups))
 
+    def test_explicit_no_recording_keeps_feedback_and_stop_checks(self):
+        self.health=None
+        self.assertEqual(self.ready(),'RECORDER_UNAVAILABLE')
+        self.m.require_recording=False
+        self.assertEqual(self.ready(),'')
+        self.state.stop_failures=['unconfirmed']
+        self.assertEqual(self.ready(),'EXECUTION_NOT_QUIESCENT')
+
+    def test_dual_only_starts_unselected_and_rejects_single_arm(self):
+        m=ModeSelection(self.profile,'left',10.,require_recording=False,enabled_modes=('bimanual_tool',))
+        self.assertEqual((m.mode,m.phase,m.code),('','SAFE','MODE_NOT_SELECTED'))
+        with self.assertRaisesRegex(ValueError,'INVALID_MODE_SELECTION'):
+            m.begin('single_arm','left',m.generation,11.)
+        self.assertTrue(m.begin('bimanual_tool','',m.generation,11.))
+
     def test_switch_requires_quiescence_and_fresh_paired_release(self):
         self.assertEqual(self.ready(),'')
         self.state.lease_active=True
