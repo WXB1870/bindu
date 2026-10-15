@@ -162,7 +162,14 @@ class ShovelGeometryTests(unittest.TestCase):
         for change in schedule[1:]:
             self.assertEqual(grasp_mode_at(recipe, change['t']), change['mode'])
             self.assertNotEqual(grasp_mode_at(recipe, change['t']-.01), change['mode'])
-        for when in (5.,17.551):
+        # Choose moving segments from the recipe: fixed timestamps can fall
+        # after re-lock when the demonstration is sped up.
+        fields = ('translation_m', 'yaw_pitch_rad', 'shaft_roll_rad')
+        moving_times = [(a['t']+b['t'])/2 for a,b in zip(recipe['keyframes'], recipe['keyframes'][1:])
+                        if b['t'] < schedule[-1]['t'] and
+                        any(a.get(field,0.) != b.get(field,0.) for field in fields)]
+        self.assertGreaterEqual(len(moving_times),2)
+        for when in moving_times:
             moving=copy.deepcopy(self.config);moving['demo']['grasp_schedule'][1]['t']=when
             validate_recipe(moving)
         for field,value,reason in [('mode','open','INVALID_SHOVEL_GRASP_SCHEDULE'),

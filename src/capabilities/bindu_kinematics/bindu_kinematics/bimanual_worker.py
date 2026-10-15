@@ -6,11 +6,28 @@ import time
 import gc
 
 
-def _run(config, profile, requests, results):
+def _run(config, profile, requests, results, preload_path_checks=False):
     solver = None
     try:
         from .bimanual import BimanualQP
         solver=BimanualQP(config,profile)
+        path_checks={}
+        def path_check(loaded):
+            if loaded not in path_checks:
+                import numpy as np
+                from pathlib import Path
+                from .tool_geometry import make_collision_checker
+                recipe=dict(config['demo'])
+                recipe['left_grip_in_tool_m']=(np.linalg.inv(solver.tool) @
+                    np.r_[recipe['grip_offset_m'],1.])[:3].tolist()
+                path_checks[loaded]=make_collision_checker(Path(config['urdf']).parent/recipe['display_urdf'],
+                    recipe,conservative_convex=True,tool_present=loaded)
+            return path_checks[loaded]
+        if preload_path_checks:
+            # PICO uses immutable tool/model configuration. Load both CAD
+            # query contexts before ready; each request still checks its fresh
+            # measured start and complete proposed path, including grip meshes.
+            path_check(False);path_check(True)
         # This is the private spawned child, never the caller's interpreter.
         # Initialization has a separate startup budget. Leave GC enabled for
         # later garbage without rescanning this stable model/import graph.
@@ -25,14 +42,8 @@ def _run(config, profile, requests, results):
                 if operation == 'capture': value=solver.capture(feedback,grasp_mode)
                 elif operation in ('prepare_path','gripper_path'):
                     import numpy as np
-                    from pathlib import Path
-                    from .tool_geometry import make_collision_checker
-                    recipe=dict(config['demo'])
-                    recipe['left_grip_in_tool_m']=(np.linalg.inv(solver.tool) @
-                        np.r_[recipe['grip_offset_m'],1.])[:3].tolist()
                     loaded=operation=='gripper_path'
-                    check=make_collision_checker(Path(config['urdf']).parent/recipe['display_urdf'],
-                                                 recipe,conservative_convex=True,tool_present=loaded)
+                    check=path_check(loaded)
                     names=solver.model_names if loaded else solver.names
                     tool=np.asarray(solver.capture(feedback,'right_axial')).reshape(4,4) if loaded else np.eye(4)
                     before=np.array([feedback[n] for n in names])
@@ -62,14 +73,14 @@ def _run(config, profile, requests, results):
 
 
 class BimanualWorker:
-    def __init__(self,config,profile):
+    def __init__(self,config,profile,*,preload_path_checks=False):
         self.timeout=float(config.get('worker_timeout', config['solve_timeout_us']*1e-6+.2))
         self.startup_timeout=float(config.get('worker_startup_timeout',30.))
         if not all(math.isfinite(v) and v > 0 for v in (self.timeout,self.startup_timeout)):
             raise ValueError('BIMANUAL_WORKER_TIMEOUT_CONFIG')
         ctx=mp.get_context('spawn')
         self.requests,self.results=ctx.Queue(maxsize=1),ctx.Queue(maxsize=2)
-        self.process=ctx.Process(target=_run,args=(config,profile,self.requests,self.results),daemon=True)
+        self.process=ctx.Process(target=_run,args=(config,profile,self.requests,self.results,preload_path_checks),daemon=True)
         self.ready=self.busy=False
         self.error=''
         self.submitted=0.

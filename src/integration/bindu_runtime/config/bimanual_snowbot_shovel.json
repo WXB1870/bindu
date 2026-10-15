@@ -44,8 +44,8 @@
   "worker_startup_timeout": 30.0,
   "relative_gain": 2.0,
   "max_relative_error": 0.03,
-  "max_linear_speed": 0.3,
-  "max_angular_speed": 0.6,
+  "max_linear_speed": 0.7,
+  "max_angular_speed": 1.2,
   "solve_timeout_us": 30000,
   "demo": {
     "description": "Simulation fixture: sideways shaft, head to robot right; CAD-derived jaw opening and separate left/right grip centres. Contact geometry is checked; jaw drive and friction remain simulation assumptions.",
@@ -113,7 +113,7 @@
         ]
       },
       {
-        "t": 0.25,
+        "t": 0.05,
         "phase": "铲入",
         "translation_m": [
           0.0,
@@ -126,7 +126,7 @@
         ]
       },
       {
-        "t": 2.25,
+        "t": 1.65,
         "phase": "铲入",
         "translation_m": [
           0.0,
@@ -139,7 +139,7 @@
         ]
       },
       {
-        "t": 2.5,
+        "t": 1.7,
         "phase": "抬铲",
         "translation_m": [
           0.0,
@@ -152,7 +152,7 @@
         ]
       },
       {
-        "t": 9.5,
+        "t": 5.0,
         "phase": "保持",
         "translation_m": [
           -0.08,
@@ -165,7 +165,7 @@
         ]
       },
       {
-        "t": 9.85,
+        "t": 5.05,
         "phase": "转送箱口",
         "translation_m": [
           -0.08,
@@ -178,7 +178,7 @@
         ]
       },
       {
-        "t": 15.15,
+        "t": 8.25,
         "phase": "保持",
         "translation_m": [
           -0.08,
@@ -192,7 +192,7 @@
         "shaft_roll_rad": -0.0
       },
       {
-        "t": 16.45,
+        "t": 8.7,
         "phase": "翻铲倒雪",
         "translation_m": [
           -0.08,
@@ -206,7 +206,7 @@
         "shaft_roll_rad": -0.0
       },
       {
-        "t": 24.45,
+        "t": 12.5,
         "phase": "倒雪保持",
         "translation_m": [
           -0.08,
@@ -220,7 +220,7 @@
         "shaft_roll_rad": -2.0943951023931953
       },
       {
-        "t": 25.35,
+        "t": 12.8,
         "phase": "扶正铲头",
         "translation_m": [
           -0.08,
@@ -234,7 +234,7 @@
         "shaft_roll_rad": -2.0943951023931953
       },
       {
-        "t": 33.35,
+        "t": 17.3,
         "phase": "保持",
         "translation_m": [
           -0.08,
@@ -248,7 +248,7 @@
         "shaft_roll_rad": -0.0
       },
       {
-        "t": 34.65,
+        "t": 17.75,
         "phase": "转回侧方",
         "translation_m": [
           -0.08,
@@ -262,7 +262,7 @@
         "shaft_roll_rad": -0.0
       },
       {
-        "t": 39.95,
+        "t": 20.75,
         "phase": "保持",
         "translation_m": [
           -0.08,
@@ -276,7 +276,7 @@
         "shaft_roll_rad": -0.0
       },
       {
-        "t": 40.3,
+        "t": 20.8,
         "phase": "下放回位",
         "translation_m": [
           -0.08,
@@ -290,7 +290,7 @@
         "shaft_roll_rad": -0.0
       },
       {
-        "t": 47.3,
+        "t": 24.1,
         "phase": "保持",
         "translation_m": [
           0.0,
@@ -304,7 +304,7 @@
         "shaft_roll_rad": -0.0
       },
       {
-        "t": 48.4,
+        "t": 24.5,
         "phase": "完成",
         "translation_m": [
           0.0,
@@ -319,7 +319,7 @@
       }
     ],
     "acceptance": {
-      "push_seconds": 2.5,
+      "push_seconds": 1.7,
       "min_push_m": 0.15,
       "min_lift_m": 0.6,
       "max_return_error_m": 0.002,
@@ -333,8 +333,8 @@
       "min_ground_clearance_m": 0.003,
       "max_ready_clearance_m": 0.015,
       "min_tool_robot_clearance_m": 0.02,
-      "lift_seconds": 9.85,
-      "swing_seconds": 16.45,
+      "lift_seconds": 5.05,
+      "swing_seconds": 8.7,
       "max_phase_angle_error_rad": 0.01,
       "posture_limits_rad": {
         "body_joint_2": [
@@ -345,7 +345,7 @@
       "max_target_lag_m": 0.02,
       "max_target_rotation_error_rad": 0.03
     },
-    "sample_hz": 20,
+    "sample_hz": 50,
     "pivot_in_tool_m": [
       -0.7713451316238472,
       0.0,
@@ -453,12 +453,12 @@
     },
     "dump": {
       "hold_seconds": [
-        24.45,
-        25.35
+        12.5,
+        12.8
       ],
       "transfer_seconds": [
-        16.45,
-        33.35
+        8.7,
+        17.3
       ],
       "mouth_margin_m": 0.04,
       "min_rim_clearance_m": 0.05,
@@ -471,11 +471,11 @@
         "mode": "rigid"
       },
       {
-        "t": 15.8,
+        "t": 8.45,
         "mode": "right_axial"
       },
       {
-        "t": 34.0,
+        "t": 17.5,
         "mode": "rigid"
       }
     ],
@@ -508,7 +508,7 @@
   "grasp_position_tolerance_m": 0.005,
   "grasp_rotation_tolerance_rad": 0.02,
   "tool_gain": 6.0,
-  "posture_gain": 0.05,
+  "posture_gain": 0.1,
   "limit_margin": 0.15,
   "damper_gain": 2.0,
   "right_axial_grasp": {

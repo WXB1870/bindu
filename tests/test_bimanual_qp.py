@@ -77,6 +77,36 @@ class AbiLoadingTests(unittest.TestCase):
             check_abi(lib)
         lib.bq_create.assert_not_called()
 
+    def test_path_contexts_preload_once_but_recheck_each_measured_path(self):
+        from bindu_kinematics.bimanual_worker import _run
+        cfg={'urdf':'/tmp/model.urdf','demo':{'display_urdf':'display.urdf','grip_offset_m':[0.,0.,0.]}}
+        profile=S(limits={'joint':(-1.,1.)})
+        solver=S(tool=np.eye(4),model_names=['joint'],names=['joint'],close=Mock(),
+                 capture=Mock(return_value=np.eye(4)))
+        requests=Mock();requests.get.side_effect=[
+            ('gripper_path',i,{'joint':start},{'joint':end},None,None,'rigid',None)
+            for i,start,end in ((1,0.,.01),(2,.01,.02),(3,.02,.04))]+[None]
+        results=[];paths=[];constructed=[]
+        def factory(*args,**kwargs):
+            constructed.append(kwargs)
+            def check(samples):
+                paths.append(samples)
+                if any(s['q']['joint']>.03 for s in samples):raise ValueError('GRASP_PENETRATION')
+                return {'samples':len(samples)}
+            return check
+        with patch('bindu_kinematics.bimanual.BimanualQP',return_value=solver), \
+                patch('bindu_kinematics.tool_geometry.make_collision_checker',side_effect=factory), \
+                patch('bindu_kinematics.bimanual_worker.gc.collect'), \
+                patch('bindu_kinematics.bimanual_worker.gc.freeze'):
+            _run(cfg,profile,requests,S(put=results.append),True)
+        self.assertEqual(constructed,[{'conservative_convex':True,'tool_present':False},
+                                     {'conservative_convex':True,'tool_present':True}])
+        self.assertEqual([r[0] for r in results],['ready','result','result','error'])
+        self.assertIn('GRASP_PENETRATION',results[-1][2])
+        self.assertEqual([p[0]['q']['joint'] for p in paths],[0.,.01,.02])
+        self.assertEqual(solver.capture.call_count,3)
+        solver.close.assert_called_once()
+
     def test_worker_startup_and_request_deadlines_are_bounded(self):
         worker = BimanualWorker.__new__(BimanualWorker)
         worker.results = queue.Queue()

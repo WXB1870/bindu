@@ -64,7 +64,7 @@ class PicoNode(RuntimeNode):
         self.control=PicoControl(initial_load='unknown',
                                  max_age=float(self.tool_cfg['input_max_age']))
         validation_cfg=dict(self.tool_cfg,worker_timeout=30.)
-        self.validator=BimanualWorker(validation_cfg,self.profile)
+        self.validator=BimanualWorker(validation_cfg,self.profile,preload_path_checks=True)
         self.validation_result=None
         self.frames={};self.state=self.mode=None;self.handoff_complete=False
         self.tool_goal=None;self.tool_result=None;self.tool_phase='inactive'
@@ -145,7 +145,13 @@ class PicoNode(RuntimeNode):
                    for m in (a,b))
         self.control.update_feedback(self.feedback(),self.now())
         previous=(self.control.source,self.control.seq)
+        previous_reason=self.control.reason
         self.control.ingest(*pair,self.now())
+        if self.control.reason=='PICO_PAIR_INVALID' and previous_reason!=self.control.reason:
+            self.event('PICO_PAIR_DIAGNOSTIC',json.dumps(dict(now=self.now(),frames=[
+                dict(stamp=f.stamp,seq=f.seq,side=f.side,source=f.source_id,mapping=f.mapping,
+                     valid=f.valid,init=f.init,grip=f.grip,trigger=f.trigger,buttons=f.buttons,
+                     edges=f.button_edges,clutch_seq=f.clutch_seq) for f in pair])))
         if self.control.source!=a.source_id or self.control.seq!=a.seq or previous==(a.source_id,a.seq):return
         allowed=self.control.phase in ('engaging','following') and self.now()>=self.release_until
         for m in (a,b):
@@ -203,7 +209,7 @@ class PicoNode(RuntimeNode):
         if not reply.ok:raise RuntimeError(reply.code)
         await self.stopped(self.now(),release=True)
 
-    async def move(self,intent,targets,duration):
+    async def move(self,intent,targets,duration,*,fit_duration=False):
         self.current(intent)
         if not self.feedback().stopped:raise RuntimeError('PICO_MOTION_REQUIRES_STOP')
         lease=await self.wait(self.leases.call_async(Lease.Request(operation='acquire',
@@ -219,8 +225,22 @@ class PicoNode(RuntimeNode):
                 await self.pause()
             s,q=self.reading();end=[targets.get(n,q[n]) for n in self.names]
             revision=s.revision;segment=0
-            curve=Curve.between(0.,duration,State.rest(tuple(q[n] for n in self.names)),State.rest(tuple(end)))
+            before=State.rest(tuple(q[n] for n in self.names));after=State.rest(tuple(end))
+            curve=Curve.between(0.,duration,before,after)
             if not curve.valid(self.profile,self.names):raise RuntimeError('PICO_MOTION_LIMITS')
+            if fit_duration:
+                # Virtual/closed differs by only 0.02 rad in this simulated
+                # gripper. Fit the small move to the same v/a/jerk limits;
+                # loading/unloading keeps its configured full-open duration.
+                # Keep transport reserve beyond the 120 ms reference horizon;
+                # fitting the mathematical curve to its exact jerk boundary
+                # leaves no budget for timestamp/service scheduling jitter.
+                while duration*.75>=.3:
+                    candidate=Curve.between(0.,duration*.75,before,after)
+                    if not candidate.valid(self.profile,self.names):break
+                    duration*=.75;curve=candidate
+            self.event('PICO_ACTUATOR_STARTED',json.dumps(dict(operation=intent.operation,
+                duration_s=duration,fit_duration=fit_duration,simulated_actuator=True)))
             started=self.now();command_id=self.instance_id+'_'+str(intent.token)
             deadline=time.monotonic()+duration+6.;renew_at=0.;next_submit=0.
             while time.monotonic()<deadline:
@@ -357,7 +377,7 @@ class PicoNode(RuntimeNode):
                 cfg=self.cfg['grippers']['right']
                 target={cfg['joint']:cfg['virtual' if intent.value else 'closed']}
                 await self.validate_prepare(intent,target)
-                await self.move(intent,target,self.cfg['gripper_duration'])
+                await self.move(intent,target,self.cfg['gripper_duration'],fit_duration=True)
             elif intent.operation=='follow':await self.follow(intent)
             elif intent.operation!='stop':raise RuntimeError('PICO_OPERATION_UNSUPPORTED')
             ok=True
