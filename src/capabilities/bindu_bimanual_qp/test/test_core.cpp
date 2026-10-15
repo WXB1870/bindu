@@ -282,6 +282,13 @@ TEST_F(CoreTest, PostureEnvelopeBoundsAutomaticWaistWithoutSharedTargets) {
   EXPECT_GT(result.velocity[0],0.);
   EXPECT_LE(result.velocity[0],0.002+1e-8);
   EXPECT_LT((kin.relativeErrorJacobian()*result.velocity).norm(),5e-4);
+  controller.setPostureReferenceMargin(0.01);
+  const auto reserved=controller.solve(goal,0.1,robot.activePositions());
+  ASSERT_TRUE(reserved.ok) << reserved.reason;
+  EXPECT_LE(reserved.velocity[0],1e-7);
+  EXPECT_LT((kin.relativeErrorJacobian()*reserved.velocity).norm(),5e-4);
+  EXPECT_THROW(controller.setPostureReferenceMargin(-0.01),std::invalid_argument);
+  EXPECT_THROW(controller.setPostureReferenceMargin(0.2),std::invalid_argument);
   auto invalid=lower; invalid[0]=0.3;
   EXPECT_THROW(controller.setPosturePolicy(robot.activePositions(),invalid,upper),std::invalid_argument);
   q[robot.qIndex("waist_joint")]=0.201; robot.update(q);

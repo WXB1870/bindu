@@ -293,6 +293,13 @@ void QpController::setPosturePolicy(const Eigen::VectorXd &reference,
   have_posture_policy_=true;
 }
 
+void QpController::setPostureReferenceMargin(double margin) {
+  if (!have_posture_policy_ || !std::isfinite(margin) || margin < 0. ||
+      (2.*margin >= (posture_upper_-posture_lower_).array()).any())
+    throw std::invalid_argument("invalid posture reference margin");
+  posture_reference_margin_=margin;
+}
+
 void QpController::reset() {
   qp_ = std::make_unique<proxsuite::proxqp::dense::QP<double>>(
       robot_.variables(), kin_.constraintRows(), 0, true);
@@ -390,6 +397,14 @@ SolveResult QpController::solve(const pinocchio::SE3 &desired_tool, double dt,
                            config_.damper_gain*(pl-q[i]), config_.damper_gain*(pl-ref)});
       upper[i] = std::min({upper[i], (pu-ref)/dt,
                            config_.damper_gain*(pu-q[i]), config_.damper_gain*(pu-ref)});
+      // Reserve measured servo error inside the unchanged physical envelope.
+      // A recapture can lie in the reserve: allow inward recovery and prohibit
+      // further outward velocity, without a position jump at mode transitions.
+      const double il=pl+posture_reference_margin_, iu=pu-posture_reference_margin_;
+      lower[i] = std::max({lower[i], std::min(0.,config_.damper_gain*(il-q[i])),
+                                   std::min(0.,config_.damper_gain*(il-ref))});
+      upper[i] = std::min({upper[i], std::max(0.,config_.damper_gain*(iu-q[i])),
+                                   std::max(0.,config_.damper_gain*(iu-ref))});
     }
     if (lower[i] > upper[i]) { out.reason = "joint bounds infeasible"; return out; }
   }

@@ -219,6 +219,14 @@ int bq_posture_policy(void *ptr, const double *reference, const double *lower,
     } catch (...) { h.qp.reset(); h.kin->reset(); throw; }
   });
 }
+int bq_posture_reference_margin(void *ptr, double margin) {
+  return checked(ptr, [&](Handle &h) {
+    try {
+      if (!h.qp) throw std::invalid_argument("solver not captured");
+      h.qp->setPostureReferenceMargin(margin);
+    } catch (...) { h.qp.reset(); h.kin->reset(); throw; }
+  });
+}
 int bq_solve(void *ptr, const double *q, int nq, const double *reference, int n,
              const double *target, double dt, double *out, double *metrics) {
   return bq_solve_tracking(ptr,q,nq,reference,n,target,nullptr,nullptr,dt,out,metrics);

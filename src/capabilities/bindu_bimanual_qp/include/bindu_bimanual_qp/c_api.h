@@ -65,6 +65,9 @@ int bq_shared_targets(void *handle, const double *targets, int n);
  * the capture so a partially configured policy cannot be used. */
 int bq_posture_policy(void *handle, const double *reference,
                       const double *lower, const double *upper, int n);
+/* Optional ABI v1 extension: inset the reference velocity damper; physical
+ * posture bounds and measured capture checks remain unchanged. */
+int bq_posture_reference_margin(void *handle, double margin);
 /* reference/out follow active-name order. reference is the last accepted
  * command (capture feedback for the first step), never an unaccepted result.
  * dt is the elapsed reference sampling interval, 0 < dt <= 0.1 s. The caller

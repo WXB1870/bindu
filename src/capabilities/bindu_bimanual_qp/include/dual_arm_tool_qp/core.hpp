@@ -132,6 +132,7 @@ public:
   void clearSharedTargets();
   void setPosturePolicy(const Eigen::VectorXd &reference,
                         const Eigen::VectorXd &lower, const Eigen::VectorXd &upper);
+  void setPostureReferenceMargin(double margin);
   SolveResult solve(const pinocchio::SE3 &desired_tool, double dt,
                     const Eigen::VectorXd &reference,
                     const Eigen::Matrix<double, 6, 1> &world_velocity = Eigen::Matrix<double, 6, 1>::Zero(),
@@ -145,6 +146,7 @@ private:
   Eigen::VectorXd nominal_;
   Eigen::VectorXd posture_lower_, posture_upper_;
   bool have_posture_policy_{false};
+  double posture_reference_margin_{0.};
   Eigen::VectorXd shared_targets_;
   int shared_count_{0};
   bool have_shared_targets_{false};

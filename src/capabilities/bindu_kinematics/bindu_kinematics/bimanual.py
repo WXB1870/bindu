@@ -134,6 +134,9 @@ class BimanualQP:
         try:
             self.posture_policy = config.get('posture_policy')
             self.posture_reference = None
+            self.posture_reference_margin = float(config.get('posture_reference_margin_rad',0.))
+            if not math.isfinite(self.posture_reference_margin) or self.posture_reference_margin < 0:
+                raise ValueError('BIMANUAL_POSTURE_REFERENCE_MARGIN')
             self.posture_lower, self.posture_upper = lower.copy(), upper.copy()
             if self.posture_policy is not None:
                 policy = self.posture_policy
@@ -153,6 +156,12 @@ class BimanualQP:
                 except AttributeError as exc:
                     raise ValueError('BIMANUAL_POSTURE_ABI_MISSING: rebuild bindu_bimanual_qp') from exc
                 fn.argtypes,fn.restype=[p,array,array,array,i],i
+            if self.posture_reference_margin > 0:
+                if self.posture_policy is None:raise ValueError('BIMANUAL_POSTURE_REFERENCE_MARGIN')
+                try:fn=lib.bq_posture_reference_margin
+                except AttributeError as exc:
+                    raise ValueError('BIMANUAL_POSTURE_MARGIN_ABI_MISSING: rebuild bindu_bimanual_qp') from exc
+                fn.argtypes,fn.restype=[p,d],i
             self.tool = self._transform(config['left_to_tool'])
             self.axial = config.get('right_axial_grasp')
             self.grasp_mode = 'rigid'
@@ -289,6 +298,8 @@ class BimanualQP:
             if not self.lib.bq_posture_policy(self.handle,self._ptr(posture_reference),
                     self._ptr(self.posture_lower),self._ptr(self.posture_upper),len(self.names)):
                 raise ValueError('BIMANUAL_POSTURE_POLICY:'+self._error())
+            if self.posture_reference_margin > 0 and not self.lib.bq_posture_reference_margin(self.handle,self.posture_reference_margin):
+                raise ValueError('BIMANUAL_POSTURE_REFERENCE_MARGIN:'+self._error())
         self.grasp_mode = grasp_mode
         self.grasp_reference = measured.copy()
         out = np.empty((4,4), dtype=np.float64)
@@ -349,24 +360,28 @@ class BimanualQP:
         if not ok:
             raise ValueError('BIMANUAL_SHARED_TARGET:'+self._error())
 
-    def solve(self, feedback, target, *, reference, dt, target_stamp=None):
+    def solve(self, feedback, target, *, reference, dt, target_stamp=None, tool_feedback=None):
         """Propose a step; caller commits reference/time only after acceptance.
 
         Optional reference kinematics integrate a coherent tool path at the
         accepted reference; measured feedback still gates grasp, tracking and
         collision safety. dt is explicit, not inferred from VR frequency. A large tracking error requires hold and a fresh capture;
         silently realigning a moving reference would introduce a position jump.
+        An optional calibrated tool observation replaces only the tool tracking
+        error. Joint/grasp/limit/collision guards still use measured joints.
+        Freshness and frame alignment are the caller's responsibility; explicit
+        correction bounds are required and excessive disagreement rejects.
         """
         if not self.captured:
             raise ValueError('BIMANUAL_NOT_CAPTURED')
         self.last_timing = None
         try:
-            return self._solve(feedback, target, reference, float(dt), target_stamp)
+            return self._solve(feedback, target, reference, float(dt), target_stamp, tool_feedback)
         except (ValueError, TypeError):
             self.captured = False
             raise
 
-    def _solve(self, feedback, target, reference, dt, target_stamp):
+    def _solve(self, feedback, target, reference, dt, target_stamp, tool_feedback=None):
         started = time.perf_counter()
         cpu_started = time.thread_time()
         if not math.isfinite(dt) or not 0 < dt <= self.max_interval:
@@ -376,6 +391,9 @@ class BimanualQP:
         if reference.shape != (len(self.names),) or not np.isfinite(reference).all():
             raise ValueError('BIMANUAL_REFERENCE_LAYOUT')
         measured = np.array([feedback[n] for n in self.names])
+        if self.posture_policy is not None and (np.any(measured<self.posture_lower-1e-9) or
+                                                np.any(measured>self.posture_upper+1e-9)):
+            raise ValueError('BIMANUAL_MEASURED_POSTURE_ERROR')
         if np.max(np.abs(reference-measured)) > self.max_reference_error:
             raise ValueError('BIMANUAL_REFERENCE_TRACKING_ERROR')
         measured_tool = None
@@ -396,10 +414,21 @@ class BimanualQP:
                 angle = math.acos(float(np.clip(actual[:3,2] @ self.tool_grip[:3,2],-1.,1.)))
             if math.hypot(distance,angle) > self.cfg['max_relative_error']:
                 raise ValueError('BIMANUAL_MEASURED_GRASP_ERROR')
+            if tool_feedback is not None:
+                observed = self._transform(tool_feedback)
+                position_bound = float(self.cfg.get('max_tool_feedback_translation_m',0.))
+                rotation_bound = float(self.cfg.get('max_tool_feedback_rotation_rad',0.))
+                angle = math.acos(float(np.clip((np.trace(observed[:3,:3] @ measured_tool[:3,:3].T)-1.)/2.,-1.,1.)))
+                if (not all(math.isfinite(x) and x > 0 for x in (position_bound,rotation_bound)) or
+                        np.linalg.norm(observed[:3,3]-measured_tool[:3,3]) > position_bound or angle > rotation_bound):
+                    raise ValueError('BIMANUAL_TOOL_FEEDBACK_DISAGREEMENT')
+                measured_tool = np.ascontiguousarray(observed)
             # Measured non-controlled joints remain context; the integrated
             # controlled reference must have its own coherent FK/Jacobians.
             q = q.copy()
             q[[self.model_names.index(n) for n in self.names]] = reference
+        elif tool_feedback is not None:
+            raise ValueError('BIMANUAL_TOOL_FEEDBACK_REQUIRES_REFERENCE_KINEMATICS')
         target = np.ascontiguousarray(target, dtype=np.float64).reshape(4,4)
         out = np.empty(len(self.names), dtype=np.float64)
         metrics = np.empty(3, dtype=np.float64)

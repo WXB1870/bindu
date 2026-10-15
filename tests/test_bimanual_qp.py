@@ -266,6 +266,45 @@ class NativeBimanual(unittest.TestCase):
             self.assertGreaterEqual(new,lo)
             self.assertLessEqual(new,hi)
 
+    def test_bounded_tool_observation_corrects_sag_and_keeps_joint_guards(self):
+        solver=BimanualQP(dict(self.config,reference_kinematics=True,
+            max_tool_feedback_translation_m=.05,max_tool_feedback_rotation_rad=.1),self.profile)
+        self.addCleanup(solver.close)
+        target=solver.capture(self.feedback);observed=target.copy();observed[2,3]-=.01
+        reference=[self.feedback[n] for n in solver.names]
+        out,_=solver.solve(self.feedback,target,reference=reference,dt=.01,tool_feedback=observed)
+        q=solver._q(self.feedback)
+        for name,value in zip(solver.names,out):q[solver.model_names.index(name)]=value
+        next_tool=np.empty((4,4))
+        self.assertTrue(solver.lib.bq_tool_pose(solver.handle,solver._ptr(q),solver.nq,solver._ptr(next_tool)))
+        self.assertGreater(next_tool[2,3],target[2,3]+1e-5)
+        damaged=dict(self.feedback);damaged[solver.names[-2]]+=.2
+        with self.assertRaisesRegex(ValueError,'MEASURED_GRASP_ERROR'):
+            solver.solve(damaged,target,reference=[damaged[n] for n in solver.names],dt=.01,tool_feedback=target)
+
+    def test_tool_observation_requires_bounds_and_rejects_invalid_or_large_correction(self):
+        for correction in ('unconfigured','too_far','invalid'):
+            with self.subTest(correction=correction):
+                cfg=dict(self.config,reference_kinematics=True)
+                if correction!='unconfigured':cfg.update(max_tool_feedback_translation_m=.05,max_tool_feedback_rotation_rad=.1)
+                solver=BimanualQP(cfg,self.profile);self.addCleanup(solver.close)
+                target=solver.capture(self.feedback);observed=target.copy()
+                if correction=='too_far':observed[0,3]+=.051
+                if correction=='invalid':observed[0,0]=float('nan')
+                with self.assertRaisesRegex(ValueError,'BIMANUAL_TOOL_(FEEDBACK_DISAGREEMENT|TRANSFORM)'):
+                    solver.solve(self.feedback,target,reference=[self.feedback[n] for n in solver.names],dt=.01,tool_feedback=observed)
+                self.assertFalse(solver.captured)
+
+    def test_actual_posture_guard_is_independent_of_reference_jacobians(self):
+        name=self.qp.names[0];value=self.feedback[name]
+        solver=BimanualQP(dict(self.config,reference_kinematics=True,posture_policy={
+            'reference':'initial_capture','position_bounds':{name:[value-.05,value+.05]}}),self.profile)
+        self.addCleanup(solver.close)
+        target=solver.capture(self.feedback);damaged=dict(self.feedback);damaged[name]+=.051
+        with self.assertRaisesRegex(ValueError,'BIMANUAL_MEASURED_POSTURE_ERROR'):
+            solver.solve(damaged,target,reference=[self.feedback[n] for n in solver.names],dt=.01)
+        self.assertFalse(solver.captured)
+
     def test_integration_uses_accepted_reference_and_variable_interval(self):
         tool = self.qp.capture(self.feedback)
         target = tool.copy(); target[0,3] += .015
@@ -538,7 +577,7 @@ class AxialShovelTests(unittest.TestCase):
     def test_guard_rejects_tool_into_body_and_failed_capture_invalidates(self):
         # Isolate the geometry guard: the configured posture envelope now
         # rejects this large bend before it can reach collision checking.
-        cfg=dict(self.cfg);cfg.pop('posture_policy',None)
+        cfg=dict(self.cfg);cfg.pop('posture_policy',None);cfg.pop('posture_reference_margin_rad',None)
         solver=BimanualQP(cfg,self.profile)
         self.addCleanup(solver.close)
         solver.capture(self.ready)
