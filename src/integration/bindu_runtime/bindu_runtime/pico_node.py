@@ -34,8 +34,8 @@ class PicoNode(RuntimeNode):
     def __init__(self):
         super().__init__('pico_control')
         share=Path(get_package_share_directory('bindu_runtime'))
-        self.declare_parameter('pico_config',str(share/'config/pico_snowbot_sim.json'),descriptor=ParameterDescriptor(read_only=True))
-        self.declare_parameter('tool_config',str(share/'config/bimanual_snowbot_shovel.json'),descriptor=ParameterDescriptor(read_only=True))
+        self.declare_parameter('pico_config',str(share/'config/robots/snowbot/pico_snowbot_sim.json'),descriptor=ParameterDescriptor(read_only=True))
+        self.declare_parameter('tool_config',str(share/'config/robots/snowbot/bimanual_snowbot_shovel.json'),descriptor=ParameterDescriptor(read_only=True))
         self.declare_parameter('model_root',str(Path(get_package_share_directory('bindu_description'))/'urdf'),descriptor=ParameterDescriptor(read_only=True))
         self.declare_parameter('device_backend','kinematic',descriptor=ParameterDescriptor(read_only=True))
         self.cfg=json.loads(Path(self.get_parameter('pico_config').value).read_text())

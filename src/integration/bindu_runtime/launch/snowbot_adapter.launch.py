@@ -29,7 +29,7 @@ def assemble(context):
         raise ValueError('INVALID_RECORDING_MODE')
     share = Path(get_package_share_directory('bindu_runtime'))
     profile = value('profile') or str(share/'config'/(
-        'snowbot_vendor_position.json' if mode == 'real' else 'snowbot_shovel_sim.json'))
+        'robots/snowbot/snowbot_vendor_position.json' if mode == 'real' else 'robots/snowbot/snowbot_shovel_sim.json'))
     common = {'profile': profile, 'runtime_mode': mode, 'run_id': value('run_id', 'manual')}
     parameters = {**common}
     if mode == 'real':

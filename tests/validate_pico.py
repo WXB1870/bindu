@@ -192,7 +192,7 @@ def main():
     if args.websocket_input and (args.crash_coordinator or args.reject_virtual):
         parser.error('WebSocket validation uses the ordinary scenario')
     out=Path(args.output).resolve();out.mkdir(parents=True,exist_ok=False)
-    root=Path(__file__).resolve().parents[1];cfg=root/'src/integration/bindu_runtime/config'
+    root=Path(__file__).resolve().parents[1];cfg=root/'src/integration/bindu_runtime/config/robots/snowbot'
     profile=cfg/'snowbot_shovel_sim.json';tool=Path(args.tool_config).resolve() if args.tool_config else cfg/'bimanual_snowbot_shovel.json'
     if args.reject_virtual and not json.loads(tool.read_text())['demo'].get('check_grasp_contacts'):
         raise ValueError('REJECT_VIRTUAL_TEST_REQUIRES_CONFIGURED_GRASP_CONTACT_CHECKS')

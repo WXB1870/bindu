@@ -49,7 +49,7 @@ def inputs(description, root=ROOT):
         'display':description/'urdf/g1_display.urdf',
         'asset_manifest':description/MANIFEST,
         'physics':description/'physics.json',
-        'profile':root/'src/integration/bindu_runtime/config/g1_provisional_sim.json',
+        'profile':root/'src/integration/bindu_runtime/config/robots/g1/g1_provisional_sim.json',
         'preparation_recipe':Path(__file__),
     }.items()}
 
@@ -120,7 +120,7 @@ def prepare(source, output, root=ROOT, description=None):
     path.write_text('<?xml version="1.0"?>\n<!-- Generated physics fixture; synthetic differential wheels/supports. Not calibrated hardware. -->\n'+ET.tostring(robot, encoding='unicode')+'\n')
     shutil.copyfile(description/'LICENSE',output/'LICENSE')
     shutil.copyfile(description/'physics.json',output/'physics.json')
-    profile = json.loads((root / 'src/integration/bindu_runtime/config/g1_provisional_sim.json').read_text())
+    profile = json.loads((root / 'src/integration/bindu_runtime/config/robots/g1/g1_provisional_sim.json').read_text())
     profile['name'] = 'g1_physics_sim'
     # Simulation-only overrides stay with the body configuration. Public
     # execution math and the provisional kinematic profile remain unchanged.

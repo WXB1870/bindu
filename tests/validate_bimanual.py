@@ -184,10 +184,10 @@ def main():
     right=['right_joint_'+str(k) for k in range(1,7)]
     physics_model=None
     if args.snowbot:
-        profile=root/'src/integration/bindu_runtime/config/snowbot_sim.json'
-        config=root/'src/integration/bindu_runtime/config/bimanual_snowbot_sim.json'
+        profile=root/'src/integration/bindu_runtime/config/robots/snowbot/snowbot_sim.json'
+        config=root/'src/integration/bindu_runtime/config/robots/snowbot/bimanual_snowbot_sim.json'
         if args.axial_grasp:
-            config=root/'src/integration/bindu_runtime/config/bimanual_snowbot_shovel.json'
+            config=root/'src/integration/bindu_runtime/config/robots/snowbot/bimanual_snowbot_shovel.json'
             profile=config.parent/json.loads(config.read_text())['demo']['profile']
         if args.expect_geometry_rejection:
             invalid=json.loads(config.read_text())
@@ -200,11 +200,11 @@ def main():
         physics_model=output/'g1_model'
         shutil.copytree(args.g1_model.resolve(),physics_model)
         physical=json.loads((physics_model/'physics.json').read_text())
-        prepared=json.loads((root/'src/integration/bindu_runtime/config/bimanual_g1_pose.json').read_text())
+        prepared=json.loads((root/'tests/config/teleoperation/bimanual_g1_pose.json').read_text())
         physical['initial_joint_positions'].update(prepared['joint_positions_rad'])
         (physics_model/'physics.json').write_text(json.dumps(physical,indent=2)+'\n')
         profile=physics_model/'g1_physics_sim.json'
-        config=root/'src/integration/bindu_runtime/config/bimanual_g1_sim.json'
+        config=root/'src/integration/bindu_runtime/config/robots/g1/bimanual_g1_sim.json'
         command_groups=['waist','left_arm','right_arm']
         command_count=16
     else:
@@ -265,7 +265,7 @@ def main():
                             '-p','model_root:='+str((root/'src/hardware/bindu_description/urdf')
                                                     if physics_model or args.snowbot else fixture.parent)])
         if args.snowbot:
-            start('teleop',['-p','teleop_config:='+str(root/'src/integration/bindu_runtime/config/teleop_snowbot_left.json'),
+            start('teleop',['-p','teleop_config:='+str(root/'src/integration/bindu_runtime/config/robots/snowbot/teleop_snowbot_left.json'),
                             '-p','model_root:='+str(root/'src/hardware/bindu_description/urdf'),
                             '-p','require_mode_selection:=true'])
         if args.tool_display:

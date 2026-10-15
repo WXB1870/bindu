@@ -705,7 +705,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('motion', type=Path)
     parser.add_argument('--output', type=Path, required=True)
-    parser.add_argument('--config', type=Path, default=ROOT/'src/integration/bindu_runtime/config/snowbot_shovel_physics.json')
+    parser.add_argument('--config', type=Path, default=ROOT/'src/integration/bindu_runtime/config/robots/snowbot/snowbot_shovel_physics.json')
     parser.add_argument('--case', default='baseline')
     parser.add_argument('--duration', type=float, help='Optional shorter simulated motion interval for diagnostics')
     parser.add_argument('--gui', action='store_true')

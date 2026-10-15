@@ -23,7 +23,7 @@
 
 ## 接入与验证
 
-ROS 会话入口：[runtime/nav2_session.py](../../integration/bindu_runtime/bindu_runtime/nav2_session.py)、[runtime/navigation.py](../../integration/bindu_runtime/bindu_runtime/navigation.py)。传感器参数示例：[navigation_sensors.json](../../integration/bindu_runtime/config/navigation_sensors.json)。
+ROS 会话入口：[runtime/nav2_session.py](../../integration/bindu_runtime/bindu_runtime/nav2_session.py)、[runtime/navigation.py](../../integration/bindu_runtime/bindu_runtime/navigation.py)。传感器参数示例：[navigation_sensors.json](../../integration/bindu_runtime/config/navigation/navigation_sensors.json)。
 
 - 单元检查：[导航](../../../tests/test_navigation.py)、[Airy 扫描](../../../tests/test_airy_scan.py)。
 - 集成检查：[导航协议](../../../tests/validate_navigation.py)、[Nav2 身份](../../../tests/validate_nav2_identity.py)、[Nav2 物理场景](../../../tests/validate_nav2_physics.py)。各入口需要相应 ROS／仿真环境。

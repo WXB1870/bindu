@@ -19,7 +19,7 @@ CONFIG = ROOT/'src/integration/bindu_runtime/config'
 
 class SnowbotAdapterTests(unittest.TestCase):
     def setUp(self):
-        self.profile = Profile.load(CONFIG/'snowbot_vendor_position.json')
+        self.profile = Profile.load(CONFIG/'robots/snowbot/snowbot_vendor_position.json')
         self.now = 10.
         self.sent = []
         self.io = SnowbotIO(self.profile, lambda g, q: self.sent.append((set(g), dict(q))),
@@ -55,9 +55,9 @@ class SnowbotAdapterTests(unittest.TestCase):
         self.assertEqual(self.profile.limits['arm_l_joint_3'], [-2.61, .58])
         self.assertEqual(self.profile.limits['arm_r_joint_3'], [-.58, 2.61])
         self.assertEqual(self.profile.limits['head_joint_1'], [-.791, .791])
-        old = Profile.load(CONFIG/'snowbot_shovel_sim.json')
+        old = Profile.load(CONFIG/'robots/snowbot/snowbot_shovel_sim.json')
         self.assertEqual(old.limits['body_joint_2'], [-.79, 1.83])
-        for filename in ('snowbot_shovel_sim.json', 'wheel_sim.json'):
+        for filename in ('robots/snowbot/snowbot_shovel_sim.json', 'simulation/wheel_sim.json'):
             with self.assertRaisesRegex(ValueError, 'PROFILE_REQUIRED'):
                 SnowbotIO(Profile.load(CONFIG/filename), None, lambda: self.now)
 

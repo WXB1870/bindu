@@ -43,7 +43,7 @@ class HuaweiDescriptionTests(unittest.TestCase):
         self.assertFalse(list(control.iter('mesh')))
         self.assertEqual(len(display.findall('.//visual')),88)
         self.assertEqual(len(display.findall('.//collision')),81)
-        cfg=json.loads((ROOT/'src/integration/bindu_runtime/config/teleop_v34.json').read_text())['kinematics']
+        cfg=json.loads((ROOT/'src/integration/bindu_runtime/config/robots/huawei_v34/teleop_v34.json').read_text())['kinematics']
         moving={j.get('name') for j in control.findall('joint') if j.get('type')!='fixed'}
         self.assertEqual(moving,set(cfg['joint_names'])|set(cfg['locked_joints']))
 

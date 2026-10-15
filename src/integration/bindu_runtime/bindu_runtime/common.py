@@ -43,7 +43,7 @@ def joints_at_rest(joints, names, tolerance=.01):
 class RuntimeNode(Node):
     def __init__(self, name, *, allow_hardware=False, default_mode=None):
         super().__init__(name)
-        default = str(Path(get_package_share_directory('bindu_runtime')) / 'config/wheel_sim.json')
+        default = str(Path(get_package_share_directory('bindu_runtime')) / 'config/simulation/wheel_sim.json')
         self.declare_parameter('profile', default, descriptor=ParameterDescriptor(read_only=True))
         self.declare_parameter('run_id', 'manual', descriptor=ParameterDescriptor(read_only=True))
         self.declare_parameter('runtime_mode', '')

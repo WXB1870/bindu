@@ -124,7 +124,7 @@ class G1CollisionTests(unittest.TestCase):
         from bindu_teleoperation.config import load_config
         from bindu_kinematics.pinocchio_casadi import PinocchioCasadiIK
         root=Path(__file__).resolve().parents[1]
-        folder=root/'src/integration/bindu_runtime/config'
+        folder=root/'src/integration/bindu_runtime/config/robots/g1'
         profile=Profile.load(folder/'g1_provisional_sim.json')
         cls.solvers={side:PinocchioCasadiIK(load_config(folder/f'teleop_g1_{side}.json',profile,
             root/'src/hardware/bindu_description/urdf')['kinematics']) for side in ('left','right')}

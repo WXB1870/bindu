@@ -35,7 +35,7 @@ def run_case(root,output,name,mode='pubsub',fault='',correlate=False,launch=Fals
     if g1:correlate=True
     run=name+'_'+uuid.uuid4().hex[:8]; namespace='/bindu_pi_'+uuid.uuid4().hex[:8]
     folder=output/run;folder.mkdir(parents=True)
-    cfg=json.loads((root/('src/integration/bindu_runtime/config/pi_g1.json' if g1 else 'src/integration/bindu_runtime/config/pi_loopback.json')).read_text())
+    cfg=json.loads((root/('src/integration/bindu_runtime/config/vla/pi_g1.json' if g1 else 'src/integration/bindu_runtime/config/vla/pi_loopback.json')).read_text())
     cfg.update(mode=mode,state_bind=f'tcp://127.0.0.1:{free_port()}',command_connect=f'tcp://127.0.0.1:{free_port()}',require_correlation=correlate)
     config=folder/'config.json';config.write_text(json.dumps(cfg))
     handles=[]; processes={}; node=rclpy.create_node('pi_verifier_'+uuid.uuid4().hex[:8])
@@ -52,7 +52,7 @@ def run_case(root,output,name,mode='pubsub',fault='',correlate=False,launch=Fals
         else:
             for executable in ('execution','recorder','pi_client'):
                 start(executable,['ros2','run','bindu_runtime',executable,'--ros-args','-r','__ns:='+namespace,
-                    '-p','run_id:='+run,'-p','output:='+str(output/'episodes'),'-p','pi_config:='+str(config)]+(['-p','profile:='+str(root/'src/integration/bindu_runtime/config/g1_provisional_sim.json')] if g1 else []))
+                    '-p','run_id:='+run,'-p','output:='+str(output/'episodes'),'-p','pi_config:='+str(config)]+(['-p','profile:='+str(root/'src/integration/bindu_runtime/config/robots/g1/g1_provisional_sim.json')] if g1 else []))
         peerfault=fault if fault not in ('cancel','stale_observation','recorder_loss') else ''
         start('peer',[sys.executable,str(root/'tests/pi_peer.py'),'--config',str(config),
                       '--output',str(folder/'peer.json'),'--fault',peerfault]+(['--correlate'] if correlate else []))

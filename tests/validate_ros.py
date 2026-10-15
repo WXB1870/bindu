@@ -63,6 +63,8 @@ def terminate(p):
 
 
 def scenario(root, output, case, strategy='planner', profile='wheel_sim', fault='', cancel=False, launch=False, recording_mode='normal'):
+    profile_path = (root/'tests/config/profiles/alternate_sim.json' if profile == 'alternate_sim'
+                    else root/'src/integration/bindu_runtime/config/simulation'/f'{profile}.json')
     run=case+'_'+uuid.uuid4().hex[:8]
     ns='/bindu_test_'+uuid.uuid4().hex[:8]
     logs=output/'processes'/run
@@ -83,7 +85,7 @@ def scenario(root, output, case, strategy='planner', profile='wheel_sim', fault=
         for name in (() if launch else ('execution','perception','recorder','task')):
             log=(logs/(name+'.log')).open('w'); handles.append(log)
             cmd=['ros2','run','bindu_runtime',name,'--ros-args','-r','__ns:='+ns,
-                 '-p','profile:='+str(root/'src/integration/bindu_runtime/config'/f'{profile}.json'),
+                 '-p','profile:='+str(profile_path),
                  '-p','run_id:='+run,'-p','output:='+str(output/'episodes')]
             if name=='recorder':cmd+=['-p','recording_mode:='+json.dumps(recording_mode)]
             processes[name]=subprocess.Popen(cmd,stdout=log,stderr=subprocess.STDOUT,start_new_session=True)

@@ -132,10 +132,10 @@ class NativeBimanual(unittest.TestCase):
     def setUpClass(cls):
         try: get_package_prefix('bindu_bimanual_qp')
         except PackageNotFoundError: raise unittest.SkipTest('optional native QP not installed')
-        cls.config=json.loads((ROOT/'src/integration/bindu_runtime/config/bimanual_g1_sim.json').read_text())
+        cls.config=json.loads((ROOT/'src/integration/bindu_runtime/config/robots/g1/bimanual_g1_sim.json').read_text())
         cls.config['urdf']=str(ROOT/'src/hardware/bindu_description/urdf/g1_provisional.urdf')
-        cls.profile=Profile.load(ROOT/'src/integration/bindu_runtime/config/g1_provisional_sim.json')
-        cls.pose=json.loads((ROOT/'src/integration/bindu_runtime/config/bimanual_g1_pose.json').read_text())['joint_positions_rad']
+        cls.profile=Profile.load(ROOT/'src/integration/bindu_runtime/config/robots/g1/g1_provisional_sim.json')
+        cls.pose=json.loads((ROOT/'tests/config/teleoperation/bimanual_g1_pose.json').read_text())['joint_positions_rad']
 
     def setUp(self):
         self.qp=BimanualQP(self.config,self.profile)
@@ -522,9 +522,9 @@ class NativeBimanual(unittest.TestCase):
                 solver.close()
 
     def test_snowbot_cad_waist_and_seven_axis_arm_layout(self):
-        config=json.loads((ROOT/'src/integration/bindu_runtime/config/bimanual_snowbot_sim.json').read_text())
+        config=json.loads((ROOT/'src/integration/bindu_runtime/config/robots/snowbot/bimanual_snowbot_sim.json').read_text())
         config['urdf']=str(ROOT/'src/hardware/bindu_description/urdf/snowbot_control.urdf')
-        profile=Profile.load(ROOT/'src/integration/bindu_runtime/config/snowbot_sim.json')
+        profile=Profile.load(ROOT/'src/integration/bindu_runtime/config/robots/snowbot/snowbot_sim.json')
         solver=BimanualQP(config,profile)
         try:
             self.assertEqual(solver.names[:2],('body_joint_1','body_joint_2'))
@@ -550,9 +550,9 @@ class NativeBimanual(unittest.TestCase):
             solver.close()
 
     def test_shovel_grasp_checks_orientation_and_invalidates_failed_capture(self):
-        config=json.loads((ROOT/'src/integration/bindu_runtime/config/bimanual_snowbot_shovel.json').read_text())
+        config=json.loads((ROOT/'src/integration/bindu_runtime/config/robots/snowbot/bimanual_snowbot_shovel.json').read_text())
         config['urdf']=str(ROOT/'src/hardware/bindu_description/urdf/snowbot_control.urdf')
-        profile=Profile.load(ROOT/'src/integration/bindu_runtime/config/snowbot_sim.json')
+        profile=Profile.load(ROOT/'src/integration/bindu_runtime/config/robots/snowbot/snowbot_sim.json')
         solver=BimanualQP(config,profile)
         self.addCleanup(solver.close)
         ready=dict(config['demo']['initial_positions_rad'])
@@ -570,9 +570,9 @@ class NativeBimanual(unittest.TestCase):
         self.assertLess(metrics[1],1e-6)
 
     def test_shovel_grasp_rejects_inconsistent_second_attachment(self):
-        config=json.loads((ROOT/'src/integration/bindu_runtime/config/bimanual_snowbot_shovel.json').read_text())
+        config=json.loads((ROOT/'src/integration/bindu_runtime/config/robots/snowbot/bimanual_snowbot_shovel.json').read_text())
         config['urdf']=str(ROOT/'src/hardware/bindu_description/urdf/snowbot_control.urdf')
-        profile=Profile.load(ROOT/'src/integration/bindu_runtime/config/snowbot_sim.json')
+        profile=Profile.load(ROOT/'src/integration/bindu_runtime/config/robots/snowbot/snowbot_sim.json')
         attachment=np.array(config['right_to_tool']).reshape(4,4)
         attachment[0,3]+=.02
         config['right_to_tool']=attachment.ravel().tolist()
@@ -584,9 +584,9 @@ class NativeBimanual(unittest.TestCase):
 
 class AxialShovelTests(unittest.TestCase):
     def setUp(self):
-        self.cfg=json.loads((ROOT/'src/integration/bindu_runtime/config/bimanual_snowbot_shovel.json').read_text())
+        self.cfg=json.loads((ROOT/'src/integration/bindu_runtime/config/robots/snowbot/bimanual_snowbot_shovel.json').read_text())
         self.cfg['urdf']=str(ROOT/'src/hardware/bindu_description/urdf/snowbot_control.urdf')
-        self.profile=Profile.load(ROOT/'src/integration/bindu_runtime/config/snowbot_sim.json')
+        self.profile=Profile.load(ROOT/'src/integration/bindu_runtime/config/robots/snowbot/snowbot_sim.json')
         self.qp=BimanualQP(self.cfg,self.profile)
         self.addCleanup(self.qp.close)
         self.ready=self.cfg['demo']['initial_positions_rad']

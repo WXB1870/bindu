@@ -60,7 +60,7 @@ def derive(source, root):
               '     visual/collision meshes removed. Kinematics only, not calibrated hardware.\n'
               '     Regenerate with tools/derive_g1_model.py; do not hand-edit. -->\n')
     out.write_text(notice+ET.tostring(robot, encoding='unicode')+'\n')
-    (root/'src/integration/bindu_runtime/config/g1_provisional_sim.json').write_text(json.dumps(profile, indent=2)+'\n')
+    (root/'src/integration/bindu_runtime/config/robots/g1/g1_provisional_sim.json').write_text(json.dumps(profile, indent=2)+'\n')
 
 
 if __name__ == '__main__':

@@ -11,7 +11,7 @@ from bindu_hardware.robot_io.system import RobotIO
 
 ROOT = Path(__file__).resolve().parents[1]
 URDF = ROOT/'src/hardware/bindu_description/urdf/g1_provisional.urdf'
-PROFILE = ROOT/'src/integration/bindu_runtime/config/g1_provisional_sim.json'
+PROFILE = ROOT/'src/integration/bindu_runtime/config/robots/g1/g1_provisional_sim.json'
 
 
 class G1ModelTests(unittest.TestCase):
@@ -55,7 +55,7 @@ class G1ModelTests(unittest.TestCase):
         from bindu_vla.pi.protocol import Message
         import numpy as np
         profile = Profile.load(PROFILE)
-        cfg = load_config(ROOT/'src/integration/bindu_runtime/config/pi_g1.json', profile)
+        cfg = load_config(ROOT/'src/integration/bindu_runtime/config/vla/pi_g1.json', profile)
         self.assertEqual(cfg['joint_map'], {n:n for n in profile.limits})
         self.assertEqual(cfg['resource_groups'], ['left_arm', 'right_arm'])
         self.assertTrue(cfg['require_correlation'])
@@ -84,7 +84,7 @@ class G1ModelTests(unittest.TestCase):
         from bindu_teleoperation.session import TeleopSession
         profile = Profile.load(PROFILE)
         for side in ('left', 'right'):
-            cfg = load_config(ROOT/f'src/integration/bindu_runtime/config/teleop_g1_{side}.json', profile, URDF.parent)
+            cfg = load_config(ROOT/f'src/integration/bindu_runtime/config/robots/g1/teleop_g1_{side}.json', profile, URDF.parent)
             names = profile.groups[side+'_arm']
             session = TeleopSession(cfg, names)
             frame = VRFrame('vr', 0, 10., side, tuple(np.eye(4).ravel()))
@@ -159,7 +159,7 @@ class G1KinematicsTests(unittest.TestCase):
         from bindu_contracts.teleoperation import IKRequest
         profile = Profile.load(PROFILE)
         for side in ('left', 'right'):
-            cfg = load_config(ROOT/f'src/integration/bindu_runtime/config/teleop_g1_{side}.json', profile, URDF.parent)
+            cfg = load_config(ROOT/f'src/integration/bindu_runtime/config/robots/g1/teleop_g1_{side}.json', profile, URDF.parent)
             solver = PinocchioCasadiIK(cfg['kinematics'])
             body = dict(solver.arm.cfg['locked_joints'])
             body.update(leg_joint1=.1, leg_joint2=.2, leg_joint3=.1, leg_joint4=.15)

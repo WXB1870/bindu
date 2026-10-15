@@ -13,7 +13,7 @@
 
 ## 扫雪求解与反馈
 
-[雪铲配置](../../integration/bindu_runtime/config/bimanual_snowbot_shovel.json) 选择 `waist + left_arm + right_arm`，对应两轴腰部与双臂各七轴。控制链为工具目标 → `BimanualQP` 候选关节位置 → 共享执行器接纳；头部和两侧第八轴保留为上下文，不随工具目标自动控制。
+[雪铲配置](../../integration/bindu_runtime/config/robots/snowbot/bimanual_snowbot_shovel.json) 选择 `waist + left_arm + right_arm`，对应两轴腰部与双臂各七轴。控制链为工具目标 → `BimanualQP` 候选关节位置 → 共享执行器接纳；头部和两侧第八轴保留为上下文，不随工具目标自动控制。
 
 - `reference_kinematics=true` 时，在已接纳参考处计算受控关节的 FK／Jacobian；工具跟踪误差使用实测关节推得的工具位姿，保护仍检查实际姿态。参考只在执行器接纳后推进。
 - 工具速度前馈只使用已处理输入；换握／重捕获清空历史。姿态参考余量由 `posture_reference_margin_rad` 配置，实际姿态边界仍独立检查。
@@ -33,7 +33,7 @@ Isaac 物理实验在 [shovel_control.py](../../../tools/shovel_control.py) 中�
 
 ## 接入与验证
 
-双臂配置入口：[Snowbot 雪铲](../../integration/bindu_runtime/config/bimanual_snowbot_shovel.json)。IK 与 QP 各有可选依赖；使用对应能力前，按 [运行与验证](../../../运行与验证.md) 安装并构建。
+双臂配置入口：[Snowbot 雪铲](../../integration/bindu_runtime/config/robots/snowbot/bimanual_snowbot_shovel.json)。IK 与 QP 各有可选依赖；使用对应能力前，按 [运行与验证](../../../运行与验证.md) 安装并构建。
 
 - 原生边界与参数：[双臂 QP 参数与 ABI](../../../运行与验证.md#双臂qp参数与abi)。
 - 行为检查：[模型](../../../tests/test_g1_model.py)、[IK 碰撞](../../../tests/test_ik_collision.py)、[双臂 QP](../../../tests/test_bimanual_qp.py)、[雪铲运动](../../../tests/test_shovel_motion.py)。

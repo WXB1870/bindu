@@ -36,7 +36,7 @@ PICO目标方案中的左右Trigger各控制一爪开合、X请求右爪虚握�
 
 设备选择在 [device_assembly.py](../../integration/bindu_runtime/bindu_runtime/device_assembly.py) 完成。Snowbot ROS 适配入口为 [snowbot_adapter.py](../../integration/bindu_runtime/bindu_runtime/snowbot_adapter.py)，二代反馈入口为 [soem_joint_feedback.py](../../integration/bindu_runtime/bindu_runtime/soem_joint_feedback.py)。
 
-- 配置示例：[Snowbot 底层位置](../../integration/bindu_runtime/config/snowbot_vendor_position.json)、[二代位置映射](../../integration/bindu_runtime/config/position_mapping_wheel_gen2.json)。
+- 配置示例：[Snowbot 底层位置](../../integration/bindu_runtime/config/robots/snowbot/snowbot_vendor_position.json)、[二代位置映射](../../integration/bindu_runtime/config/robots/wheel_gen2/position_mapping_wheel_gen2.json)。
 - 行为检查：[物理反馈](../../../tests/test_physics.py)、[里程计](../../../tests/test_odometry.py)、[Snowbot 适配](../../../tests/test_snowbot_adapter.py)。
 - 接入步骤和限制：[Snowbot 位置控制适配层](../../../运行与验证.md#snowbot-位置控制适配层)。
 

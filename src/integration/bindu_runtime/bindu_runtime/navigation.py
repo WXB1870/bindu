@@ -29,7 +29,7 @@ class Nav2Navigation:
         from rclpy.qos import QoSProfile, ReliabilityPolicy
         from nav2_msgs.action import NavigateToPose
         from bindu_interfaces.msg import NavigationVelocity, NavigationPose
-        port.declare_parameter('navigation_config', str(Path(get_package_share_directory('bindu_runtime'))/'config/navigation_sim.json'))
+        port.declare_parameter('navigation_config', str(Path(get_package_share_directory('bindu_runtime'))/'config/navigation/navigation_sim.json'))
         port.declare_parameter('navigation_backend', 'navigation/backend')
         self.config = NavigationConfig.load(port.get_parameter('navigation_config').value)
         backend = port.get_parameter('navigation_backend').value.rstrip('/')

@@ -14,7 +14,7 @@ from bindu_hardware.drivers.simulated_base import SimBaseDriver
 from bindu_hardware.drivers.simulated_joints import SimJointDriver
 
 ROOT = Path(__file__).resolve().parents[1]
-CONFIG = ROOT/'src/integration/bindu_runtime/config/navigation_sim.json'
+CONFIG = ROOT/'src/integration/bindu_runtime/config/navigation/navigation_sim.json'
 
 
 class NavigationTests(unittest.TestCase):
@@ -94,7 +94,7 @@ class NavigationTests(unittest.TestCase):
 
 class BaseStreamTests(unittest.TestCase):
     def setUp(self):
-        self.p = Profile.load(ROOT/'src/integration/bindu_runtime/config/wheel_sim.json')
+        self.p = Profile.load(ROOT/'src/integration/bindu_runtime/config/simulation/wheel_sim.json')
         self.base = SimBaseDriver()
         drivers = {g:SimJointDriver(names,self.p.max_speed) for g,names in self.p.groups.items()}
         self.io = RobotIO(self.p,drivers,self.base)
@@ -132,7 +132,7 @@ class BaseStreamTests(unittest.TestCase):
         with self.assertRaisesRegex(Rejected,'INVALID_LEASE'): self.e.submit(self.m,10.02)
 
     def test_invalid_base_profile_limits(self):
-        raw=json.loads((ROOT/'src/integration/bindu_runtime/config/wheel_sim.json').read_text())
+        raw=json.loads((ROOT/'src/integration/bindu_runtime/config/simulation/wheel_sim.json').read_text())
         with tempfile.TemporaryDirectory() as td:
             path=Path(td)/'profile.json'
             for value in (-1.,float('nan'),True):

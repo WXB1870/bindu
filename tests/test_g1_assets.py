@@ -72,8 +72,8 @@ class G1AssetsTests(unittest.TestCase):
 
     def test_profile_and_cache_schema_drift_are_rejected(self):
         with tempfile.TemporaryDirectory() as temp:
-            root=Path(temp);profile=root/'src/integration/bindu_runtime/config/g1_provisional_sim.json'
-            profile.parent.mkdir(parents=True);profile.write_bytes((ROOT/'src/integration/bindu_runtime/config/g1_provisional_sim.json').read_bytes())
+            root=Path(temp);profile=root/'src/integration/bindu_runtime/config/robots/g1/g1_provisional_sim.json'
+            profile.parent.mkdir(parents=True);profile.write_bytes((ROOT/'src/integration/bindu_runtime/config/robots/g1/g1_provisional_sim.json').read_bytes())
             output=root/'physics';prepare(None,output,root=root,description=DESC)
             validate_physics_model(output,root=root,description=DESC)
             profile.write_bytes(profile.read_bytes()+b'\n')

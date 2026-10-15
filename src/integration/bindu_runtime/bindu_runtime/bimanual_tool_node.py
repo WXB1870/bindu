@@ -22,7 +22,7 @@ class BimanualToolNode(RuntimeNode):
     def __init__(self):
         super().__init__('teleop_tool')
         share=Path(get_package_share_directory('bindu_runtime'))
-        self.declare_parameter('tool_config',str(share/'config/bimanual_g1_sim.json'))
+        self.declare_parameter('tool_config',str(share/'config/robots/g1/bimanual_g1_sim.json'))
         self.declare_parameter('model_root',str(Path(get_package_share_directory('bindu_description'))/'urdf'))
         self.cfg=json.loads(Path(self.get_parameter('tool_config').value).read_text())
         if not self.cfg.get('simulation_only') or self.cfg.get('collision_scope') not in ('empty_scene_only','configured_tool_geometry'):

@@ -18,5 +18,5 @@ def assemble(context):
 def generate_launch_description():
     share = Path(get_package_share_directory('bindu_runtime'))
     return LaunchDescription([
-        DeclareLaunchArgument('config', default_value=str(share/'config/runtime_deployment.json')),
+        DeclareLaunchArgument('config', default_value=str(share/'config/deployments/runtime_deployment.json')),
         OpaqueFunction(function=assemble)])

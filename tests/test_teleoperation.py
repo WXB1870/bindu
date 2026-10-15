@@ -18,8 +18,8 @@ POSE = tuple(np.eye(4).ravel())
 
 
 def configuration():
-    profile = Profile.load(ROOT/'src/integration/bindu_runtime/config/huawei_v34_left_sim.json')
-    return load_config(ROOT/'src/integration/bindu_runtime/config/teleop_v34.json', profile,
+    profile = Profile.load(ROOT/'src/integration/bindu_runtime/config/robots/huawei_v34/huawei_v34_left_sim.json')
+    return load_config(ROOT/'src/integration/bindu_runtime/config/robots/huawei_v34/teleop_v34.json', profile,
                        ROOT/'src/hardware/bindu_description/urdf')
 
 
@@ -169,8 +169,8 @@ class VRContracts(unittest.TestCase):
         np.testing.assert_allclose(legacy[:3,:3],rotate_y.T @ robot[:3,:3],atol=1e-12)
 
     def test_mapping_config_preserves_old_defaults_and_rejects_ignored_yaw(self):
-        profile=Profile.load(ROOT/'src/integration/bindu_runtime/config/huawei_v34_left_sim.json')
-        cfg=json.loads((ROOT/'src/integration/bindu_runtime/config/teleop_v34.json').read_text())
+        profile=Profile.load(ROOT/'src/integration/bindu_runtime/config/robots/huawei_v34/huawei_v34_left_sim.json')
+        cfg=json.loads((ROOT/'src/integration/bindu_runtime/config/robots/huawei_v34/teleop_v34.json').read_text())
         cfg.pop('mapping_mode');cfg.pop('operator_yaw_rad')
         with tempfile.TemporaryDirectory() as directory:
             path=Path(directory)/'teleop.json'

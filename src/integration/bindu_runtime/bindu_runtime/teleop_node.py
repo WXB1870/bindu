@@ -23,7 +23,7 @@ from .common import MODE_STATE_MAX_AGE, RuntimeNode, seconds, stamp, spin, joint
 class TeleopNode(RuntimeNode):
     def __init__(self):
         super().__init__('teleop')
-        self.declare_parameter('teleop_config', str(Path(get_package_share_directory('bindu_runtime'))/'config/teleop_v34.json'))
+        self.declare_parameter('teleop_config', str(Path(get_package_share_directory('bindu_runtime'))/'config/robots/huawei_v34/teleop_v34.json'))
         self.declare_parameter('model_root', str(Path(get_package_share_directory('bindu_description'))/'urdf'))
         self.declare_parameter('require_mode_selection', False)
         self.require_mode_selection = self.get_parameter('require_mode_selection').value

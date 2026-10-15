@@ -84,8 +84,8 @@ def run_case(root,output,case,g1=False,side='left'):
         log=(folder/(key+'.log')).open('w');handles.append(log)
         processes[key]=subprocess.Popen(cmd,stdout=log,stderr=subprocess.STDOUT,start_new_session=True)
     try:
-        profile=root/('src/integration/bindu_runtime/config/g1_provisional_sim.json' if g1 else 'src/integration/bindu_runtime/config/huawei_v34_left_sim.json')
-        extra = ['-p','teleop_config:='+str(root/f'src/integration/bindu_runtime/config/teleop_g1_{side}.json'),
+        profile=root/('src/integration/bindu_runtime/config/robots/g1/g1_provisional_sim.json' if g1 else 'src/integration/bindu_runtime/config/robots/huawei_v34/huawei_v34_left_sim.json')
+        extra = ['-p','teleop_config:='+str(root/f'src/integration/bindu_runtime/config/robots/g1/teleop_g1_{side}.json'),
                  '-p','model_root:='+str(root/'src/hardware/bindu_description/urdf')] if g1 else []
         launched = case in ('normal', 'websocket_launch')
         if launched:
@@ -162,7 +162,7 @@ def run_case(root,output,case,g1=False,side='left'):
                 until(node,lambda:seen['state'].command_id==cmd.command_id and seen['state'].state=='SUCCEEDED')
                 assert wait(node,lease_client.call_async(Lease.Request(operation='release',lease_id=lease.lease_id,epoch=lease.epoch))).ok
             from bindu_kinematics.model import ArmModel
-            cfg=json.loads((root/f'src/integration/bindu_runtime/config/teleop_g1_{side}.json').read_text())['kinematics']
+            cfg=json.loads((root/f'src/integration/bindu_runtime/config/robots/g1/teleop_g1_{side}.json').read_text())['kinematics']
             cfg['urdf']=str(root/'src/hardware/bindu_description/urdf/g1_provisional.urdf')
             model=ArmModel(cfg);positions=dict(zip(seen['state'].joints.name,seen['state'].joints.position))
             pose=model.fk([positions[n] for n in model.names],[positions[n] for n in model.context_names]).ravel()

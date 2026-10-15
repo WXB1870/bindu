@@ -69,8 +69,9 @@ class TaskReadiness(unittest.TestCase):
 class CapabilityContract(unittest.TestCase):
     def test_strategies_share_executor_across_profiles(self):
         root = Path(__file__).resolve().parents[1]
-        for filename in ('wheel_sim', 'alternate_sim'):
-            profile = Profile.load(root/'src/integration/bindu_runtime/config'/f'{filename}.json')
+        for filename in ('src/integration/bindu_runtime/config/simulation/wheel_sim.json',
+                         'tests/config/profiles/alternate_sim.json'):
+            profile = Profile.load(root/filename)
             for strategy in (PlannerStrategy(), ChunkStrategy()):
                 with self.subTest(profile=filename, strategy=type(strategy).__name__):
                     drivers = {g: SimJointDriver(names, profile.max_speed) for g, names in profile.groups.items()}

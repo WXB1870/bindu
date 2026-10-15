@@ -19,8 +19,8 @@ def validate_mode(context):
 
 def generate_launch_description():
     share = Path(get_package_share_directory('bindu_runtime'))
-    defaults = {'runtime_mode': 'simulation', 'profile': str(share/'config/huawei_v34_left_sim.json'),
-                'teleop_config': str(share/'config/teleop_v34.json'),
+    defaults = {'runtime_mode': 'simulation', 'profile': str(share/'config/robots/huawei_v34/huawei_v34_left_sim.json'),
+                'teleop_config': str(share/'config/robots/huawei_v34/teleop_v34.json'),
                 'namespace': 'bindu_sim', 'run_id': uuid.uuid4().hex,
                 'output': '/tmp/bindu-runs', 'recording_mode': 'compact', 'vr_enabled': 'false',
                 'host': '127.0.0.1', 'port': '8012', 'side': 'left',

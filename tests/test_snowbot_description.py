@@ -26,7 +26,7 @@ class SnowbotDescription(unittest.TestCase):
         self.assertFalse(reduced.findall('.//mesh'))
         self.assertEqual(len(display.findall('.//mesh')),len(full.findall('.//mesh')))
         moving={j.get('name') for j in reduced.findall('joint') if j.get('type')!='fixed'}
-        profile=Profile.load(CONFIG/'snowbot_sim.json')
+        profile=Profile.load(CONFIG/'robots/snowbot/snowbot_sim.json')
         self.assertEqual(moving,{n for names in profile.groups.values() for n in names})
         self.assertEqual(profile.groups['waist'],['body_joint_1','body_joint_2'])
         self.assertEqual(len(profile.groups['left_arm']),7)

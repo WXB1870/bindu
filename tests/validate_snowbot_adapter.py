@@ -61,7 +61,7 @@ def main():
     if os.environ.get('ROS_LOCALHOST_ONLY') != '1' or not os.environ.get('ROS_DOMAIN_ID'):
         raise RuntimeError('An isolated localhost ROS domain is required')
     root = Path(__file__).resolve().parents[1]
-    profile_path = root/'src/integration/bindu_runtime/config/snowbot_vendor_position.json'
+    profile_path = root/'src/integration/bindu_runtime/config/robots/snowbot/snowbot_vendor_position.json'
     profile = Profile.load(profile_path)
     output = Path(args.output).resolve(); output.mkdir(parents=True, exist_ok=False)
     token = uuid.uuid4().hex[:8]

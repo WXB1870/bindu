@@ -162,7 +162,7 @@ def plot_comparison(result, output):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--config', type=Path,
-                        default=ROOT/'src/integration/bindu_runtime/config/bimanual_snowbot_shovel.json')
+                        default=ROOT/'src/integration/bindu_runtime/config/robots/snowbot/bimanual_snowbot_shovel.json')
     parser.add_argument('--description', type=Path, default=ROOT/'src/hardware/bindu_description/urdf')
     parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args()

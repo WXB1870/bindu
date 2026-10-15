@@ -77,7 +77,7 @@ def assemble(context):
 
 
 def generate_launch_description():
-    default = Path(get_package_share_directory('bindu_runtime')) / 'config/navigation_lio.yaml'
+    default = Path(get_package_share_directory('bindu_runtime')) / 'config/navigation/navigation_lio.yaml'
     return LaunchDescription([
         DeclareLaunchArgument('namespace'), DeclareLaunchArgument('sensor_config'),
         DeclareLaunchArgument('parameters', default_value=str(default)),

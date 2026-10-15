@@ -26,7 +26,7 @@ from .common import RuntimeNode, seconds, stamp, spin, joints_at_rest
 class PiNode(RuntimeNode):
     def __init__(self):
         super().__init__('pi_client')
-        self.declare_parameter('pi_config', str(Path(get_package_share_directory('bindu_runtime'))/'config/pi_loopback.json'))
+        self.declare_parameter('pi_config', str(Path(get_package_share_directory('bindu_runtime'))/'config/vla/pi_loopback.json'))
         self.cfg = load_config(self.get_parameter('pi_config').value, self.profile)
         self.state = self.health = self.observation = None
         self.busy = False

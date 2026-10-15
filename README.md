@@ -35,7 +35,7 @@ Bindu 是基于 ROS 2 的模块化机器人控制系统，面向遥操作与移�
 | 数据记录 | [bindu_recording](src/data/bindu_recording/README.md) | 异步结构化记录、采样和记录健康状态 |
 | 运行装配 | [bindu_runtime](src/integration/bindu_runtime/README.md) | ROS 节点、launch、配置和模块装配 |
 
-公共说明：[软件架构](软件架构设计.md) · [动作执行契约](动作执行契约.md) · [运行与验证](运行与验证.md)。
+公共说明：[软件架构](软件架构设计.md) · [动作执行契约](动作执行契约.md) · [运行与验证](运行与验证.md) · [配置分类](src/integration/bindu_runtime/README.md#配置目录)。
 
 ### 扫雪遥操作阅读路径
 

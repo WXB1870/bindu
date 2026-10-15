@@ -19,7 +19,7 @@ from bindu_kinematics.tool_geometry import tracking_acceptance, coupling_metrics
 class ShovelGeometryTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.config = json.loads((ROOT/'src/integration/bindu_runtime/config/bimanual_snowbot_shovel.json').read_text())
+        cls.config = json.loads((ROOT/'src/integration/bindu_runtime/config/robots/snowbot/bimanual_snowbot_shovel.json').read_text())
         cls.urdf = ROOT/'src/hardware/bindu_description/urdf/snowbot_display.urdf'
         cls.recipe = copy.deepcopy(cls.config['demo'])
         positions = cls.recipe['initial_positions_rad']
@@ -264,7 +264,7 @@ class ShovelGeometryTests(unittest.TestCase):
         from bindu_kinematics.bimanual import BimanualQP
         cfg=copy.deepcopy(self.config)
         cfg['urdf']=str(ROOT/'src/hardware/bindu_description/urdf'/cfg['urdf'])
-        profile=Profile.load(ROOT/'src/integration/bindu_runtime/config'/cfg['demo']['profile'])
+        profile=Profile.load(ROOT/'src/integration/bindu_runtime/config/robots/snowbot'/cfg['demo']['profile'])
         runs=[]
         for future_direction in (-1.,1.):
             solver=BimanualQP(cfg,profile)

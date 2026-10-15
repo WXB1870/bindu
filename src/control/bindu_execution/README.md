@@ -13,7 +13,7 @@
 
 ## 扫雪位置执行
 
-- 当前 ROS 运动学扫雪与 Isaac 物理闭环复用 `Executor`；[snowbot_shovel_sim.json](../../integration/bindu_runtime/config/snowbot_shovel_sim.json) 选择 `joint_target_interpolation=synchronized`，对腰部和双臂联合目标做同步位置执行。
+- 当前 ROS 运动学扫雪与 Isaac 物理闭环复用 `Executor`；[snowbot_shovel_sim.json](../../integration/bindu_runtime/config/robots/snowbot/snowbot_shovel_sim.json) 选择 `joint_target_interpolation=synchronized`，对腰部和双臂联合目标做同步位置执行。
 - 独立 Snowbot 位置适配入口使用 `DelegatedPositionExecutor`，直接交目标给底层控制完成平滑与制动。它仅接纳非定时位置目标，不承诺上述曲线的导数或到达时间；当前尚未与真机工具会话联通。
 - 换握、暂停和取消依赖实测停稳确认。反馈过期或速度未知时不能报告已停稳，停止超时会锁存未确认状态并阻止新接管。
 

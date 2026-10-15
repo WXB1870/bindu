@@ -32,7 +32,7 @@ def assemble(context):
                       remappings=[('/tf', 'tf'), ('/tf_static', 'tf_static')]))
     ns = LaunchConfiguration('namespace')
     teleop = {**common, 'teleop_config': (LaunchConfiguration('teleop_config').perform(context)
-              or str(share/f'config/teleop_g1_{side}.json')),
+              or str(share/f'config/robots/g1/teleop_g1_{side}.json')),
               'model_root': str(model.parent)}
     bimanual = LaunchConfiguration('bimanual_enabled').perform(context).lower() == 'true'
     enabled = (LaunchConfiguration('teleop_enabled').perform(context).lower() == 'true' or
@@ -69,13 +69,13 @@ def assemble(context):
 def generate_launch_description():
     share = Path(get_package_share_directory('bindu_runtime'))
     defaults = {'runtime_mode':'simulation', 'namespace':'bindu_g1_sim', 'run_id':uuid.uuid4().hex, 'output':'/tmp/bindu-runs', 'recording_mode':'compact',
-                'profile':str(share/'config/g1_provisional_sim.json'), 'device_backend':'kinematic',
+                'profile':str(share/'config/robots/g1/g1_provisional_sim.json'), 'device_backend':'kinematic',
                 'teleop_enabled':'false', 'teleop_config':'', 'vr_enabled':'false', 'bimanual_enabled':'false',
-                'bimanual_config':str(share/'config/bimanual_g1_sim.json'),
+                'bimanual_config':str(share/'config/robots/g1/bimanual_g1_sim.json'),
                 'side':'left', 'host':'127.0.0.1',
                 'port':'8012', 'cert_file':'', 'key_file':'', 'pi_enabled':'false',
-                'pi_config':str(share/'config/pi_g1.json'), 'navigation_enabled':'true',
-                'navigation_config':str(share/'config/navigation_sim.json'),
+                'pi_config':str(share/'config/vla/pi_g1.json'), 'navigation_enabled':'true',
+                'navigation_config':str(share/'config/navigation/navigation_sim.json'),
                 'navigation_backend':'navigation/backend'}
     return LaunchDescription([DeclareLaunchArgument(k,default_value=v) for k,v in defaults.items()]+
                              [OpaqueFunction(function=assemble)])

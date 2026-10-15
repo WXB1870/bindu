@@ -17,7 +17,7 @@ def assemble(context):
     if mode != 'simulation':
         raise ValueError('ROBOT_TELEOP_REAL_BACKEND_NOT_IMPLEMENTED')
     legacy = not value('robot_config')
-    selection = value('robot_config') or str(Path(get_package_share_directory('bindu_runtime'))/'config/robot_snowbot.json')
+    selection = value('robot_config') or str(Path(get_package_share_directory('bindu_runtime'))/'config/robots/snowbot/robot_snowbot.json')
     overrides = {'profile': value('profile'), 'tool': value('bimanual_config')} if legacy else None
     robot = RobotSetup.load(selection, overrides=overrides)
     side, backend = value('side'), value('device_backend')
@@ -40,7 +40,7 @@ def assemble(context):
     pico = value('pico_enabled','false').lower() == 'true'
     if pico and (robot.robot_id != 'snowbot' or backend != 'kinematic' or value('tool_input_source') != 'vr'):
         raise ValueError('PICO_REQUIRES_SNOWBOT_KINEMATIC_VR')
-    pico_config = value('pico_config') or str(Path(get_package_share_directory('bindu_runtime'))/'config/pico_snowbot_sim.json')
+    pico_config = value('pico_config') or str(Path(get_package_share_directory('bindu_runtime'))/'config/robots/snowbot/pico_snowbot_sim.json')
     if pico:
         tool_settings=json.loads(robot.tool_config.read_text())
         if not tool_settings.get('right_axial_grasp') or tool_settings.get('collision_scope')!='configured_tool_geometry' or not tool_settings.get('demo',{}).get('initial_positions_rad'):

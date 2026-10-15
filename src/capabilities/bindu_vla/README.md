@@ -24,7 +24,7 @@
 
 ROS 节点为 [pi_node.py](../../integration/bindu_runtime/bindu_runtime/pi_node.py)，使用 [PiSession.action](../../shared/bindu_interfaces/action/PiSession.action) 管理会话。
 
-- 配置示例：[pi_g1.json](../../integration/bindu_runtime/config/pi_g1.json)、[pi_loopback.json](../../integration/bindu_runtime/config/pi_loopback.json)。
+- 配置示例：[pi_g1.json](../../integration/bindu_runtime/config/vla/pi_g1.json)、[pi_loopback.json](../../integration/bindu_runtime/config/vla/pi_loopback.json)。
 - 单元检查：[test_pi.py](../../../tests/test_pi.py)。
 - 模拟服务与 ROS 检查：[pi_peer.py](../../../tests/pi_peer.py)、[validate_pi.py](../../../tests/validate_pi.py)。模拟服务仅用于验证，不是实际模型服务。
 - 依赖、协议与启动步骤：[Pi 客户端运行入口](../../../运行与验证.md#pi-客户端运行入口)。

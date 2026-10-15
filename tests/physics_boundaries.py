@@ -30,7 +30,7 @@ def collision_checks(node,args,profile,seen,results,command,send,finished,releas
     root=Path(__file__).resolve().parents[1]
     evidence=[]
     for side in ('left','right'):
-        solver=PinocchioCasadiIK(load_config(root/f'src/integration/bindu_runtime/config/teleop_g1_{side}.json',
+        solver=PinocchioCasadiIK(load_config(root/f'src/integration/bindu_runtime/config/robots/g1/teleop_g1_{side}.json',
             profile,root/'src/hardware/bindu_description/urdf')['kinematics'])
         arm=solver.arm
         def values():
@@ -67,7 +67,7 @@ def collision_checks(node,args,profile,seen,results,command,send,finished,releas
 
 def boundary_checks(node,args,profile,seen,results,command,send,finished,release,drain):
     root=Path(__file__).resolve().parents[1]
-    solvers={side:PinocchioCasadiIK(load_config(root/f'src/integration/bindu_runtime/config/teleop_g1_{side}.json',
+    solvers={side:PinocchioCasadiIK(load_config(root/f'src/integration/bindu_runtime/config/robots/g1/teleop_g1_{side}.json',
         profile,root/'src/hardware/bindu_description/urdf')['kinematics']) for side in ('left','right')}
     pending_q=OrderedDict();pending_pose=OrderedDict();comparisons=[]
     def key(m):return (m.sec,m.nanosec)

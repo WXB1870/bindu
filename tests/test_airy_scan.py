@@ -14,7 +14,7 @@ from bindu_navigation.airy_scan import AiryScanConfig, cloud_stamp, project_clou
 
 
 ROOT = Path(__file__).resolve().parents[1]
-CONFIG = ROOT/'src/integration/bindu_runtime/config/navigation_wheel_gen2_airy.json'
+CONFIG = ROOT/'src/integration/bindu_runtime/config/robots/wheel_gen2/navigation_wheel_gen2_airy.json'
 
 
 def calibrated():

@@ -83,7 +83,7 @@ PICO实体布局参考[官方OpenXR定义](https://github.com/Pico-Developer/PIC
 
 ### 程序接入
 
-[PicoControl](bindu_teleoperation/pico.py)维护纯操作状态和代次；[PicoNode](../../integration/bindu_runtime/bindu_runtime/pico_node.py)负责ROS串接与执行权交接。[专用仿真配置](../../integration/bindu_runtime/config/teleop_pico_snowbot_sim.json)和[模拟第8轴参数](../../integration/bindu_runtime/config/pico_snowbot_sim.json)是显式入口；后者的开合／虚握角仅为运动学代理，不能用于实机。新节点拒绝真实及外部物理后端，详细启动、人工承载声明与验证命令见[运行流程](../../../运行与验证.md#pico-扫雪操作流程目标方案)。
+[PicoControl](bindu_teleoperation/pico.py)维护纯操作状态和代次；[PicoNode](../../integration/bindu_runtime/bindu_runtime/pico_node.py)负责ROS串接与执行权交接。[专用仿真配置](../../integration/bindu_runtime/config/deployments/teleop_pico_snowbot_sim.json)和[模拟第8轴参数](../../integration/bindu_runtime/config/robots/snowbot/pico_snowbot_sim.json)是显式入口；后者的开合／虚握角仅为运动学代理，不能用于实机。新节点拒绝真实及外部物理后端，详细启动、人工承载声明与验证命令见[运行流程](../../../运行与验证.md#pico-扫雪操作流程目标方案)。
 
 `teleop/pico/state`区分操作阶段、阻断原因、模拟夹爪反馈及QP阶段，`physical_gripper_confirmed`保持`null`；`teleop/pico/context`需要当前协调器实例绑定的来源和generation，人工声明空手／持铲／外部承载，不伪造传感器证据。Squeeze接合及X切换通过真实工具Action进入QP；Y或断流取消动作并确认停稳，B只回待命。左右摇杆分别连装卸请求及`recorder/capture`。启动／重启持物状态固定未知，须重新声明；跟随／故障／换连接作废承载声明，装卸完成需要新的持物声明。协调器更换投影来源身份，避免继承旧工具会话；Vuer接收器在PICO配置下显示该状态面板。
 

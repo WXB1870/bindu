@@ -1,6 +1,6 @@
 # bindu_runtime：ROS 运行装配
 
-[项目模块导航](../../../README.md#模块快速导航) · [职责与边界](#职责与边界) · [扫雪遥操作](#扫雪遥操作) · [源码导航](#源码导航) · [接入与验证](#接入与验证) · [关联模块](#关联模块)
+[项目模块导航](../../../README.md#模块快速导航) · [职责与边界](#职责与边界) · [配置目录](#配置目录) · [扫雪遥操作](#扫雪遥操作) · [源码导航](#源码导航) · [接入与验证](#接入与验证) · [关联模块](#关联模块)
 
 提供 ROS 2 节点、launch 与配置，把公共契约、执行库、设备和能力组合为可启动的运行实例。算法核心仍在各自模块中维护。
 
@@ -11,33 +11,46 @@
 - 当前真实模式主要覆盖 Snowbot 专用适配的只读接入，运动写入另有使能条件；不代表完整真机遥操作、Pi 或导航已验收。
 - 配置选择不替代真实模型标定、设备能力核实和现场验证。
 
+## 配置目录
+
+| 位置 | 维护内容 |
+|---|---|
+| [config/deployments/](config/deployments/) | 用户选择的运行入口，引用下列参数 |
+| [config/robots/](config/robots/) | 按Snowbot、G1、二代轮式及旧Huawei模型分组的本体、执行、遥操作和工具参数 |
+| [config/navigation/](config/navigation/) | 通用导航场景、站点、LIO及定位参数 |
+| [config/vla/](config/vla/) | Pi客户端与回环示例 |
+| [config/simulation/](config/simulation/) | 通用模拟执行参数 |
+| [tests/config/](../../../tests/config/) | 验证专用夹具，不安装到运行包 |
+
+正式运行配置共35份，安装时保持相同目录结构。旧`teleop_snowbot_deployment.json`并入统一`deployments/teleop_robot_deployment.json`；schema 1读取能力仍兼容。旧平铺路径已迁移，升级需重建运行包并更新外部脚本中的配置路径。
+
 ## 扫雪遥操作
 
 ### 场景选择
 
 | 目的 | 当前入口 | 反馈与验证范围 |
 |---|---|---|
-| 工具位姿输入、模式切换与暂停／恢复 | [teleop_only.launch.py](launch/teleop_only.launch.py)，默认加载 [teleop_robot_deployment.json](config/teleop_robot_deployment.json) | ROS 运动学模拟；默认 `tool_pose` 输入，现场 VR 待接入 |
+| 工具位姿输入、模式切换与暂停／恢复 | [teleop_only.launch.py](launch/teleop_only.launch.py)，默认加载 [teleop_robot_deployment.json](config/deployments/teleop_robot_deployment.json) | ROS 运动学模拟；默认 `tool_pose` 输入，现场 VR 待接入 |
 | 整段双臂协调、CAD几何与实时回放 | [run_shovel_physics.sh](../../../tools/run_shovel_physics.sh)，使用 `--kinematic ... --gui` | 日常运动学检查；生产QP／执行器生成输入，Isaac 6.2核对关节和法兰并回放，无承载／接触验收 |
 | 短时重力、夹爪接触与载荷 | 同一入口，使用 `--closed-loop` | 默认contact，有限力矩J8与CAD接触；私有IPC复用求解／会话／执行核心；旧弹簧观测须显式选proxy，不启动ROS节点 |
 | Snowbot 底层位置接口联调 | [snowbot_adapter.launch.py](launch/snowbot_adapter.launch.py) | 独立位置入口，默认真实模式且只读；真实工具会话尚未联通 |
 
-`runtime.launch.py` 的默认 [runtime_deployment.json](config/runtime_deployment.json) 选择位置适配入口的仿真模式。运行扫雪工具会话从 `teleop_only.launch.py` 进入；ROS 装配切换 `runtime_mode` 不会自动接通真机遥操作。
+`runtime.launch.py` 的默认 [runtime_deployment.json](config/deployments/runtime_deployment.json) 选择位置适配入口的仿真模式。运行扫雪工具会话从 `teleop_only.launch.py` 进入；ROS 装配切换 `runtime_mode` 不会自动接通真机遥操作。
 
 ### 配套配置与流程
 
 | 配置 | 作用 |
 |---|---|
-| [robot_snowbot.json](config/robot_snowbot.json) | 绑定本体模型、执行 profile、单臂与工具配置 |
-| [snowbot_shovel_sim.json](config/snowbot_shovel_sim.json) | 资源组、动态限制和同步位置执行；联合控制两轴腰部与双臂各七轴 |
-| [bimanual_snowbot_shovel.json](config/bimanual_snowbot_shovel.json) | 工具安装、握持约束、姿态策略、几何与输入时效 |
-| [snowbot_shovel_physics.json](config/snowbot_shovel_physics.json) | 空铲木质质量、接触夹持、Fabric与GUI刷新；保留显式proxy对照参数 |
+| [robot_snowbot.json](config/robots/snowbot/robot_snowbot.json) | 绑定本体模型、执行 profile、单臂与工具配置 |
+| [snowbot_shovel_sim.json](config/robots/snowbot/snowbot_shovel_sim.json) | 资源组、动态限制和同步位置执行；联合控制两轴腰部与双臂各七轴 |
+| [bimanual_snowbot_shovel.json](config/robots/snowbot/bimanual_snowbot_shovel.json) | 工具安装、握持约束、姿态策略、几何与输入时效 |
+| [snowbot_shovel_physics.json](config/robots/snowbot/snowbot_shovel_physics.json) | 空铲木质质量、接触夹持、Fabric与GUI刷新；保留显式proxy对照参数 |
 
 1. 构建并加载匹配的 ROS、Python 与原生 QP／执行库，检查本体配置；具体命令见[环境准备](../../../运行与验证.md#环境准备与构建)。
 2. 启动遥操作装配。默认从零位等待，不自动取铲或运动到准备姿态；工具模式需要有效握姿和新鲜反馈。测试夹具初始化仅由专用模拟入口／验证器显式设置。
 3. 持续提供有效工具输入，显式选择 `bimanual_tool` 模式，再开启 `teleop/tool_session`。暂停、恢复和只读显示见[遥操作专用装配与暂停](../../../运行与验证.md#遥操作专用装配与暂停)；模式 Action 见[Snowbot 双臂遥操作](../../../运行与验证.md#snowbot-双臂与两轴腰部遥操作)。
 
-以上为当前模拟装配步骤。实机目标的底层默认待命与重启条件见[启动方案](../../../软件架构设计.md#832-snowbot-实机启动与准备建议流程)；PICO的Squeeze／Trigger术语、实体键表和相对计算见[遥操作映射](../../capabilities/bindu_teleoperation/README.md#pico-按键方案)，空手装夹／持铲重接／作业卸载见[目标操作流程](../../../运行与验证.md#pico-扫雪操作流程目标方案)，装卸资格、虚握子状态和停止恢复见[执行契约6.1](../../../动作执行契约.md#61-snowbot-工具操作与握持切换目标契约)。独立PICO运动学入口已接入：选择[teleop_pico_snowbot_sim.json](config/teleop_pico_snowbot_sim.json)，`pico_enabled=true`且`tool_input_source=vr`；实体夹爪与真实恢复仍未接入，旧默认装配不改映射。
+以上为当前模拟装配步骤。实机目标的底层默认待命与重启条件见[启动方案](../../../软件架构设计.md#832-snowbot-实机启动与准备建议流程)；PICO的Squeeze／Trigger术语、实体键表和相对计算见[遥操作映射](../../capabilities/bindu_teleoperation/README.md#pico-按键方案)，空手装夹／持铲重接／作业卸载见[目标操作流程](../../../运行与验证.md#pico-扫雪操作流程目标方案)，装卸资格、虚握子状态和停止恢复见[执行契约6.1](../../../动作执行契约.md#61-snowbot-工具操作与握持切换目标契约)。独立PICO运动学入口已接入：选择[teleop_pico_snowbot_sim.json](config/deployments/teleop_pico_snowbot_sim.json)，`pico_enabled=true`且`tool_input_source=vr`；实体夹爪与真实恢复仍未接入，旧默认装配不改映射。
 
 当前底层源码仍有启动回位及自动六维传感器清零，`bindu_guard=true`不跳过这两步；必须同步修改底层默认启动路径，不能仅在GUI加按钮。现有看门狗也不允许新适配器直接接管旧会话。整底层进程重启的持载保持须单独验证；完成前持铲仍需支架辅助恢复，不能把目标待命方案视为已有能力。
 
@@ -51,7 +64,7 @@
 
 实验采用固定底盘、木质刚体空铲与弹簧阻尼握持代理，没有真实指面滑移、木杆弯曲或雪载荷。完整生成输入、GUI 启动、评分与内力定义见[PhysX 受力实验](../../../运行与验证.md#木质雪铲的-physx-受力实验2026-10-15)。
 
-PICO运行节点：[pico_node.py](bindu_runtime/pico_node.py)；模拟开合参数：[pico_snowbot_sim.json](config/pico_snowbot_sim.json)。Squeeze／Trigger及面键先由接收器保留，再由协调器处理操作和控制权，实际夹爪／承载仍不得用模拟状态代替。
+PICO运行节点：[pico_node.py](bindu_runtime/pico_node.py)；模拟开合参数：[pico_snowbot_sim.json](config/robots/snowbot/pico_snowbot_sim.json)。Squeeze／Trigger及面键先由接收器保留，再由协调器处理操作和控制权，实际夹爪／承载仍不得用模拟状态代替。
 
 ## 源码导航
 
@@ -69,16 +82,16 @@ PICO运行节点：[pico_node.py](bindu_runtime/pico_node.py)；模拟开合参�
 
 | 用途 | 启动文件 | 配置示例 |
 |---|---|---|
-| 环境选择与运行装配 | [runtime.launch.py](launch/runtime.launch.py) | [runtime_deployment.json](config/runtime_deployment.json) |
-| 本体与遥操作模式选择 | [robot_teleop.launch.py](launch/robot_teleop.launch.py) | [robot_snowbot.json](config/robot_snowbot.json) |
-| 旧 Snowbot 模拟入口兼容 | [snowbot_sim.launch.py](launch/snowbot_sim.launch.py) | [snowbot_shovel_sim.json](config/snowbot_shovel_sim.json) 与 [bimanual_snowbot_shovel.json](config/bimanual_snowbot_shovel.json) 须配套选择 |
-| Snowbot 底层适配 | [snowbot_adapter.launch.py](launch/snowbot_adapter.launch.py) | [snowbot_vendor_position.json](config/snowbot_vendor_position.json) |
-| 导航物理场景 | [navigation_physics.launch.py](launch/navigation_physics.launch.py) | [navigation_room.json](config/navigation_room.json) |
-| 三维建图／地图定位 | [lio.launch.py](launch/lio.launch.py) / [localization.launch.py](launch/localization.launch.py) | [navigation_lio.yaml](config/navigation_lio.yaml) / [navigation_localization.yaml](config/navigation_localization.yaml) |
+| 环境选择与运行装配 | [runtime.launch.py](launch/runtime.launch.py) | [runtime_deployment.json](config/deployments/runtime_deployment.json) |
+| 本体与遥操作模式选择 | [robot_teleop.launch.py](launch/robot_teleop.launch.py) | [robot_snowbot.json](config/robots/snowbot/robot_snowbot.json) |
+| 旧 Snowbot 模拟入口兼容 | [snowbot_sim.launch.py](launch/snowbot_sim.launch.py) | [snowbot_shovel_sim.json](config/robots/snowbot/snowbot_shovel_sim.json) 与 [bimanual_snowbot_shovel.json](config/robots/snowbot/bimanual_snowbot_shovel.json) 须配套选择 |
+| Snowbot 底层适配 | [snowbot_adapter.launch.py](launch/snowbot_adapter.launch.py) | [snowbot_vendor_position.json](config/robots/snowbot/snowbot_vendor_position.json) |
+| 导航物理场景 | [navigation_physics.launch.py](launch/navigation_physics.launch.py) | [navigation_room.json](config/navigation/navigation_room.json) |
+| 三维建图／地图定位 | [lio.launch.py](launch/lio.launch.py) / [localization.launch.py](launch/localization.launch.py) | [navigation_lio.yaml](config/navigation/navigation_lio.yaml) / [navigation_localization.yaml](config/navigation/navigation_localization.yaml) |
 
-`runtime.launch.py` 读取部署配置并选择具体 launch；[teleop_robot_deployment.json](config/teleop_robot_deployment.json) 是选择 `robot_teleop.launch.py` 的部署示例。`robot_teleop.launch.py` 自身通过 `robot_config` 读取本体配置。上表配置为场景示例，所需参数及默认值见对应运行说明。
+`runtime.launch.py` 读取部署配置并选择具体 launch；[teleop_robot_deployment.json](config/deployments/teleop_robot_deployment.json) 是选择 `robot_teleop.launch.py` 的部署示例。`robot_teleop.launch.py` 自身通过 `robot_config` 读取本体配置。上表配置为场景示例，所需参数及默认值见对应运行说明。
 
-木质雪铲 PhysX 实验使用仓库级 [run_shovel_physics.sh](../../../tools/run_shovel_physics.sh) 和 [snowbot_shovel_physics.json](config/snowbot_shovel_physics.json)，具体反馈路径和模型限制见运行说明。
+木质雪铲 PhysX 实验使用仓库级 [run_shovel_physics.sh](../../../tools/run_shovel_physics.sh) 和 [snowbot_shovel_physics.json](config/robots/snowbot/snowbot_shovel_physics.json)，具体反馈路径和模型限制见运行说明。
 
 ## 接入与验证
 

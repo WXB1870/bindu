@@ -93,7 +93,7 @@ def main():
         ns, recipe, lease_client, submit_client=contexts['simulation']
         lease=call(node,lease_client,Lease.Request(operation='acquire',owner='probe',resources=['left_arm']))
         assert lease.ok,lease.code
-        profile=Profile.load(root/'src/integration/bindu_runtime/config/snowbot_shovel_sim.json')
+        profile=Profile.load(root/'src/integration/bindu_runtime/config/robots/snowbot/snowbot_shovel_sim.json')
         names=profile.groups['left_arm'];q=dict(zip(states['simulation'][-1].joints.name,states['simulation'][-1].joints.position))
         targets=[q[n] for n in names];targets[0]+=.01
         cmd=MotionCommand(schema_version=1,command_id='legacy_'+token,task_id='mode_probe',lease_id=lease.lease_id,
@@ -139,7 +139,7 @@ def main():
             log=output/(label+'.log')
             with log.open('w') as f:
                 command=[str(executable),'--ros-args','-r','__ns:=/invalid_'+token,
-                         '-p','profile:='+str(root/'src/integration/bindu_runtime/config/snowbot_vendor_position.json')]
+                         '-p','profile:='+str(root/'src/integration/bindu_runtime/config/robots/snowbot/snowbot_vendor_position.json')]
                 for parameter in parameters:command+=['-p',parameter]
                 result=subprocess.run(command,stdout=f,stderr=subprocess.STDOUT,timeout=6.)
             assert result.returncode!=0 and reason in log.read_text()

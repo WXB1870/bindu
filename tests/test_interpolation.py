@@ -428,7 +428,7 @@ class Interpolation(unittest.TestCase):
         self.assertTrue(curve.valid(p,('a',)))
         self.assertGreater(curve.duration,1.)
         root=Path(__file__).resolve().parents[1]
-        raw=json.loads((root/'src/integration/bindu_runtime/config/wheel_sim.json').read_text())
+        raw=json.loads((root/'src/integration/bindu_runtime/config/simulation/wheel_sim.json').read_text())
         with tempfile.TemporaryDirectory() as directory:
             path=Path(directory)/'bad.json'
             for cfg in ({'max_jerk':float('nan')},{'control_period':1.,'max_tick_gap':.1},

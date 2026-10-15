@@ -21,7 +21,7 @@ from validate_ros import wait, until, terminate
 
 def run(output):
     root = Path(__file__).resolve().parents[1]
-    profile = Profile.load(root/'src/integration/bindu_runtime/config/g1_provisional_sim.json')
+    profile = Profile.load(root/'src/integration/bindu_runtime/config/robots/g1/g1_provisional_sim.json')
     ns = '/g1_'+uuid.uuid4().hex[:8]
     node = rclpy.create_node('g1_validator')
     seen = {'state': None, 'joints': None, 'health': None, 'tf': {}, 'static': {}}

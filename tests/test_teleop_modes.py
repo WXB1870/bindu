@@ -41,7 +41,7 @@ class AcceptedReferenceTests(unittest.TestCase):
 
 class ModeTests(unittest.TestCase):
     def setUp(self):
-        self.profile = Profile.load(ROOT/'src/integration/bindu_runtime/config/g1_provisional_sim.json')
+        self.profile = Profile.load(ROOT/'src/integration/bindu_runtime/config/robots/g1/g1_provisional_sim.json')
         self.m = ModeSelection(self.profile,'left',10.)
         self.m.begin('bimanual_tool','',1,11.)
         names = [n for group in self.profile.groups.values() for n in group]

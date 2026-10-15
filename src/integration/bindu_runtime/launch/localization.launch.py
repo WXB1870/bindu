@@ -45,7 +45,7 @@ def assemble(context):
 
 
 def generate_launch_description():
-    default=Path(get_package_share_directory('bindu_runtime'))/'config/navigation_localization.yaml'
+    default=Path(get_package_share_directory('bindu_runtime'))/'config/navigation/navigation_localization.yaml'
     return LaunchDescription([DeclareLaunchArgument('namespace'),DeclareLaunchArgument('navigation_robot'),
         DeclareLaunchArgument('mode',default_value='mapping'),DeclareLaunchArgument('map',default_value=''),
         DeclareLaunchArgument('pose_graph',default_value=''),

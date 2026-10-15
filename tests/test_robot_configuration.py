@@ -47,13 +47,13 @@ def fixture(folder, arms=7, waist=2, positive_limit=False):
                'capabilities': ['joint_position']}
     (folder/'profile.json').write_text(json.dumps(profile))
     for side, group in [('left', 'port'), ('right', 'starboard')]:
-        config = json.loads((CONFIG/f'teleop_snowbot_{side}.json').read_text())
+        config = json.loads((CONFIG/f'robots/snowbot/teleop_snowbot_{side}.json').read_text())
         config['resource_group'] = group
         config['kinematics'].update(urdf='robot.urdf', joint_names=groups[group],
                                    ee_link=groups[group][-1]+'_link',
                                    locked_joints={n: max(0., limits[n][0]) for n in limits if n not in groups[group]})
         (folder/f'{side}.json').write_text(json.dumps(config))
-    tool = json.loads((CONFIG/'bimanual_g1_sim.json').read_text())
+    tool = json.loads((CONFIG/'robots/g1/bimanual_g1_sim.json').read_text())
     tool.update(urdf='robot.urdf', resource_groups=list(groups)[:-1],
                 input_frame='root',
                 left_frame=groups['port'][-1]+'_link', right_frame=groups['starboard'][-1]+'_link',
@@ -69,13 +69,13 @@ def fixture(folder, arms=7, waist=2, positive_limit=False):
 
 class RobotConfigurationTests(unittest.TestCase):
     def test_existing_models_and_second_real_robot_are_distinct(self):
-        snow = RobotSetup.load(CONFIG/'robot_snowbot.json', PACKAGES)
-        g1 = RobotSetup.load(CONFIG/'robot_g1_fixture.json', PACKAGES)
+        snow = RobotSetup.load(CONFIG/'robots/snowbot/robot_snowbot.json', PACKAGES)
+        g1 = RobotSetup.load(CONFIG/'robots/g1/robot_g1_fixture.json', PACKAGES)
         self.assertEqual((len(snow.active_joints), len(snow.context_joints)), (16, 4))
         self.assertEqual((len(g1.active_joints), len(g1.context_joints)), (16, 4))
         self.assertNotEqual(snow.active_joints, g1.active_joints)
         with self.assertRaisesRegex(ValueError, 'INCOMPLETE:wheel_gen2'):
-            RobotSetup.load(CONFIG/'robot_wheel_gen2.json', PACKAGES)
+            RobotSetup.load(CONFIG/'robots/wheel_gen2/robot_wheel_gen2.json', PACKAGES)
 
     def test_axis_counts_are_derived_and_native_qp_accepts_each_layout(self):
         from bindu_kinematics.bimanual import BimanualQP
@@ -173,7 +173,7 @@ class RobotConfigurationTests(unittest.TestCase):
     def test_logging_off_keeps_required_health_publisher(self):
         from launch import LaunchContext
         from bindu_runtime.teleop_assembly import assemble
-        robot = RobotSetup.load(CONFIG/'robot_snowbot.json', PACKAGES)
+        robot = RobotSetup.load(CONFIG/'robots/snowbot/robot_snowbot.json', PACKAGES)
         context = LaunchContext()
         context.launch_configurations.update(robot_config=str(robot.path), side='left',
             device_backend='kinematic', tool_input_source='tool_pose', recording_mode='off',
@@ -186,17 +186,16 @@ class RobotConfigurationTests(unittest.TestCase):
         self.assertEqual(len(recorder), 1)
         self.assertEqual(recorder[0]['parameters'][0]['recording_mode'].evaluate(context), 'off')
 
-    def test_new_deployment_has_no_startup_pose_and_legacy_still_loads(self):
-        launch, args = load_deployment(CONFIG/'teleop_robot_deployment.json', RUNTIME)
+    def test_new_deployment_has_no_startup_pose(self):
+        launch, args = load_deployment(CONFIG/'deployments/teleop_robot_deployment.json', RUNTIME)
         self.assertEqual(launch, 'robot_teleop.launch.py')
-        self.assertEqual(Path(args['robot_config']), CONFIG/'robot_snowbot.json')
+        self.assertEqual(Path(args['robot_config']), CONFIG/'robots/snowbot/robot_snowbot.json')
         self.assertNotIn('initialize_tool_pose', args)
-        self.assertEqual(load_deployment(CONFIG/'teleop_snowbot_deployment.json', RUNTIME)[0], 'snowbot_sim.launch.py')
 
 
 class PositionMappingTests(unittest.TestCase):
     def setUp(self):
-        self.config = json.loads((CONFIG/'position_mapping_wheel_gen2.json').read_text())
+        self.config = json.loads((CONFIG/'robots/wheel_gen2/position_mapping_wheel_gen2.json').read_text())
         self.mapping = PositionMapping(self.config, self.config['joints'])
         self.feedback = {n: .01*i for i, n in enumerate(self.config['channels'])}
 
@@ -252,7 +251,7 @@ class PositionMappingTests(unittest.TestCase):
 
 class SoemFeedbackGateTests(unittest.TestCase):
     def setUp(self):
-        self.config = json.loads((CONFIG/'position_mapping_wheel_gen2.json').read_text())
+        self.config = json.loads((CONFIG/'robots/wheel_gen2/position_mapping_wheel_gen2.json').read_text())
         self.names = self.config['channels']
         self.positions = [.01*i for i in range(48)]
         self.gate = SoemFeedbackGate(self.config)

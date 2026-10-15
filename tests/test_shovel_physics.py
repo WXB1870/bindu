@@ -68,8 +68,8 @@ class ShovelPhysicsTests(unittest.TestCase):
             estimator.update(.2,[1.,2.],[0.,0.])
 
     def setUp(self):
-        config = json.loads((ROOT/'src/integration/bindu_runtime/config/bimanual_snowbot_shovel.json').read_text())
-        self.cfg = json.loads((ROOT/'src/integration/bindu_runtime/config/snowbot_shovel_physics.json').read_text())
+        config = json.loads((ROOT/'src/integration/bindu_runtime/config/robots/snowbot/bimanual_snowbot_shovel.json').read_text())
+        self.cfg = json.loads((ROOT/'src/integration/bindu_runtime/config/robots/snowbot/snowbot_shovel_physics.json').read_text())
         self.recipe = copy.deepcopy(config['demo'])
         self.recipe['left_grip_in_tool_m'] = self.recipe['pivot_in_tool_m']
         self.cfg['shaft_axis_in_tool'] = np.array([0., 0., 1.])
@@ -174,7 +174,7 @@ class ShovelPhysicsTests(unittest.TestCase):
         np.testing.assert_allclose(friction,[-2.,0.,0.])
 
     def test_flange_wrench_recovers_static_tool_deflection_in_rotated_frame(self):
-        config = json.loads((ROOT/'src/integration/bindu_runtime/config/bimanual_snowbot_shovel.json').read_text())
+        config = json.loads((ROOT/'src/integration/bindu_runtime/config/robots/snowbot/bimanual_snowbot_shovel.json').read_text())
         parameters = dict(self.cfg, max_age_s=.2)
         observer = GripLoadObserver(parameters,config)
         hand=np.eye(4);hand[:3,:3]=Rotation.from_euler('xyz',[.3,-.2,.8]).as_matrix();hand[:3,3]=[.1,.2,.3]

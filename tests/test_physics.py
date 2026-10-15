@@ -19,7 +19,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 class PhysicsGateTests(unittest.TestCase):
     def setUp(self):
-        self.profile = Profile.load(ROOT/'src/integration/bindu_runtime/config/g1_provisional_sim.json')
+        self.profile = Profile.load(ROOT/'src/integration/bindu_runtime/config/robots/g1/g1_provisional_sim.json')
         self.gate = PhysicsCommandGate(self.profile, 'sim-boot')
 
     def command(self, **changes):
@@ -77,7 +77,7 @@ class PhysicsGateTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'HOLD_HAS_TARGET'):self.gate.accept(cmd, 10.)
 
     def test_invalid_feedback_tolerance_rejected(self):
-        raw = json.loads((ROOT/'src/integration/bindu_runtime/config/g1_provisional_sim.json').read_text())
+        raw = json.loads((ROOT/'src/integration/bindu_runtime/config/robots/g1/g1_provisional_sim.json').read_text())
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp)/'profile.json'
             for bad in ({'joint_position':0}, {'joint_velocity':float('nan')}, {'unknown':1}, {'joint_velocity':True}):

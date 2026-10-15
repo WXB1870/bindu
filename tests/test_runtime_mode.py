@@ -94,7 +94,7 @@ class RuntimeModeTests(unittest.TestCase):
         self.assertIsNone(node.state)
 
     def test_default_runtime_recipe_is_simulation_and_readonly_hardware_permission(self):
-        launch, args = load_deployment(SHARE/'config/runtime_deployment.json', SHARE)
+        launch, args = load_deployment(SHARE/'config/deployments/runtime_deployment.json', SHARE)
         self.assertEqual(launch, 'snowbot_adapter.launch.py')
         self.assertEqual(args['runtime_mode'], 'simulation')
         self.assertEqual(args['command_enabled'], 'false')

@@ -101,7 +101,7 @@ class MappingTests(unittest.TestCase):
         self.assertEqual(rig.core.reason,'PICO_Y_STOP')
 
     def test_right_trigger_never_requests_pico_virtual_grasp(self):
-        cfg=json.loads((Path(__file__).resolve().parents[1]/'src/integration/bindu_runtime/config/bimanual_snowbot_shovel.json').read_text())
+        cfg=json.loads((Path(__file__).resolve().parents[1]/'src/integration/bindu_runtime/config/robots/snowbot/bimanual_snowbot_shovel.json').read_text())
         session=BimanualSession(cfg,1,0.)
         rig=Rig('held');a,b=rig.core.frames
         session.ingest(a,b,rig.now)
@@ -116,7 +116,7 @@ class MappingTests(unittest.TestCase):
 class GraspContinuationTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.cfg=json.loads((Path(__file__).resolve().parents[1]/'src/integration/bindu_runtime/config/bimanual_snowbot_shovel.json').read_text())
+        cls.cfg=json.loads((Path(__file__).resolve().parents[1]/'src/integration/bindu_runtime/config/robots/snowbot/bimanual_snowbot_shovel.json').read_text())
 
     def feed(self,session,t,*,held=True,virtual=False,source='headset:coordinator',clutch=(0,0),mapping=PICO_MAPPING):
         frames=[]

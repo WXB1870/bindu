@@ -12,7 +12,7 @@ ROOT=Path(__file__).resolve().parents[1]
 
 
 def config():
-    return json.loads((ROOT/'src/integration/bindu_runtime/config/teleop_g1_left.json').read_text())
+    return json.loads((ROOT/'src/integration/bindu_runtime/config/robots/g1/teleop_g1_left.json').read_text())
 
 
 class OneEuroTests(unittest.TestCase):

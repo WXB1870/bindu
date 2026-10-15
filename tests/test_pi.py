@@ -13,8 +13,8 @@ ROOT = Path(__file__).resolve().parents[1]
 
 class PiContracts(unittest.TestCase):
     def setUp(self):
-        self.profile = Profile.load(ROOT/'src/integration/bindu_runtime/config/wheel_sim.json')
-        self.cfg = load_config(ROOT/'src/integration/bindu_runtime/config/pi_loopback.json', self.profile)
+        self.profile = Profile.load(ROOT/'src/integration/bindu_runtime/config/simulation/wheel_sim.json')
+        self.cfg = load_config(ROOT/'src/integration/bindu_runtime/config/vla/pi_loopback.json', self.profile)
         self.adapter = CommandAdapter(self.cfg, self.profile, 'arm', 'session', 10.)
         self.command = Message(self.cfg['command_topic'], 2, 10.1,
                                {'关节命令字典': {'left_joint_1': .2, 'left_joint_2': .3}}, {})

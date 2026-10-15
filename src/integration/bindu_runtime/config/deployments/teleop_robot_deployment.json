@@ -1,14 +1,13 @@
 {
-  "schema_version": 1,
-  "robot_launch": "snowbot_sim.launch.py",
+  "schema_version": 2,
+  "robot_launch": "robot_teleop.launch.py",
   "arguments": {
     "runtime_mode": "simulation",
+    "robot_config": "@runtime/config/robots/snowbot/robot_snowbot.json",
     "namespace": "bindu_teleop",
-    "profile": "@runtime/config/snowbot_shovel_sim.json",
-    "bimanual_config": "@runtime/config/bimanual_snowbot_shovel.json",
+    "device_backend": "kinematic",
     "side": "left",
     "tool_input_source": "tool_pose",
-    "device_backend": "kinematic",
     "vr_enabled": false,
     "description_enabled": false,
     "tool_display_enabled": true,

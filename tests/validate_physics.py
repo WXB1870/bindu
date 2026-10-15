@@ -84,7 +84,7 @@ def dynamic_checks(node, args, profile, seen, samples, results, command, send,
         return target
     try:
         for side in ('left','right'):
-            cfg=load_config(root/f'src/integration/bindu_runtime/config/teleop_g1_{side}.json',
+            cfg=load_config(root/f'src/integration/bindu_runtime/config/robots/g1/teleop_g1_{side}.json',
                 profile,root/'src/hardware/bindu_description/urdf')['kinematics']
             arm=ArmModel(cfg);worker=KinematicsWorker(cfg);workers.append(worker)
             def ready():worker.poll();return worker.ready
@@ -316,8 +316,8 @@ def main():
         # The validator owns these processes; never find/kill arbitrary Isaac instances.
         simulator=subprocess.Popen([str(root/'tools/run_g1_isaac.sh'),
             '--namespace',physical_namespace,'--model',str(args.model.resolve()),
-            '--navigation-scene',str(root/'src/integration/bindu_runtime/config/navigation_room.json'),
-            '--navigation-robot',str(root/'src/integration/bindu_runtime/config/navigation_g1_fixture.json'),
+            '--navigation-scene',str(root/'src/integration/bindu_runtime/config/navigation/navigation_room.json'),
+            '--navigation-robot',str(root/'tests/config/navigation/navigation_g1_fixture.json'),
             '--output',str((args.output/f'scene-{scene_generation}').resolve())],
             stdout=scene_log,stderr=subprocess.STDOUT,start_new_session=True)
     def restart_executor():
@@ -343,9 +343,9 @@ def main():
                 sock.bind(('127.0.0.1',0));args.vr_port=sock.getsockname()[1]
             launch+=['vr_enabled:=true','side:='+args.side,'port:='+str(args.vr_port)]
             root=Path(__file__).resolve().parents[1]
-            cfg=json.loads((root/f'src/integration/bindu_runtime/config/teleop_g1_{args.side}.json').read_text())
+            cfg=json.loads((root/f'src/integration/bindu_runtime/config/robots/g1/teleop_g1_{args.side}.json').read_text())
             cfg['pose_filter']['enabled']=not args.vr_filter_off
-            cfg['kinematics']['collision_model']=str(root/'src/integration/bindu_runtime/config/g1_ik_collision.json')
+            cfg['kinematics']['collision_model']=str(root/'src/integration/bindu_runtime/config/robots/g1/g1_ik_collision.json')
             config_path=(args.output/'teleop-config.json').resolve();config_path.write_text(json.dumps(cfg,indent=2))
             launch+=['teleop_config:='+str(config_path)]
             if args.vr_tls:

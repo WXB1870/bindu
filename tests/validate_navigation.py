@@ -35,7 +35,7 @@ def run_case(root,output,case,g1=False):
         log=(folder/(name+'.log')).open('w');logs.append(log)
         processes[name]=subprocess.Popen(command,stdout=log,stderr=subprocess.STDOUT,start_new_session=True)
     try:
-        config=json.loads((root/'src/integration/bindu_runtime/config/navigation_sim.json').read_text())
+        config=json.loads((root/'src/integration/bindu_runtime/config/navigation/navigation_sim.json').read_text())
         if case=='timeout':config['timeout']=1.
         if case=='differential_turn':
             config['sites'][0].update(x=.1,y=.04,yaw=.35)
