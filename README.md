@@ -12,6 +12,31 @@ Bindu 是基于 ROS 2 的模块化机器人控制系统，面向遥操作与移�
 - **反馈与数据**：关联记录目标、执行参考、设备反馈和任务事件，支持异步日志与状态观察。
 - **本体与仿真**：通过模型、配置和设备适配器表达机器人差异，支持运动学模拟与 Isaac 仿真验证。
 
+## 模块快速导航
+
+按现有 ROS 包划分为以下 16 个模块。各模块 README 提供职责、源码、配置与验证入口；目录存在不代表已完成真机接入。
+
+| 分类 | 模块 | 主要职责 |
+|---|---|---|
+| 公共接口 | [bindu_contracts](src/shared/bindu_contracts/README.md) | 与 ROS 无关的数据契约、设备端口和本体配置 |
+| 公共接口 | [bindu_interfaces](src/shared/bindu_interfaces/README.md) | ROS 2 消息、服务和动作定义 |
+| 执行控制 | [bindu_execution](src/control/bindu_execution/README.md) | 控制权、指令校验、插值、动态限制和停止确认 |
+| 本体与设备 | [bindu_hardware](src/hardware/bindu_hardware/README.md) | 设备适配、命令路由、反馈汇总和里程计 |
+| 本体与设备 | [bindu_description](src/hardware/bindu_description/README.md) | URDF、网格和模型资产 |
+| 运动求解 | [bindu_kinematics](src/capabilities/bindu_kinematics/README.md) | FK、单臂 IK、碰撞检查和双臂求解封装 |
+| 运动求解 | [bindu_bimanual_qp](src/capabilities/bindu_bimanual_qp/README.md) | 原生双臂持工具联合 QP 与 C ABI |
+| 目标输入 | [bindu_teleoperation](src/capabilities/bindu_teleoperation/README.md) | VR 输入、位姿映射、遥操作会话和模式管理 |
+| 目标输入 | [bindu_vla](src/capabilities/bindu_vla/README.md) | 远端 Pi 推理客户端与动作接入 |
+| 移动能力 | [bindu_navigation](src/capabilities/bindu_navigation/README.md) | 导航输入校验、Nav2 速度身份检查和扫描适配 |
+| 移动能力 | [bindu_lio](src/capabilities/bindu_lio/README.md) | FAST-LIO、三维地图定位与点云适配 |
+| 操作能力 | [bindu_perception](src/capabilities/bindu_perception/README.md) | 目标定位接口的模拟实现 |
+| 操作能力 | [bindu_planning](src/capabilities/bindu_planning/README.md) | 候选关节计划的模拟策略 |
+| 任务编排 | [bindu_tasks](src/tasks/bindu_tasks/README.md) | 取饮料示例流程和场景状态 |
+| 数据记录 | [bindu_recording](src/data/bindu_recording/README.md) | 异步结构化记录、采样和记录健康状态 |
+| 运行装配 | [bindu_runtime](src/integration/bindu_runtime/README.md) | ROS 节点、launch、配置和模块装配 |
+
+公共说明：[软件架构](软件架构设计.md) · [动作执行契约](动作执行契约.md) · [运行与验证](运行与验证.md)。
+
 ## 当前进展
 
 截至 **2026-10-15**，已完成模拟框架及主要遥操作链路、Snowbot 厂家位置接口适配，并增加配置级仿真／真实模式选择与消息一致性检查；真机运行尚未验收。
