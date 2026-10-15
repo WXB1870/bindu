@@ -26,6 +26,8 @@ class VRFrame:
 class ToolPoseFrame:
     """Absolute tool pose in the robot base; independent of VR and task phases.
 
+    VR mapping combines clutch-relative deltas with the measured tool anchor
+    before producing this target. No raw headset/controller pose is implied.
     tight=False means right axial support, not releasing the tool. The left
     grip remains locked. Source/sequence/time are transport safety metadata.
     """

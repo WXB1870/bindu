@@ -1,4 +1,5 @@
 # Absolute tool pose after VR mapping. Row-major SE(3), metres, robot base.
+# VR control is clutch-relative; the mapper combines deltas with the tool anchor.
 # Only pose and tight are action inputs. The remaining fields fence stale data.
 builtin_interfaces/Time stamp
 string source_id
