@@ -1,0 +1,291 @@
+"""PICO operator state, independent of ROS, robot protocols and numerical control.
+
+Every effect is an intent completed by a fenced backend operation. Feedback and
+operator declarations are separate; no input frame can manufacture a grip ack.
+"""
+from dataclasses import dataclass
+import math
+import numpy as np
+from .vr.mapping import pose_matrix
+
+PICO_MAPPING = 'pico_snowbot_v1'
+
+
+@dataclass(frozen=True)
+class PicoIntent:
+    token: int
+    operation: str
+    value: object = None
+
+
+@dataclass(frozen=True)
+class PicoFeedback:
+    stamp: float
+    stopped: bool
+    modes: tuple = ('unknown', 'unknown')
+    healthy: bool = True
+
+
+class PicoControl:
+    def __init__(self, *, initial_load='unknown', max_age=.25, prepare_hold=1.):
+        if initial_load not in ('empty','held','unknown'):
+            raise ValueError('PICO_LOAD_STATE')
+        self.load, self.supported = initial_load, False
+        self.max_age, self.prepare_hold = max_age, prepare_hold
+        self.phase, self.reason = 'checking', 'WAITING_FOR_INPUT_AND_FEEDBACK'
+        self.generation = 0
+        self.source, self.retired = None, set()
+        self.seq, self.stamp = -1, float('-inf')
+        self.frames = None
+        self.feedback = None
+        self.previous = None
+        self.clutch_counts = None
+        self.armed = [False]*8  # left X/Y/stick/trigger, right A/B/stick/trigger
+        self.squeeze_released = [False,False]
+        self.a_since = None
+        self.prepare_blocked = False
+        self.virtual = False
+        self.pending = None
+        self.desired = ['closed','closed']
+        self.effects = []
+        self.changed_at = float('-inf')
+        self.context_at = self.loading_since = float('-inf')
+
+    def emit(self, operation, value=None):
+        self.generation += 1
+        intent = PicoIntent(self.generation,operation,value)
+        self.pending = intent
+        self.effects.append(intent)
+        return intent
+
+    def drain(self):
+        effects,self.effects = self.effects,[]
+        return effects
+
+    def context(self, source, generation, load, supported, now):
+        if (source != self.source or generation != self.generation or
+                load not in ('empty','held','unknown') or type(supported) is not bool):
+            raise ValueError('PICO_CONTEXT_STALE_OR_INVALID')
+        if (self.pending or not self.rest(now) or self.phase not in
+                ('standby','tool_standby','load_check','loading','locked','checking')):
+            raise ValueError('PICO_CONTEXT_NOT_AT_REST')
+        self.load,self.supported = load,supported
+        self.context_at=now
+        self.generation += 1
+        # Context does not execute a rejected/held key or acknowledge a fault.
+        self.previous = None
+        self.armed = [False]*8
+        self.a_since = None
+
+    def rest(self, now):
+        f=self.feedback
+        return bool(f and f.healthy and f.stopped and 0 <= now-f.stamp <= self.max_age)
+
+    def lock(self, reason, now):
+        if self.phase != 'locked' or self.pending and self.pending.operation != 'stop':
+            self.phase,self.reason,self.changed_at='locked',reason,now
+            self.a_since=None
+            self.supported=False
+            self.emit('stop')
+
+    def update_feedback(self, feedback, now):
+        self.feedback=feedback
+        if not feedback.healthy or not 0 <= now-feedback.stamp <= self.max_age:
+            if self.source and self.phase!='checking': self.lock('PICO_FEEDBACK_UNAVAILABLE',now)
+        elif self.phase=='checking' and feedback.stopped and self.frames:
+            self.phase,self.reason='standby','READY_FOR_OPERATOR'
+
+    def tick(self, now):
+        if self.source and not 0 <= now-self.stamp <= self.max_age:
+            self.lock('PICO_INPUT_TIMEOUT',now)
+        if self.phase!='checking' and self.feedback and not 0 <= now-self.feedback.stamp <= self.max_age:
+            self.lock('PICO_FEEDBACK_STALE',now)
+
+    def ingest(self, left, right, now):
+        pair=(left,right)
+        try:
+            poses=tuple(pose_matrix(f.pose) for f in pair)
+        except (ValueError,TypeError):
+            self.lock('PICO_POSE_INVALID',now);return
+        if (any(f.mapping != PICO_MAPPING or not f.valid or f.init or not f.source_id or
+                f.side != side or type(f.seq) is not int or f.seq < 0 or
+                not math.isfinite(f.stamp) or not 0 <= now-f.stamp <= self.max_age or
+                len(f.button_edges)!=8 or any(type(v) is not int or v<0 for v in f.button_edges) or
+                type(f.buttons) is not int or not 0<=f.buttons<8 or
+                type(f.clutch_seq) is not int or f.clutch_seq<0 or
+                not all(math.isfinite(v) and 0<=v<=1 for v in (f.grip,f.trigger))
+                for f,side in zip(pair,('left','right'))) or
+                left.source_id != right.source_id or left.seq != right.seq or
+                abs(left.stamp-right.stamp) > .02):
+            self.lock('PICO_PAIR_INVALID',now);return
+        if left.source_id in self.retired:return
+        if self.source != left.source_id:
+            old=self.source
+            if old:self.retired.add(old)
+            self.source,self.seq,self.previous=left.source_id,-1,None
+            self.armed=[False]*8;self.squeeze_released=[False,False];self.clutch_counts=None
+            self.a_since=None
+            if old:
+                self.load='unknown';self.supported=False
+                self.lock('PICO_CONNECTION_CHANGED',now)
+        if left.seq<=self.seq:return
+        if min(f.stamp for f in pair)<self.stamp:
+            self.lock('PICO_TIME_REVERSED',now);return
+        if self.frames and self.phase in ('engaging','following','switching'):
+            before=tuple(pose_matrix(f.pose) for f in self.frames)
+            if any(np.linalg.norm(a[:3,3]-b[:3,3])>.2 or
+                   math.acos(float(np.clip((np.trace(a[:3,:3] @ b[:3,:3].T)-1)/2,-1.,1.)))>.6
+                   for a,b in zip(poses,before)):
+                self.lock('PICO_POSE_ORIGIN_JUMP',now);return
+        clutch=tuple(f.clutch_seq for f in pair)
+        if self.clutch_counts is not None and any(a<b for a,b in zip(clutch,self.clutch_counts)):
+            self.lock('PICO_CLUTCH_COUNTER_REVERSED',now);return
+        clutch_changed=[self.clutch_counts is not None and a!=b
+                        for a,b in zip(clutch,self.clutch_counts or clutch)]
+        self.clutch_counts=clutch
+        self.seq,self.stamp,self.frames=left.seq,max(f.stamp for f in pair),pair
+        states=[];counts=[]
+        for side,f in enumerate(pair):
+            physical=[bool(f.buttons & (1<<i)) for i in range(3)]
+            differences=[f.button_edges[2*i]-f.button_edges[2*i+1] for i in range(4)]
+            if (any(v not in (0,1) for v in differences) or
+                    any(v!=int(held) for v,held in zip(differences[:3],physical)) or
+                    f.trigger>.7 and differences[3]!=1 or f.trigger<.3 and differences[3]!=0):
+                self.lock('PICO_BUTTON_STATE_COUNTER_MISMATCH',now);return
+            states.extend(physical+[bool(differences[3])])
+            counts.extend(f.button_edges)
+            if f.grip<.3:self.squeeze_released[side]=True
+        if self.previous is None:
+            self.previous=tuple(counts)
+            for i,held in enumerate(states):
+                if not held:self.armed[i]=True
+            if left.stop or right.stop or states[1]:self.lock('PICO_Y_STOP',now)
+            return
+        if any(c<p for c,p in zip(counts,self.previous)):
+            self.lock('PICO_BUTTON_COUNTER_REVERSED',now);return
+        delta=[c-p for c,p in zip(counts,self.previous)];self.previous=tuple(counts)
+        presses=[bool(delta[2*i] and self.armed[i]) for i in range(8)]
+        releases=[bool(delta[2*i+1]) for i in range(8)]
+        for i,held in enumerate(states):
+            if not held:self.armed[i]=True
+        if left.stop or right.stop or states[1] or delta[2]:
+            self.lock('PICO_Y_STOP',now);return
+        squeeze=all(f.grip>.7 for f in pair)
+        release=any(f.grip<.3 for f in pair)
+        if self.phase in ('following','engaging','switching') and (release or any(clutch_changed)):
+            self.phase,self.reason='tool_standby','SQUEEZE_RELEASED'
+            self.squeeze_released=[f.grip<.3 or changed for f,changed in zip(pair,clutch_changed)]
+            self.emit('stop');return
+        if self.phase=='preparing' and (not states[4] or not all(f.grip<.3 for f in pair) or any(clutch_changed)):
+            self.phase,self.reason='standby','PREPARE_RELEASED'
+            self.prepare_blocked=True;self.emit('stop');return
+        if not states[4]:self.a_since=None;self.prepare_blocked=False
+        elif self.phase not in ('standby','tool_standby','preparing') or (self.pending and self.phase!='preparing'):
+            self.prepare_blocked=True
+        if self.phase in ('preparing','engaging','following','switching') and (presses[3] or presses[7]):
+            self.phase,self.reason='standby','OPEN_REQUIRES_LOADING_AND_SUPPORT'
+            self.prepare_blocked=True;self.emit('stop');return
+        if self.phase=='locked':
+            if presses[5] and self.rest(now) and all(f.grip<.3 for f in pair) and not self.pending:
+                self.phase,self.reason='standby','RECOVERED_TO_STANDBY'
+                self.armed=[not h for h in states]
+                self.squeeze_released=[True,True]
+            return
+        if self.pending and self.pending.operation!='grippers':return
+        if self.stamp <= self.changed_at:return
+        if self.phase=='load_check':
+            if presses[5] and self.rest(now) and all(f.grip<.3 for f in pair):
+                if not self.supported:
+                    self.reason='EXTERNAL_SUPPORT_CONFIRMATION_REQUIRED'
+                else:
+                    self.phase,self.reason='loading','TRIGGERS_CONTROL_INDIVIDUAL_GRIPPERS'
+                    self.loading_since=now
+                    self.armed[3]=not states[3];self.armed[7]=not states[7]
+            return
+        if self.phase=='loading':
+            desired=self.desired.copy();changed=False
+            for j,i in enumerate((3,7)):
+                if presses[i] and states[i]:desired[j]='open';changed=True
+                if releases[i] and self.armed[i] and self.desired[j]=='open':
+                    desired[j]='closed';changed=True
+            if changed:
+                self.desired=desired;self.emit('grippers',tuple(desired));return
+            if presses[5] and not self.pending and self.rest(now):
+                if self.context_at<=self.loading_since:
+                    self.reason='FRESH_LOAD_DECLARATION_REQUIRED';return
+                if self.load=='held' and self.feedback.modes==('closed','closed'):
+                    self.phase='confirming_tool';self.emit('confirm_tool')
+                elif self.load=='empty' and self.feedback.modes==('closed','closed'):
+                    self.phase,self.reason='standby','UNLOADED'
+                else:self.reason='GRIP_OR_TOOL_CONFIRMATION_REQUIRED'
+            return
+        if presses[2]:
+            self.phase,self.reason='load_check','CHECK_SUPPORT_THEN_B'
+            self.emit('stop');return
+        if presses[3] or presses[7]:
+            # A work-time open request stops, but is never queued for later opening.
+            self.phase,self.reason='standby','OPEN_REQUIRES_LOADING_AND_SUPPORT'
+            self.emit('stop');return
+        if presses[6]:self.effects.append(PicoIntent(self.generation,'record'));return
+        if self.phase=='following' and ((presses[0] and states[0]) or releases[0]):
+            desired=states[0]
+            if desired!=self.virtual:
+                self.phase='switching';self.emit('switch_grasp',desired)
+            return
+        if self.phase in ('standby','tool_standby'):
+            if not states[4]:self.a_since=None;self.prepare_blocked=False
+            elif self.armed[4] and not self.prepare_blocked:
+                if self.a_since is None:self.a_since=now
+                if now-self.a_since>=self.prepare_hold:
+                    self.prepare_blocked=True
+                    if self.load=='empty' and self.rest(now) and all(f.grip<.3 for f in pair):
+                        self.phase='preparing';self.emit('prepare')
+                    else:self.reason='PREPARE_REQUIRES_EMPTY_AND_RELEASED_SQUEEZE'
+                    return
+            if presses[5] and self.load=='held' and self.rest(now):
+                if self.phase=='tool_standby' and states[0]!=self.virtual:
+                    self.phase='switching';self.emit('switch_grasp',states[0])
+                else:
+                    self.phase='confirming_tool';self.emit('confirm_tool')
+                return
+            if self.phase=='tool_standby' and squeeze and all(self.squeeze_released):
+                self.squeeze_released=[False,False]
+                if states[0]!=self.virtual:
+                    self.reason='CONFIRM_GRASP_CHANGE_BEFORE_REENGAGE';return
+                self.phase='engaging';self.emit('follow',self.virtual)
+
+    def complete(self, token, success, reason='', now=0.):
+        if not self.pending or self.pending.token!=token:return False
+        operation,value=self.pending.operation,self.pending.value
+        self.pending=None
+        if not success:
+            self.phase,self.reason='locked',reason or 'PICO_OPERATION_FAILED'
+            self.a_since=None
+            self.changed_at=now
+            return True
+        if operation=='stop':
+            pass  # Stop does not acknowledge a latched reason or start another action.
+        elif operation=='prepare':self.phase,self.reason='standby','PREPARED'
+        elif operation=='confirm_tool':
+            self.phase,self.reason='tool_standby','TOOL_GRASP_VERIFIED'
+            self.virtual=bool(self.feedback and self.feedback.modes[1]=='virtual')
+            self.desired=['closed','virtual' if self.virtual else 'closed']
+            self.squeeze_released=[False,False]
+        elif operation=='switch_grasp':
+            self.virtual=bool(value)
+            self.phase,self.reason='tool_standby','GRASP_MODE_CONFIRMED'
+            self.squeeze_released=[False,False]
+            if (self.frames and 0<=now-self.stamp<=self.max_age and
+                    all(f.grip>.7 for f in self.frames) and bool(self.frames[0].buttons&1)==self.virtual):
+                self.phase='engaging';self.emit('follow',self.virtual)
+        elif operation=='follow':
+            self.phase,self.reason='following','FOLLOWING'
+            self.supported=False
+        self.changed_at=now
+        return True
+
+    def snapshot(self):
+        return dict(phase=self.phase,reason=self.reason,generation=self.generation,
+                    source_id=self.source,load_state=self.load,external_support=self.supported,
+                    grasp_requested='right_axial' if (self.pending.value if self.pending and self.pending.operation=='switch_grasp' else self.virtual) else 'rigid',
+                    pending=self.pending.operation if self.pending else None)

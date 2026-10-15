@@ -17,6 +17,9 @@
 | [msg/](msg/) | 全部消息定义 |
 | [MotionCommand.msg](msg/MotionCommand.msg) | 运动指令、资源组、时间语义与租约身份 |
 | [ExecutionState.msg](msg/ExecutionState.msg) | 执行参考、实际反馈、来源、运行模式和停止失败 |
+| [VRInput.msg](msg/VRInput.msg) | VR位姿、映射标识、物理键状态和累计边沿；保留旧`grip`字段 |
+| [PicoContext.srv](srv/PicoContext.srv) | 绑定来源与状态代次的人工持物／外部支撑声明 |
+| [RecorderHealth.msg](msg/RecorderHealth.msg) | 写入健康及独立的采集开关状态 |
 | [srv/](srv/) | 控制权、运动提交、执行控制、目标定位与故障注入服务 |
 | [action/](action/) | 任务、导航、Pi、遥操作会话和模式选择动作 |
 | [CMakeLists.txt](CMakeLists.txt) | 接口生成与依赖声明 |

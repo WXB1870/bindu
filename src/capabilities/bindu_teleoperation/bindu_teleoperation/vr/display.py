@@ -11,6 +11,27 @@ def viewer_matrix(pose):
     return result.ravel(order='F').tolist()
 
 
+def status_lines(view):
+    if view.get('pico'):
+        return [('BINDU | PICO | KINEMATIC SIMULATION','#f1f5f9'),
+                ('State: '+view['mode'],'#ffffff'),
+                ('Reason: '+view['reason'],'#fbbf24'),
+                ('Load: '+str(view.get('load_state','unknown'))+' | Support: '+str(view.get('external_support',False)),'#cbd5e1'),
+                ('Grippers L/R: '+str(view.get('gripper_modes',['unknown','unknown'])),'#7dd3fc'),
+                ('A prepare | B confirm | Y stop','#cbd5e1'),
+                ('Squeeze follow | X virtual | Triggers open','#cbd5e1')]
+    lines = [('BINDU | SINGLE ARM SIMULATION | ' + view.get('side', 'left'), '#f1f5f9'),
+             ('Mode: ' + view['mode'] + ' (requested)', '#ffffff'),
+             ('Reason: ' + view['reason'], '#fbbf24'),
+             ('CYAN = requested target | ORANGE = feedback FK', '#7dd3fc'),
+             ('Axes RGB = local XYZ | robot_base | metres', '#cbd5e1'),
+             ('Squeeze: release to pause; hold 1s to resume', '#cbd5e1')]
+    error = view.get('error')
+    lines.append(('Error: %.1f mm / %.1f deg' % (error['position_m']*1000, np.degrees(error['rotation_rad']))
+                  if error else 'Error: -- (fresh target and feedback required)', '#ffffff'))
+    return lines
+
+
 def render(view):
     from vuer.schemas import Group, CoordsMarker, Sphere, Plane, SceneElement
 
@@ -21,15 +42,7 @@ def render(view):
 
     class StatusHUD(SceneElement):
         tag = 'HUDPlane'
-    lines = [('BINDU | SINGLE ARM SIMULATION | ' + view.get('side', 'left'), '#f1f5f9'),
-             ('Mode: ' + view['mode'] + ' (requested)', '#ffffff'),
-             ('Reason: ' + view['reason'], '#fbbf24'),
-             ('CYAN = requested target | ORANGE = feedback FK', '#7dd3fc'),
-             ('Axes RGB = local XYZ | robot_base | metres', '#cbd5e1'),
-             ('Grip: release to pause; hold 1s to resume', '#cbd5e1')]
-    error = view.get('error')
-    lines.append(('Error: %.1f mm / %.1f deg' % (error['position_m']*1000, np.degrees(error['rotation_rad']))
-                  if error else 'Error: -- (fresh target and feedback required)', '#ffffff'))
+    lines = status_lines(view)
     panel = [Plane(key='statusBackground', args=[1.005, 1.005], position=[0., 0., .001],
                    materialType='basic', material={'color': '#101b2a', 'depthTest': False})]
     for i, (line, color) in enumerate(lines):

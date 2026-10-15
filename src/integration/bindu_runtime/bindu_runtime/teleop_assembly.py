@@ -37,6 +37,17 @@ def assemble(context):
     initial = value('initialize_tool_pose', 'false').lower() == 'true'
     if initial and (not legacy or backend != 'kinematic'):
         raise ValueError('INITIAL_POSE_ONLY_FOR_KINEMATIC_FIXTURE')
+    pico = value('pico_enabled','false').lower() == 'true'
+    if pico and (robot.robot_id != 'snowbot' or backend != 'kinematic' or value('tool_input_source') != 'vr'):
+        raise ValueError('PICO_REQUIRES_SNOWBOT_KINEMATIC_VR')
+    pico_config = value('pico_config') or str(Path(get_package_share_directory('bindu_runtime'))/'config/pico_snowbot_sim.json')
+    if pico:
+        tool_settings=json.loads(robot.tool_config.read_text())
+        if not tool_settings.get('right_axial_grasp') or tool_settings.get('collision_scope')!='configured_tool_geometry' or not tool_settings.get('demo',{}).get('initial_positions_rad'):
+            raise ValueError('PICO_REQUIRES_AXIAL_SHOVEL_CONFIG')
+        settings=json.loads(Path(pico_config).read_text())
+        if settings.get('simulation_only') is not True or settings.get('mapping')!='pico_snowbot_v1':
+            raise ValueError('PICO_CONFIG_UNAVAILABLE')
     ns = LaunchConfiguration('namespace')
     common = {'profile': str(robot.profile_path), 'run_id': LaunchConfiguration('run_id'), 'runtime_mode': mode,
               **({} if legacy else {'robot_config': str(robot.path), 'robot_config_digest': robot.digest})}
@@ -76,8 +87,13 @@ def assemble(context):
                       output='screen', parameters=[{**common, **model, 'tool_config': str(robot.tool_config)}]))
     vr = {key: ParameterValue(LaunchConfiguration(key), value_type=str)
           for key in ('host', 'cert_file', 'key_file')}
+    if pico:
+        nodes.append(Node(package='bindu_runtime',executable='pico_control',namespace=ns,output='screen',
+            parameters=[{**common,**model,'tool_config':str(robot.tool_config),
+                         'pico_config':pico_config,'device_backend':backend}]))
     nodes.append(Node(package='bindu_runtime', executable='vr_input', namespace=ns,
                       condition=IfCondition(LaunchConfiguration('vr_enabled')), output='screen',
-                      parameters=[{**common, **vr, 'side': 'both',
-                          'port': ParameterValue(LaunchConfiguration('port'), value_type=int)}]))
+                      parameters=[{**common, **vr, 'side': 'both', 'mapping': 'pico_snowbot_v1' if pico else 'v34',
+                          'port': ParameterValue(LaunchConfiguration('port'), value_type=int)}],
+                      remappings=[('teleop/vr/input','teleop/vr/raw')] if pico else []))
     return nodes

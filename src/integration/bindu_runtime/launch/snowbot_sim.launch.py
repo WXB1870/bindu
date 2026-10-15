@@ -15,6 +15,7 @@ def generate_launch_description():
                 'device_backend': 'kinematic', 'side': 'left', 'initialize_tool_pose': 'false',
                 'tool_input_source': 'vr',
                 'description_enabled': 'true', 'tool_display_enabled': 'false',
+                'pico_enabled': 'false', 'pico_config': str(share/'config/pico_snowbot_sim.json'),
                 'vr_enabled': 'false', 'host': '127.0.0.1', 'port': '8012',
                 'cert_file': '', 'key_file': ''}
     return LaunchDescription([DeclareLaunchArgument(k, default_value=v)

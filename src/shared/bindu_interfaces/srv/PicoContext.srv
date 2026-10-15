@@ -1,0 +1,10 @@
+# Explicit operator declarations, separate from device/geometry feedback.
+# source_id is the coordinator-fenced identity copied from teleop/pico/state.
+string source_id
+uint64 expected_generation
+string load_state
+bool external_support
+---
+bool success
+string code
+uint64 generation

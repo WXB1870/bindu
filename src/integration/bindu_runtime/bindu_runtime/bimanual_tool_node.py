@@ -98,7 +98,8 @@ class BimanualToolNode(RuntimeNode):
     def on_frame(self,msg):
         if self.matches_mode(msg) and msg.side in ('left','right'):
             self.frames[msg.side]=VRFrame(msg.source_id,msg.seq,seconds(msg.stamp),msg.side,
-                tuple(msg.pose),msg.grip,msg.trigger,msg.init,msg.stop,msg.valid,msg.clutch_seq)
+                tuple(msg.pose),msg.grip,msg.trigger,msg.init,msg.stop,msg.valid,msg.clutch_seq,
+                msg.mapping or "v34",msg.buttons,tuple(int(v) for v in msg.button_edges),msg.virtual_grip)
 
     def on_tool_frame(self,msg):
         if self.input_source == 'tool_pose' and self.matches_mode(msg):

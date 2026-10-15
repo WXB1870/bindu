@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "simulation_only": true,
+  "mapping": "pico_snowbot_v1",
+  "initial_load_state": "unknown",
+  "prepare_duration": 8.0,
+  "gripper_duration": 1.5,
+  "grippers": {
+    "left": {
+      "group": "left_tool_axis",
+      "joint": "arm_l_joint_8",
+      "closed": 0.0,
+      "open": 0.4,
+      "virtual": 0.08
+    },
+    "right": {
+      "group": "right_tool_axis",
+      "joint": "arm_r_joint_8",
+      "closed": 0.0,
+      "open": -0.4,
+      "virtual": -0.02
+    }
+  }
+}

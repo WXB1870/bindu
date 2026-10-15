@@ -14,6 +14,7 @@ def generate_launch_description():
                 'device_backend': 'kinematic', 'side': 'left', 'tool_input_source': 'tool_pose',
                 'output': '/tmp/bindu-runs', 'recording_mode': 'compact',
                 'description_enabled': 'false', 'tool_display_enabled': 'true',
+                'pico_enabled': 'false', 'pico_config': str(share/'config/pico_snowbot_sim.json'),
                 'vr_enabled': 'false', 'host': '127.0.0.1', 'port': '8012',
                 'cert_file': '', 'key_file': ''}
     return LaunchDescription([DeclareLaunchArgument(k, default_value=v) for k, v in defaults.items()]

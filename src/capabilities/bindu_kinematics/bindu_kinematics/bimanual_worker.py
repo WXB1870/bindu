@@ -23,6 +23,31 @@ def _run(config, profile, requests, results):
             operation,token,feedback,target,reference,dt,grasp_mode,target_stamp=item
             try:
                 if operation == 'capture': value=solver.capture(feedback,grasp_mode)
+                elif operation in ('prepare_path','gripper_path'):
+                    import numpy as np
+                    from pathlib import Path
+                    from .tool_geometry import make_collision_checker
+                    recipe=dict(config['demo'])
+                    recipe['left_grip_in_tool_m']=(np.linalg.inv(solver.tool) @
+                        np.r_[recipe['grip_offset_m'],1.])[:3].tolist()
+                    loaded=operation=='gripper_path'
+                    check=make_collision_checker(Path(config['urdf']).parent/recipe['display_urdf'],
+                                                 recipe,conservative_convex=True,tool_present=loaded)
+                    names=solver.model_names if loaded else solver.names
+                    tool=np.asarray(solver.capture(feedback,'right_axial')).reshape(4,4) if loaded else np.eye(4)
+                    before=np.array([feedback[n] for n in names])
+                    after=np.array([target.get(n,feedback[n]) for n in names]) if loaded else np.array(target)
+                    if before.shape!=after.shape or not np.isfinite(after).all():
+                        raise ValueError('PREPARE_JOINT_LAYOUT')
+                    for name,q in zip(names,after):
+                        if not profile.limits[name][0]<=q<=profile.limits[name][1]:
+                            raise ValueError('PREPARE_JOINT_LIMIT')
+                    count=max(1,int(np.ceil(np.max(np.abs(after-before))/.01)))
+                    samples=[]
+                    for f in np.linspace(0,1,count+1):
+                        q=dict(feedback);q.update(zip(names,before+f*(after-before)))
+                        samples.append(dict(t=float(f),q={n:q[n] for n in solver.model_names},tool=tool))
+                    value=check(samples)
                 elif operation == 'solve':
                     value=solver.solve(feedback,target,reference=reference,dt=dt,target_stamp=target_stamp)
                 else: raise ValueError('BIMANUAL_WORKER_OPERATION')

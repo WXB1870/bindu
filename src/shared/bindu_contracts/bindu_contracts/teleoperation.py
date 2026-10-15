@@ -20,6 +20,11 @@ class VRFrame:
     stop: bool = False
     valid: bool = True
     clutch_seq: int = 0  # Release counter survives latest-frame queue coalescing.
+    mapping: str = 'v34'
+    buttons: int = 0  # primary, secondary, thumbstick-click; physical side is explicit.
+    button_edges: Tuple[int, ...] = (0,)*8  # press/release counters for those 3 + Trigger.
+    virtual_grip: bool = False  # Coordinated PICO X request, not right Trigger.
+
 
 
 @dataclass(frozen=True)

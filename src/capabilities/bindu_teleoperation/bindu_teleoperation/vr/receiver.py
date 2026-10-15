@@ -17,7 +17,7 @@ from bindu_contracts.teleoperation import VRFrame
 from .mapping import pose_matrix
 
 
-def decode_controller(value, side, source_id, seq, stamp):
+def decode_controller(value, side, source_id, seq, stamp, mapping="v34"):
     if side not in ('left', 'right'):
         raise ValueError('VR_INVALID_SIDE')
     try:
@@ -36,9 +36,40 @@ def decode_controller(value, side, source_id, seq, stamp):
         stop = value.get('leftState', {}).get('bButton', False)
         if not isinstance(init, bool) or not isinstance(stop, bool):
             raise ValueError('VR_INVALID_BUTTON')
-        return VRFrame(source_id, seq, stamp, side, pose, grip, trigger, init, stop)
+        if mapping not in ('v34', 'pico_snowbot_v1'):
+            raise ValueError('VR_MAPPING')
+        buttons = 0
+        if mapping == 'pico_snowbot_v1':
+            bits = [state[key] for key in ('aButton', 'bButton', 'thumbstick')]
+            if any(type(bit) is not bool for bit in bits):
+                raise ValueError('VR_INVALID_BUTTON')
+            buttons = sum(int(bit) << i for i,bit in enumerate(bits))
+            init = False
+        return VRFrame(source_id, seq, stamp, side, pose, grip, trigger, init, stop,
+                       mapping=mapping, buttons=buttons)
     except (KeyError, TypeError, ValueError):
         return VRFrame(source_id, seq, stamp, side, (), valid=False)
+
+
+class ButtonCounters:
+    """Cumulative edges survive pose queue coalescing; never infer a release on loss."""
+    def __init__(self):
+        self.previous = [False]*4
+        self.counts = [0]*8
+
+    def update(self, frame):
+        if not frame.valid:
+            return frame
+        values = [bool(frame.buttons & (1 << i)) for i in range(3)]
+        pressed = self.previous[3]
+        if frame.trigger > .7: pressed = True
+        elif frame.trigger < .3: pressed = False
+        values.append(pressed)
+        for i,value in enumerate(values):
+            if value != self.previous[i]:
+                self.counts[2*i + int(not value)] += 1
+        self.previous = values
+        return replace(frame, button_edges=tuple(self.counts))
 
 
 def _latest_put(output, item):
@@ -72,22 +103,24 @@ def _serve(config, output, feedback):
         clutch_seq = {'left': 0, 'right': 0}
         previous_grip = {'left': 0., 'right': 0.}
         stop_latched = False
+        counters = {side: ButtonCounters() for side in ('left','right')}
         latest_display = None
         display_received = float('-inf')
 
         async def on_controller(event, session):
-            nonlocal owner, identity, seq, clutch_seq, previous_grip, stop_latched
+            nonlocal owner, identity, seq, clutch_seq, previous_grip, stop_latched, counters
             if owner is None or owner.CURRENT_WS_ID not in app.ws:
                 owner, identity = session, uuid.uuid4().hex
                 clutch_seq = {'left': 0, 'right': 0}
                 previous_grip = {'left': 0., 'right': 0.}
                 stop_latched = False
+                counters = {side: ButtonCounters() for side in ('left','right')}
             if owner is not session:
                 return  # A second browser must not interleave commands.
             seq += 1
             now = time.time()
             sides = ('left', 'right') if config['side'] == 'both' else (config['side'],)
-            frames = [decode_controller(event.value, side, identity, seq, now) for side in sides]
+            frames = [decode_controller(event.value, side, identity, seq, now, config.get("mapping", "v34")) for side in sides]
             stop_latched = stop_latched or any(frame.stop for frame in frames)
             paired = []
             for frame in frames:
@@ -96,7 +129,9 @@ def _serve(config, output, feedback):
                     if frame.grip < .3 and previous_grip[side] >= .3:
                         clutch_seq[side] += 1
                     previous_grip[side] = frame.grip
-                paired.append(replace(frame, clutch_seq=clutch_seq[side], stop=stop_latched))
+                item = counters[side].update(frame)
+                paired.append(replace(item, clutch_seq=clutch_seq[side],
+                    stop=frame.stop if config.get('mapping') == 'pico_snowbot_v1' else stop_latched))
             # A single queue item keeps the two sides from separate event epochs together.
             _latest_put(output, ('frame', tuple(paired) if len(paired) == 2 else paired[0]))
 

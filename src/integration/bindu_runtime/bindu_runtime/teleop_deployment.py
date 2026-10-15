@@ -5,12 +5,12 @@ from bindu_contracts.runtime_mode import resolve_mode
 
 
 COMMON = {'namespace', 'profile', 'bimanual_config', 'side', 'tool_input_source',
-          'vr_enabled', 'host', 'port', 'cert_file', 'key_file', 'recording_mode',
+          'vr_enabled', 'pico_enabled', 'pico_config', 'host', 'port', 'cert_file', 'key_file', 'recording_mode',
           'output', 'device_backend', 'description_enabled', 'tool_display_enabled', 'runtime_mode'}
 EXECUTION = {'runtime_mode', 'namespace', 'profile', 'device_backend', 'run_id', 'output',
              'recording_mode', 'command_enabled', 'vendor_namespace', 'arm_receiver_node',
              'servo_receiver_node', 'mid_receiver_node'}
-PATHS = {'profile', 'bimanual_config', 'robot_config', 'cert_file', 'key_file', 'output'}
+PATHS = {'profile', 'bimanual_config', 'robot_config', 'cert_file', 'key_file', 'output', 'pico_config'}
 
 
 def load_deployment(path, share):
@@ -43,6 +43,8 @@ def load_deployment(path, share):
         raise ValueError('TELEOP_REAL_BACKEND_NOT_IMPLEMENTED')
     if args.get('tool_input_source', 'tool_pose') not in ('vr', 'tool_pose'):
         raise ValueError('TELEOP_DEPLOYMENT_INPUT')
+    if args.get('pico_enabled', False) and (args.get('tool_input_source') != 'vr' or backend != 'kinematic'):
+        raise ValueError('PICO_REQUIRES_KINEMATIC_VR')
     if args.get('recording_mode', 'compact') not in ('off', 'compact', 'normal'):
         raise ValueError('TELEOP_DEPLOYMENT_RECORDING')
     result = {'runtime_mode': selected_mode} if execution_only else {

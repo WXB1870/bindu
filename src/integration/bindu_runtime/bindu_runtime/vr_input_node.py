@@ -3,6 +3,7 @@ import time
 import json
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 from std_msgs.msg import String
+from rcl_interfaces.msg import ParameterDescriptor
 from bindu_teleoperation.vr.receiver import VuerReceiver
 from bindu_interfaces.msg import VRInput
 from .common import RuntimeNode, stamp, spin
@@ -11,20 +12,21 @@ from .common import RuntimeNode, stamp, spin
 class VRInputNode(RuntimeNode):
     def __init__(self):
         super().__init__('vr_input', allow_hardware=True, default_mode='simulation')
-        defaults = {'host': '127.0.0.1', 'port': 8012, 'side': 'left', 'cert_file': '', 'key_file': ''}
+        defaults = {'host': '127.0.0.1', 'port': 8012, 'side': 'left', 'cert_file': '', 'key_file': '', 'mapping': 'v34'}
         for key, value in defaults.items():
-            self.declare_parameter(key, value)
+            self.declare_parameter(key, value, descriptor=ParameterDescriptor(read_only=key=='mapping'))
         cfg = {key: self.get_parameter(key).value for key in defaults}
         if cfg['side'] not in ('left', 'right', 'both'):
             raise ValueError('VR_INVALID_SIDE')
         cfg['cert_file'] = cfg['cert_file'] or None
         cfg['key_file'] = cfg['key_file'] or None
+        self.mapping=cfg['mapping']
         self.receiver = VuerReceiver(cfg)
         # Both sides share one receiver event; retain both messages until DDS
         # delivers the pair to mode, single-arm and bimanual subscribers.
         self.publisher = self.create_publisher(VRInput, 'teleop/vr/input', 5)
         self.timer = self.create_timer(.005, self.poll)
-        self.create_subscription(String, 'teleop/display', self.on_display,
+        self.create_subscription(String, 'teleop/pico/state' if self.mapping=='pico_snowbot_v1' else 'teleop/display', self.on_display,
                                  QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT))
 
     def on_display(self, msg):
@@ -33,6 +35,8 @@ class VRInputNode(RuntimeNode):
             if (view['run_id'] == self.run_id and view['profile_hash'] == self.profile.digest
                     and view.get('runtime_mode') == self.runtime_mode
                     and 0 <= self.now()-view['stamp'] <= .6):
+                if self.mapping=='pico_snowbot_v1':
+                    view=dict(view,pico=True,mode=view['phase'],target=None,measured=None,error=None)
                 self.receiver.display(view)
         except (ValueError, KeyError, TypeError):
             pass
@@ -55,7 +59,8 @@ class VRInputNode(RuntimeNode):
                 seq=item.seq, side=item.side, runtime_mode=self.runtime_mode,
                 pose=list(item.pose) if item.valid else [0.]*16,
                 grip=item.grip, trigger=item.trigger, init=item.init, stop=item.stop,
-                valid=item.valid, clutch_seq=item.clutch_seq))
+                valid=item.valid, clutch_seq=item.clutch_seq, mapping=item.mapping,
+                buttons=item.buttons, button_edges=list(item.button_edges), virtual_grip=item.virtual_grip))
 
     def destroy_node(self):
         self.receiver.close()

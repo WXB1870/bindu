@@ -131,7 +131,9 @@ class BimanualSession:
         self.clutch_seq = clutch_seq
         desired = self.grasp_mode
         if self.axial is not None:
-            if right.trigger < self.release:
+            if right.mapping == 'pico_snowbot_v1':
+                desired = 'right_axial' if right.virtual_grip else 'rigid'
+            elif right.trigger < self.release:
                 self.trigger_armed = True
                 desired = 'rigid'
             elif right.trigger > self.press and self.trigger_armed and min(left.grip,right.grip) > .7:

@@ -18,6 +18,23 @@ class DeploymentTests(unittest.TestCase):
         self.assertEqual(args['description_enabled'],'false')
         self.assertTrue(Path(args['profile']).is_file())
 
+    def test_pico_recipe_is_explicit_simulation_and_not_default(self):
+        launch,args=load_deployment(SHARE/'config/teleop_pico_snowbot_sim.json',SHARE)
+        self.assertEqual(launch,'robot_teleop.launch.py')
+        self.assertEqual(args['runtime_mode'],'simulation')
+        self.assertEqual(args['pico_enabled'],'true')
+        self.assertEqual(args['tool_input_source'],'vr')
+        _,default=load_deployment(SHARE/'config/teleop_robot_deployment.json',SHARE)
+        self.assertNotIn('pico_enabled',default)
+
+    def test_pico_rejects_wrong_source_and_external_actuator_backend(self):
+        recipe=json.loads((SHARE/'config/teleop_pico_snowbot_sim.json').read_text())
+        for key,value in [('tool_input_source','tool_pose'),('device_backend','external_simulation')]:
+            changed=json.loads(json.dumps(recipe));changed['arguments'][key]=value
+            with tempfile.TemporaryDirectory() as tmp:
+                path=Path(tmp)/'deploy.json';path.write_text(json.dumps(changed))
+                with self.assertRaisesRegex(ValueError,'PICO_REQUIRES'):load_deployment(path,SHARE)
+
     def test_unknown_hardware_auto_pose_and_nonteleop_launch_fail_closed(self):
         recipe=json.loads((SHARE/'config/teleop_snowbot_deployment.json').read_text())
         for key,value in (('device_backend','real'),('initialize_tool_pose',True),

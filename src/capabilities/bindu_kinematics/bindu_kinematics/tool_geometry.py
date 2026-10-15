@@ -78,13 +78,15 @@ def check_dump(samples, recipe):
             'scope':'pan envelope above bin; no snow or contact dynamics'}
 
 
-def make_collision_checker(urdf, recipe, conservative_convex=False):
+def make_collision_checker(urdf, recipe, conservative_convex=False, *, tool_present=True):
     """Discrete CAD and tool clearance; only bounded grip bands allow contact.
 
     The ground is expressed in the fixed URDF base frame and cross-checked
     against configured supporting links. Missing meshes require explicit
     conservative proxies. This is not a contact/dynamics or continuous check.
     """
+    if type(tool_present) is not bool:
+        raise ValueError('INVALID_TOOL_PRESENCE')
     import coal as fcl
     import hashlib
     import tempfile
@@ -300,7 +302,7 @@ def make_collision_checker(urdf, recipe, conservative_convex=False):
             axis_z = float((tool[:3,:3] @ shaft_axis)[2])
             radial_height = radius*np.sqrt(max(0.,1.-axis_z*axis_z))
             shaft_heights = (shaft_points @ tool[:3,:3].T + tool[:3,3])[:,2] - radial_height
-            ground_failure = min(corners[:,2].min(),shaft_heights.min()) < ground_z+floor_clearance
+            ground_failure = tool_present and min(corners[:,2].min(),shaft_heights.min()) < ground_z+floor_clearance
             pan_pose = fcl.Transform3s(tool[:3, :3], tool[:3, 3]+tool[:3, :3] @ np.array(recipe['pan_center_m']))
             # The same body poses are checked against the tool and all five
             # bin walls. Compute their world bounds once per measured pose.
@@ -317,7 +319,7 @@ def make_collision_checker(urdf, recipe, conservative_convex=False):
             lower_bounds = np.linalg.norm(np.maximum(
                 np.abs(part_centers[part_indices]-body_centers[body_indices])-
                 part_halves[part_indices]-body_halves[body_indices], 0.), axis=1)-1e-9
-            for (body_index, part_index), lower_bound in zip(body_queries, lower_bounds):
+            for (body_index, part_index), lower_bound in (zip(body_queries, lower_bounds) if tool_present else ()):
                 name = bodies[body_index][0]
                 grasp_query = check_grasp_contacts and name in contacts and parts[part_index][0] == 'SHAFT'
                 limit = -grasp_penetration if grasp_query else clearance_limit
@@ -357,6 +359,7 @@ def make_collision_checker(urdf, recipe, conservative_convex=False):
             shaft_pose = fcl.Transform3s(tool[:3,:3] @ rotation,tool[:3,3]+tool[:3,:3] @ shaft_center)
             scene_parts = bodies + [('PAN',pan,pan_pose,pan_bounds),
                 ('SHAFT',full_shaft,shaft_pose,world_bounds(full_shaft,shaft_pose.getRotation(),shaft_pose.getTranslation()))]
+            if not tool_present: scene_parts = bodies
             if bin_parts:
                 scene_centers, scene_halves = np.asarray([part[3] for part in scene_parts]).transpose(1, 0, 2)
                 wall_centers, wall_halves = np.asarray(bin_bounds).transpose(1, 0, 2)

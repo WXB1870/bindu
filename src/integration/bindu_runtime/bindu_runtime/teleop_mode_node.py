@@ -69,7 +69,8 @@ class TeleopModeNode(RuntimeNode):
         if not self.matches_mode(msg) or msg.side not in ('left','right'):
             return
         self.frames[msg.side] = VRFrame(msg.source_id,msg.seq,seconds(msg.stamp),msg.side,
-            tuple(msg.pose),msg.grip,msg.trigger,msg.init,msg.stop,msg.valid,msg.clutch_seq)
+            tuple(msg.pose),msg.grip,msg.trigger,msg.init,msg.stop,msg.valid,msg.clutch_seq,
+                msg.mapping or "v34",msg.buttons,tuple(int(v) for v in msg.button_edges),msg.virtual_grip)
         left,right=self.frames.get('left'),self.frames.get('right')
         if (left and right and left.source_id==right.source_id and left.seq==right.seq and
                 abs(left.stamp-right.stamp)<=.02):

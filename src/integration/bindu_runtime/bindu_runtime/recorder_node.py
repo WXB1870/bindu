@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+from std_srvs.srv import SetBool
 from rosidl_runtime_py.convert import message_to_ordereddict
 from bindu_recording.recorder import AsyncRecorder
 from bindu_interfaces.msg import RuntimeEvent, ExecutionState, RecorderHealth, MotionCommand, ObjectObservation, VRInput
@@ -20,6 +21,9 @@ class RecorderNode(RuntimeNode):
                                      'device_backend':self.get_parameter('device_backend').value,
                                      'profile_hash':self.profile.digest,
                                      'profile':json.loads(Path(self.profile_path).read_text())}, mode=mode)
+        self.capture_available=mode!='off'
+        self.capture_enabled=self.capture_available
+        self.create_service(SetBool,'recorder/capture',self.capture)
         self.get_logger().info('Recording mode: '+mode)
         if mode != 'off':
             self.create_subscription(RuntimeEvent, 'events', lambda m:self.record('event',m), EVENT_QOS)
@@ -30,6 +34,16 @@ class RecorderNode(RuntimeNode):
         self.pub = self.create_publisher(RecorderHealth, 'recorder/health', 5)
         self.create_timer(.1, self.health)
 
+    def capture(self,request,reply):
+        if not self.capture_available or self.writer.error or self.writer.dropped:
+            reply.success,reply.message=False,'RECORDING_UNAVAILABLE'
+            return reply
+        self.writer.submit({'kind':'recording_control','received_at':self.now(),'enabled':request.data})
+        self.capture_enabled=request.data
+        reply.success=True
+        reply.message='RECORDING_ENABLED' if request.data else 'RECORDING_DISABLED'
+        return reply
+
     def record(self, kind, message):
         if not self.matches_mode(message):
             self.input_error = 'RECORDING_RUNTIME_MODE_MISMATCH'
@@ -37,6 +51,7 @@ class RecorderNode(RuntimeNode):
         if hasattr(message, 'profile_hash') and message.profile_hash != self.profile.digest:
             self.input_error = 'RECORDING_PROFILE_MISMATCH'
             return
+        if not self.capture_enabled:return
         self.writer.submit({'kind':kind, 'received_at':self.now(), 'data':message_to_ordereddict(message)})
 
     def health(self):
@@ -44,7 +59,8 @@ class RecorderNode(RuntimeNode):
         # control without recording; it is not evidence that data was saved.
         self.pub.publish(RecorderHealth(stamp=stamp(self.now()), run_id=self.run_id, runtime_mode=self.runtime_mode,
                          ready=not bool(self.writer.error or self.input_error) and not bool(self.writer.dropped),
-                         written=self.writer.written, dropped=self.writer.dropped, error=self.writer.error or self.input_error))
+                         written=self.writer.written, dropped=self.writer.dropped, error=self.writer.error or self.input_error,
+                         capture_enabled=self.capture_enabled))
 
     def destroy_node(self):
         self.writer.close()

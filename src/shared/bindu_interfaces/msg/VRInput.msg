@@ -12,3 +12,10 @@ bool init
 bool stop
 bool valid
 uint64 clutch_seq
+
+# Explicit input mapping; empty retains legacy v3.4 consumers.
+string mapping
+uint8 buttons
+# primary press/release, secondary press/release, stick press/release, trigger press/release.
+uint64[8] button_edges
+bool virtual_grip

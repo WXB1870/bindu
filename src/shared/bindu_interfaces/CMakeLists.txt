@@ -15,6 +15,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/RecorderHealth.msg"
   "msg/ObjectObservation.msg"
   "srv/Lease.srv"
+  "srv/PicoContext.srv"
   "srv/SubmitMotion.srv"
   "srv/ControlExecution.srv"
   "srv/LocateObject.srv"
