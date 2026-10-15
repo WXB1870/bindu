@@ -1,6 +1,6 @@
 # bindu_execution：共享执行与停止管理
 
-[项目模块导航](../../../README.md#模块快速导航) · [职责与边界](#职责与边界) · [源码导航](#源码导航) · [接入与验证](#接入与验证) · [关联模块](#关联模块)
+[项目模块导航](../../../README.md#模块快速导航) · [职责与边界](#职责与边界) · [扫雪位置执行](#扫雪位置执行) · [源码导航](#源码导航) · [接入与验证](#接入与验证) · [关联模块](#关联模块)
 
 为遥操作、规划和 VLA 提供统一执行入口。Python 管理命令与状态，原生 C++ 实现插值和在线轨迹计算。
 
@@ -8,8 +8,16 @@
 
 - 管理租约、实例／版本身份、资源占用、命令有效期、关节顺序和动态限制。
 - 保持单一执行时间线，处理定时轨迹与在线跟随，并依据新鲜设备反馈确认到达或停稳。
-- 对已由厂家承担平滑的位置接口使用委托执行路径，避免重复叠加插值；停止后仍需实际反馈确认。
+- 对已由底层承担平滑的位置接口使用委托执行路径，避免重复叠加插值；停止后仍需实际反馈确认。
 - 通过 `ExecutionIO` 访问设备；本库不导入具体硬件、ROS 节点、GUI 或算法包。
+
+## 扫雪位置执行
+
+- 当前 ROS 运动学扫雪与 Isaac 物理闭环复用 `Executor`；[snowbot_shovel_sim.json](../../integration/bindu_runtime/config/snowbot_shovel_sim.json) 选择 `joint_target_interpolation=synchronized`，对腰部和双臂联合目标做同步位置执行。
+- 独立 Snowbot 位置适配入口使用 `DelegatedPositionExecutor`，直接交目标给底层控制完成平滑与制动。它仅接纳非定时位置目标，不承诺上述曲线的导数或到达时间；当前尚未与真机工具会话联通。
+- 换握、暂停和取消依赖实测停稳确认。反馈过期或速度未知时不能报告已停稳，停止超时会锁存未确认状态并阻止新接管。
+
+两种执行路径由装配选择；底层已有柔顺，上层没有在此叠加柔顺控制。场景与入口见[扫雪运行装配](../../integration/bindu_runtime/README.md#扫雪遥操作)，完整时间／停止规则见执行契约。
 
 ## 源码导航
 
@@ -17,7 +25,7 @@
 |---|---|
 | [executor.py](bindu_execution/executor.py) | Executor、控制权、指令接纳、状态机与反馈检查 |
 | [interpolation.py](bindu_execution/interpolation.py) | 原生数学内核的 Python 接口 |
-| [delegated_position.py](bindu_execution/delegated_position.py) | 厂家位置控制的委托执行路径 |
+| [delegated_position.py](bindu_execution/delegated_position.py) | 底层位置控制的委托执行路径 |
 | [native/interpolation.cpp](native/interpolation.cpp) | 定时轨迹插值与限制检查 |
 | [native/adaptive_stream.cpp](native/adaptive_stream.cpp) | 在线自适应位置流 |
 | [setup.py](setup.py) | C++17 扩展构建；运行需要已编译的原生模块 |

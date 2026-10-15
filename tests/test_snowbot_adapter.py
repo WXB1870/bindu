@@ -1,4 +1,4 @@
-"""Vendor boundary and delegated stop semantics; never touches hardware."""
+"""Position interface and delegated stop semantics; never touches hardware."""
 import copy
 import json
 from dataclasses import replace
@@ -299,7 +299,7 @@ class SnowbotAdapterTests(unittest.TestCase):
             S(node_namespace='/test', node_name='vendor'), S(node_namespace='/', node_name='observer')]
         transport.publishers = {g: Mock() for g in transport.command_topics}
         for publisher in transport.publishers.values():
-            publisher.get_subscription_count.return_value = 2  # Vendor + passive observer.
+            publisher.get_subscription_count.return_value = 2  # Controller + passive observer.
         target = {n: self.q[n] for g in ('waist', 'left_arm', 'right_arm') for n in GROUPS[g]}
         transport.send({'waist', 'left_arm', 'right_arm'}, target)
         transport.publishers['arms'].publish.assert_called_once()

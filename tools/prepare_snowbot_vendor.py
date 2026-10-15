@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prepare a patched vendor workspace from the exact reviewed ZIP; never run it."""
+"""Prepare a patched controller workspace from the exact reviewed ZIP; never run it."""
 import argparse
 import hashlib
 import json

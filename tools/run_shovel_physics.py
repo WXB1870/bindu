@@ -4,7 +4,7 @@
 Replays verified references or runs the production QP/executor on measured joints.
 Only the initial state is set; every subsequent state comes from physics.
 No ROS/hardware transport is created. This is an empty-shovel load experiment,
-not validation of real finger contacts or manufacturer compliance parameters.
+not validation of real finger contacts or low-level compliance parameters.
 """
 import argparse
 import hashlib

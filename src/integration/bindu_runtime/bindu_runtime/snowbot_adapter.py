@@ -1,4 +1,4 @@
-"""Opt-in Snowbot execution endpoint; vendor nodes are never launched here."""
+"""Opt-in Snowbot execution endpoint; controller nodes are never launched here."""
 import secrets
 from rcl_interfaces.msg import ParameterDescriptor
 from bindu_execution.delegated_position import DelegatedPositionExecutor
@@ -115,7 +115,7 @@ class SnowbotDevices:
 
     def send(self, groups, target):
         # Validate all subscribers before sending the first packet. Across the
-        # vendor's three topics this is still not an atomic hardware operation.
+        # controller's three topics this is still not an atomic hardware operation.
         packets = []
         if {'left_arm', 'right_arm'} & groups:
             msg = self.arm_type()
@@ -168,7 +168,7 @@ class SnowbotAdapter(ExecutionNode):
     def __init__(self):
         super().__init__(allow_hardware=True, device_factory=assemble_snowbot,
                          executor_factory=DelegatedPositionExecutor)
-        self.get_logger().info('Snowbot adapter: command_enabled=%s; interpolation owned by vendor' %
+        self.get_logger().info('Snowbot adapter: command_enabled=%s; interpolation handled by the low-level controller' %
                                self.robot_io.command_enabled)
 
     def fault(self, request, reply):

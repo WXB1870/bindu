@@ -2,7 +2,7 @@
 
 Retains Executor's lease, layout, limit, freshness and revision validation.
 Only untimed joint_target is supported: timed derivative trajectories cannot
-be honored by an un-timestamped vendor position interface.
+be honored by an un-timestamped position interface.
 """
 import math
 from dataclasses import dataclass

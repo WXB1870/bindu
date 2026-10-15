@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Isolated ROS wire test with original vendor messages and synthetic feedback.
+"""Isolated ROS wire test with original controller messages and synthetic feedback.
 
 Never starts the vendor controller, SOEM, or any robot device. Call with
 ROS_LOCALHOST_ONLY=1 and a dedicated ROS_DOMAIN_ID after loading both installs.
@@ -70,7 +70,7 @@ def main():
     source = node.create_publisher(RetInformation, vendor+'/dualArmCtl_fdback', 1)
     health_pub = node.create_publisher(String, vendor+'/bindu/servo_health', 1)
     source_pub = node.create_publisher(String, vendor+'/bindu/control_source', 1)
-    # Graph fixtures for the two internal vendor hops; no control is executed.
+    # Graph fixtures for the two internal control hops; no control is executed.
     bridge_pubs = [node.create_publisher(MidNodeCtlMsgSend, vendor+'/upperMonitor_msg_send', 1),
                    node.create_publisher(CtlInformation, vendor+'/ctl_data_pub', 1)]
     node.create_subscription(MidNodeCtlMsgSend, vendor+'/upperMonitor_msg_send', lambda m: None, 1)

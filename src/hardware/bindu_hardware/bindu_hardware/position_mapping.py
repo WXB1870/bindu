@@ -1,4 +1,4 @@
-"""Validated model-radian <-> vendor-position mapping; no transport or control.
+"""Validated model-radian <-> device-position mapping; no transport or control.
 
 One frame is assembled atomically, including explicitly held extra channels.
 Calibration is applied only here, never again in the motion solver.

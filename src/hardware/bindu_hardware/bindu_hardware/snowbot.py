@@ -1,4 +1,4 @@
-"""Snowbot vendor position/feedback boundary; no ROS or trajectory generation.
+"""Snowbot position/feedback boundary; no ROS or trajectory generation.
 
 Layout follows the user supplied src.zip (2026-10-13). J8 is a gripper,
 read as context only. Arm packets always carry both arms, so their ownership

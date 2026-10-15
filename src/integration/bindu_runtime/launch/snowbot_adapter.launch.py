@@ -1,4 +1,4 @@
-"""Snowbot execution mode selection; never starts vendor drivers or motors."""
+"""Snowbot execution mode selection; never starts low-level drivers or motors."""
 from pathlib import Path
 import uuid
 from launch import LaunchDescription

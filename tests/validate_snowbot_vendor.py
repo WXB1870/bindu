@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compile patched vendor units and exercise the driver with a fake PDO bus."""
+"""Compile patched controller units and exercise the driver with a fake PDO bus."""
 import argparse
 import json
 from pathlib import Path
