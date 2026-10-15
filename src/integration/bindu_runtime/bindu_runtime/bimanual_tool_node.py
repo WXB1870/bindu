@@ -52,6 +52,7 @@ class BimanualToolNode(RuntimeNode):
         self.frames={}
         self.state=self.health=self.mode_state=None
         self.busy=False
+        self.grasp_continuation=None
         self.pause_control=ToolPause()
         group=ReentrantCallbackGroup()
         self.lease_client=self.create_client(Lease,'execution/lease',callback_group=group)
@@ -243,7 +244,10 @@ class BimanualToolNode(RuntimeNode):
     async def execute(self,goal):
         mode=self.mode_state
         session_type=ToolPoseSession if self.input_source=='tool_pose' else BimanualSession
-        session=session_type(self.cfg,mode.generation,seconds(mode.changed_at))
+        continuation=self.grasp_continuation
+        self.grasp_continuation=None
+        session=session_type(self.cfg,mode.generation,seconds(mode.changed_at),
+            **({'continuation':continuation} if self.input_source=='vr' else {}))
         reference=AcceptedReference(self.cfg.get('max_integration_interval',.1))
         result=TeleopAction.Result(simulated=self.simulation)
         lease=pending=renewal=None
@@ -402,7 +406,8 @@ class BimanualToolNode(RuntimeNode):
                             reference.capture(work_positions,work_sampled_at)
                             self.event('BIMANUAL_CAPTURED',json.dumps({'tool_pose':value.tolist(),
                                 'input_stamp':session.stamp,'grasp_mode':session.grasp_mode,
-                                'grasp_generation':session.grasp_generation}),goal.request.task_id)
+                                'grasp_generation':session.grasp_generation,
+                                'grasp_continuation':getattr(session,'resumed_grasp',False)}),goal.request.task_id)
                         else:
                             # A newer VR frame does not invalidate a bounded,
                             # same-grasp solve. Clutch/mode changes clear awaiting.
@@ -467,6 +472,8 @@ class BimanualToolNode(RuntimeNode):
                 except RuntimeError:
                     self.event('BIMANUAL_SUBMIT_UNCONFIRMED',session.identity,goal.request.task_id)
             if not stopped: result.code+=':STOP_UNCONFIRMED'
+            if canceled and stopped and result.code=='CANCELED' and isinstance(session,BimanualSession):
+                self.grasp_continuation=session.stopped_continuation(self.now())
             result.accepted_commands=accepted
             result.success=result.code=='TELEOP_SESSION_COMPLETE'
             self.event('BIMANUAL_ENDED',json.dumps({'session_id':session.identity,

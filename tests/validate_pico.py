@@ -95,7 +95,7 @@ def run_shovel_cycle(node,source,views,states,events,trace,raw,projected,tool_in
         event,data=captures(mode,start)[-1]
         poses=[p.copy() for p in source['poses']]
         item=dict(stamp=event['stamp'],tool=np.asarray(data['tool_pose']),input=pair_pose(poses),
-                  hands=[robot_pose(p) for p in poses],mode=mode)
+                  hands=[robot_pose(p) for p in poses],mode=mode,continuation=data.get('grasp_continuation',False))
         anchors.append(item)
         return item
     current=anchor('rigid');home=current['tool'].copy()
@@ -166,6 +166,7 @@ def run_shovel_cycle(node,source,views,states,events,trace,raw,projected,tool_in
                              captures=[dict(t=a['stamp'],mode=a['mode']) for a in anchors])
     assert tracking['max_lift_m']>=recipe['acceptance']['min_lift_m'],'Shovel must actually lift, not only preserve a static grasp'
     assert [a['mode'] for a in anchors]==['rigid','right_axial','rigid']
+    assert [a['continuation'] for a in anchors]==[False,True,True], 'Only continuous X handoffs may use the short hold'
     assert all(f['runtime_mode']=='simulation' for f in raw+projected)
     result['shovel_cycle']=dict(recipe_duration_s=recipe['keyframes'][-1]['t'],operator_speed=operator_speed,wall_s=motion_wall,
         feedback_start_stamp=trace[start_index]['stamp'],feedback_end_stamp=trace[end_index-1]['stamp'],
@@ -360,6 +361,8 @@ def main():
         source['grip']=[0.,1.];phase('tool_standby');pump(.2)
         before=len(accepted);source['delta']=.01;pump(.3);assert len(accepted)==before
         source['grip']=[0.,0.];pump(.15);source['grip']=[1.,1.];phase('following',timeout=12.)
+        resumed=[json.loads(e['code']) for e in events if e['state']=='BIMANUAL_CAPTURED']
+        assert resumed and not resumed[-1]['grasp_continuation'], 'Physical release must discard the short handoff'
         check('Squeeze release holds and reengagement reanchors without queued displacement')
         source['trigger'][1]=1.;phase('standby');pump(.2)
         assert views[-1]['gripper_modes']==['closed','closed']

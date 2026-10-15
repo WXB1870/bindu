@@ -1,6 +1,7 @@
 """Two-hand clutch and tool pose target with optional right axial support, independent of robot model."""
 import math
 import uuid
+from dataclasses import dataclass
 import numpy as np
 from .vr.mapping import robot_pose, relative_target
 
@@ -44,8 +45,18 @@ class AcceptedReference:
         self.positions, self.sampled_at = positions, sampled_at
 
 
+@dataclass(frozen=True)
+class GraspContinuation:
+    """One local handoff, issued only after cancellation and confirmed stop."""
+    source: str
+    clutch_seq: tuple
+    grasp_mode: str
+    issued_at: float
+    expires_at: float
+
+
 class BimanualSession:
-    def __init__(self, config, generation, selected_at):
+    def __init__(self, config, generation, selected_at, *, continuation=None):
         self.cfg = config
         self.generation = generation
         self.selected_at = selected_at
@@ -65,6 +76,14 @@ class BimanualSession:
         self.grasp_generation = 0
         self.axial = config.get('right_axial_grasp')
         self.trigger_armed = False
+        self.continuation = continuation
+        self.confirmed_hold = None
+        self.pico_pair = False
+        self.resumed_grasp = False
+        self.engage_seconds = config['engage_seconds']
+        self.resume_seconds = config.get('pico_grasp_resume_seconds',self.engage_seconds)
+        if not math.isfinite(self.resume_seconds) or not 0 < self.resume_seconds <= self.engage_seconds:
+            raise ValueError('BIMANUAL_GRASP_RESUME_CONFIG')
         if self.axial is not None:
             self.press = float(self.axial.get('press_threshold', .7))
             self.release = float(self.axial.get('release_threshold', .3))
@@ -128,7 +147,16 @@ class BimanualSession:
             self.pressed_since = None
             self.mode = 'idle'
             self.anchor_input = self.anchor_tool = self.target = None
+            self.confirmed_hold = self.continuation = None
+            self.engage_seconds = self.cfg['engage_seconds']
+            self.resumed_grasp = False
         self.clutch_seq = clutch_seq
+        self.pico_pair = left.mapping == right.mapping == 'pico_snowbot_v1'
+        if self.continuation is not None and (
+                not self.pico_pair or self.continuation.source != left.source_id or
+                self.continuation.clutch_seq != clutch_seq or
+                not self.continuation.issued_at <= now <= self.continuation.expires_at):
+            self.continuation = None
         desired = self.grasp_mode
         if self.axial is not None:
             if right.mapping == 'pico_snowbot_v1':
@@ -153,7 +181,14 @@ class BimanualSession:
         elif min(left.grip,right.grip) > .7 and self.released:
             if self.pressed_since is None:
                 self.pressed_since=self.stamp
-            if self.mode == 'idle' and self.stamp-self.pressed_since >= self.cfg['engage_seconds']:
+                # Projected hands are released during the actuator handoff.
+                # Physical release counters must be unchanged throughout it.
+                self.resumed_grasp=bool(self.continuation is not None and
+                    self.continuation.grasp_mode != self.grasp_mode and
+                    self.resume_seconds < self.cfg['engage_seconds'])
+                self.engage_seconds=self.resume_seconds if self.resumed_grasp else self.cfg['engage_seconds']
+                self.continuation=None  # Consumed once, never a standing bypass.
+            if self.mode == 'idle' and self.stamp-self.pressed_since >= self.engage_seconds:
                 self.mode='follow'
                 self.anchor_input=pose
                 self.anchor_tool=self.target=None
@@ -176,6 +211,18 @@ class BimanualSession:
         self.target=np.asarray(relative_target(self.anchor_input,self.current_input,self.anchor_tool,
             self.cfg['position_scale'],mapping_mode='robot_base',
             operator_yaw_rad=self.cfg['operator_yaw_rad'])).reshape(4,4)
+        self.confirmed_hold=(self.source,self.clutch_seq,self.grasp_mode) if self.pico_pair else None
+
+    def stopped_continuation(self, now):
+        """Runtime calls only after a canceled goal's fresh, confirmed stop.
+
+        Keep the physical hold identity, never a tool target or grasp anchor.
+        Slow handoffs fall back to the normal hold; source/release changes do too.
+        """
+        if (self.confirmed_hold != (self.source,self.clutch_seq,self.grasp_mode) or
+                not 0 <= now-self.stamp <= self.cfg['input_max_age']):
+            return None
+        return GraspContinuation(self.source,self.clutch_seq,self.grasp_mode,now,now+1.)
 
 
 class ToolPoseSession:

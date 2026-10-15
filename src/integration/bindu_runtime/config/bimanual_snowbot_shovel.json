@@ -35,6 +35,7 @@
   "feedback_max_age": 0.2,
   "command_max_age": 0.4,
   "engage_seconds": 1.0,
+  "pico_grasp_resume_seconds": 0.08,
   "position_scale": 1.0,
   "operator_yaw_rad": 0.0,
   "sample_period": 0.01,
