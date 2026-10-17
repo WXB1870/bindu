@@ -1,0 +1,14 @@
+# Position control; authorize_loading is an operator declaration, not grasp evidence.
+string operation
+string side
+string lease_id
+uint64 epoch
+uint64 sequence
+builtin_interfaces/Time stamp
+float64 valid_for
+float64 position
+string load_state
+bool external_support
+---
+bool accepted
+string code

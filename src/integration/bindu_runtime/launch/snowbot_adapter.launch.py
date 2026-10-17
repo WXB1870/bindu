@@ -15,6 +15,8 @@ def assemble(context):
     if legacy not in ('', 'true', 'false'):
         raise ValueError('RUNTIME_SIMULATION_ALIAS_INVALID')
     mode = resolve_mode(value('runtime_mode'), None if not legacy else legacy == 'true', default='real')
+    if value('gripper_config') and mode != 'real':
+        raise ValueError('GRIPPER_REQUIRES_REAL_MODE')
     backend = value('device_backend') or ('snowbot_vendor' if mode == 'real' else 'kinematic')
     if (mode == 'real' and backend != 'snowbot_vendor') or (
             mode == 'simulation' and backend not in ('kinematic', 'external_simulation')):
@@ -34,7 +36,7 @@ def assemble(context):
     parameters = {**common}
     if mode == 'real':
         parameters.update(command_enabled=enabled == 'true', vendor_namespace=value('vendor_namespace', '/snowbot'),
-            **{key: value(key) for key in ('arm_receiver_node', 'servo_receiver_node', 'mid_receiver_node')})
+            **{key: value(key) for key in ('arm_receiver_node', 'servo_receiver_node', 'mid_receiver_node', 'gripper_config')})
     else:
         parameters['device_backend'] = backend
     return [Node(package='bindu_runtime', executable='snowbot_adapter' if mode == 'real' else 'execution',
@@ -48,6 +50,6 @@ def generate_launch_description():
     defaults = {'runtime_mode': '', 'simulation': '', 'device_backend': '', 'profile': '',
                 'namespace': 'bindu_snowbot', 'run_id': uuid.uuid4().hex, 'vendor_namespace': '/snowbot',
                 'arm_receiver_node': '', 'servo_receiver_node': '', 'mid_receiver_node': '',
-                'command_enabled': 'false', 'recording_mode': 'off', 'output': '/tmp/bindu-runs'}
+                'command_enabled': 'false', 'recording_mode': 'off', 'output': '/tmp/bindu-runs', 'gripper_config': ''}
     return LaunchDescription([DeclareLaunchArgument(k, default_value=v) for k, v in defaults.items()]
                              + [OpaqueFunction(function=assemble)])

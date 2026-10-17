@@ -11,7 +11,7 @@ for bindu_argument in "$@"; do
 done
 case "${1:-}" in
   configure|-h|--help|'') exec python3 "$bindu_root/tools/snowbot_teleop.py" "$@" ;;
-  build|check|start|status) ;;
+  build|check|start|status|gripper) ;;
   *) echo "未知命令：$1；使用 --help 查看用法。" >&2; exit 2 ;;
 esac
 bindu_distro="${BINDU_ROS_DISTRO:-humble}"
@@ -53,6 +53,10 @@ if [[ -n "$bindu_cmeel" ]]; then
   export LD_LIBRARY_PATH="$bindu_cmeel/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
   export CMAKE_PREFIX_PATH="$bindu_cmeel${CMAKE_PREFIX_PATH:+:$CMAKE_PREFIX_PATH}"
 fi
+# A pip --target directory may contain obsolete backports such as argparse.
+# Keep the selected interpreter's standard library ahead of those backports.
+bindu_stdlib="$(python3 -c 'import sysconfig; print(sysconfig.get_path("stdlib"))')"
+export PYTHONPATH="$bindu_stdlib${PYTHONPATH:+:$PYTHONPATH}"
 if [[ "$1" == build ]]; then
   if [[ "$#" != 1 ]]; then echo 'build 不接受额外参数。' >&2; exit 2; fi
   python3 -c 'import rclpy' # Refuse a Python/ROS ABI mismatch before writing build output.

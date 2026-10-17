@@ -12,7 +12,9 @@ COMMON = {'namespace', 'profile', 'bimanual_config', 'side', 'tool_input_source'
 EXECUTION = {'runtime_mode', 'namespace', 'profile', 'device_backend', 'run_id', 'output',
              'recording_mode', 'command_enabled', 'vendor_namespace', 'arm_receiver_node',
              'servo_receiver_node', 'mid_receiver_node'}
-PATHS = {'profile', 'bimanual_config', 'robot_config', 'cert_file', 'key_file', 'output', 'pico_config'}
+COMMON.add('gripper_config')
+EXECUTION.add('gripper_config')
+PATHS = {'profile', 'bimanual_config', 'robot_config', 'cert_file', 'key_file', 'output', 'pico_config', 'gripper_config'}
 
 
 def load_deployment(path, share):
@@ -37,6 +39,8 @@ def load_deployment(path, share):
     if 'runtime_mode' in args and args['runtime_mode'] not in ('simulation', 'real'):
         raise ValueError('RUNTIME_MODE_INVALID')
     selected_mode = resolve_mode(args.get('runtime_mode', 'simulation'))
+    if args.get('gripper_config') and selected_mode != 'real':
+        raise ValueError('GRIPPER_REQUIRES_REAL_MODE')
     backend = args.get('device_backend', '') if execution_only else args.get('device_backend', 'kinematic')
     allowed_backends = ('', 'snowbot_vendor') if selected_mode == 'real' else ('', 'kinematic', 'external_simulation')
     if backend not in allowed_backends:

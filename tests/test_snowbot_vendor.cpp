@@ -36,6 +36,17 @@ int main() {
     BinduWatchdog fault; fault.enable(); assert(fault.heartbeat(123, 1, 1));
     assert(fault.blocked(2, false)); assert(fault.latched());
 
+    BinduGripperWatchdog grip;
+    assert(grip.blocked(1, true));
+    assert(grip.accept(1, 100, 200, false)); assert(!grip.blocked(101, true));
+    assert(!grip.accept(1, 102, 200, false)); // no replay renewal
+    assert(grip.blocked(300, true)); assert(grip.latched());
+    assert(!grip.accept(2, 301, 200, true)); // late hold cannot erase timeout
+    BinduGripperWatchdog held;
+    assert(held.accept(1, 100, 200, true)); assert(held.blocked(10000, true));
+    assert(!held.latched()); assert(held.accept(2, 10001, 200, false));
+    assert(!held.blocked(10002, true));
+
     // Leak this tiny fixture until process exit to exclude real stop()/ec_close().
     auto* driver = new EtherCATDriver();
     std::memset(driver->csp_rx_, 0, sizeof(driver->csp_rx_));
@@ -97,5 +108,31 @@ int main() {
         assert(std::strtod(report.data()+offset+key.size(), nullptr) >= 0.);
     }
     pdo.join();
+    // An opt-in gripper has its own deadline even with a live arm heartbeat.
+    auto* gripper_driver = new EtherCATDriver();
+    std::memset(gripper_driver->csp_rx_, 0, sizeof(gripper_driver->csp_rx_));
+    std::memset(gripper_driver->csp_tx_, 0, sizeof(gripper_driver->csp_tx_));
+    motor_rx_pdo_t protected_rx{}; motor_tx_pdo_t protected_tx{};
+    protected_tx.actual_position = -.25f; protected_tx.statusword = 0x27;
+    gripper_driver->m_rx_[7] = &protected_rx; gripper_driver->m_tx_[7] = &protected_tx;
+    gripper_driver->inOP_ = true; gripper_driver->expectedWKC_ = 40; gripper_driver->wkc_ = 40;
+    gripper_driver->setSingleMotorEnable(7, true);
+    for (int i = 0; i < 40; ++i) gripper_driver->cycle();
+    gripper_driver->enableBinduGuard(); gripper_driver->enableBinduGrippers();
+    assert(gripper_driver->binduHeartbeat(456, 1, now_ns()));
+    assert(!gripper_driver->binduGripperCommand(0, 123, 1, now_ns(), 200000000, false));
+    assert(gripper_driver->binduGripperCommand(0, 456, 1, now_ns(), 200000000, false));
+    gripper_driver->setMotorCmd(7, -.5f, 0.f, 0.f, 100.f, 30.f);
+    gripper_driver->cycle(); assert(protected_rx.target_position == -.5f);
+    gripper_driver->bindu_gripper_guard_[0].expires_ = now_ns()-1;
+    gripper_driver->cycle();
+    assert(gripper_driver->bindu_gripper_guard_[0].latched());
+    assert(protected_rx.target_position == -.25f && protected_rx.target_speed == 0.f);
+    protected_tx.actual_position = -.3f;
+    gripper_driver->setMotorCmd(7, .4f, 1.f, 2.f, 999.f, 20.f);
+    gripper_driver->cycle();
+    assert(protected_rx.target_position == -.25f && protected_rx.KP == 100.f);
+    assert(!gripper_driver->binduGripperCommand(0, 456, 2, now_ns(), 200000000, true));
+    assert(gripper_driver->binduHealthJson(10., true).find("\"gripper_latched_mask\":1") != std::string::npos);
     std::cout << "PASS: replay, exact timeout, bus fault, independent RT hold, frozen hold, J8 isolation, valid PDO progress\n";
 }

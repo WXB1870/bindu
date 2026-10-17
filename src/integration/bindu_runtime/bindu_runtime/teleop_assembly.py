@@ -22,6 +22,8 @@ def assemble(context):
     if not recorder_enabled and value('recording_mode')!='off':
         raise ValueError('RECORDER_DISABLED_REQUIRES_OFF')
     mode = resolve_mode(value('runtime_mode', 'simulation'))
+    if value('gripper_config') and mode != 'real':
+        raise ValueError('GRIPPER_REQUIRES_REAL_MODE')
     legacy = not value('robot_config')
     selection = value('robot_config') or str(Path(get_package_share_directory('bindu_runtime'))/'config/robots/snowbot/robot_snowbot.json')
     overrides = {'profile': value('profile'), 'tool': value('bimanual_config')} if legacy else None
@@ -72,7 +74,7 @@ def assemble(context):
     if mode=='real':
         execution.update(command_enabled=enabled('command_enabled','false'),
             **{key:value(key,default) for key,default in (
-                ('vendor_namespace','/snowbot'),('arm_receiver_node',''),
+                ('gripper_config',''),('vendor_namespace','/snowbot'),('arm_receiver_node',''),
                 ('servo_receiver_node',''),('mid_receiver_node',''))})
     nodes.append(Node(package='bindu_runtime', executable='snowbot_adapter' if mode=='real' else 'execution', namespace=ns,
                       output='screen', parameters=[execution]))

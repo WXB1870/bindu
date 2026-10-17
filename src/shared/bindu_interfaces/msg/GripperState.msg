@@ -1,0 +1,25 @@
+builtin_interfaces/Time stamp
+builtin_interfaces/Time feedback_stamp
+string runtime_mode
+string instance_id
+string profile_hash
+string config_hash
+string side
+string joint_name
+string state
+string code
+bool calibrated
+bool feedback_valid
+bool lease_active
+string owner
+uint64 epoch
+uint64 control_sequence
+bool loading_authorized
+bool trigger_armed
+float64 measured_position
+float64 measured_velocity
+float64 measured_current
+float64 target_position
+bool position_reached
+# Position/current alone cannot confirm physical grasp or axial support.
+string grasp_state

@@ -190,6 +190,12 @@ class ExecutionNode(RuntimeNode):
     def abort_shutdown(self):
         self.engine.fail_stop(self.now(), 'STOP_FEEDBACK_TIMEOUT')
 
+    def shutdown_pending(self):
+        return bool(self.engine.stopping)
+
+    def shutdown_failed(self):
+        return bool(self.robot_io.stop_failures or self.engine.stop_fault)
+
 
 def main():
     run_execution(ExecutionNode)
@@ -215,7 +221,7 @@ def run_execution(factory):
                 node.begin_shutdown()
                 deadline = time.monotonic()+node.profile.stop_timeout+.5
             if requested:
-                if not node.engine.stopping:
+                if not node.shutdown_pending():
                     break
                 if time.monotonic() >= deadline:
                     node.abort_shutdown()
@@ -228,7 +234,7 @@ def run_execution(factory):
                 # ROS timers may stop when /clock is paused; the stop budget
                 # and feedback handshake must still progress during teardown.
                 node.tick()
-        if node.robot_io.stop_failures or node.engine.stop_fault:
+        if node.shutdown_failed():
             node.get_logger().error('Shutdown: device stop unconfirmed')
             exit_code = 1
         elif requested:

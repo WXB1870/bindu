@@ -45,4 +45,29 @@ private:
     std::atomic<int64_t> last_ns_{0};
 };
 
+// Independent command deadlines: an arm heartbeat cannot keep a stale gripper
+// target alive. Explicit hold persists; timeout/fault is latched until restart.
+class BinduGripperWatchdog {
+public:
+    uint64_t sequence() const { return sequence_.load(); }
+    bool latched() const { return latched_.load(); }
+    bool accept(uint64_t sequence, int64_t now, int64_t ttl, bool hold) {
+        if (!sequence || sequence <= sequence_.load() || now <= 0 || ttl <= 0 || latched()) return false;
+        if (sequence_.load() && !hold_.load() && (now < last_ns_.load() || now >= expires_.load())) {
+            latched_.store(true); return false;
+        }
+        hold_.store(hold); last_ns_.store(now); expires_.store(now+ttl);
+        sequence_.store(sequence); return true;
+    }
+    bool blocked(int64_t now, bool healthy) {
+        if (!sequence_.load()) return true;
+        if (!healthy || now < last_ns_.load() || (!hold_.load() && now >= expires_.load())) latched_.store(true);
+        return hold_.load() || latched();
+    }
+private:
+    std::atomic<uint64_t> sequence_{0};
+    std::atomic<int64_t> last_ns_{0}, expires_{0};
+    std::atomic<bool> hold_{true}, latched_{false};
+};
+
 #endif

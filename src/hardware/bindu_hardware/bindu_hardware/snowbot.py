@@ -21,6 +21,7 @@ GROUPS = {
 }
 WRITABLE = frozenset(('waist', 'head', 'left_arm', 'right_arm'))
 SLOT_MASKS = {'left_arm': 0x7f, 'right_arm': 0x7f00, 'head': 0x30000, 'waist': 0xc0000}
+SLOT_MASKS.update(left_tool_axis=0x80, right_tool_axis=0x8000)
 
 
 class VendorHealth:

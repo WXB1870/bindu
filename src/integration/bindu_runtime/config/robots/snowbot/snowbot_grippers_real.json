@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "calibrated": false,
+  "position_tolerance": 0.003,
+  "velocity_tolerance": 0.01,
+  "settle_time": 0.1,
+  "motion_timeout": 5.0,
+  "stop_timeout": 2.0,
+  "feedback_max_age": 0.2,
+  "command_ttl": 0.2,
+  "grippers": {
+    "left": {"open": -0.4, "closed": 0.0, "kp": 100.0, "kd": 30.0, "max_speed": 0.2},
+    "right": {"open": 0.4, "closed": 0.0, "kp": 100.0, "kd": 30.0, "max_speed": 0.2}
+  }
+}

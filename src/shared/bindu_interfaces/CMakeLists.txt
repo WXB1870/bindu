@@ -16,6 +16,8 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/ObjectObservation.msg"
   "srv/Lease.srv"
   "srv/PicoContext.srv"
+  "srv/GripperControl.srv"
+  "msg/GripperState.msg"
   "srv/SubmitMotion.srv"
   "srv/ControlExecution.srv"
   "srv/LocateObject.srv"

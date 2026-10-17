@@ -3,6 +3,7 @@
 import argparse
 import importlib
 import json
+import hashlib
 import math
 import os
 from pathlib import Path
@@ -63,6 +64,8 @@ def configure(options):
         ('host', 'port', 'namespace', 'vendor_namespace', 'arm_receiver_node',
          'servo_receiver_node', 'mid_receiver_node')})
     data['arguments']['command_enabled'] = options.enable_commands
+    if options.gripper_config:
+        data['arguments']['gripper_config'] = str(Path(options.gripper_config).expanduser().resolve())
     for key in ('cert_file', 'key_file'):
         value = getattr(options, key)
         data['arguments'][key] = str(Path(value).expanduser().resolve()) if value else ''
@@ -103,6 +106,13 @@ def preflight(path):
         package = importlib.import_module(module)
         for name in names:
             check_for_type_support(getattr(package, name))
+    if args.get('gripper_config'):
+        from bindu_hardware.snowbot_gripper import validate_config
+        grippers = validate_config(json.loads(Path(args['gripper_config']).read_text()), robot.profile)
+        check_for_type_support(getattr(importlib.import_module('bindu_interfaces.msg'), 'GripperState'))
+        check_for_type_support(getattr(importlib.import_module('bindu_interfaces.srv'), 'GripperControl'))
+        if not grippers['calibrated']:
+            print('夹爪配置未现场标定：状态可读，夹爪写入将拒绝。')
     for module in ('pinocchio', 'casadi', 'vuer', 'bindu_execution.interpolation'):
         importlib.import_module(module)
     # Constructing the solver validates the native ABI/model/config, without targets or IO.
@@ -203,16 +213,120 @@ def observe(args, robot, duration):
         rclpy.shutdown()
 
 
+def operate_gripper(args, robot, options):
+    import rclpy
+    from rclpy.signals import SignalHandlerOptions
+    from bindu_interfaces.msg import GripperState
+    from bindu_interfaces.srv import Lease, GripperControl
+    cfg = json.loads(Path(args['gripper_config']).read_text())
+    config_hash = hashlib.sha256(Path(args['gripper_config']).read_bytes()).hexdigest()
+    if args['command_enabled'] != 'true' or not cfg['calibrated']:
+        raise ValueError('夹爪操作需要允许写入且已现场标定的配置')
+    if options.operation == 'authorize_loading' and not options.vr_source_id:
+        raise ValueError('authorize_loading 须明确指定 --vr-source-id')
+    if options.operation != 'authorize_loading' and options.vr_source_id:
+        raise ValueError('--vr-source-id 仅用于 authorize_loading')
+    if options.operation != 'authorize_loading' and options.side == 'both':
+        raise ValueError('位置操作每次选择 left 或 right')
+    if options.operation == 'position' and (options.position is None or not math.isfinite(options.position)):
+        raise ValueError('position 操作须填写有限的 --position（rad）')
+    rclpy.init(args=[], signal_handler_options=SignalHandlerOptions.NO)
+    node = rclpy.create_node('bindu_gripper_operator_'+uuid.uuid4().hex[:8])
+    ns = namespace(args['namespace']).rstrip('/')
+    clients = [node.create_client(Lease, ns+'/gripper/lease'), node.create_client(GripperControl, ns+'/gripper/control')]
+    received = {}
+    def state_received(msg):
+        age = node.get_clock().now().nanoseconds*1e-9-msg.stamp.sec-msg.stamp.nanosec*1e-9
+        if (msg.runtime_mode=='real' and msg.profile_hash==robot.profile.digest and msg.config_hash==config_hash
+                and 0 <= age <= .5):
+            received[msg.side]=msg
+    node.create_subscription(GripperState, ns+'/gripper/state', state_received, 10)
+    lease = None
+    transferred = False
+    def call(client, request):
+        deadline = time.monotonic()+2.
+        while not client.service_is_ready() and time.monotonic() < deadline:
+            rclpy.spin_once(node, timeout_sec=.02)
+        if not client.service_is_ready():
+            raise RuntimeError('夹爪服务未就绪')
+        future = client.call_async(request)
+        while not future.done() and time.monotonic() < deadline:
+            rclpy.spin_once(node, timeout_sec=.02)
+        if not future.done():
+            raise RuntimeError('夹爪服务应答超时')
+        reply = future.result()
+        if not (reply.ok if hasattr(reply, 'ok') else reply.accepted):
+            raise RuntimeError(reply.code)
+        return reply
+    def request(operation, sequence):
+        req = GripperControl.Request(operation=operation, side='' if operation=='authorize_loading' else options.side,
+            lease_id=lease.lease_id, epoch=lease.epoch, sequence=sequence, valid_for=.3,
+            position=options.position or 0., load_state=options.load_state, external_support=options.external_support)
+        req.stamp = node.get_clock().now().to_msg()
+        return req
+    try:
+        sides = ('left','right') if options.side=='both' else (options.side,)
+        def publisher_matches():
+            writers = node.get_publishers_info_by_topic(ns+'/gripper/state')
+            return len(writers)==1 and writers[0].node_namespace.rstrip('/')+'/'+writers[0].node_name==ns+'/execution'
+        discovery_deadline = time.monotonic()+2.
+        while not publisher_matches() and time.monotonic()<discovery_deadline:
+            rclpy.spin_once(node, timeout_sec=.02)
+        if not publisher_matches():
+            raise RuntimeError('夹爪状态发布者不匹配')
+        owner = options.vr_source_id or node.get_name()
+        lease = call(clients[0], Lease.Request(operation='acquire',owner=owner,resources=[s+'_tool_axis' for s in sides]))
+        if lease.profile_hash != robot.profile.digest:
+            raise RuntimeError('夹爪profile不匹配')
+        call(clients[1], request('authorize_loading', 1))
+        if options.operation == 'authorize_loading':
+            transferred = True
+            print('已将装卸控制绑定到指定VR来源；须先释放Trigger再操作，输入中断会撤权并请求保持。')
+            return 0
+        call(clients[1], request(options.operation, 2))
+        deadline, renew_at = time.monotonic()+cfg['motion_timeout']+cfg['stop_timeout']+1., time.monotonic()+.5
+        while time.monotonic() < deadline:
+            rclpy.spin_once(node, timeout_sec=.02)
+            state = received.get(options.side)
+            if (state and state.epoch==lease.epoch and state.control_sequence>=2
+                    and state.state in ('SUCCEEDED','FAILED','FAULT','CANCELED')):
+                if not publisher_matches():
+                    raise RuntimeError('夹爪状态发布者不匹配')
+                print(f'{state.side}: {state.state} {state.code}; position={state.measured_position:.5f} rad; grasp={state.grasp_state}')
+                return 0 if state.position_reached and state.state=='SUCCEEDED' else 1
+            if time.monotonic() >= renew_at:
+                call(clients[0], Lease.Request(operation='renew',lease_id=lease.lease_id,epoch=lease.epoch))
+                renew_at=time.monotonic()+.5
+        raise RuntimeError('夹爪状态等待超时')
+    finally:
+        try:
+            if lease and not transferred:
+                call(clients[0], Lease.Request(operation='release',lease_id=lease.lease_id,epoch=lease.epoch))
+                end=time.monotonic()+cfg['stop_timeout']+.5
+                while time.monotonic()<end:
+                    rclpy.spin_once(node,timeout_sec=.02)
+                    if all(s in received and received[s].epoch>lease.epoch and not received[s].lease_active and received[s].state!='STOPPING' for s in sides):
+                        if any(received[s].state=='FAULT' for s in sides):
+                            raise RuntimeError('夹爪停止未确认')
+                        break
+                else:
+                    raise RuntimeError('夹爪释放后的保持未确认')
+        finally:
+            node.destroy_node()
+            rclpy.shutdown()
+
+
 def parser():
     p = argparse.ArgumentParser(description='Snowbot 最小遥操作：现场配置、构建、检查、前台启动和只读状态。通过 snowbot_teleop.sh 自动加载环境。')
     commands = p.add_subparsers(dest='command')
     workspace = Path(os.environ.get('BINDU_TELEOP_WORKSPACE', ROOT/'artifacts/real-teleop'))
-    for command in ('configure', 'build', 'check', 'start', 'status'):
+    for command in ('configure', 'build', 'check', 'start', 'status', 'gripper'):
         sub = commands.add_parser(command)
         if command == 'build':
             continue
         sub.add_argument('--config', type=Path, default=workspace/'site.json')
         if command == 'configure':
+            sub.add_argument('--gripper-config', default='', help='现场标定的夹爪配置；默认示例禁止夹爪写入')
             sub.add_argument('--host', default='127.0.0.1')
             sub.add_argument('--port', type=int, default=8012)
             sub.add_argument('--namespace', default='bindu_snowbot')
@@ -222,6 +336,13 @@ def parser():
             sub.add_argument('--enable-commands', action='store_true', help='仅在已获准的现场运动实验中生成允许写入的配方')
         if command == 'status':
             sub.add_argument('--seconds', type=float, default=3.)
+        if command == 'gripper':
+            sub.add_argument('--operation', choices=('open','close','position','authorize_loading'), required=True)
+            sub.add_argument('--side', choices=('left','right','both'), default='left')
+            sub.add_argument('--position', type=float)
+            sub.add_argument('--load-state', choices=('empty','held'), required=True)
+            sub.add_argument('--external-support', action='store_true')
+            sub.add_argument('--vr-source-id', default='')
     return p
 
 
@@ -241,6 +362,8 @@ def main(argv=None):
         if options.command == 'status' and not (math.isfinite(options.seconds) and 0 < options.seconds <= 30):
             raise ValueError('--seconds 须在 0–30 秒内')
         args, robot = preflight(options.config)
+        if options.command == 'gripper':
+            return operate_gripper(args, robot, options)
         if options.command == 'status':
             return observe(args, robot, options.seconds)
         if options.command == 'start':
@@ -248,6 +371,9 @@ def main(argv=None):
             print('前台启动四节点；Ctrl+C 收尾。仍需显式选择模式和开启会话。', flush=True)
             os.execvp('ros2', ['ros2', 'launch', 'bindu_runtime', 'teleop_only.launch.py', 'config:='+str(options.config)])
         return 0
+    except KeyboardInterrupt:
+        print('操作已中断；已尝试按夹爪控制权完成保持收尾。', file=sys.stderr)
+        return 130
     except (OSError, ValueError, KeyError, TypeError, ImportError, RuntimeError) as exc:
         print(f'部署检查失败：{exc}', file=sys.stderr)
         return 2

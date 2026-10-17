@@ -19,6 +19,7 @@ class SnowbotDevices:
         from std_msgs.msg import Float64MultiArray, String, UInt64MultiArray
         from rclpy.qos import qos_profile_sensor_data
         self.node = node
+        self.grippers = None
         self.session = secrets.randbits(64) or 1
         self.health = VendorHealth(node.now, expected_session=self.session)
         self.heartbeat_sequence = 0
@@ -109,6 +110,8 @@ class SnowbotDevices:
                 raise ValueError('SNOWBOT_FEEDBACK_PUBLISHER_IDENTITY')
             q, v, stamp = decode_feedback(msg)
             self.io.observe(q, v, stamp, self.node.now())
+            if self.grippers:
+                self.grippers.observe(msg, q, v, stamp)
         except ValueError as exc:
             self.io.invalid = str(exc)
             self.node.get_logger().warn(str(exc), throttle_duration_sec=1.)
@@ -168,6 +171,8 @@ class SnowbotAdapter(ExecutionNode):
     def __init__(self):
         super().__init__(allow_hardware=True, device_factory=assemble_snowbot,
                          executor_factory=DelegatedPositionExecutor)
+        from .snowbot_gripper import SnowbotGrippers
+        self.grippers = self.snowbot_devices.grippers = SnowbotGrippers(self.snowbot_devices)
         self.get_logger().info('Snowbot adapter: command_enabled=%s; interpolation handled by the low-level controller' %
                                self.robot_io.command_enabled)
 
@@ -176,10 +181,30 @@ class SnowbotAdapter(ExecutionNode):
         return reply
 
     def begin_shutdown(self):
+        self.grippers.stop()
         self.robot_io.command_enabled = False
         super().begin_shutdown()
 
+    def lease(self, request, reply):
+        if request.operation == 'acquire' and getattr(self, 'grippers', None) and self.grippers.core and self.grippers.core.busy:
+            reply.ok, reply.code, reply.profile_hash = False, 'GRIPPERS_BUSY_OR_FAULT', self.profile.digest
+            return reply
+        return super().lease(request, reply)
+
+    def tick(self):
+        super().tick()
+        if getattr(self, 'grippers', None) and self.grippers.core:
+            self.grippers.tick()
+
+    def shutdown_pending(self):
+        return super().shutdown_pending() or self.grippers.stopping
+
+    def shutdown_failed(self):
+        return super().shutdown_failed() or bool(self.grippers.core and self.grippers.core.fault)
+
     def abort_shutdown(self):
+        if self.grippers.core and self.grippers.stopping:
+            self.grippers.core.fail('SHUTDOWN_TIMEOUT')
         self.robot_io.stop_failures = ('vendor_hold',)
         self.engine.halt(self.now(), 'STOP_UNCONFIRMED', revoke=True, emergency=True)
 

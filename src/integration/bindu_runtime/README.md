@@ -8,7 +8,7 @@
 
 - 负责消息转换、依赖选择、设备／遥操作装配、本体校验与进程生命周期。
 - 启动时明确仿真／真实环境，检查指令和反馈模式一致性；环境选择与设备后端、写权限分别配置。
-- 真实模式支持 Snowbot 双臂／腰部位置遥操作装配，默认只读；实体开合／虚握、完整PICO流程、Pi和导航未完成真机接入。
+- 真实模式支持 Snowbot 双臂／腰部位置遥操作装配，默认只读；独立夹爪位置闭环默认未标定禁止写入；实体夹持／虚握确认、完整PICO流程、Pi和导航未完成真机接入。
 - 配置选择不替代真实模型标定、设备能力核实和现场验证。
 
 ## 配置目录
@@ -24,7 +24,7 @@
 
 Snowbot真机最小配方为`snowbot_real_teleop.json`，使用独立的真实本体、位置运行profile和工具几何配置；默认只读且不启动记录器。
 
-正式运行配置共39份，安装时保持相同目录结构。旧`teleop_snowbot_deployment.json`并入统一`deployments/teleop_robot_deployment.json`；schema 1读取能力仍兼容。旧平铺路径已迁移，升级需重建运行包并更新外部脚本中的配置路径。
+正式运行配置共40份，安装时保持相同目录结构。旧`teleop_snowbot_deployment.json`并入统一`deployments/teleop_robot_deployment.json`；schema 1读取能力仍兼容。旧平铺路径已迁移，升级需重建运行包并更新外部脚本中的配置路径。
 
 ## 扫雪遥操作
 
@@ -42,6 +42,8 @@ Snowbot真机最小配方为`snowbot_real_teleop.json`，使用独立的真实�
 
 ### 配套配置与流程
 
+真机配方增加`snowbot_grippers_real.json`，默认`calibrated=false`禁止夹爪写入；位置闭环及授权Trigger操作见[真实夹爪接口](../../../运行与验证.md#snowbot真实夹爪位置闭环)。夹爪服务由同一execution节点提供，原四节点范围不变。底层需配套`bindu_gripper_control`保护入口，实体持物／虚握不由位置到位推断。
+
 | 配置 | 作用 |
 |---|---|
 | [robot_snowbot.json](config/robots/snowbot/robot_snowbot.json) | 绑定本体模型、执行 profile、单臂与工具配置 |
@@ -49,6 +51,7 @@ Snowbot真机最小配方为`snowbot_real_teleop.json`，使用独立的真实�
 | [robot_snowbot_real.json](config/robots/snowbot/robot_snowbot_real.json) | 真机模型／profile／工具索引，不包含单臂配置或模拟初始姿态 |
 | [snowbot_real_position.json](config/robots/snowbot/snowbot_real_position.json) | 真实位置运行限制；头部第2轴取源接口与CAD交集±0.79 rad，其余沿用源接口，仍需现场核实 |
 | [bimanual_snowbot_real.json](config/robots/snowbot/bimanual_snowbot_real.json) | 真机位置链的名义工具安装／CAD几何／QP与时效参数；不包含演示轨迹，安装尺寸和地面需标定 |
+| [snowbot_grippers_real.json](config/robots/snowbot/snowbot_grippers_real.json) | 独立夹爪位置闭环、超时与开合参数；默认未标定，拒绝写入 |
 | [bimanual_snowbot_shovel.json](config/robots/snowbot/bimanual_snowbot_shovel.json) | 工具安装、握持约束、姿态策略、几何与输入时效 |
 | [snowbot_shovel_physics.json](config/robots/snowbot/snowbot_shovel_physics.json) | 空铲木质质量、接触夹持、Fabric与GUI刷新；保留显式proxy对照参数 |
 
