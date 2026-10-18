@@ -12,6 +12,9 @@ def viewer_matrix(pose):
 
 
 def status_lines(view):
+    if view.get('connectivity'):
+        from .connectivity import status_lines as connectivity_lines
+        return connectivity_lines(view)
     if view.get('runtime_mode')=='real':
         return [('BINDU | REAL | BIMANUAL POSITION','#f1f5f9'),
                 ('Session status: check ROS feedback','#ffffff'),
@@ -66,7 +69,8 @@ def render(view):
                 CoordsMarker(key=name+'Axes', scale=.12),
                 Sphere(key=name+'Point', args=[radius, 16, 12], materialType='basic', material={'color': color, 'wireframe': name == 'target'}),
                 key=name+'Pose', matrix=viewer_matrix(pose)))
-    children.append(Group(CoordsMarker(key='robotBaseAxes', scale=.2),
-                          key='robotBase', matrix=viewer_matrix(np.eye(4))))
+    if not view.get('connectivity'):
+        children.append(Group(CoordsMarker(key='robotBaseAxes', scale=.2),
+                              key='robotBase', matrix=viewer_matrix(np.eye(4))))
     return Group(*children, key='teleopFeedback',
                  userData={'mode': view['mode'], 'reason': view['reason'], 'simulated': view.get('runtime_mode')!='real'})

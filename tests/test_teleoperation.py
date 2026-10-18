@@ -100,6 +100,56 @@ class DisplayFeedbackTests(unittest.TestCase):
         self.assertEqual(output.get_nowait(), 999)
 
 
+class VRConnectivityTests(unittest.TestCase):
+    def setUp(self):
+        from bindu_teleoperation.vr.connectivity import VRConnectivity
+        self.monitor = VRConnectivity()
+        self.pair = tuple(VRFrame('headset', 1, 10., side, POSE, .8, .4,
+                                  mapping='pico_snowbot_v1', buttons=1)
+                          for side in ('left', 'right'))
+
+    def test_waiting_live_and_stale_do_not_reuse_pose_or_buttons(self):
+        self.assertEqual(self.monitor.snapshot(10.)['mode'], 'INPUT_WAITING')
+        self.monitor.ingest(self.pair)
+        live = self.monitor.snapshot(10.1)
+        self.assertEqual(live['mode'], 'INPUT_LIVE')
+        self.assertEqual(live['sides']['left']['position_m'], [0., 0., 0.])
+        for now in (11., 9.):
+            stale = self.monitor.snapshot(now)
+            self.assertEqual(stale['mode'], 'INPUT_STALE')
+            for side in stale['sides'].values():
+                self.assertFalse(side['valid'])
+                self.assertIsNone(side['position_m'])
+                self.assertIsNone(side['buttons'])
+
+    def test_invalid_payload_is_distinct_from_no_events_and_partial(self):
+        self.monitor.ingest((self.pair[0], replace(self.pair[1], valid=False, pose=())))
+        self.assertEqual(self.monitor.snapshot(10.1)['mode'], 'INPUT_PARTIAL')
+        self.monitor.ingest(tuple(replace(f, seq=2, stamp=10.1, valid=False, pose=()) for f in self.pair))
+        self.assertEqual(self.monitor.snapshot(10.2)['mode'], 'INPUT_INVALID')
+
+    def test_reconnect_resets_rate_and_old_side_and_duplicates_do_not_refresh(self):
+        self.monitor.ingest(self.pair)
+        self.monitor.ingest(tuple(replace(f, seq=6, stamp=10.1) for f in self.pair))
+        self.assertAlmostEqual(self.monitor.snapshot(10.2)['receive_hz'], 50.)
+        self.monitor.ingest(tuple(replace(f, seq=5, stamp=10.3) for f in self.pair))
+        self.assertEqual(self.monitor.snapshot(10.4)['sides']['left']['seq'], 6)
+        self.monitor.ingest(replace(self.pair[0], source_id='new', stamp=11.))
+        fresh = self.monitor.snapshot(11.1)
+        self.assertEqual(fresh['mode'], 'INPUT_PARTIAL')
+        self.assertIsNone(fresh['receive_hz'])
+        self.assertIsNone(fresh['sides']['right']['seq'])
+
+    def test_connectivity_panel_names_physical_keys_and_has_no_robot_target(self):
+        from bindu_teleoperation.vr.display import status_lines
+        self.monitor.ingest(self.pair)
+        view = self.monitor.snapshot(10.1)
+        lines = ' '.join(line for line, _ in status_lines(view))
+        for label in ('NO ROBOT', 'INPUT_LIVE', 'X:1', 'Y:0', 'A:1', 'B:0'):
+            self.assertIn(label, lines)
+        self.assertIsNone(view['target'])
+
+
 class VRContracts(unittest.TestCase):
     def setUp(self):
         self.cfg = configuration()

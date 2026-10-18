@@ -90,11 +90,25 @@ def _serve(config, output, feedback):
     try:
         from vuer import Vuer
         from vuer.schemas import MotionControllers, Scene, Grid
+
+        class LocalVuer(Vuer):
+            async def socket_index(self, request):
+                # Vuer 0.0.60's HTTPS fallback omits the page's explicit port.
+                # Keep the locally served page and socket on the same origin.
+                if (request.headers.get('Upgrade', '').lower() != 'websocket'
+                        and not request.query.get('ws')):
+                    from aiohttp.web import HTTPFound
+                    scheme = 'wss' if request.secure else 'ws'
+                    query = dict(request.query)
+                    query['ws'] = f'{scheme}://{request.host}{request.path}'
+                    raise HTTPFound(location=str(request.rel_url.with_query(query)))
+                return await super().socket_index(request)
+
         static = tempfile.TemporaryDirectory(prefix='bindu-vr-static-')
         # Serve Pillow's bundled font locally; the headset needs no font CDN.
         from PIL import ImageFont
         (Path(static.name)/'display.ttf').write_bytes(ImageFont.load_default(size=14).font_bytes)
-        app = Vuer(host=config['host'], port=config['port'],
+        app = LocalVuer(host=config['host'], port=config['port'],
                    cert=config['cert_file'], key=config['key_file'],
                    static_root=static.name, queries={'grid': True}, queue_len=2)
         owner = None
@@ -106,6 +120,8 @@ def _serve(config, output, feedback):
         counters = {side: ButtonCounters() for side in ('left','right')}
         latest_display = None
         display_received = float('-inf')
+        from .connectivity import VRConnectivity
+        connectivity = VRConnectivity() if config.get('connectivity_check') else None
 
         async def on_controller(event, session):
             nonlocal owner, identity, seq, clutch_seq, previous_grip, stop_latched, counters
@@ -133,6 +149,8 @@ def _serve(config, output, feedback):
                 paired.append(replace(item, clutch_seq=clutch_seq[side],
                     stop=frame.stop if config.get('mapping') == 'pico_snowbot_v1' else stop_latched))
             # A single queue item keeps the two sides from separate event epochs together.
+            if connectivity is not None:
+                connectivity.ingest(tuple(paired))
             _latest_put(output, ('frame', tuple(paired) if len(paired) == 2 else paired[0]))
 
         async def display(session):
@@ -150,7 +168,8 @@ def _serve(config, output, feedback):
                             display_received, latest_display = feedback.get_nowait()
                         except queue.Empty:
                             break
-                    view = display_snapshot(latest_display, time.time()-display_received)
+                    view = (connectivity.snapshot(time.time()) if connectivity is not None
+                            else display_snapshot(latest_display, time.time()-display_received))
                     if config.get('runtime_mode')=='real':
                         view=dict(view,runtime_mode='real',simulated=False)
                     try:
