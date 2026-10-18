@@ -23,13 +23,12 @@ def status_lines(view):
                 ('Gripper controls unavailable in this entry','#cbd5e1'),
                 ('Startup: no automatic preparation','#cbd5e1')]
     if view.get('pico'):
-        return [('BINDU | PICO | KINEMATIC SIMULATION','#f1f5f9'),
-                ('State: '+view['mode'],'#ffffff'),
-                ('Reason: '+view['reason'],'#fbbf24'),
-                ('Load: '+str(view.get('load_state','unknown'))+' | Support: '+str(view.get('external_support',False)),'#cbd5e1'),
-                ('Grippers L/R: '+str(view.get('gripper_modes',['unknown','unknown'])),'#7dd3fc'),
-                ('A prepare | B confirm | Y stop','#cbd5e1'),
-                ('Squeeze follow | X virtual | Triggers open','#cbd5e1')]
+        from .hud import hud_spec
+        spec = hud_spec(view)
+        lines = [(' · '.join(spec[k] for k in ('context','status','grip','action')),'#e5eeea')]
+        if spec['title']:
+            lines += [(spec['title'],'#f0c476'),(spec['detail'],'#a7bbb0')]
+        return lines
     lines = [('BINDU | SINGLE ARM SIMULATION | ' + view.get('side', 'left'), '#f1f5f9'),
              ('Mode: ' + view['mode'] + ' (requested)', '#ffffff'),
              ('Reason: ' + view['reason'], '#fbbf24'),
@@ -44,6 +43,13 @@ def status_lines(view):
 
 def render(view):
     from vuer.schemas import Group, CoordsMarker, Sphere, Plane, SceneElement
+    if view.get('pico') and view.get('runtime_mode')!='real':
+        from .hud import render_hud
+        from .model import render_model
+        model=render_model(view)
+        children=([model] if model is not None else [])+[render_hud(view)]
+        return Group(*children,key='teleopFeedback',
+            userData={'mode':view['mode'],'reason':view['reason'],'simulated':True})
 
     # These components exist in Vuer 0.0.60's frontend. Its Python package
     # exposes HUDPlane through Image and does not yet wrap the Text component.
@@ -55,10 +61,11 @@ def render(view):
     lines = status_lines(view)
     panel = [Plane(key='statusBackground', args=[1.005, 1.005], position=[0., 0., .001],
                    materialType='basic', material={'color': '#101b2a', 'depthTest': False})]
+    spacing=.90/max(7,len(lines))
     for i, (line, color) in enumerate(lines):
         panel.append(Text(line, key='statusLine'+str(i), font='/static/display.ttf',
-            fontSize=.07, anchorX='left', anchorY='top', color=color,
-            position=[-.47, .44-i*.135, .002], scale=[1/3.2, 1., 1.],
+            fontSize=.07*min(1.,7/len(lines)), anchorX='left', anchorY='top', color=color,
+            position=[-.47, .44-i*spacing, .002], scale=[1/3.2, 1., 1.],
             maxWidth=3., overflowWrap='break-word', depthTest=False))
     children = [StatusHUD(*panel, key='teleopStatus', distanceToCamera=1.,
                           height=.30, aspect=3.2, position=[0., -.30, 0.])]

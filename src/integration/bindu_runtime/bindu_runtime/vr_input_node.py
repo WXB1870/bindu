@@ -16,11 +16,20 @@ class VRInputNode(RuntimeNode):
         for key, value in defaults.items():
             self.declare_parameter(key, value, descriptor=ParameterDescriptor(read_only=key=='mapping'))
         cfg = {key: self.get_parameter(key).value for key in defaults}
+        self.declare_parameter('simulation_demo',False)
+        demo=self.get_parameter('simulation_demo').value
+        if type(demo) is not bool or (demo and (not self.simulation or cfg['mapping']!='pico_snowbot_v1')):
+            raise ValueError('VR_DEMO_REQUIRES_SIMULATION')
+        cfg['simulation_demo']=demo
         if cfg['side'] not in ('left', 'right', 'both'):
             raise ValueError('VR_INVALID_SIDE')
         cfg['cert_file'] = cfg['cert_file'] or None
         cfg['key_file'] = cfg['key_file'] or None
         self.mapping=cfg['mapping']
+        if self.simulation and self.mapping=='pico_snowbot_v1' and self.get_parameter('robot_config').value:
+            from .robot_setup import RobotSetup
+            robot=RobotSetup.load(self.get_parameter('robot_config').value)
+            cfg.update(display_urdf=str(robot.display_urdf),display_tool_config=str(robot.tool_config))
         self.receiver = VuerReceiver({**cfg,'runtime_mode':self.runtime_mode})
         # Both sides share one receiver event; retain both messages until DDS
         # delivers the pair to mode, single-arm and bimanual subscribers.

@@ -51,6 +51,9 @@ def assemble(context):
     if initial and (not legacy or backend != 'kinematic'):
         raise ValueError('INITIAL_POSE_ONLY_FOR_KINEMATIC_FIXTURE')
     pico = value('pico_enabled','false').lower() == 'true'
+    pico_demo=enabled('pico_simulation_demo','false')
+    if pico_demo and (not pico or mode!='simulation' or backend!='kinematic'):
+        raise ValueError('PICO_DEMO_REQUIRES_KINEMATIC_SIMULATION')
     if pico and (robot.robot_id != 'snowbot' or backend != 'kinematic' or value('tool_input_source') != 'vr'):
         raise ValueError('PICO_REQUIRES_SNOWBOT_KINEMATIC_VR')
     pico_config = value('pico_config') or str(Path(get_package_share_directory('bindu_runtime'))/'config/robots/snowbot/pico_snowbot_sim.json')
@@ -102,7 +105,9 @@ def assemble(context):
                           output='screen', parameters=[{**common, **model,
                               'teleop_config': str(robot.single_arm[side]), 'require_mode_selection': True,'require_recording':recorder_enabled}]))
     nodes.append(Node(package='bindu_runtime', executable='teleop_tool', namespace=ns,
-                      output='screen', parameters=[{**common, **model, **tool,'require_recording':recorder_enabled}]))
+                      output='screen', parameters=[{**common, **model, **tool,'require_recording':recorder_enabled,
+                          'simulation_demo':pico_demo,
+                          'tool_ground_policy':'report_only' if pico_demo else 'configured'}]))
     nodes.append(Node(package='bindu_runtime', executable='teleop_display', namespace=ns,
                       condition=IfCondition(LaunchConfiguration('tool_display_enabled')),
                       output='screen', parameters=[{**common, **model, 'tool_config': str(robot.tool_config)}]))
@@ -111,10 +116,12 @@ def assemble(context):
     if pico:
         nodes.append(Node(package='bindu_runtime',executable='pico_control',namespace=ns,output='screen',
             parameters=[{**common,**model,'tool_config':str(robot.tool_config),
-                         'pico_config':pico_config,'device_backend':backend,'recording_enabled':recorder_enabled}]))
+                         'pico_config':pico_config,'device_backend':backend,'recording_enabled':recorder_enabled,
+                         'simulation_demo':pico_demo}]))
     nodes.append(Node(package='bindu_runtime', executable='vr_input', namespace=ns,
                       condition=IfCondition(LaunchConfiguration('vr_enabled')), output='screen',
                       parameters=[{**common, **vr, 'side': 'both', 'mapping': 'pico_snowbot_v1' if pico or mode=='real' else 'v34',
+                          'simulation_demo':pico_demo,
                           'port': ParameterValue(LaunchConfiguration('port'), value_type=int)}],
                       remappings=[('teleop/vr/input','teleop/vr/raw')] if pico else []))
     return nodes

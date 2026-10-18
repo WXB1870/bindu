@@ -108,6 +108,11 @@ def _serve(config, output, feedback):
         # Serve Pillow's bundled font locally; the headset needs no font CDN.
         from PIL import ImageFont
         (Path(static.name)/'display.ttf').write_bytes(ImageFont.load_default(size=14).font_bytes)
+        model_url = None
+        if config.get('display_urdf') and config.get('runtime_mode')=='simulation':
+            from .model import prepare_model
+            model_url=prepare_model(config['display_urdf'],static.name,config.get('display_tool_config'),
+                                    short_rod=config.get('simulation_demo',False))
         app = LocalVuer(host=config['host'], port=config['port'],
                    cert=config['cert_file'], key=config['key_file'],
                    static_root=static.name, queries={'grid': True}, queue_len=2)
@@ -161,6 +166,7 @@ def _serve(config, output, feedback):
                 bgChildren=[Grid(key='default-grid'),
                             MotionControllers(stream=True, key='motionControllers', left=True, right=True)]))
             render_error = ''
+            render_key = None
             try:
                 while session.CURRENT_WS_ID in app.ws:
                     for _ in range(2):
@@ -170,11 +176,20 @@ def _serve(config, output, feedback):
                             break
                     view = (connectivity.snapshot(time.time()) if connectivity is not None
                             else display_snapshot(latest_display, time.time()-display_received))
+                    if config.get('mapping')=='pico_snowbot_v1' and connectivity is None:
+                        view=dict(view,pico=True,model_url=model_url,
+                            model_tool_url='/static/snowbot-tool.urdf' if model_url and config.get('display_tool_config') else None)
                     if config.get('runtime_mode')=='real':
                         view=dict(view,runtime_mode='real',simulated=False)
                     try:
-                        scene = await asyncio.to_thread(render, view)
-                        session.upsert(scene, to='bgChildren')
+                        key = None
+                        if view.get('pico') and view.get('runtime_mode')!='real':
+                            from .hud import hud_spec
+                            key=(tuple(hud_spec(view).items()),tuple(sorted((view.get('model_joints') or {}).items())))
+                        if key is None or key!=render_key:
+                            scene = await asyncio.to_thread(render, view)
+                            session.upsert(scene, to='bgChildren')
+                            render_key=key
                         render_error = ''
                     except Exception as exc:
                         # Rendering is optional and must never invalidate controller input.

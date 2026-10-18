@@ -62,6 +62,22 @@ class ShovelGeometryTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,'INVALID_TOOL_TRACKING'):
                 tracking_acceptance(recipe,value,.1)
 
+    def test_short_rod_uses_grip_midpoint_and_does_not_keep_hidden_pan_collision(self):
+        from bindu_teleoperation.simulation_fixture import short_rod_config
+        from bindu_kinematics.tool_geometry import make_collision_checker
+        rod=short_rod_config(self.config)
+        old_mount=np.array(self.config['left_to_tool']).reshape(4,4)
+        new_mount=np.array(rod['left_to_tool']).reshape(4,4)
+        tool=np.array(self.sample['tool']) @ np.linalg.inv(old_mount) @ new_mount
+        # The obsolete pan deliberately covers the whole robot. A rod must
+        # contain no pan collision queries, including its ground corners.
+        rod['demo']['pan_size_m']=[100.,100.,100.]
+        check=make_collision_checker(self.urdf,rod['demo'],conservative_convex=True)
+        report=check([dict(self.sample,tool=tool.tolist())])
+        self.assertEqual(report['geometry_kind'],'rod')
+        self.assertEqual(report['violations'],0)
+        self.assertNotEqual((report['closest_tool_robot_pair'] or {}).get('part'),'PAN')
+
     def test_coupling_accepts_common_motion_but_rejects_one_hand_drift(self):
         world=np.eye(4);world[:3,:3]=Rotation.from_euler('z',.5).as_matrix();world[:3,3]=[.12,-.3,.2]
         rows=[self.coupling_sample(0.),self.coupling_sample(1.,world=world)]
@@ -95,6 +111,18 @@ class ShovelGeometryTests(unittest.TestCase):
         self.assertGreaterEqual(result['min_tool_robot_clearance_m'],.02)
         self.assertGreater(result['aabb_bounded_queries'],0)
         self.assertEqual(len(result['support_heights_m']),4)
+
+    def test_tool_ground_contact_can_be_observed_without_blocking_arm_motion(self):
+        recipe=copy.deepcopy(self.recipe)
+        recipe['acceptance']['min_ground_clearance_m']=.05
+        with self.assertRaisesRegex(ValueError,'TOOL_BELOW_GROUND'):
+            collision_check(self.urdf,[self.sample],recipe)
+        recipe['acceptance']['ground_policy']='report_only'
+        result=collision_check(self.urdf,[self.sample],recipe)
+        self.assertEqual(result['violations'],0)
+        self.assertEqual(result['ground_warning_samples'],1)
+        self.assertLess(result['min_tool_ground_clearance_m'],.05)
+        self.assertGreaterEqual(result['min_tool_robot_clearance_m'],.02)
 
     def test_contact_check_does_not_skip_the_shaft_at_the_grip(self):
         # Put the shaft centre through the actual palm. The legacy contact

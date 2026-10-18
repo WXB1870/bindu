@@ -87,6 +87,17 @@ def display_snapshot(snapshot, age):
     if snapshot is None or not 0 <= age <= .6:
         return {'mode': 'DISPLAY_STALE', 'reason': 'Display unavailable; check ROS observer',
                 'target': None, 'measured': None, 'error': None, 'task': '', 'side': 'left'}
+    if snapshot.get('pico'):
+        view=dict(snapshot)
+        maximum=view.get('input_max_age_s',.25)
+        view['input_fresh']=bool(view.get('input_fresh') and
+            view.get('input_age_s') is not None and 0<=view['input_age_s']+age<=maximum)
+        if not view['input_fresh']:
+            view['raw_input_valid']=False
+            view['tracking_valid']={'left':False,'right':False}
+        if view.get('feedback_age_s') is None or not 0<=view['feedback_age_s']+age<=maximum:
+            view['stop_confirmed']=False
+        return view
     return snapshot
 
 

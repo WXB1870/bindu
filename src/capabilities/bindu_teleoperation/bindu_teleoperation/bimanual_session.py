@@ -3,7 +3,8 @@ import math
 import uuid
 from dataclasses import dataclass
 import numpy as np
-from .vr.mapping import robot_pose, relative_target
+from .vr.mapping import robot_pose, relative_target, mapping_rotation
+from .vr.one_euro import rotation_log, rotation_exp
 
 
 class AcceptedReference:
@@ -12,10 +13,13 @@ class AcceptedReference:
     Times use the same control clock at capture/solve sampling, not VR event time
     or service reply time. Long gaps and clock rollback require a new capture.
     """
-    def __init__(self, max_interval=.1):
+    def __init__(self, max_interval=.1, *, max_sample_gap=None):
         self.max_interval = float(max_interval)
         if not math.isfinite(self.max_interval) or not 0 < self.max_interval <= .1:
             raise ValueError('BIMANUAL_INTEGRATION_INTERVAL_CONFIG')
+        self.max_sample_gap = self.max_interval if max_sample_gap is None else float(max_sample_gap)
+        if not math.isfinite(self.max_sample_gap) or not self.max_interval <= self.max_sample_gap <= .25:
+            raise ValueError('BIMANUAL_SAMPLE_GAP_CONFIG')
         self.reset()
 
     def reset(self):
@@ -33,9 +37,11 @@ class AcceptedReference:
         if self.positions is None:
             raise ValueError('BIMANUAL_REFERENCE_NOT_CAPTURED')
         dt = sampled_at-self.sampled_at
-        if not math.isfinite(dt) or not 0 < dt <= self.max_interval:
-            raise ValueError('BIMANUAL_INTEGRATION_INTERVAL')
-        return self.positions, dt
+        if not math.isfinite(dt) or not 0 < dt <= self.max_sample_gap:
+            raise ValueError(f'BIMANUAL_INTEGRATION_INTERVAL: elapsed={dt:.6f}s limit={self.max_sample_gap:.6f}s')
+        # A bounded integration step must never consume an entire scheduling
+        # stall. Sample time still records real elapsed time on acceptance.
+        return self.positions, min(dt, self.max_interval)
 
     def accept(self, positions, sampled_at):
         self.step(sampled_at)
@@ -58,6 +64,12 @@ class GraspContinuation:
 class BimanualSession:
     def __init__(self, config, generation, selected_at, *, continuation=None):
         self.cfg = config
+        if type(config.get('two_hand_rod',False)) is not bool:
+            raise ValueError('VR_ROD_MAPPING_CONFIG')
+        if config.get('two_hand_rod'):
+            axis=np.asarray(config.get('rod_axis_in_tool'),dtype=float)
+            if axis.shape!=(3,) or not np.isfinite(axis).all() or not np.isclose(np.linalg.norm(axis),1.):
+                raise ValueError('VR_ROD_AXIS_CONFIG')
         self.generation = generation
         self.selected_at = selected_at
         self.identity = uuid.uuid4().hex
@@ -68,6 +80,8 @@ class BimanualSession:
         self.pressed_since = None
         self.anchor_input = self.anchor_tool = None
         self.current_input = None
+        self.current_hands = self.rod_anchor_hands = self.rod_anchor_basis = None
+        self.rod_roll = (0.,0.)
         self.stamp = 0.
         self.input_stamps = None
         self.target = None
@@ -111,6 +125,68 @@ class BimanualSession:
         pose[:3,3]=(a[:3,3]+b[:3,3])/2
         return pose
 
+    @staticmethod
+    def rod_swing(before, direction, transverse):
+        axis=np.cross(before,direction);length=float(np.linalg.norm(axis))
+        cosine=float(np.clip(before @ direction,-1.,1.))
+        return (rotation_exp(axis/length*math.atan2(length,cosine)) if length>1e-8 else
+                rotation_exp(transverse*math.pi) if cosine<0 else np.eye(3))
+
+    @staticmethod
+    def paired_rod_pose(hands, anchor_hands=None, anchor_basis=None, previous_roll=(0.,0.)):
+        a,b=hands
+        direction=a[:3,3]-b[:3,3]
+        distance=float(np.linalg.norm(direction))
+        if not .05 <= distance <= 1.2:
+            raise ValueError('VR_GRASP_GEOMETRY')
+        direction/=distance
+        pose=np.eye(4);pose[:3,3]=(a[:3,3]+b[:3,3])/2
+        if anchor_hands is None:
+            transverse=np.eye(3)[int(np.argmin(abs(direction)))]
+            transverse-=direction*float(direction @ transverse)
+            transverse/=np.linalg.norm(transverse)
+            pose[:3,:3]=np.column_stack((direction,transverse,np.cross(direction,transverse)))
+            return pose,(0.,0.)
+        swing=BimanualSession.rod_swing(anchor_basis[:,0],direction,anchor_basis[:,1])
+        rolls=[]
+        for hand,home,previous in zip(hands,anchor_hands,previous_roll):
+            # Remove line swing, then extract only each wrist's relative twist
+            # about the current rod axis. Initial wrist orientations cancel.
+            vector=rotation_log(hand[:3,:3] @ home[:3,:3].T @ swing.T)
+            angle=float(np.linalg.norm(vector))
+            q_axis=float(direction @ vector)*(math.sin(angle/2)/angle if angle>1e-12 else .5)
+            q_scalar=math.cos(angle/2)
+            if math.hypot(q_axis,q_scalar)<1e-6:
+                raise ValueError('VR_ROD_ROLL_DEGENERATE')
+            twist=2*math.atan2(q_axis,q_scalar)
+            twist=previous+math.remainder(twist-previous,2*math.pi)
+            rolls.append(twist)
+        pose[:3,:3]=rotation_exp(direction*sum(rolls)/2) @ swing @ anchor_basis
+        return pose,tuple(rolls)
+
+    def mapped_target(self):
+        target=np.asarray(relative_target(self.anchor_input,self.current_input,self.anchor_tool,
+            self.cfg['position_scale'],mapping_mode='robot_base',
+            operator_yaw_rad=self.cfg['operator_yaw_rad'])).reshape(4,4)
+        if self.cfg.get('two_hand_rod'):
+            basis=mapping_rotation('robot_base',self.cfg['operator_yaw_rad'])
+            robot_axis=self.anchor_tool[:3,:3] @ np.asarray(self.cfg['rod_axis_in_tool'])
+            # Align the two rod directions ONCE at engagement. Without this
+            # relative calibration a human pitch around the robot rod axis
+            # could leave the robot line unchanged (or turn into axial roll).
+            alignment=self.rod_swing(basis @ self.anchor_input[:3,0],robot_axis,
+                                     basis @ self.anchor_input[:3,1])
+            basis=alignment @ basis
+            swing=self.rod_swing(self.anchor_input[:3,0],self.current_input[:3,0],self.anchor_input[:3,1])
+            swing=basis @ swing @ basis.T
+            rotation=swing @ self.anchor_tool[:3,:3]
+            # A relative clutch permits different initial human/robot rod
+            # directions. Roll must still use the ROBOT rod's current axis;
+            # left-composing an input-axis roll would incorrectly tilt it.
+            axis=rotation @ np.asarray(self.cfg['rod_axis_in_tool'])
+            target[:3,:3]=rotation_exp(axis*sum(self.rod_roll)/2) @ rotation
+        return target
+
     def ingest(self, left, right, now):
         frames=(left,right)
         if (not math.isfinite(now) or
@@ -137,7 +213,14 @@ class BimanualSession:
             raise ValueError('VR_CLUTCH_UNORDERED')
         # Validate geometry before changing clutch/grasp state. A rejected
         # proposal must not consume a release counter or discard the anchor.
-        pose=self.paired_pose(left,right,left_orientation=self.axial is not None)
+        if self.cfg.get('two_hand_rod'):
+            hands=(robot_pose(left.pose),robot_pose(right.pose))
+            engaged=self.anchor_tool is not None and min(left.grip,right.grip)>=.3 and clutch_seq==self.clutch_seq
+            pose,rolls=self.paired_rod_pose(hands,self.rod_anchor_hands if engaged else None,
+                self.rod_anchor_basis if engaged else None,self.rod_roll)
+            self.current_hands,self.rod_roll=hands,rolls
+        else:
+            pose=self.paired_pose(left,right,left_orientation=self.axial is not None)
         # A nonzero counter on the first frame is historical, not a new release.
         if self.clutch_seq is not None and clutch_seq != self.clutch_seq:
             # The receiver can coalesce a brief release into the next pressed
@@ -195,22 +278,28 @@ class BimanualSession:
         if self.mode == 'follow' and self.anchor_input is None:
             self.anchor_input = pose
         if self.mode == 'follow' and self.anchor_tool is not None:
-            self.target=np.asarray(relative_target(self.anchor_input,pose,self.anchor_tool,
-                self.cfg['position_scale'],mapping_mode='robot_base',
-                operator_yaw_rad=self.cfg['operator_yaw_rad'])).reshape(4,4)
+            self.target=self.mapped_target()
         return True
 
     def reanchor(self):
         """Discard pending mapping at a confirmed-stop constraint transition."""
         self.anchor_input = self.anchor_tool = self.target = None
+        self.rod_anchor_hands = self.rod_anchor_basis = None
+        self.rod_roll = (0.,0.)
 
     def capture(self, tool_pose):
         if self.mode != 'follow' or self.anchor_input is None:
             raise ValueError('BIMANUAL_NOT_ENGAGED')
+        # Capture is asynchronous. Re-latch the controller on completion too,
+        # so motion while the worker captures cannot turn into a first target
+        # jump. The robot is held until this capture has completed.
+        self.anchor_input=self.current_input.copy()
+        if self.cfg.get('two_hand_rod'):
+            self.rod_anchor_hands=tuple(hand.copy() for hand in self.current_hands)
+            self.rod_anchor_basis=self.anchor_input[:3,:3].copy()
+            self.rod_roll=(0.,0.)
         self.anchor_tool=np.asarray(tool_pose,dtype=float).reshape(4,4)
-        self.target=np.asarray(relative_target(self.anchor_input,self.current_input,self.anchor_tool,
-            self.cfg['position_scale'],mapping_mode='robot_base',
-            operator_yaw_rad=self.cfg['operator_yaw_rad'])).reshape(4,4)
+        self.target=self.mapped_target()
         self.confirmed_hold=(self.source,self.clutch_seq,self.grasp_mode) if self.pico_pair else None
 
     def stopped_continuation(self, now):

@@ -63,7 +63,24 @@ class PicoNode(RuntimeNode):
                     or len(set(targets))!=3):raise ValueError('PICO_GRIPPER_TARGETS')
         if self.cfg.get('initial_load_state','unknown')!='unknown':
             raise ValueError('PICO_STARTUP_LOAD_MUST_BE_UNKNOWN')
-        self.control=PicoControl(initial_load='unknown',
+        self.declare_parameter('simulation_demo',False)
+        self.simulation_demo=self.get_parameter('simulation_demo').value
+        if type(self.simulation_demo) is not bool or (self.simulation_demo and
+                (not self.simulation or self.backend!='kinematic')):
+            raise ValueError('PICO_DEMO_REQUIRES_KINEMATIC_SIMULATION')
+        if self.simulation_demo:
+            from bindu_teleoperation.simulation_fixture import short_rod_config
+            self.tool_cfg=short_rod_config(self.tool_cfg)
+        self.prepare_positions=(self.cfg.get('simulation_demo_prepare_positions_rad',
+            self.tool_cfg['demo']['initial_positions_rad']) if self.simulation_demo else
+            self.tool_cfg['demo']['initial_positions_rad'])
+        prepare_names=[n for g in self.tool_cfg['resource_groups'] for n in self.profile.groups[g]]
+        if (not set(prepare_names)<=set(self.prepare_positions) or any(
+                type(self.prepare_positions[n]) not in (float,int) or not math.isfinite(self.prepare_positions[n]) or
+                not self.profile.limits[n][0]<=self.prepare_positions[n]<=self.profile.limits[n][1]
+                for n in prepare_names)):
+            raise ValueError('PICO_PREPARE_PRESET_INVALID')
+        self.control=PicoControl(initial_load='unknown',simulation_demo=self.simulation_demo,
                                  max_age=float(self.tool_cfg['input_max_age']))
         validation_cfg=dict(self.tool_cfg,worker_timeout=30.)
         self.validator=BimanualWorker(validation_cfg,self.profile,preload_path_checks=True)
@@ -232,9 +249,9 @@ class PicoNode(RuntimeNode):
             curve=Curve.between(0.,duration,before,after)
             if not curve.valid(self.profile,self.names):raise RuntimeError('PICO_MOTION_LIMITS')
             if fit_duration:
-                # Virtual/closed differs by only 0.02 rad in this simulated
-                # gripper. Fit the small move to the same v/a/jerk limits;
-                # loading/unloading keeps its configured full-open duration.
+                # Fit simulation-demo preparation and small grasp changes to
+                # the same v/a/jerk limits. Loading/unloading and the strict
+                # preparation flow retain their configured duration.
                 # Keep transport reserve beyond the 120 ms reference horizon;
                 # fitting the mathematical curve to its exact jerk boundary
                 # leaves no budget for timestamp/service scheduling jitter.
@@ -280,7 +297,7 @@ class PicoNode(RuntimeNode):
         self.current(intent);s,q=self.reading()
         if not joints_at_rest(s.joints,self.names,1e-6):raise RuntimeError('PREPARE_REQUIRES_STATIONARY_START')
         loaded=targets is not None
-        target=targets if loaded else {n:self.tool_cfg['demo']['initial_positions_rad'][n]
+        target=targets if loaded else {n:self.prepare_positions[n]
                 for g in self.tool_cfg['resource_groups'] for n in self.profile.groups[g]}
         end=time.monotonic()+self.validator.startup_timeout
         while not self.validator.ready or self.validator.busy:
@@ -368,7 +385,7 @@ class PicoNode(RuntimeNode):
             if intent.operation=='prepare':
                 if self.control.load!='empty':raise RuntimeError('PICO_PREPARE_REQUIRES_EMPTY')
                 target=await self.validate_prepare(intent)
-                await self.move(intent,target,self.cfg['prepare_duration'])
+                await self.move(intent,target,self.cfg['prepare_duration'],fit_duration=self.simulation_demo)
             elif intent.operation=='grippers':
                 if not self.control.supported or self.control.phase!='loading':raise RuntimeError('PICO_LOADING_REQUIRED')
                 target={self.cfg['grippers'][side]['joint']:self.cfg['grippers'][side][mode]
@@ -423,11 +440,37 @@ class PicoNode(RuntimeNode):
             self.running=self.executor.create_task(self.perform(intent))
         if self.now()-self.last_status>=.1:
             self.last_status=self.now()
-            view=dict(self.control.snapshot(),run_id=self.run_id,profile_hash=self.profile.digest,vr_source_id=self.control.source,
+            if self.simulation_demo:
+                try:
+                    _,q=self.reading()
+                    ready=self.prepare_positions
+                    prepared=all(abs(q[n]-ready[n])<.003 for g in self.tool_cfg['resource_groups'] for n in self.profile.groups[g])
+                    self.control.simulation_fixture(prepared,self.now())
+                except RuntimeError:
+                    pass
+            view=dict(self.control.snapshot(self.now()),run_id=self.run_id,profile_hash=self.profile.digest,vr_source_id=self.control.source,
                 source_id=(self.control.source+':'+self.instance_id) if self.control.source else None,
                 coordinator_id=self.instance_id,stamp=self.now(),simulated=True,runtime_mode=self.runtime_mode,
                 handoff_complete=self.handoff_complete,gripper_modes=list(self.feedback().modes),tool_phase=self.tool_phase,recording=self.recording,recording_enabled=self.recording_enabled,
-                physical_gripper_confirmed=None,actuator_feedback='simulated_joint_position')
+                physical_gripper_confirmed=None,actuator_feedback='simulated_joint_position',
+                execution_state=self.state.state if self.state is not None else 'unavailable',
+                feedback_age_s=self.now()-seconds(self.state.feedback_stamp) if self.state is not None else None)
+            raw=tuple(self.frames.values())
+            feedback=self.feedback()
+            view.update(motion_stopped=feedback.healthy and feedback.stopped,
+                tool_ground_policy=self.tool_cfg['demo']['acceptance'].get('ground_policy','required'),
+                tool_variant='short_rod' if self.simulation_demo else 'shovel',
+                position_scale=self.tool_cfg['position_scale'],rotation_scale=1.,
+                mapping_frame='robot_base',control_point='grip_midpoint' if self.simulation_demo else 'tool_origin',
+                model_joints=dict(zip(self.state.joints.name,self.state.joints.position)) if feedback.healthy else None,
+                input_max_age_s=self.control.max_age,
+                stop_confirmed=(self.control.rest(self.now()) and self.control.pending is None and
+                                self.running is None and self.handoff_complete),
+                grasp_applied='right_axial' if self.control.virtual else 'rigid',
+                tracking_valid={f.side:bool(f.valid and 0<=self.now()-seconds(f.stamp)<=self.control.max_age) for f in raw})
+            view['raw_input_age_s']=max((self.now()-seconds(f.stamp) for f in raw),default=None)
+            view['raw_input_valid']=(len(raw)==2 and all(f.valid for f in raw) and
+                len({(f.source_id,f.seq) for f in raw})==1)
             self.display.publish(String(data=json.dumps(view)))
             if self.last_phase!=(self.control.phase,self.control.reason):
                 self.last_phase=(self.control.phase,self.control.reason)

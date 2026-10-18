@@ -60,6 +60,81 @@ class Rig:
         assert self.core.phase=='tool_standby'
 
 
+class SimulationDemoTests(unittest.TestCase):
+    def fixture(self):
+        rig=Rig(load='unknown')
+        rig.core.simulation_demo=True
+        return rig
+
+    def test_default_never_infers_a_tool(self):
+        r=Rig(load='unknown')
+        r.core.simulation_fixture(True,r.now)
+        self.assertEqual(r.core.load,'unknown')
+        self.assertEqual(r.core.drain(),[])
+
+    def test_initial_tracking_acquisition_stays_checking_but_active_loss_stops(self):
+        r=Rig()
+        left,right=r.core.frames
+        core=PicoControl()
+        core.ingest(replace(left,valid=False,pose=()),replace(right,valid=False,pose=()),r.now)
+        self.assertEqual(core.phase,'checking')
+        self.assertEqual(core.drain(),[])
+        r.core.ingest(replace(left,valid=False,pose=()),right,r.now)
+        self.assertEqual(r.core.phase,'locked')
+        self.assertEqual(r.core.drain()[-1].operation,'stop')
+
+    def test_real_pico_near_rotation_remains_rigid_after_zero_motion_mapping(self):
+        from bindu_teleoperation.vr.mapping import pose_matrix,robot_pose,relative_target
+        # Observed live XR matrix: accepted at 1e-3; uncorrected composition
+        # exceeded the QP's 1e-5 rotation check even with no operator motion.
+        pose=np.array([[.5447476506233215,-.7995926141738892,-.25289684534072876,.066],
+            [.83836829662323,.511938750743866,.1872648298740387,.774],
+            [-.020273271948099136,-.31402915716171265,.9492216110229492,-.321],
+            [0.,0.,0.,1.]])
+        rigid=pose_matrix(pose)
+        np.testing.assert_allclose(rigid[:3,:3].T@rigid[:3,:3],np.eye(3),atol=1e-12)
+        np.testing.assert_array_equal(rigid[:3,3],pose[:3,3])
+        target=np.array(relative_target(robot_pose(pose),robot_pose(pose),np.eye(4),mapping_mode='robot_base')).reshape(4,4)
+        np.testing.assert_allclose(target,np.eye(4),atol=1e-12)
+        for malformed in (np.diag([1.01,1.,1.,1.]),np.diag([-1.,1.,1.,1.])):
+            with self.assertRaises(ValueError):pose_matrix(malformed)
+
+    def test_demo_empty_start_stays_stationary_and_prepared_attaches_virtual_tool(self):
+        r=self.fixture()
+        r.core.simulation_fixture(False,r.now)
+        self.assertEqual(r.core.load,'empty')
+        self.assertEqual(r.core.drain(),[])
+        r.core.reason='PREPARED'
+        r.core.simulation_fixture(True,r.now)
+        self.assertEqual(r.core.load,'held')
+        self.assertEqual(r.core.drain()[-1].operation,'confirm_tool')
+
+    def test_existing_prepared_fixture_only_requests_readiness(self):
+        r=self.fixture()
+        r.core.simulation_fixture(True,r.now)
+        self.assertEqual(r.core.phase,'confirming_tool')
+        self.assertEqual([i.operation for i in r.core.drain()],['confirm_tool'])
+
+    def test_demo_cannot_clear_stop_or_use_stale_held_input(self):
+        for condition in ('locked','stale','held_squeeze','moving'):
+            r=self.fixture()
+            if condition=='locked':r.core.phase='locked'
+            elif condition=='stale':r.now+=1.
+            elif condition=='held_squeeze':r.grips=[1.,1.];r.step()
+            elif condition=='moving':r.core.feedback=PicoFeedback(r.now,False)
+            r.core.simulation_fixture(True,r.now)
+            self.assertEqual(r.core.load,'unknown',condition)
+            self.assertEqual(r.core.drain(),[],condition)
+
+    def test_stale_snapshot_never_advertises_old_buttons(self):
+        r=self.fixture()
+        view=r.core.snapshot(r.now+1.)
+        self.assertFalse(view['input_fresh'])
+        for value in view['controller_states'].values():
+            self.assertIsNone(value['buttons'])
+            self.assertIsNone(value['squeeze'])
+
+
 class MappingTests(unittest.TestCase):
     def event(self):
         pose=np.eye(4).ravel(order='F').tolist()
@@ -77,10 +152,24 @@ class MappingTests(unittest.TestCase):
         from bindu_teleoperation.vr.display import status_lines
         lines=status_lines(dict(pico=True,mode='loading',reason='WAIT',load_state='held',
                                 external_support=True,gripper_modes=['closed','open']))
-        self.assertEqual(len(lines),7)
+        self.assertEqual(len(lines),3)
         text=' '.join(line for line,_ in lines)
-        self.assertIn('PICO',text);self.assertIn('Triggers open',text);self.assertIn('X virtual',text)
+        self.assertIn('仿真',text);self.assertIn('装卸',text);self.assertIn('既有流程',text)
         self.assertNotIn('SINGLE ARM',text)
+
+    def test_normal_hud_hides_raw_tracking_and_physical_keys(self):
+        from bindu_teleoperation.vr.display import status_lines
+        view=dict(pico=True,mode='following',reason='FOLLOWING',grasp_applied='rigid',input_fresh=True,controller_states={
+            side:dict(valid=True,squeeze=.2,trigger=.4,buttons=1) for side in ('left','right')},
+            raw_input_age_s=.02,raw_input_valid=True,simulation_demo=True)
+        text=' '.join(line for line,_ in status_lines(view))
+        for token in ('跟随中','刚握','Y 停止'):
+            self.assertIn(token,text)
+        for token in ('20 ms','X:1','A:1','0.2'):
+            self.assertNotIn(token,text)
+        self.assertEqual(len(status_lines(view)),1)
+        view['raw_input_valid']=False
+        self.assertIn('手柄输入不可用',' '.join(line for line,_ in status_lines(view)))
 
     def test_real_position_panel_only_advertises_supported_controls(self):
         from bindu_teleoperation.vr.display import status_lines
@@ -119,6 +208,110 @@ class MappingTests(unittest.TestCase):
         session.ingest(replace(a,seq=a.seq+1,stamp=a.stamp+.01),
                        replace(b,seq=b.seq+1,stamp=b.stamp+.01,virtual_grip=True),rig.now+.01)
         self.assertEqual(session.grasp_mode,'right_axial')
+
+
+class PicoHUDTests(unittest.TestCase):
+    def view(self,mode='following',**values):
+        return dict(pico=True,mode=mode,reason='FOLLOWING',input_fresh=True,raw_input_valid=True,
+            grasp_applied='rigid',grasp_requested='rigid',**values)
+
+    def test_reference_six_states_use_feedback_and_hide_normal_notice(self):
+        from bindu_teleoperation.vr.hud import hud_spec
+        following=hud_spec(self.view())
+        self.assertEqual((following['state'],following['title']),('following',''))
+        virtual=hud_spec({**self.view(), 'grasp_applied':'right_axial'})
+        self.assertEqual((virtual['state'],virtual['grip'],virtual['title']),('virtual','右手虚握',''))
+        paused=hud_spec(self.view('tool_standby',stop_confirmed=True))
+        self.assertIn('松开双侧握',paused['title'])
+        switching=hud_spec({**self.view('switching'),'grasp_requested':'right_axial'})
+        self.assertEqual((switching['state'],switching['grip']),('switching','刚握'))
+        self.assertIn('尚未进入右手虚握',switching['detail'])
+        lost=hud_spec({**self.view('locked'),'reason':'PICO_PAIR_INVALID','tracking_valid':{'left':True,'right':False}})
+        self.assertEqual((lost['state'],lost['title']),('lost','右手柄输入失效'))
+        self.assertIn('等待停稳确认',lost['detail'])
+        stopped=hud_spec({**self.view('locked',stop_confirmed=True),'reason':'PICO_Y_STOP'})
+        self.assertEqual((stopped['state'],stopped['title'],stopped['action']),('stopped','已确认停稳','B 恢复待命'))
+
+    def test_y_request_and_stale_observer_never_claim_confirmed_stop(self):
+        from bindu_teleoperation.vr.hud import hud_spec
+        from bindu_teleoperation.feedback import display_snapshot
+        view={**self.view('locked'),'reason':'PICO_Y_STOP'}
+        self.assertEqual(hud_spec(view)['status'],'停止未确认')
+        view.update(stop_confirmed=True,feedback_age_s=.02,input_age_s=.02)
+        stale=display_snapshot(view,.3)
+        self.assertFalse(stale['stop_confirmed'])
+        self.assertFalse(stale['input_fresh'])
+        self.assertEqual(hud_spec(stale)['status'],'停止未确认')
+        self.assertEqual(hud_spec(display_snapshot(view,1.))['status'],'状态未知')
+
+    def test_pico_render_has_one_small_image_hud_and_no_diagnostic_axes(self):
+        from bindu_teleoperation.vr.display import render
+        scene=render(self.view()).serialize()
+        self.assertEqual(len(scene['children']),1)
+        hud=scene['children'][0]
+        self.assertEqual(hud['tag'],'ImageBackground')
+        self.assertEqual(hud['geometry'],'plane')
+        self.assertEqual(hud['userData']['hud_state'],'following')
+        self.assertEqual(hud['userData']['title'],'')
+        self.assertTrue(hud['src'].startswith('data:image/png;base64,'))
+
+    def test_model_uses_fresh_measured_joints_and_local_urdf(self):
+        from bindu_teleoperation.vr.display import render
+        scene=render(self.view(model_url='/static/snowbot.urdf',model_joints={'joint':.2})).serialize()
+        self.assertEqual(len(scene['children']),2)
+        model=scene['children'][0]['children'][0]
+        self.assertEqual(model['tag'],'Urdf')
+        self.assertEqual(model['src'],'/static/snowbot.urdf')
+        self.assertEqual(model['jointValues'],{'joint':.2})
+        self.assertFalse(model['parseCollision'])
+
+
+class ShortRodFixtureTests(unittest.TestCase):
+    def test_midpoint_rebase_removes_shovel_lever_without_changing_grasp(self):
+        from bindu_teleoperation.simulation_fixture import short_rod_config
+        import copy
+        path=Path(__file__).resolve().parents[1]/'src/integration/bindu_runtime/config/robots/snowbot/bimanual_snowbot_shovel.json'
+        original=json.loads(path.read_text());before=copy.deepcopy(original)
+        rod=short_rod_config(original)
+        self.assertEqual(original,before)
+        points=[]
+        for side,key in (('left','grip_offset_m'),('right','right_grip_offset_m')):
+            mount=np.array(rod[side+'_to_tool']).reshape(4,4)
+            points.append((np.linalg.inv(mount) @ np.r_[rod['demo'][key],1.])[:3])
+        np.testing.assert_allclose((points[0]+points[1])/2,0.,atol=1e-12)
+        old_l=np.array(original['left_to_tool']).reshape(4,4);old_r=np.array(original['right_to_tool']).reshape(4,4)
+        new_l=np.array(rod['left_to_tool']).reshape(4,4);new_r=np.array(rod['right_to_tool']).reshape(4,4)
+        np.testing.assert_allclose(old_l @ np.linalg.inv(old_r),new_l @ np.linalg.inv(new_r),atol=1e-12)
+        self.assertAlmostEqual(np.diff(rod['demo']['shaft_from_left_grip_m'])[0],.56)
+        self.assertEqual(rod['position_scale'],.5)
+        self.assertEqual(rod['demo']['geometry_kind'],'rod')
+        self.assertNotIn('receiving_bin',rod['demo'])
+        # Change only the old tool-origin/length convention. The short rod's
+        # mount and operator leverage must remain exactly the same.
+        shifted=copy.deepcopy(original);offset=np.eye(4);offset[2,3]=.6
+        for side in ('left','right'):
+            shifted[side+'_to_tool']=(np.array(original[side+'_to_tool']).reshape(4,4) @ offset).ravel().tolist()
+        shifted_rod=short_rod_config(shifted)
+        np.testing.assert_allclose(shifted_rod['left_to_tool'],rod['left_to_tool'],atol=1e-12)
+        with self.assertRaisesRegex(ValueError,'REQUIRES_SIMULATION'):
+            short_rod_config(dict(original,simulation_only=False))
+
+    def test_display_has_only_the_short_rod_and_shares_the_solver_mount(self):
+        from bindu_teleoperation.simulation_fixture import short_rod_config
+        from bindu_teleoperation.vr.model import prepare_model
+        import tempfile,xml.etree.ElementTree as ET
+        root=Path(__file__).resolve().parents[1]
+        cfg=root/'src/integration/bindu_runtime/config/robots/snowbot/bimanual_snowbot_shovel.json'
+        urdf=root/'src/hardware/bindu_description/urdf/snowbot_display.urdf'
+        rod=short_rod_config(json.loads(cfg.read_text()))
+        with tempfile.TemporaryDirectory() as directory:
+            prepare_model(urdf,directory,cfg,short_rod=True)
+            tree=ET.parse(Path(directory)/'snowbot-tool.urdf')
+            visuals=tree.findall("link[@name='bindu_virtual_tool']/visual")
+            self.assertEqual([v.get('name') for v in visuals],['shaft'])
+            self.assertAlmostEqual(float(visuals[0].find('geometry/cylinder').get('length')),.56)
+            origin=tree.find("joint[@name='bindu_virtual_tool_mount']/origin")
+            np.testing.assert_allclose(np.fromstring(origin.get('xyz'),sep=' '),np.array(rod['left_to_tool']).reshape(4,4)[:3,3])
 
 
 class GraspContinuationTests(unittest.TestCase):
@@ -195,6 +388,22 @@ class GraspContinuationTests(unittest.TestCase):
 
 
 class StateTests(unittest.TestCase):
+    def test_startup_input_before_feedback_does_not_latch_timeout_or_use_stale_pair(self):
+        core=PicoControl(initial_load='unknown')
+        rig=Rig()
+        core.ingest(*rig.core.frames,rig.now)
+        later=rig.now+1.
+        core.tick(later)
+        self.assertEqual(core.phase,'checking')
+        core.update_feedback(PicoFeedback(later,True),later)
+        self.assertEqual(core.phase,'checking')
+        rig.step(1.01)
+        core.ingest(*rig.core.frames,rig.now)
+        core.update_feedback(PicoFeedback(rig.now,True),rig.now)
+        self.assertEqual(core.phase,'standby')
+        core.tick(rig.now+1.)
+        self.assertEqual((core.phase,core.reason),('locked','PICO_INPUT_TIMEOUT'))
+
     def test_initial_feedback_discovery_waits_without_latching_or_moving(self):
         rig=Rig();core=PicoControl(initial_load='empty')
         core.update_feedback(PicoFeedback(0.,False,healthy=False),rig.now)

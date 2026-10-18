@@ -42,6 +42,22 @@ class BimanualToolNode(RuntimeNode):
             raise ValueError('BIMANUAL_INPUT_SOURCE')
         if self.input_source == 'tool_pose' and not self.cfg.get('input_frame'):
             raise ValueError('BIMANUAL_INPUT_FRAME')
+        self.declare_parameter('tool_ground_policy','configured')
+        ground_policy=self.get_parameter('tool_ground_policy').value
+        if ground_policy not in ('configured','report_only') or (
+                ground_policy=='report_only' and (not self.simulation or self.input_source!='vr')):
+            raise ValueError('BIMANUAL_GROUND_POLICY_OVERRIDE')
+        if ground_policy=='report_only':
+            self.cfg['demo']['acceptance']['ground_policy']='report_only'
+        self.declare_parameter('simulation_demo',False)
+        demo=self.get_parameter('simulation_demo').value
+        if type(demo) is not bool or (demo and (not self.simulation or self.input_source!='vr')):
+            raise ValueError('PICO_DEMO_REQUIRES_KINEMATIC_SIMULATION')
+        if demo:
+            from bindu_teleoperation.simulation_fixture import short_rod_config
+            self.cfg=short_rod_config(self.cfg)
+        if not self.simulation and 'integration_max_sample_gap' in self.cfg:
+            raise ValueError('BIMANUAL_SAMPLE_GAP_OVERRIDE_REQUIRES_SIMULATION')
         self.tool_frame=None
         self.groups=tuple(self.cfg['resource_groups'])
         if (len(self.groups) not in (2,3) or len(set(self.groups))!=len(self.groups) or
@@ -265,7 +281,8 @@ class BimanualToolNode(RuntimeNode):
         self.grasp_continuation=None
         session=session_type(self.cfg,mode.generation,seconds(mode.changed_at),
             **({'continuation':continuation} if self.input_source=='vr' else {}))
-        reference=AcceptedReference(self.cfg.get('max_integration_interval',.1))
+        reference=AcceptedReference(self.cfg.get('max_integration_interval',.1),
+            max_sample_gap=self.cfg.get('integration_max_sample_gap'))
         result=TeleopAction.Result(simulated=self.simulation)
         lease=pending=renewal=None
         accepted=0
@@ -279,6 +296,7 @@ class BimanualToolNode(RuntimeNode):
         work_positions=None
         work_target=None
         work_dt=None
+        work_gap=None
         pending_reference=None
         last_mode='idle'
         last_grasp_generation=0
@@ -303,6 +321,9 @@ class BimanualToolNode(RuntimeNode):
                 'mode_generation':session.generation,'resource_groups':self.groups,
                 'collision_scope':self.cfg['collision_scope'],'tool_frame':self.cfg['left_frame'],
                 'tool_transform':self.cfg['left_to_tool'],
+                'position_scale':self.cfg['position_scale'],'rotation_scale':1.,
+                'mapping_frame':'robot_base','geometry_kind':self.cfg.get('demo',{}).get('geometry_kind','shovel'),
+                'max_integration_interval':reference.max_interval,'max_sample_gap':reference.max_sample_gap,
                 'right_axial_grasp':bool(session.axial),
                 'grip_actuation':'kinematic_constraint_only'}),goal.request.task_id)
             started=time.monotonic()
@@ -404,6 +425,7 @@ class BimanualToolNode(RuntimeNode):
                             pending=None
                         if not await self.stop(lease):
                             raise RuntimeError('BIMANUAL_HOLD_UNCONFIRMED')
+                        worker_token+=1
                         self.worker_result=None
                         awaiting=''
                         reference.reset()
@@ -419,10 +441,16 @@ class BimanualToolNode(RuntimeNode):
                     if token==worker_token and session.mode=='follow' and awaiting:
                         if kind=='error': raise RuntimeError(value)
                         if awaiting=='capture':
+                            if not 0 <= self.now()-work_sampled_at <= reference.max_sample_gap:
+                                raise RuntimeError('BIMANUAL_CAPTURE_STALE')
                             session.capture(value)
-                            reference.capture(work_positions,work_sampled_at)
+                            # No motion was submitted while capturing. Start the
+                            # integration clock here; capture latency is not dt.
+                            reference.capture(work_positions,self.now())
                             self.event('BIMANUAL_CAPTURED',json.dumps({'tool_pose':value.tolist(),
-                                'input_stamp':session.stamp,'grasp_mode':session.grasp_mode,
+                                'input_stamp':session.stamp,'input_seq':session.seq,'grasp_mode':session.grasp_mode,
+                                'controller_pose':session.anchor_input.tolist(),
+                                'feedback_sampled_at':work_sampled_at,'capture_completed_at':reference.sampled_at,
                                 'grasp_generation':session.grasp_generation,
                                 'grasp_continuation':getattr(session,'resumed_grasp',False)}),goal.request.task_id)
                         else:
@@ -445,7 +473,8 @@ class BimanualToolNode(RuntimeNode):
                                 pending_at=now
                                 self.event('BIMANUAL_QP_RESULT',json.dumps({'solve_us':metrics[0],
                                     'relative_error':metrics[1],'recovery_scale':metrics[2],
-                                    'input_stamp':work_stamp,'integration_dt':work_dt,
+                                    'input_stamp':work_stamp,'input_seq':work_seq,'integration_dt':work_dt,
+                                    'sample_gap_s':work_gap,
                                     'target':work_target}),
                                     goal.request.task_id,command.command_id)
                         awaiting=''
@@ -456,13 +485,20 @@ class BimanualToolNode(RuntimeNode):
                     worker_token+=1
                     operation='capture' if session.anchor_tool is None else 'solve'
                     sampled_at=self.now()
+                    # A capture and this loop can share a clock tick. The next
+                    # fresh controller frame will provide a positive interval.
+                    if operation=='solve' and sampled_at<=reference.sampled_at:
+                        await self.pause()
+                        continue
                     baseline,dt=reference.step(sampled_at) if operation=='solve' else (None,None)
+                    gap=sampled_at-reference.sampled_at if operation=='solve' else None
                     if self.worker.submit(operation,worker_token,measured,session.target,
                                           reference=baseline,dt=dt,grasp_mode=session.grasp_mode,
                                           target_stamp=session.stamp):
                         awaiting=operation
                         work_seq,work_stamp=session.seq,session.stamp
                         work_sampled_at,work_dt=sampled_at,dt
+                        work_gap=gap
                         work_positions=tuple(measured[n] for n in self.names)
                         work_target=None if session.target is None else session.target.ravel().tolist()
                 goal.publish_feedback(TeleopAction.Feedback(session_id=session.identity,

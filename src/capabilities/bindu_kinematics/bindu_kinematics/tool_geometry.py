@@ -253,6 +253,13 @@ def make_collision_checker(urdf, recipe, conservative_convex=False, *, tool_pres
     ground = recipe['ground']
     ground_z = float(ground['z_in_base_m'])
     floor_clearance = float(recipe['acceptance']['min_ground_clearance_m'])
+    ground_policy=recipe['acceptance'].get('ground_policy','required')
+    geometry_kind=recipe.get('geometry_kind','shovel')
+    if geometry_kind not in ('shovel','rod'):
+        raise ValueError('INVALID_TOOL_GEOMETRY_KIND')
+    has_pan=geometry_kind=='shovel'
+    if ground_policy not in ('required','report_only'):
+        raise ValueError('INVALID_GROUND_POLICY')
     if not np.isfinite(floor_clearance) or floor_clearance < 0:
         raise ValueError('INVALID_GROUND_CLEARANCE')
     support_tolerance = float(ground['support_tolerance_m'])
@@ -310,11 +317,11 @@ def make_collision_checker(urdf, recipe, conservative_convex=False, *, tool_pres
         return rotation @ center+translation, np.abs(rotation) @ half
     # Geometry is immutable: share identical shaft pieces and precompute query
     # layout. Only transforms and conservative bounds change with each pose.
-    tool_parts = [('PAN', pan, np.asarray(recipe['pan_center_m']))] + [
+    tool_parts = ([('PAN', pan, np.asarray(recipe['pan_center_m']))] if has_pan else []) + [
         ('SHAFT', shape, center) for shape, center in segment_cache.values()]
     tool_ids = {id(shape): i for i, (_, shape, _) in enumerate(tool_parts)}
     body_queries = [(i, j) for i, name in enumerate(names)
-                    for j in [0]+[tool_ids[id(shape)] for shape, _ in segments[name]]]
+                    for j in ([0] if has_pan else [])+[tool_ids[id(shape)] for shape, _ in segments[name]]]
     body_indices, part_indices = np.array(body_queries).T
     corners_local = pan_corners(recipe)
     shaft_points = np.array(recipe['left_grip_in_tool_m']) + ends[:, None]*shaft_axis
@@ -330,6 +337,7 @@ def make_collision_checker(urdf, recipe, conservative_convex=False, *, tool_pres
         minimum = float('inf')
         grasp_minimum = float('inf')
         support_heights = {}
+        ground_minimum,ground_warnings=float('inf'),0
         distance_request = fcl.DistanceRequest()
         intersection_request = fcl.CollisionRequest()
         intersection_request.enable_contact = False
@@ -367,7 +375,11 @@ def make_collision_checker(urdf, recipe, conservative_convex=False, *, tool_pres
             axis_z = float((tool[:3,:3] @ shaft_axis)[2])
             radial_height = radius*np.sqrt(max(0.,1.-axis_z*axis_z))
             shaft_heights = (shaft_points @ tool[:3,:3].T + tool[:3,3])[:,2] - radial_height
-            ground_failure = tool_present and min(corners[:,2].min(),shaft_heights.min()) < ground_z+floor_clearance
+            tool_clearance=float(min(corners[:,2].min() if has_pan else float('inf'),shaft_heights.min())-ground_z)
+            if tool_present:
+                ground_minimum=min(ground_minimum,tool_clearance)
+                ground_warnings+=int(tool_clearance<floor_clearance)
+            ground_failure = tool_present and tool_clearance<floor_clearance and ground_policy=='required'
             pan_pose = fcl.Transform3s(tool[:3, :3], tool[:3, 3]+tool[:3, :3] @ np.array(recipe['pan_center_m']))
             # The same body poses are checked against the tool and all five
             # bin walls. Compute their world bounds once per measured pose.
@@ -418,11 +430,10 @@ def make_collision_checker(urdf, recipe, conservative_convex=False, *, tool_pres
                 if distance < limit and failure is None:
                     kind = 'GRASP_PENETRATION' if grasp_query else part+'_CLEARANCE'
                     failure = f'{kind}: {name} distance={distance:.6g}'
-            pan_bounds = part_bounds[0]
             # No grip exemptions apply to the receiving bin. Check every body mesh,
             # the full shaft and the pan against its four walls and floor.
             shaft_pose = fcl.Transform3s(tool[:3,:3] @ rotation,tool[:3,3]+tool[:3,:3] @ shaft_center)
-            scene_parts = bodies + [('PAN',pan,pan_pose,pan_bounds),
+            scene_parts = bodies + ([('PAN',pan,pan_pose,part_bounds[0])] if has_pan else []) + [
                 ('SHAFT',full_shaft,shaft_pose,world_bounds(full_shaft,shaft_pose.getRotation(),shaft_pose.getTranslation()))]
             if not tool_present: scene_parts = bodies
             if bin_parts:
@@ -447,13 +458,16 @@ def make_collision_checker(urdf, recipe, conservative_convex=False, *, tool_pres
                 if not collect_failures:
                     raise ValueError(f"{failure} t={sample['t']}")
                 failures.append({'sample': sample['t'], 'reason': failure})
-        return {'samples': len(samples), 'tool_body_representation':'convex_outer' if conservative_convex else 'cad_mesh',
+        return {'samples': len(samples), 'geometry_kind':geometry_kind,
+                'tool_body_representation':'convex_outer' if conservative_convex else 'cad_mesh',
                 'mesh_pairs': len(geometry.collisionPairs),
                 'excluded_tree_distance': 2, 'shaft_contacts': contacts,
                 'grasp_contact_checked': check_grasp_contacts,
                 'grasp_contact_test': 'inner_cylinder_mesh_intersection' if check_grasp_contacts else 'legacy_band_exemption',
                 'grasp_penetration_limit_m': grasp_penetration if check_grasp_contacts else None,
                 'empty_mesh_proxies': proxies, 'support_heights_m': support_heights,
+                'ground_policy':ground_policy,'ground_warning_samples':ground_warnings,
+                'min_tool_ground_clearance_m':ground_minimum if tool_present else None,
                 'min_tool_robot_clearance_m': minimum, 'closest_tool_robot_pair': worst,
                 'exact_distance_queries': exact_queries, 'aabb_bounded_queries': bounded_queries,
                 'min_bin_clearance_m': bin_minimum if bin_parts else None, 'closest_bin_pair': bin_worst,

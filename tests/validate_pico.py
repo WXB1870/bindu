@@ -38,7 +38,7 @@ def websocket_source(port, source, stop, errors, records, period):
         with ws:
             next_send=time.monotonic()
             while not stop.is_set():
-                if source['enabled']:
+                if source['enabled'] and time.monotonic()>=source.get('send_pause_until',0.):
                     generator=source.get('pose_generator')
                     if generator is not None:
                         poses,recipe_time,target=generator(time.monotonic())
@@ -176,6 +176,127 @@ def run_shovel_cycle(node,source,views,states,events,trace,raw,projected,tool_in
         backend='ROS kinematic simulated joints',physical_grasp_validated=False)
 
 
+def run_rod_demo(source,views,states,accepted,events,trace,raw,tool_path,model_root,
+                 pump,wait,phase,click,check,result,soak_seconds):
+    """Bounded real-protocol simulation acceptance, including moving reclutches."""
+    from scipy.spatial.transform import Rotation
+    from bindu_teleoperation.vr.mapping import OPENXR_TO_ROBOT as C
+    from bindu_teleoperation.simulation_fixture import short_rod_config
+    import pinocchio as pin
+    from bisect import bisect_right
+    cfg=short_rod_config(json.loads(tool_path.read_text()))
+    source['buttons'][1]=1
+    phase('tool_standby',timeout=40.)
+    source['buttons'][1]=0;pump(.2)
+    assert views[-1]['tool_variant']=='short_rod' and views[-1]['position_scale']==.5
+    check('A prepares and installs short rod; 0.5 translation scale is reported')
+    motion_windows=[];capture_errors=[]
+    def engage():
+        start=len(events)
+        source['grip']=[1.,1.]
+        phase('following',timeout=12.)
+        wait(lambda:any(e['state']=='BIMANUAL_CAPTURED' for e in events[start:]),3.,'rod capture')
+        capture=next(e for e in events[start:] if e['state']=='BIMANUAL_CAPTURED')
+        data=json.loads(capture['code'])
+        wait(lambda:any(e['state']=='BIMANUAL_QP_RESULT' for e in events[start:]),3.,'first rod target')
+        first=json.loads(next(e['code'] for e in events[start:] if e['state']=='BIMANUAL_QP_RESULT'))
+        error=float(np.max(np.abs(np.asarray(first['target']).reshape(4,4)-data['tool_pose'])))
+        capture_errors.append(error)
+        assert error<1e-8,('RECLUTCH_TARGET_JUMP',error)
+    for cycle in range(4):
+        engage()
+        base=[C @ p @ C.T for p in source['poses']]
+        center=(base[0][:3,3]+base[1][:3,3])/2
+        direction=base[0][:3,3]-base[1][:3,3];direction/=np.linalg.norm(direction)
+        began=time.monotonic();start=time.time()
+        def generate(now):
+            t=now-began;w=2*np.pi*.13
+            translation=np.array([.04*np.sin(w*t),.03*np.sin(.8*w*t),.02*np.sin(.6*w*t)])
+            swing=Rotation.from_rotvec([.06*np.sin(.7*w*t),.05*np.sin(.9*w*t),.06*np.sin(.5*w*t)]).as_matrix()
+            axis=swing @ direction
+            roll=.12*np.sin(.65*w*t)
+            twist=Rotation.from_rotvec(axis*roll).as_matrix()
+            poses=[]
+            for hand in base:
+                pose=np.eye(4);pose[:3,3]=center+translation+swing @ (hand[:3,3]-center)
+                pose[:3,:3]=twist @ swing @ hand[:3,:3]
+                poses.append(C.T @ pose @ C)
+            return poses,t,np.eye(4)
+        source['cycle_targets']=[];source['pose_generator']=generate
+        next_delay=began+1.
+        while time.monotonic()-began<soak_seconds/4:
+            pump(.02)
+            if cycle==1 and time.monotonic()>=next_delay:
+                source['send_pause_until']=time.monotonic()+.14
+                next_delay=time.monotonic()+3.
+            if views[-1]['phase']!='following':
+                raise AssertionError('ROD_FOLLOW_INTERRUPTED:'+json.dumps(views[-1]))
+        source['pose_generator']=None
+        motion_windows.append((start,time.time()))
+        source['grip']=[0.,0.];phase('tool_standby')
+        wait(lambda:views[-1].get('stop_confirmed') is True,5.,'released rod stopped')
+        pump(.15)
+        before=np.array(states[-1].joints.position);count=len(accepted)
+        # Reposition and turn hands while stopped. None of this displacement
+        # may be replayed when the operator squeezes again.
+        moved=[]
+        for pose in source['poses']:
+            p=pose.copy();p[:3,3]+=[.12,-.03,.02]
+            p[:3,:3]=Rotation.from_euler('y',.3).as_matrix() @ p[:3,:3]
+            moved.append(p)
+        source['poses']=moved;pump(.4)
+        assert len(accepted)==count
+        assert np.max(np.abs(np.array(states[-1].joints.position)-before))<1e-4
+    check('four continuous 6D segments, pause reposition and zero-jump reclutch')
+    engage();click(0,1);phase('locked')
+    wait(lambda:views[-1].get('stop_confirmed') is True,5.,'Y confirmed stop')
+    pump(.2);count=len(accepted);pump(.4);assert len(accepted)==count
+    check('Y confirms actual stop and held squeezes cannot restart')
+    source['grip']=[0.,0.];pump(.2);click(1,1);phase('tool_standby',timeout=15.)
+    engage();source['enabled']=False;phase('locked',timeout=5.)
+    wait(lambda:views[-1].get('stop_confirmed') is True,5.,'input loss stop')
+    assert views[-1]['reason']=='PICO_INPUT_TIMEOUT'
+    source['enabled']=True;pump(.5);count=len(accepted);pump(.5)
+    assert views[-1]['phase']=='locked' and len(accepted)==count
+    check('input loss stops; fresh input with squeezes held never resumes')
+    source['grip']=[0.,0.];pump(.2);click(1,1);phase('tool_standby',timeout=15.)
+    engage();click(0,1);phase('locked')
+    wait(lambda:views[-1].get('stop_confirmed') is True,5.,'final Y stop')
+    # Check actual feedback against the most recent commanded tool target.
+    model=pin.buildModelFromUrdf(str(model_root/cfg['urdf']));data=model.createData()
+    mount=np.array(cfg['left_to_tool']).reshape(4,4);frame=model.getFrameId(cfg['left_frame'])
+    q=pin.neutral(model);indices={n:model.joints[model.getJointId(n)].idx_q for n in model.names[1:]}
+    targets=[(e['stamp'],np.array(json.loads(e['code'])['target']).reshape(4,4)) for e in events if e['state']=='BIMANUAL_QP_RESULT']
+    times=[x[0] for x in targets];position_errors=[];rotation_errors=[];motion=[]
+    for row in trace:
+        if not any(a+.3<=row['stamp']<=b for a,b in motion_windows):continue
+        i=bisect_right(times,row['stamp'])-1
+        if i<0:continue
+        for name,j in indices.items():q[j]=row['positions'][name]
+        pin.framesForwardKinematics(model,data,q);actual=data.oMf[frame].homogeneous @ mount
+        desired=targets[i][1]
+        position_errors.append(float(np.linalg.norm(actual[:3,3]-desired[:3,3])))
+        rotation_errors.append(float(Rotation.from_matrix(actual[:3,:3] @ desired[:3,:3].T).magnitude()))
+        motion.append([row['positions'][n] for g in cfg['resource_groups'] for n in
+                       (['body_joint_1','body_joint_2'] if g=='waist' else [f'arm_{"l" if g=="left_arm" else "r"}_joint_{j}' for j in range(1,8)])])
+    assert len(position_errors)>100
+    assert max(position_errors)<.025,('TOOL_TRANSLATION_TRACKING',max(position_errors))
+    assert max(rotation_errors)<.08,('TOOL_ROTATION_TRACKING',max(rotation_errors))
+    ranges=np.ptp(np.array(motion),axis=0)
+    assert np.count_nonzero(ranges>1e-4)>=14
+    check('measured FK tracks short-rod target within 25 mm / 0.08 rad')
+    timing=[json.loads(e['code']) for e in events if e['state']=='BIMANUAL_QP_RESULT']
+    max_gap=max(row['sample_gap_s'] for row in timing)
+    max_dt=max(row['integration_dt'] for row in timing)
+    assert max_gap>.1 and max_dt<=.1,('INTEGRATION_GAP_NOT_EXERCISED',max_gap,max_dt)
+    check('140 ms transport pauses retain follow with integration capped at 100 ms')
+    result['rod_demo']=dict(soak_seconds=soak_seconds,segments=4,feedback_samples=len(position_errors),
+        max_position_error_m=max(position_errors),max_rotation_error_rad=max(rotation_errors),
+        max_sample_gap_s=max_gap,max_integration_dt_s=max_dt,
+        reclutch_max_target_difference=max(capture_errors),moved_joints=int(np.count_nonzero(ranges>1e-4)))
+    result.update(success=True,accepted_commands=len(accepted),final=views[-1])
+
+
 def main():
     parser=argparse.ArgumentParser();parser.add_argument('--output',required=True);parser.add_argument('--crash-coordinator',action='store_true');parser.add_argument('--reject-virtual',action='store_true');parser.add_argument('--tool-config')
     parser.add_argument('--websocket-input',action='store_true',help='Send raw CONTROLLER_MOVE events through the real Vuer receiver')
@@ -183,7 +304,13 @@ def main():
     parser.add_argument('--minimal',action='store_true',help='No recorder or single-arm worker; verify optional recording is absent')
     parser.add_argument('--operator-speed',type=float,default=1.,help='Scale synthetic controller movement speed, not robot limits')
     parser.add_argument('--input-period',type=float,default=.01,help='Raw VR event period in seconds')
+    parser.add_argument('--rod-demo',action='store_true',help='Validate short rod, relative 6D motion, repeated clutch and stops')
+    parser.add_argument('--soak-seconds',type=float,default=120.,help='Total continuous short-rod motion across four clutches')
     args=parser.parse_args()
+    if args.rod_demo and (not args.websocket_input or not args.minimal or args.shovel_cycle or args.crash_coordinator or args.reject_virtual or args.tool_config):
+        parser.error('--rod-demo requires --minimal --websocket-input and the default tool recipe')
+    if not np.isfinite(args.soak_seconds) or not 8<=args.soak_seconds<=600:
+        parser.error('--soak-seconds must be in [8,600]')
     if not np.isfinite(args.operator_speed) or not 0 < args.operator_speed <= 1.:
         parser.error('--operator-speed must be in (0, 1]')
     if not np.isfinite(args.input_period) or not .005 <= args.input_period <= .05:
@@ -283,12 +410,13 @@ def main():
         common=['-p','tool_config:='+str(tool)]
         requirements=['-p','require_recording:=false'] if args.minimal else []
         start('teleop_mode',common+requirements+['-p','single_arm_enabled:='+str(not args.minimal).lower(),'-p','supported_sides:=[left,right]','-p','input_source:=vr'])
-        start('teleop_tool',common+requirements+['-p','model_root:='+str(model),'-p','input_source:=vr'])
+        demo_args=['-p','simulation_demo:=true'] if args.rod_demo else []
+        start('teleop_tool',common+requirements+demo_args+['-p','model_root:='+str(model),'-p','input_source:=vr'])
         pico_config=cfg/'pico_snowbot_sim.json'
         if args.reject_virtual:
             settings=json.loads(pico_config.read_text());settings['grippers']['right']['virtual']=-.08
             pico_config=out/'invalid_virtual_config.json';pico_config.write_text(json.dumps(settings))
-        start('pico_control',common+['-p','model_root:='+str(model),'-p','pico_config:='+str(pico_config),'-p','recording_enabled:='+str(not args.minimal).lower()])
+        start('pico_control',common+demo_args+['-p','model_root:='+str(model),'-p','pico_config:='+str(pico_config),'-p','recording_enabled:='+str(not args.minimal).lower()])
         coordinator_process=procs[-1]
         if args.websocket_input:
             with socket.socket() as sock:sock.bind(('127.0.0.1',0));port=sock.getsockname()[1]
@@ -303,6 +431,10 @@ def main():
         phase('standby',timeout=40.);pump(.5)
         assert not accepted,'unsolicited startup motion'
         check('startup stationary, no unsolicited motion')
+        if args.rod_demo:
+            run_rod_demo(source,views,states,accepted,events,trace,raw,tool,model,
+                         pump,wait,phase,click,check,result,args.soak_seconds)
+            return
         context('empty',False)
         source['buttons'][1]=1
         wait(lambda:accepted,40.,'prepare first bounded segment')

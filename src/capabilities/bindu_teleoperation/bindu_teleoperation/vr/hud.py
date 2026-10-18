@@ -1,0 +1,150 @@
+"""Minimal PICO HUD: operator guidance from actual control/stop feedback.
+
+This is an observer. Key labels are instructions, never clickable commands.
+The six reference states retain separate startup/preparation guidance.
+"""
+from functools import lru_cache
+import os
+from pathlib import Path
+
+
+def hud_spec(view):
+    mode, reason = view.get('mode', 'checking'), view.get('reason', '')
+    confirmed = view.get('stop_confirmed') is True
+    applied = view.get('grasp_applied')
+    # Older observers cannot prove the applied grasp from a requested value.
+    grip = '右手虚握' if applied == 'right_axial' else '刚握' if applied == 'rigid' else '握持待确认'
+    spec = dict(state='paused', status='待命', grip=grip, tone='warning',
+                title='', detail='', action='Y 停止', context='仿真 · 扫雪')
+    if view.get('tool_variant')=='short_rod':spec['context']='仿真 · 双手短棍'
+    def notice(title, detail):
+        spec.update(title=title, detail=detail)
+    input_fault = any(x in reason for x in ('INPUT_TIMEOUT','PAIR_INVALID','POSE_INVALID','TRACKING','CONNECTION_CHANGED','POSE_ORIGIN','TIME_REVERSED'))
+    if mode == 'DISPLAY_STALE':
+        spec.update(state='lost', status='状态未知', tone='danger',grip='握持未知')
+        notice('状态反馈已中断', '停止状态未确认，请查看电脑操作台')
+    elif mode == 'locked':
+        spec.update(state='lost' if input_fault else 'stopped',
+                    status='已停止 · 锁定' if confirmed else '停止未确认', tone='danger')
+        if input_fault:
+            hands = view.get('controller_states', {})
+            invalid = [label for side,label in (('left','左'),('right','右'))
+                       if not view.get('tracking_valid',{}).get(side,hands.get(side, {}).get('valid',False))]
+            title = ('、'.join(invalid)+'手柄输入失效') if invalid and len(invalid)<2 else '双手输入已中断'
+            notice(title, '已确认停稳；恢复追踪、松握后按 B' if confirmed else '等待停稳确认；恢复追踪并松开双侧握')
+        else:
+            title = '已确认停稳' if confirmed else '等待停稳确认'
+            detail = '检查环境，松开双侧握后按 B 恢复待命' if confirmed else '保持松握；未确认前请查看电脑操作台'
+            if reason != 'PICO_Y_STOP':
+                title = '控制链阻断' if confirmed else '控制异常 · 停止未确认'
+                detail = '查看电脑端原因；排除后松握并按 B' if confirmed else detail
+            notice(title,detail)
+            if 'TOOL_BELOW_GROUND' in reason:
+                notice('工具触地策略已阻断' if confirmed else '等待停稳确认',
+                    '查看工具长度与场景策略；松握后按 B 恢复' if confirmed else detail)
+        if confirmed:spec['action']='B 恢复待命'
+    elif mode in ('checking','DISPLAY_WAITING'):
+        spec.update(status='连接检查',grip='虚拟工具')
+        notice('等待手柄与关节反馈', '保持双侧握松开，等待连接就绪')
+    elif mode == 'preparing':
+        spec.update(status='准备中',grip='虚拟工具')
+        notice('正在前往准备姿态', '继续按住 A；松开 A 即暂停准备')
+    elif mode in ('confirming_tool','engaging'):
+        spec['status']='工具检查中' if mode=='confirming_tool' else '正在接合'
+        notice('正在确认虚拟工具' if mode=='confirming_tool' else '正在建立相对跟随基准',
+                '保持双侧握松开，等待检查完成' if mode=='confirming_tool' else '保持双侧握；松开任一侧可暂停')
+    elif mode == 'switching':
+        requested = view.get('grasp_requested')
+        target = '右手虚握' if requested=='right_axial' else '刚握'
+        spec.update(state='switching',status='换握中')
+        notice('正在确认'+target if view.get('motion_stopped') is True else '等待机器人停稳',
+                '尚未进入'+target+'，等待握持确认')
+    elif mode == 'following':
+        if view.get('input_fresh') is not True or view.get('raw_input_valid') is not True:
+            spec.update(state='lost',status='输入失效',tone='danger')
+            notice('手柄输入不可用', '松开双侧握，等待控制器确认停止')
+        else:
+            spec.update(state='virtual' if applied=='right_axial' else 'following',
+                        status='跟随中',tone='good')
+    elif mode == 'tool_standby':
+        spec['status']='已暂停' if confirmed else '正在暂停'
+        notice('松开双侧握，再同时握住' if confirmed else '等待机器人停稳',
+                '重新接合后继续跟随' if confirmed else '保持双侧握松开；停稳后再重新接合')
+    elif mode == 'standby':
+        if reason in ('PREPARE_RELEASED','PREPARE_REQUIRES_EMPTY_AND_RELEASED_SQUEEZE'):
+            notice('准备已暂停' if reason=='PREPARE_RELEASED' else '当前不能准备',
+                    '松开双侧握，确认空手后重新长按 A')
+        elif view.get('load_state')=='held':
+            notice('虚拟工具待确认', '保持松握，等待检查；严格流程按 B 确认')
+        else:
+            spec['grip']='虚拟工具未放置'
+            notice('长按 A 前往准备姿态', '保持双侧握松开，准备完成后放置虚拟工具' if view.get('simulation_demo') else '保持双侧握松开；准备后单独装夹并确认工具')
+    elif mode in ('loading','load_check'):
+        spec['status']='装卸待命'
+        notice('装卸需要独立确认', '查看电脑端工具与支撑状态，按既有流程操作')
+    else:
+        notice('控制状态待确认', '保持松握，查看电脑操作台')
+    return spec
+
+
+@lru_cache(maxsize=1)
+def _font_path():
+    candidates = [os.getenv('BINDU_HUD_FONT',''),
+        '/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc',
+        '/usr/share/fonts/truetype/arphic/uming.ttc']
+    for candidate in candidates:
+        if candidate and Path(candidate).is_file():return candidate
+    raise RuntimeError('HUD_CJK_FONT_MISSING: set BINDU_HUD_FONT to a local CJK font')
+
+
+@lru_cache(maxsize=64)
+def hud_image(state, status, grip, tone, title, detail, action, context):
+    """Cache PNG-ready artwork; no font fetch, per-frame metrics or scene images."""
+    from PIL import Image, ImageDraw, ImageFont
+    image = Image.new('RGBA',(1440,330),(0,0,0,0))
+    draw = ImageDraw.Draw(image)
+    def font(size):return ImageFont.truetype(_font_path(),size)
+    ink, muted, edge = '#e5eeea','#a7bbb0','#41574b'
+    panel, inset = '#182721','#263a30'
+    color = {'good':'#72dab7','warning':'#f0c476','danger':'#ffaaa0'}[tone]
+    # One short bottom bar; the notice appears above it only when needed.
+    draw.rounded_rectangle((60,244,1380,326),radius=18,fill=panel,outline=edge,width=2)
+    draw.text((88,265),context,font=font(26),fill=muted)
+    draw.line((270,268,270,302),fill=edge,width=2)
+    draw.ellipse((300,278,312,290),fill=color)
+    draw.text((330,263),status,font=font(30),fill=ink)
+    draw.text((690,265),grip,font=font(26),fill=muted)
+    draw.line((1058,268,1058,302),fill=edge,width=2)
+    draw.rounded_rectangle((1084,266,1118,300),radius=17,fill=inset,outline=edge,width=2)
+    draw.text((1093,266),action[0],font=font(25),fill=ink)
+    draw.text((1130,266),action[2:],font=font(25),fill=ink)
+    if title:
+        draw.rounded_rectangle((175,60,1265,216),radius=22,fill=panel,outline=edge,width=2)
+        draw.rounded_rectangle((198,88,204,183),radius=3,fill=color)
+        draw.text((230,82),title,font=font(34),fill=ink)
+        draw.text((230,139),detail,font=font(27),fill=muted)
+    return image
+
+
+@lru_cache(maxsize=64)
+def _hud_png(**spec):
+    from io import BytesIO
+    buffer=BytesIO()
+    hud_image(**spec).save(buffer,format='PNG')
+    return buffer.getvalue()
+
+
+def render_hud(view):
+    # In Vuer 0.0.60 HUDPlane ignores src; ImageBackground owns the texture
+    # and has the same camera-relative plane placement and transparency.
+    from vuer.schemas import ImageBackground
+    import base64
+    spec = hud_spec(view)
+    # A stable URL string prevents the frontend from allocating a new texture
+    # whenever an otherwise unchanged HUD accompanies a joint-state update.
+    src='data:image/png;base64,'+base64.b64encode(_hud_png(**spec)).decode('ascii')
+    return ImageBackground(src=src,geometry='plane',key='teleopStatus',
+        distanceToCamera=1.,height=.25,aspect=1440/330,position=[0.,-.28,0.],
+        interpolate=True,opacity=1.,material={'depthTest':False,'depthWrite':False,'toneMapped':False},
+        userData={'hud_state':spec['state'],'status':spec['status'],
+                  'title':spec['title'],'detail':spec['detail']})

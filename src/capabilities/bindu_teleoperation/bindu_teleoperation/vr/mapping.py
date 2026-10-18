@@ -20,7 +20,14 @@ def pose_matrix(values):
             not np.allclose(r.T @ r, np.eye(3), atol=1e-3) or
             not np.isclose(np.linalg.det(r), 1., atol=1e-3)):
         raise ValueError('VR_INVALID_ROTATION')
-    return a.copy()
+    # Browser/XR matrices can be near rotations at float precision. Keep the
+    # rejection boundary above, then return a rigid transform so relative
+    # composition cannot amplify small scale/shear into an invalid QP target.
+    result = a.copy()
+    u, _, vt = np.linalg.svd(r)
+    result[:3,:3] = u @ vt
+    result[3] = [0.,0.,0.,1.]
+    return result
 
 
 def robot_pose(openxr_pose):
@@ -41,6 +48,8 @@ def mapping_rotation(mode, yaw):
 
 def relative_target(anchor_input, current_input, anchor_robot, scale=1., *,
                     mapping_mode='v34_anchor', operator_yaw_rad=0.):
+    if isinstance(scale,bool) or not isinstance(scale,(int,float)) or not math.isfinite(scale) or scale<=0:
+        raise ValueError('VR_INVALID_POSITION_SCALE')
     basis = mapping_rotation(mapping_mode, operator_yaw_rad)
     anchor, current = pose_matrix(anchor_input), pose_matrix(current_input)
     robot = pose_matrix(anchor_robot)

@@ -47,6 +47,18 @@ class DeploymentTests(unittest.TestCase):
                 path=Path(tmp)/'deploy.json';path.write_text(json.dumps(changed))
                 with self.assertRaisesRegex(ValueError,'PICO_REQUIRES'):load_deployment(path,SHARE)
 
+    def test_demo_is_explicit_and_rejects_external_or_missing_pico(self):
+        recipe=json.loads((SHARE/'config/deployments/teleop_pico_snowbot_sim.json').read_text())
+        recipe['arguments']['pico_simulation_demo']=True
+        with tempfile.TemporaryDirectory() as tmp:
+            path=Path(tmp)/'demo.json';path.write_text(json.dumps(recipe))
+            _,args=load_deployment(path,SHARE)
+            self.assertEqual(args['pico_simulation_demo'],'true')
+            for key,value in (('pico_enabled',False),('pico_simulation_demo','true')):
+                bad=json.loads(json.dumps(recipe));bad['arguments'][key]=value
+                path.write_text(json.dumps(bad))
+                with self.assertRaises(ValueError):load_deployment(path,SHARE)
+
     def test_unknown_hardware_auto_pose_and_nonteleop_launch_fail_closed(self):
         recipe=json.loads((SHARE/'config/deployments/teleop_robot_deployment.json').read_text())
         for key,value in (('device_backend','real'),('initialize_tool_pose',True),

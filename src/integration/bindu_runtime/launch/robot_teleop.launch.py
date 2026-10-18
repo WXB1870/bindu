@@ -14,7 +14,7 @@ def generate_launch_description():
                 'device_backend': 'kinematic', 'side': 'left', 'tool_input_source': 'tool_pose',
                 'output': '/tmp/bindu-runs', 'recording_mode': 'compact',
                 'description_enabled': 'false', 'tool_display_enabled': 'true',
-                'pico_enabled': 'false', 'pico_config': str(share/'config/robots/snowbot/pico_snowbot_sim.json'),
+                'pico_enabled': 'false', 'pico_simulation_demo': 'false', 'pico_config': str(share/'config/robots/snowbot/pico_snowbot_sim.json'),
                 'single_arm_enabled':'true','recorder_enabled':'true',
                 'command_enabled':'false','vendor_namespace':'/snowbot','gripper_config':'',
                 'arm_receiver_node':'','servo_receiver_node':'','mid_receiver_node':'',

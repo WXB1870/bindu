@@ -27,7 +27,7 @@ class PicoFeedback:
 
 
 class PicoControl:
-    def __init__(self, *, initial_load='unknown', max_age=.25, prepare_hold=1.):
+    def __init__(self, *, initial_load='unknown', max_age=.25, prepare_hold=1., simulation_demo=False):
         if initial_load not in ('empty','held','unknown'):
             raise ValueError('PICO_LOAD_STATE')
         self.load, self.supported = initial_load, False
@@ -50,6 +50,8 @@ class PicoControl:
         self.effects = []
         self.changed_at = float('-inf')
         self.context_at = self.loading_since = float('-inf')
+        self.simulation_demo = simulation_demo
+        self.fixture_load = None
 
     def emit(self, operation, value=None):
         self.generation += 1
@@ -70,6 +72,8 @@ class PicoControl:
                 ('standby','tool_standby','load_check','loading','locked','checking')):
             raise ValueError('PICO_CONTEXT_NOT_AT_REST')
         self.load,self.supported = load,supported
+        if self.simulation_demo:
+            self.fixture_load = load
         self.context_at=now
         self.generation += 1
         # Context does not execute a rejected/held key or acknowledge a fault.
@@ -92,17 +96,20 @@ class PicoControl:
         self.feedback=feedback
         if not feedback.healthy or not 0 <= now-feedback.stamp <= self.max_age:
             if self.source and self.phase!='checking': self.lock('PICO_FEEDBACK_UNAVAILABLE',now)
-        elif self.phase=='checking' and feedback.stopped and self.frames:
+        elif (self.phase=='checking' and feedback.stopped and self.frames and
+              0 <= now-self.stamp <= self.max_age):
             self.phase,self.reason='standby','READY_FOR_OPERATOR'
 
     def tick(self, now):
-        if self.source and not 0 <= now-self.stamp <= self.max_age:
+        if self.phase!='checking' and self.source and not 0 <= now-self.stamp <= self.max_age:
             self.lock('PICO_INPUT_TIMEOUT',now)
         if self.phase!='checking' and self.feedback and not 0 <= now-self.feedback.stamp <= self.max_age:
             self.lock('PICO_FEEDBACK_STALE',now)
 
     def ingest(self, left, right, now):
         pair=(left,right)
+        if self.source is None and self.phase=='checking' and any(not f.valid for f in pair):
+            return  # Initial tracking acquisition is not an active-session fault.
         try:
             poses=tuple(pose_matrix(f.pose) for f in pair)
         except (ValueError,TypeError):
@@ -284,8 +291,35 @@ class PicoControl:
         self.changed_at=now
         return True
 
-    def snapshot(self):
-        return dict(phase=self.phase,reason=self.reason,generation=self.generation,
+    def simulation_fixture(self, prepared, now):
+        """An explicitly selected kinematic demo owns a virtual tool, never a physical grasp."""
+        if (not self.simulation_demo or self.phase != 'standby' or self.pending or
+                not self.rest(now) or not self.frames or not 0 <= now-self.stamp <= self.max_age or
+                any(f.grip >= .3 for f in self.frames)):
+            return
+        if self.load == 'unknown':
+            load = self.fixture_load or ('held' if prepared else 'empty')
+            self.context(self.source, self.generation, load, False, now)
+        if self.load == 'empty' and prepared and self.reason == 'PREPARED':
+            self.context(self.source, self.generation, 'held', False, now)
+        if self.load == 'held' and self.feedback.modes == ('closed','closed'):
+            self.phase,self.reason = 'confirming_tool','SIMULATED_TOOL_PREFLIGHT'
+            self.emit('confirm_tool')
+
+    def snapshot(self, now=None):
+        view = dict(phase=self.phase,reason=self.reason,generation=self.generation,
                     source_id=self.source,load_state=self.load,external_support=self.supported,
                     grasp_requested='right_axial' if (self.pending.value if self.pending and self.pending.operation=='switch_grasp' else self.virtual) else 'rigid',
                     pending=self.pending.operation if self.pending else None)
+        if now is not None:
+            age = now-self.stamp
+            fresh = 0 <= age <= self.max_age
+            view.update(input_age_s=age if math.isfinite(age) else None, input_fresh=fresh,
+                        simulation_demo=self.simulation_demo, controller_states={})
+            for f in self.frames or ():
+                view['controller_states'][f.side] = dict(seq=f.seq, valid=f.valid and fresh,
+                    squeeze=f.grip if fresh else None, trigger=f.trigger if fresh else None,
+                    buttons=f.buttons if fresh else None,
+                    button_edges=list(f.button_edges) if fresh else None,
+                    position_m=[f.pose[i] for i in (3,7,11)] if fresh else None)
+        return view

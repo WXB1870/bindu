@@ -5,7 +5,7 @@ from bindu_contracts.runtime_mode import resolve_mode
 
 
 COMMON = {'namespace', 'profile', 'bimanual_config', 'side', 'tool_input_source',
-          'vr_enabled', 'pico_enabled', 'pico_config', 'host', 'port', 'cert_file', 'key_file', 'recording_mode',
+          'vr_enabled', 'pico_enabled', 'pico_simulation_demo', 'pico_config', 'host', 'port', 'cert_file', 'key_file', 'recording_mode',
           'single_arm_enabled','recorder_enabled','command_enabled','vendor_namespace',
           'arm_receiver_node','servo_receiver_node','mid_receiver_node',
           'output', 'device_backend', 'description_enabled', 'tool_display_enabled', 'runtime_mode'}
@@ -54,6 +54,11 @@ def load_deployment(path, share):
         raise ValueError('TELEOP_DEPLOYMENT_INPUT')
     if args.get('pico_enabled', False) and (args.get('tool_input_source') != 'vr' or backend != 'kinematic'):
         raise ValueError('PICO_REQUIRES_KINEMATIC_VR')
+    if 'pico_simulation_demo' in args and type(args['pico_simulation_demo']) is not bool:
+        raise ValueError('TELEOP_DEPLOYMENT_BOOLEAN:pico_simulation_demo')
+    if args.get('pico_simulation_demo',False) and (not args.get('pico_enabled',False) or
+            selected_mode!='simulation' or backend!='kinematic'):
+        raise ValueError('PICO_DEMO_REQUIRES_KINEMATIC_SIMULATION')
     if args.get('recording_mode', 'compact') not in ('off', 'compact', 'normal'):
         raise ValueError('TELEOP_DEPLOYMENT_RECORDING')
     result = {'runtime_mode': selected_mode} if execution_only else {
