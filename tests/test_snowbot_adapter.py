@@ -119,6 +119,24 @@ class SnowbotAdapterTests(unittest.TestCase):
         self.now += .02; self.observe()
         self.acquire()
 
+    def test_invalid_device_sample_reports_detail_and_revokes_without_exiting(self):
+        motion=self.command()
+        self.engine.submit(motion,self.now)
+        self.tick()
+        original=self.io.read_feedback
+        self.io.read_feedback=Mock(side_effect=ValueError('SNOWBOT_FEEDBACK_STALE_OR_UNORDERED'))
+        self.now+=.02
+        self.engine.tick(self.now)
+        self.assertFalse(self.engine.lease_id)
+        self.assertIsNone(self.engine.active)
+        self.assertTrue(any(e.state=='DEVICE_FEEDBACK_DETAIL' and
+                            e.code=='SNOWBOT_FEEDBACK_STALE_OR_UNORDERED' for e in self.engine.events))
+        # Fresh feedback cannot revive the revoked command or ownership.
+        self.io.read_feedback=original
+        self.tick()
+        self.assertFalse(self.engine.lease_id)
+        self.assertIsNone(self.engine.active)
+
     def test_joint_target_time_modes_and_ttl_fail_closed(self):
         for changes in ({'mode':'finite_trajectory'}, {'stamp':10.01}, {'valid_for':.5},
                         {'stamp':9.}, {'profile_hash':'wrong'}, {'epoch':999}):

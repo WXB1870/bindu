@@ -332,7 +332,8 @@ class Executor:
                 self.halt(now, 'FEEDBACK_RUNTIME_MODE_MISMATCH', revoke=True, emergency=True)
                 return
             self.feedback = feedback
-        except RuntimeError:
+        except (RuntimeError, ValueError) as exc:
+            self.emit(now, self.active, 'DEVICE_FEEDBACK_DETAIL', str(exc))
             self.halt(now, 'DEVICE_FEEDBACK_ERROR', revoke=True, emergency=True)
             return
         if (self.active or self.stopping) and now-self.feedback.stamp > .2:

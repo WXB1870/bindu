@@ -81,12 +81,11 @@ def main():
     app=SimulationApp(dict(headless=live['headless'],fast_shutdown=True,width=640,height=480))
     stopping=[False]
     for sig in (signal.SIGINT,signal.SIGTERM):signal.signal(sig,lambda *_:stopping.__setitem__(0,True))
-    node=None
+    node=None;publisher=None
     try:
         import numpy as np
         import rclpy
         from rclpy.signals import SignalHandlerOptions
-        from rclpy.qos import QoSProfile,ReliabilityPolicy
         from std_msgs.msg import String
         from bindu_interfaces.msg import SimulationCommand,SimulationFeedback
         from builtin_interfaces.msg import Time
@@ -126,9 +125,8 @@ def main():
         core=PhysicsPositionState(profile,simulator_id,initial,live['command_timeout_s'])
         rclpy.init(args=[],signal_handler_options=SignalHandlerOptions.NO)
         node=rclpy.create_node('snowbot_isaac',namespace='/'+session['namespace'].strip('/'))
-        qos=QoSProfile(depth=1,reliability=ReliabilityPolicy.BEST_EFFORT)
-        states=node.create_publisher(SimulationFeedback,'simulation/feedback',qos)
-        health_pub=node.create_publisher(String,'simulation/health',1)
+        from snowbot_isaac_io import PhysicsPublisher
+        publisher=PhysicsPublisher(node.get_namespace())
         seq=0;tool_present=False;requests=[]
         measured=dict(zip(names,map(float,body.get_joint_positions())))
         stats=dict(accepted=0,rejected=0,expired=0)
@@ -229,26 +227,23 @@ def main():
                     msg.base_pose.orientation.w=1.
                     timings['sample_s']=time.monotonic()-stage
                     for key,value in timings.items():timing_max[key]=max(timing_max.get(key,0.),value)
-                    stage=time.monotonic()
-                    states.publish(msg)
-                    timings['feedback_publish_s']=time.monotonic()-stage
                     health=dict(run_id=session['run_id'],runtime_mode='simulation',profile_hash=profile.digest,
                         simulator_id=simulator_id,stamp=sampled,simulation_time=sim_t,sequence=seq,ready=sample_ready,
                         code=msg.code,rtf=sim_t/max(1e-6,time.monotonic()-start),wall_lag_s=realtime.lag,
                         max_wall_lag_s=realtime.maximum_lag,rejection_codes=dict(rejection_codes),
-                        applied_sequences=core.applied_sequences,hold_positions=core.hold_positions,
+                        applied_sequences=dict(core.applied_sequences),hold_positions=dict(core.hold_positions),
                         tool_present=tool_present,grasp_model='contact',diagnostics=trace.status(),
-                        timings=dict(timings),timing_max_s=dict(timing_max),**stats)
+                        timings=dict(timings),timing_max_s=dict(timing_max),publication=publisher.status(),**stats)
                     xyz,quat=view.get_world_poses()
                     health['tool_pose']=pose(xyz[2],quat[2]).tolist() if tool_present else None
                     stage=time.monotonic()
-                    health_pub.publish(String(data=json.dumps(health)))
-                    timings['health_publish_s']=time.monotonic()-stage
+                    publisher.submit(msg,dict(health))
+                    timings['publish_enqueue_s']=time.monotonic()-stage
                     health['timings']=timings
                     for key,value in timings.items():timing_max[key]=max(timing_max.get(key,0.),value)
                     health['timing_max_s']=dict(timing_max)
                     trace.record('physics-feedback',dict(health,joints=measured,velocities=velocity))
-                    if not ready_written and realtime.ready:
+                    if not ready_written and realtime.ready and publisher.ready.is_set():
                         (args.output/'ready.json').write_text(json.dumps(dict(simulator_id=simulator_id,profile_hash=profile.digest)))
                         print('SNOWBOT_ISAAC_READY '+simulator_id,flush=True)
                         ready_written=True
@@ -263,6 +258,7 @@ def main():
                 physics_steps=SimulationManager.get_num_physics_steps()-native_start,published_samples=seq,simulated_s=sim_t,
                 wall_s=time.monotonic()-start,code=fault or 'OK',simulator_id=simulator_id,
                 max_wall_lag_s=realtime.maximum_lag,rejection_codes=rejection_codes,timing_max_s=timing_max,
+                publication=publisher.status(),
                 diagnostics=trace.status()),indent=2))
     except BaseException as exc:
         import traceback
@@ -274,11 +270,17 @@ def main():
         import os
         os._exit(1)
     finally:
+        if publisher is not None:
+            publisher.close();publisher=None
         if node is not None:node.destroy_node()
         try:
             import rclpy
             rclpy.try_shutdown()
-        finally:app.close()
+        finally:
+            # IPC objects were allocated before gc.freeze(). Kit's fast exit
+            # bypasses Python finalizers, so release frozen IPC cycles first.
+            gc.unfreeze();gc.collect()
+            app.close()
 
 
 if __name__=='__main__':main()
