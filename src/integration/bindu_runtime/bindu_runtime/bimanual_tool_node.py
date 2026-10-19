@@ -334,6 +334,7 @@ class BimanualToolNode(RuntimeNode):
         work_target=None
         work_dt=None
         work_gap=None
+        work_feedback=work_reference=None
         pending_reference=None
         last_mode='idle'
         last_grasp_generation=0
@@ -361,6 +362,7 @@ class BimanualToolNode(RuntimeNode):
                 'tool_frame':self.cfg['left_frame'],
                 'tool_transform':None if isinstance(session,IndependentArmsSession) else self.cfg['left_to_tool'],
                 'position_scale':self.cfg['position_scale'],'rotation_scale':1.,
+                'vr_tool_mapping':self.cfg.get('vr_tool_mapping','legacy_wrist'),
                 'mapping_frame':'robot_base','geometry_kind':self.cfg.get('demo',{}).get('geometry_kind','shovel'),
                 'max_integration_interval':reference.max_interval,'max_sample_gap':reference.max_sample_gap,
                 'right_axial_grasp':bool(session.axial),
@@ -482,7 +484,13 @@ class BimanualToolNode(RuntimeNode):
                     kind,token,value=self.worker_result
                     self.worker_result=None
                     if token==worker_token and session.mode=='follow' and awaiting:
-                        if kind=='error': raise RuntimeError(value)
+                        if kind=='error':
+                            self.event('BIMANUAL_WORK_REJECTED',json.dumps({
+                                'code':value,'operation':awaiting,'input_seq':work_seq,'input_stamp':work_stamp,
+                                'control_sampled_at':work_sampled_at,'integration_dt':work_dt,'sample_gap_s':work_gap,
+                                'grasp_mode':session.grasp_mode,'feedback':work_feedback,
+                                'joint_names':self.names,'reference':work_reference,'target':work_target}),goal.request.task_id)
+                            raise RuntimeError(value)
                         if awaiting=='capture':
                             if not 0 <= self.now()-work_sampled_at <= reference.max_sample_gap:
                                 raise RuntimeError('BIMANUAL_CAPTURE_STALE')
@@ -493,6 +501,7 @@ class BimanualToolNode(RuntimeNode):
                             self.event('BIMANUAL_CAPTURED',json.dumps({'tool_pose':value.tolist(),
                                 'input_stamp':session.stamp,'input_seq':session.seq,'grasp_mode':session.grasp_mode,
                                 'controller_pose':session.anchor_input.tolist(),
+                                'control_point_in_tool_m':session.control_point_in_tool.tolist() if isinstance(session,BimanualSession) else None,
                                 'feedback_sampled_at':work_sampled_at,'capture_completed_at':reference.sampled_at,
                                 'grasp_generation':session.grasp_generation,
                                 'grasp_continuation':getattr(session,'resumed_grasp',False)}),goal.request.task_id)
@@ -556,6 +565,7 @@ class BimanualToolNode(RuntimeNode):
                         work_sampled_at,work_dt=sampled_at,dt
                         work_gap=gap
                         work_positions=tuple(measured[n] for n in self.names)
+                        work_feedback,work_reference=measured,baseline
                         work_target=None if session.target is None else session.target.ravel().tolist()
                 goal.publish_feedback(TeleopAction.Feedback(session_id=session.identity,
                     mode=(('capturing' if session.mode=='follow' and session.anchor_tool is None else session.mode)

@@ -578,7 +578,9 @@ class PicoNode(RuntimeNode):
                 tool_variant='short_rod' if self.simulation_demo else 'shovel',
                 position_scale=self.tool_cfg['position_scale'],rotation_scale=1.,
                 mapping_frame='robot_base',control_point='individual_flange' if self.control.teleop_mode=='independent_arms' else
-                    'grip_midpoint' if self.simulation_demo else 'tool_origin',
+                    'grip_midpoint' if self.simulation_demo or self.tool_cfg.get('vr_tool_mapping')=='hand_line_midpoint' else 'tool_origin',
+                orientation_source='individual_wrist' if self.control.teleop_mode=='independent_arms' else
+                    'hand_line' if self.simulation_demo or self.tool_cfg.get('vr_tool_mapping')=='hand_line_midpoint' else 'left_wrist',
                 model_joints=dict(zip(self.state.joints.name,self.state.joints.position)) if feedback.healthy else None,
                 input_max_age_s=self.control.max_age,
                 stop_confirmed=(self.control.rest(self.now()) and self.control.pending is None and

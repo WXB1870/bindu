@@ -45,8 +45,9 @@ def websocket_input(port, source, stop, errors):
                     value={}
                     for i,side in enumerate(('left','right')):
                         angle=source.get('rotation',0.);c,s=math.cos(angle),math.sin(angle)
+                        line=source.get('line_rotation',0.);dx=.34*i-.17
                         value[side]=[c,s,0.,0.,-s,c,0.,0.,0.,0.,1.,0.,
-                                     .34*i+source['delta']+source['deltas'][i],0.,0.,1.]
+                                     .17+dx*math.cos(line)+source['delta']+source['deltas'][i],dx*math.sin(line),0.,1.]
                         buttons=source['buttons'][i]
                         value[side+'State']=dict(squeezeValue=source['grips'][i] if source['grips'] is not None else source['grip'],triggerValue=source['trigger'][i],
                             aButton=bool(buttons&1),bButton=bool(buttons&2),thumbstick=bool(buttons&4))
@@ -212,10 +213,11 @@ def scenario(out, mode, websocket=False, ordinary=False):
             measured=dict(zip(states[-1].joints.name,states[-1].joints.position))
             assert max(abs(measured[n]-baseline[n]) for n in GROUPS['right_arm']+GROUPS['waist'])<1e-8
             checks.append('zero posture with unknown or empty load accepts left-only clutch; right arm and waist remain fixed')
-            source['stream']=False;pump(.14);count=len(accepted);source['stream']=True
+            count=len(accepted);wait(lambda:len(accepted)>count)
+            source['stream']=False;pump(.205);count=len(accepted);source['stream']=True
             wait(lambda:len(accepted)>count)
             assert views[-1]['phase']=='following',views[-1]
-            checks.append('140ms controller gap continues with bounded steps under the 200ms sample limit')
+            checks.append('205ms controller gap continues with bounded steps under the 250ms sample limit')
             source['grips']=[1.,1.]
             wait(lambda:views[-1]['tool_phase']=='follow:independent:3')
             source['deltas'][1]=-.003;pump(.4)
@@ -264,7 +266,7 @@ def scenario(out, mode, websocket=False, ordinary=False):
                 assert any(r['stage']=='controller_timing' and r['client_timing_available'] for r in reports)
                 events=[json.loads(line)['data'] for line in (trace_dir/'runtime-events.jsonl').read_text().splitlines()]
                 gaps=[json.loads(e['code']) for e in events if e['state']=='BIMANUAL_SAMPLE_GAP']
-                assert any(.1<g['sample_gap_s']<=.2 and not g['will_reject'] for g in gaps),gaps
+                assert any(.2<g['sample_gap_s']<=.25 and not g['will_reject'] for g in gaps),gaps
                 results=[json.loads(e['code']) for e in events if e['state']=='BIMANUAL_QP_RESULT']
                 assert any(r['sample_gap_s']>.1 and r['integration_dt']<=.1 for r in results),results[-5:]
                 checks.append('browser timing, ROS receipt and solver gap/step evidence persisted without logger loss')
@@ -390,16 +392,21 @@ def scenario(out, mode, websocket=False, ordinary=False):
         checks.append('interrupted unloading recovers to standby; a new request preserves intent but requires fresh support')
         if websocket:
             baseline_delta=source['delta'];source['grip']=1.;phase('following')
-            for i in range(60):
+            line_start=len(states)
+            for i in range(120):
                 source['delta']=baseline_delta+.012*math.sin(i*.15)
-                source['rotation']=.06*math.sin(i*.15)
+                source['line_rotation']=.4*math.sin(i*.08)
                 pump(.1)
                 assert views[-1]['phase']=='following',views[-1]
-            source['rotation']=0.;source['delta']=baseline_delta;pump(.5)
+            assert views[-1]['control_point']=='grip_midpoint' and views[-1]['orientation_source']=='hand_line'
+            motion=states[line_start:]
+            assert max(max(s.joints.position[j] for s in motion)-min(s.joints.position[j] for s in motion)
+                       for j,n in enumerate(motion[0].joints.name) if n.startswith('arm_'))>.01
+            source['line_rotation']=0.;source['delta']=baseline_delta;pump(.5)
             source['grip']=0.;phase('tool_standby')
             wait(lambda:not states[-1].lease_active and states[-1].state not in ('RUNNING','STOPPING'))
             assert not states[-1].stop_failures
-            checks.append('six seconds of small translation and wrist rotation follow without ground or grip alarms')
+            checks.append('twelve seconds of hand-line rotation with fixed wrists follows about the grip midpoint without ground or grip alarms')
         terminate(observer,node);observer=None
         diagnostic_health=json.loads((trace_dir/'diagnostics-health.json').read_text())
         assert not diagnostic_health['active'] and not diagnostic_health['error'] and diagnostic_health['dropped']==0,diagnostic_health

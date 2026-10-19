@@ -3,7 +3,7 @@ import math
 import uuid
 from dataclasses import dataclass
 import numpy as np
-from .vr.mapping import robot_pose, relative_target, mapping_rotation
+from .vr.mapping import robot_pose, relative_target, mapping_rotation, pose_matrix
 from .vr.one_euro import rotation_log, rotation_exp
 
 
@@ -63,6 +63,19 @@ class GraspContinuation:
 
 class BimanualSession:
     def __init__(self, config, generation, selected_at, *, continuation=None):
+        self.control_point_in_tool=np.zeros(3)
+        mapping=config.get('vr_tool_mapping')
+        if mapping not in (None,'hand_line_midpoint'):
+            raise ValueError('VR_TOOL_MAPPING_CONFIG')
+        if mapping=='hand_line_midpoint':
+            points=[(np.linalg.inv(pose_matrix(config[side+'_to_tool'])) @
+                     np.r_[config['demo'][key],1.])[:3]
+                    for side,key in (('left','grip_offset_m'),('right','right_grip_offset_m'))]
+            axis=points[0]-points[1];spacing=float(np.linalg.norm(axis))
+            if not .05<=spacing<=1.2:
+                raise ValueError('VR_TOOL_GRIP_GEOMETRY')
+            self.control_point_in_tool=(points[0]+points[1])/2
+            config=dict(config,two_hand_rod=True,rod_axis_in_tool=(axis/spacing).tolist())
         self.cfg = config
         if type(config.get('two_hand_rod',False)) is not bool:
             raise ValueError('VR_ROD_MAPPING_CONFIG')
@@ -185,6 +198,9 @@ class BimanualSession:
             # left-composing an input-axis roll would incorrectly tilt it.
             axis=rotation @ np.asarray(self.cfg['rod_axis_in_tool'])
             target[:3,:3]=rotation_exp(axis*sum(self.rod_roll)/2) @ rotation
+        # Human translation moves the grip midpoint. Keep the real tool/CAD
+        # origin unchanged and rotate it around that point, not around its tip.
+        target[:3,3]+=(self.anchor_tool[:3,:3]-target[:3,:3]) @ self.control_point_in_tool
         return target
 
     def ingest(self, left, right, now):

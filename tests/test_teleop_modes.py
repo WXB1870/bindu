@@ -13,6 +13,16 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class AcceptedReferenceTests(unittest.TestCase):
+    def test_deployment_tolerates_205ms_gap_without_integrating_more_than_100ms(self):
+        import json
+        config=json.loads((ROOT/'src/integration/bindu_runtime/config/robots/snowbot/bimanual_snowbot_real.json').read_text())
+        ref=AcceptedReference(config['max_integration_interval'],max_sample_gap=config['integration_max_sample_gap'])
+        self.assertEqual(ref.max_sample_gap,.25)
+        self.assertLessEqual(ref.max_sample_gap,config['input_max_age'])
+        ref.capture((0.,),10.)
+        self.assertEqual(ref.step(10.205),((0.,),.1))
+        with self.assertRaisesRegex(ValueError,'INTEGRATION_INTERVAL'):ref.step(10.251)
+
     def test_200ms_gap_keeps_100ms_step_and_rejects_longer_stall(self):
         ref = AcceptedReference(.1, max_sample_gap=.2)
         ref.capture((0.,), 10.)
@@ -403,6 +413,69 @@ class RelativeRodMappingTests(unittest.TestCase):
             np.testing.assert_allclose(self.session.target[:3,3],home[:3,3]+[.01,0.,0.],atol=1e-12)
             self.feed(t+.09,False,offset+[.2,.1,0.],angle+.4,i+1)
             self.assertIsNone(self.session.target)
+
+
+class DeployedToolMappingTests(unittest.TestCase):
+    def setUp(self):
+        import json
+        self.config=json.loads((ROOT/'src/integration/bindu_runtime/config/robots/snowbot/bimanual_snowbot_real.json').read_text())
+        self.config['engage_seconds']=.05
+        self.config['pico_grasp_resume_seconds']=.04
+        self.session=BimanualSession(self.config,1,0.)
+        self.seq=0
+
+    def feed(self,t,angle=0.,offset=(0.,0.,0.),held=True,clutch=0):
+        from scipy.spatial.transform import Rotation
+        from bindu_teleoperation.vr.mapping import OPENXR_TO_ROBOT
+        swing=Rotation.from_euler('z',angle).as_matrix()
+        self.seq+=1;frames=[]
+        for side,x in (('left',.17),('right',-.17)):
+            # Change the line direction while both wrist orientations stay fixed.
+            pose=np.eye(4);pose[:3,3]=swing @ [x,0.,0.]+np.array(offset)
+            raw=OPENXR_TO_ROBOT.T @ pose @ OPENXR_TO_ROBOT
+            frames.append(VRFrame('pico',self.seq,t,side,tuple(raw.ravel()),grip=float(held),
+                                  clutch_seq=clutch,mapping='pico_snowbot_v1'))
+        self.session.ingest(*frames,t)
+
+    def engage(self,t,home,**kwargs):
+        self.feed(t,held=False,**kwargs);self.feed(t+.01,**kwargs);self.feed(t+.07,**kwargs)
+        self.session.capture(home)
+        np.testing.assert_allclose(self.session.target,home,atol=1e-12)
+
+    def test_shared_recipe_moves_rod_axis_without_wrist_rotation_and_keeps_grip_midpoint(self):
+        from scipy.spatial.transform import Rotation
+        home=np.array(self.config['left_to_tool']).reshape(4,4)
+        self.engage(.1,home)
+        point=self.session.control_point_in_tool
+        midpoint=home[:3,3]+home[:3,:3] @ point
+        initial_axis=home[:3,:3] @ np.array(self.session.cfg['rod_axis_in_tool'])
+        for i,angle in enumerate((.15,.4,-.2)):
+            self.feed(.18+i*.01,angle)
+            target=self.session.target
+            self.assertAlmostEqual(Rotation.from_matrix(target[:3,:3] @ home[:3,:3].T).magnitude(),abs(angle))
+            self.assertAlmostEqual(np.arccos(np.clip(initial_axis @ (target[:3,:3] @ np.array(self.session.cfg['rod_axis_in_tool'])),-1.,1.)),abs(angle))
+            np.testing.assert_allclose(target[:3,3]+target[:3,:3] @ point,midpoint,atol=1e-12)
+
+    def test_translation_and_recapture_follow_current_midpoint_without_a_jump(self):
+        home=np.eye(4);home[:3,3]=[.1,.2,.4]
+        self.engage(.1,home)
+        self.feed(.18,.3,offset=(.02,-.01,.03))
+        point=self.session.control_point_in_tool
+        np.testing.assert_allclose(self.session.target[:3,3]+self.session.target[:3,:3] @ point,
+                                   home[:3,3]+point+[.02,-.01,.03],atol=1e-12)
+        self.feed(.19,.4,offset=(.1,.2,0.),held=False,clutch=1)
+        self.assertIsNone(self.session.target)
+        home=np.eye(4)
+        self.engage(.3,home,angle=.4,offset=(.1,.2,0.),clutch=1)
+        np.testing.assert_allclose(self.session.target,home,atol=1e-12)
+
+    def test_mapping_and_degenerate_mounts_fail_before_input(self):
+        with self.assertRaisesRegex(ValueError,'VR_TOOL_MAPPING_CONFIG'):
+            BimanualSession(dict(self.config,vr_tool_mapping='unknown'),1,0.)
+        broken=dict(self.config,right_to_tool=self.config['left_to_tool'])
+        broken['demo']=dict(self.config['demo'],right_grip_offset_m=self.config['demo']['grip_offset_m'])
+        with self.assertRaisesRegex(ValueError,'VR_TOOL_GRIP_GEOMETRY'):
+            BimanualSession(broken,1,0.)
 
 
 class AxialTriggerTests(unittest.TestCase):
