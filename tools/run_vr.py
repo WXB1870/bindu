@@ -33,7 +33,11 @@ def commands(args):
         '--output', str(args.output/'web'), '--startup-timeout', str(args.startup_timeout)]
     if args.diagnostics:
         display += ['--trace-file', str(args.output/'diagnostics.jsonl')]
-    return control, display
+    result=[control,display]
+    if args.deployment.get('device_backend')=='external_simulation':
+        result.insert(0,['bash',str(ROOT/'tools/run_shovel_physics.sh'),'--vr',
+                         '--session',str(args.output/'physics-session.json'),'--output',str(args.output/'physics')])
+    return tuple(result)
 
 
 def check(args):
@@ -55,6 +59,13 @@ def check(args):
     pico=json.loads(Path(args.deployment['pico_config']).read_text())
     grippers=validate_config(json.loads(Path(args.deployment['gripper_config']).read_text()),robot.profile)
     simulation=args.deployment['runtime_mode']=='simulation'
+    if args.deployment.get('device_backend')=='external_simulation':
+        sdk=Path(os.environ.get('ISAAC_SIM_PATH',str(Path.home()/'isaacsim-6.2.0')))
+        if not simulation or not (sdk/'python.sh').is_file():
+            raise ValueError('Isaac物理后端要求仿真模式和可用的ISAAC_SIM_PATH')
+        physics=json.loads(Path(args.deployment['physics_config']).read_text())
+        from snowbot_isaac import validate_live_config
+        validate_live_config(physics)
     if (tool.get('simulation_only') is not False or pico.get('schema_version')!=2 or
             pico.get('simulation_only') is not simulation or
             grippers.get('simulation_only',False) is not simulation):
@@ -125,6 +136,9 @@ def run(args):
         args.output.mkdir(parents=True, exist_ok=False)
         env = dict(os.environ, ROS_DOMAIN_ID=str(args.domain_id),
                    ROS_LOG_DIR=str(args.output/'ros-log'))
+        if args.deployment.get('device_backend')=='external_simulation':
+            from ament_index_python.packages import get_package_prefix
+            env['BINDU_ISAAC_ROS_PREFIX']=get_package_prefix('bindu_interfaces')
         stop = threading.Event()
         handlers = {s: signal.signal(s, lambda *_: stop.set()) for s in (signal.SIGINT, signal.SIGTERM)}
         children, readers, result = [], [], 0
@@ -133,6 +147,13 @@ def run(args):
             configs={}
             from bindu_runtime.robot_setup import RobotSetup
             robot=RobotSetup.load(args.deployment['robot_config'])
+            if args.deployment.get('device_backend')=='external_simulation':
+                physics_session=dict(run_id=args.run_id,namespace=args.namespace,runtime_mode='simulation',
+                    profile=str(robot.profile_path),profile_hash=robot.profile.digest,
+                    display_urdf=str(robot.display_urdf),tool_config=str(robot.tool_config),
+                    pico_config=args.deployment['pico_config'],gripper_config=args.deployment['gripper_config'],
+                    physics_config=args.deployment['physics_config'])
+                (args.output/'physics-session.json').write_text(json.dumps(physics_session,indent=2))
             config_paths=dict(deployment=str(args.config),**args.deployment,
                 tool_config=str(robot.tool_config),profile_config=str(robot.profile_path))
             for key,value in config_paths.items():
@@ -150,13 +171,19 @@ def run(args):
                 diagnostic_format='JSONL: received_at, received_monotonic_ns, data; ROS fields retained',
                 diagnostic_chunk_bytes=128*1024*1024)
             (args.output/'session.json').write_text(json.dumps(manifest,ensure_ascii=False,indent=2))
-            for name,command in zip(('control','display'),resolved_commands):
+            names=('physics','control','display') if len(resolved_commands)==3 else ('control','display')
+            for name,command in zip(names,resolved_commands):
                 options=dict(stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True,errors='replace') if args.diagnostics else {}
                 child=subprocess.Popen(command,cwd=ROOT,env=env,start_new_session=True,**options)
                 children.append(child)
                 if args.diagnostics:
                     reader=threading.Thread(target=copy_output,args=(child,args.output/(name+'.log')),daemon=True)
                     reader.start();readers.append(reader)
+                if name=='physics':
+                    deadline=time.monotonic()+max(180.,args.startup_timeout)
+                    while not (args.output/'physics/ready.json').is_file():
+                        if stop.wait(.1) or child.poll() is not None or time.monotonic()>deadline:
+                            raise RuntimeError('ISAAC_STARTUP_NOT_READY：请检查physics.log')
             print(f'遥操作会话 {args.run_id}，ROS 域 {args.domain_id}，/{args.namespace}', flush=True)
             print(f'日志目录：{args.output}', flush=True)
             print(f'电脑界面：http://127.0.0.1:{args.port}/\n'
@@ -172,7 +199,9 @@ def run(args):
                     break
         finally:
             # Keep the display alive while the control chain confirms stopping.
-            for child in children:
+            # Control first, physics last: hold confirmation still needs steps.
+            ordered=children[1:]+children[:1] if args.deployment.get('device_backend')=='external_simulation' else children
+            for child in ordered:
                 if not stop_group(child):
                     print(f'进程组 {child.pid} 超过正常退出期限；已升级终止，不能视为停稳确认。', file=sys.stderr)
                     result = 1
@@ -197,6 +226,7 @@ def parse_args(argv=None):
     parser.add_argument('--diagnostics', action=argparse.BooleanOptionalAction, default=True,
                         help='当前调试阶段默认记录完整输入、反馈和事件；--no-diagnostics 关闭')
     parser.add_argument('--check', action='store_true', help='仅检查环境、证书和端口')
+    parser.add_argument('--physics', action='store_true', help='启用Isaac物理反馈，保留浏览器显示；仅允许仿真配置')
     parser.add_argument('--domain-id', type=int, default=int(os.environ.get('ROS_DOMAIN_ID','0')))
     parser.add_argument('--namespace')
     parser.add_argument('--run-id')
@@ -221,6 +251,11 @@ def parse_args(argv=None):
     from bindu_runtime.teleop_deployment import load_deployment
     args.launch,args.deployment=load_deployment(args.config,get_package_share_directory('bindu_runtime'))
     d=args.deployment
+    if args.physics:
+        if d.get('runtime_mode')!='simulation':parser.error('--physics 仅允许仿真配置')
+        d['device_backend']='external_simulation'
+    if d.get('device_backend')=='external_simulation' and not d.get('physics_config'):
+        d['physics_config']=str(Path(get_package_share_directory('bindu_runtime'))/'config/robots/snowbot/snowbot_shovel_physics.json')
     if (args.launch!='robot_teleop.launch.py' or d.get('position_contract')!='true' or
             d.get('pico_enabled')!='true' or d.get('vr_enabled')!='true'):
         parser.error('此入口要求启用 position_contract、PICO 和 VR 的部署配置')

@@ -49,7 +49,8 @@ class PicoNode(RuntimeNode):
             raise ValueError('PICO_CONFIG_RUNTIME_MODE_MISMATCH')
         self.backend=self.get_parameter('device_backend').value
         if (not self.position_contract and not self.simulation or
-                self.backend != ('kinematic' if self.simulation else 'snowbot_vendor')):
+                self.backend not in (('kinematic','external_simulation') if self.simulation and self.position_contract else
+                                     ('kinematic',) if self.simulation else ('snowbot_vendor',))):
             raise ValueError('PICO_ACTUATOR_BACKEND_UNAVAILABLE:'+self.backend)
         self.tool_cfg=json.loads(Path(self.get_parameter('tool_config').value).read_text())
         if (not self.tool_cfg.get('right_axial_grasp') or self.tool_cfg.get('collision_scope')!='configured_tool_geometry' or
@@ -161,7 +162,7 @@ class PicoNode(RuntimeNode):
     def feedback(self):
         try:
             s,q=self.reading()
-            modes=list(self.position_ops.modes()) if self.position_ops else []
+            modes=list(self.position_ops.modes(require_stationary=self.control.phase!='following')) if self.position_ops else []
             for side in (() if self.position_ops else ('left','right')):
                 cfg=self.cfg['grippers'][side];value=q[cfg['joint']]
                 modes.append(next((m for m in ('closed','open','virtual') if abs(value-cfg[m])<.003),'unknown'))

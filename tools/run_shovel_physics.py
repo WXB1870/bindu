@@ -97,6 +97,23 @@ def build_scene(motion, cfg, output):
     art.CreateSolverPositionIterationCountAttr(cfg['solver_position_iterations'])
     art.CreateSolverVelocityIterationCountAttr(cfg['solver_velocity_iterations'])
     body = world.scene.add(SingleArticulation(str(roots[0].GetPath()), name='snowbot'))
+    # PhysX uses float32 joint constraints. Keep numerical penetration of its
+    # hard stops inside the public URDF bounds; never clip measured feedback.
+    inset = float(cfg.get('joint_limit_inset_rad', 0.))
+    if not np.isfinite(inset) or not 0 <= inset <= .001:
+        raise ValueError('PHYSICS_JOINT_LIMIT_INSET')
+    physical_limits = {}
+    for prim in Usd.PrimRange(model):
+        if not prim.IsA(UsdPhysics.RevoluteJoint):continue
+        joint = UsdPhysics.RevoluteJoint(prim)
+        lo, hi = joint.GetLowerLimitAttr().Get(), joint.GetUpperLimitAttr().Get()
+        if lo is None or hi is None:continue
+        lo, hi = np.deg2rad([lo, hi])
+        if hi-lo <= 2*inset:raise ValueError('PHYSICS_JOINT_LIMIT_WIDTH')
+        physical_limits[prim.GetName()] = [float(lo+inset),float(hi-inset)]
+        if inset:
+            joint.GetLowerLimitAttr().Set(float(np.rad2deg(lo+inset)))
+            joint.GetUpperLimitAttr().Set(float(np.rad2deg(hi-inset)))
     # Robot self-collision is checked independently against CAD. Tool/robot
     # contact stays enabled in contact mode; legacy proxy mode is explicit.
     links = {p.GetName(): p for p in Usd.PrimRange(model) if p.HasAPI(UsdPhysics.RigidBodyAPI)}
@@ -251,7 +268,8 @@ def build_scene(motion, cfg, output):
         raise ValueError('TOOL_MASS_READBACK')
     if list(view.prim_paths) != [str(p.GetPath()) for p in flanges]+['/World/Shovel']:
         raise ValueError('RIGID_VIEW_ORDER')
-    source = dict(mass_kg=mass, center_of_mass_in_tool_m=com.tolist(), inertia_at_com_kg_m2=inertia.tolist(),
+    source = dict(joint_limit_inset_rad=inset,physical_joint_limits_rad=physical_limits,
+                  mass_kg=mass, center_of_mass_in_tool_m=com.tolist(), inertia_at_com_kg_m2=inertia.tolist(),
                   parts=[dict(name=p['name'], mass_kg=p['mass']) for p in parts],
                   dof_names=names, drive_effort_limits_nm=[float(limits[n].get('effort')) for n in names],
                   gains_readback=[g.tolist() for g in gains],

@@ -526,7 +526,7 @@ function renderErrorCharts(data,online){
     if(!prior||prior.stamp!==e.stamp||!prior.valid)errorHistory.push({...e,key:data.run_id+':'+e.capture+':'+e.grasp_mode});
   }else if(prior?.valid)errorHistory.push({stamp:now,valid:false});
   errorHistory=errorHistory.filter(x=>x.stamp>=now-30).slice(-320);
-  text('error-status',valid?(e.runtime_mode==='real'?'真机关节反馈':'仿真关节反馈'):online?e?.reason||'等待反馈与接合':'状态服务断连');
+  text('error-status',valid?(e.runtime_mode==='real'?'真机关节反馈':p.device_backend==='external_simulation'?'Isaac 物理反馈':'仿真关节反馈'):online?e?.reason||'等待反馈与接合':'状态服务断连');
   const value=x=>Array.isArray(x)&&x.length===2&&x.every(finite)?`${x[0].toFixed(2)} mm / ${x[1].toFixed(2)}°`:'—';
   text('error-values',`左 ${valid?value(e.left):'—'}　右 ${valid?value(e.right):'—'}　耦合 ${valid?value(e.coupled):'—'}`);
   text('error-note','跟踪：握点目标与关节反馈 FK；耦合：标定握点位置与'+(e?.grasp_mode==='right_axial'?'杆轴夹角（允许右手绕杆转动）':'接合时相对姿态')+'。仅反映运动学误差，不能检测夹持滑移。');

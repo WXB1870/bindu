@@ -140,7 +140,7 @@
       -0.0085,
       0.0
     ],
-    "check_grasp_contacts": true,
+    "check_grasp_contacts": false,
     "max_grasp_penetration_m": 0.005
   },
   "right_to_tool": [

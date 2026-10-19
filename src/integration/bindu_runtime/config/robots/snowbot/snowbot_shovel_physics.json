@@ -1,5 +1,15 @@
 {
   "simulation_only": true,
+  "live": {
+    "physics_dt_s": 0.004,
+    "feedback_hz": 100,
+    "max_wall_lag_s": 0.15,
+    "command_timeout_s": 0.25,
+    "joint_limit_inset_rad": 0.0001,
+    "gripper_stiffness_nm_rad": 10000.0,
+    "gripper_damping_nm_s_rad": 200.0,
+    "headless": true
+  },
   "material": {
     "name": "assumed homogeneous wood, whole shovel",
     "density_kg_m3": 650.0,

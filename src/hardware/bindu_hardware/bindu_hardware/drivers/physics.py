@@ -55,3 +55,41 @@ class PhysicsCommandGate:
         for group in expired:
             del self.deadlines[group]
         return expired
+
+
+class PhysicsPositionState:
+    """Targets/one-shot holds for a physics device; acknowledgments follow a step."""
+    def __init__(self, profile, simulator_id, initial, timeout=.25):
+        self.gate=PhysicsCommandGate(profile,simulator_id,timeout)
+        self.profile=profile
+        self.targets=dict(initial)
+        self.holding=set()
+        self.hold_positions={}
+        self.pending={}
+        self.applied_sequences={}
+
+    def hold(self, group, measured):
+        if group not in self.holding:
+            for n in self.profile.groups[group]:
+                self.targets[n]=self.hold_positions[n]=measured[n]
+            self.holding.add(group)
+
+    def accept(self, command, now, measured):
+        if command.resource_group not in self.profile.groups:
+            raise ValueError('PHYSICS_POSITION_RESOURCE')
+        group=self.gate.accept(command,now)
+        if command.operation=='hold':self.hold(group,measured)
+        else:
+            self.holding.discard(group)
+            for n,q in zip(command.joint_names,command.positions):
+                self.targets[n]=q;self.hold_positions.pop(n,None)
+        self.pending[group]=command.sequence
+
+    def expire(self, now, measured):
+        groups=self.gate.expired(now)
+        for group in groups:self.hold(group,measured)
+        return groups
+
+    def stepped(self):
+        self.applied_sequences.update(self.pending)
+        self.pending.clear()

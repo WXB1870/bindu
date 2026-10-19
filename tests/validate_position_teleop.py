@@ -19,7 +19,7 @@ from std_msgs.msg import String, Float64MultiArray, UInt64MultiArray
 from snowbot_ctl_msgs.msg import RetInformation, JointPositionCommand, CtlInformation, MidNodeCtlMsgSend
 from bindu_interfaces.msg import VRInput, ExecutionState, MotionCommand, GripperState
 from bindu_interfaces.srv import Lease, SubmitMotion
-from bindu_runtime.common import stamp
+from bindu_runtime.common import stamp, seconds
 from bindu_contracts.teleoperation import VRFrame
 from bindu_teleoperation.vr.receiver import ButtonCounters
 from bindu_hardware.snowbot import GROUPS
@@ -65,7 +65,7 @@ def websocket_input(port, source, stop, errors):
         if not stop.is_set():errors.append(type(exc).__name__+':'+str(exc))
 
 
-def scenario(out, mode, websocket=False, ordinary=False):
+def scenario(out, mode, websocket=False, ordinary=False, physics=False):
     token=uuid.uuid4().hex[:8];ns='/position_'+token;vendor='/fixture_'+token
     node=rclpy.create_node('position_fixture_'+token)
     states=[];views=[];accepted=[];grippers={};packets=[]
@@ -73,7 +73,7 @@ def scenario(out, mode, websocket=False, ordinary=False):
     node.create_subscription(String,ns+'/teleop/state',lambda m:views.append(json.loads(m.data)),10)
     node.create_subscription(MotionCommand,ns+'/execution/accepted',accepted.append,100)
     node.create_subscription(GripperState,ns+'/gripper/state',lambda m:grippers.update({m.side:m}),10)
-    source=dict(buttons=[0,0],trigger=[0.,0.],grip=0.,grips=None,delta=0.,deltas=[0.,0.],stream=True,seq=0)
+    source=dict(buttons=[0,0],trigger=[0.,0.],grip=0.,grips=None,delta=0.,deltas=[0.,0.],stream=not physics,seq=0)
     counters=[ButtonCounters(),ButtonCounters()]
     vr=node.create_publisher(VRInput,ns+'/teleop/vr/raw',10)
     fixture=json.loads((CFG/'pico_snowbot_position_sim.json').read_text())
@@ -159,7 +159,14 @@ def scenario(out, mode, websocket=False, ordinary=False):
         recipe['arguments']['pico_config']=str(pp)
     path=out/(mode+'.json');path.write_text(json.dumps(recipe))
     log=(out/(mode+'.log')).open('w')
-    process=subprocess.Popen(['ros2','launch','bindu_runtime','teleop_only.launch.py','config:='+str(path)],
+    command=['ros2','launch','bindu_runtime','teleop_only.launch.py','config:='+str(path)]
+    if physics:
+        with socket.socket() as probe:
+            probe.bind(('127.0.0.1',0));web_port=probe.getsockname()[1]
+        command=[sys.executable,str(ROOT/'tools/run_vr.py'),'--config',str(path),'--physics',
+            '--domain-id',os.environ['ROS_DOMAIN_ID'],'--namespace',ns,'--port',str(web_port),
+            '--vr-port',str(port),'--output',str(out/'unified-session')]
+    process=subprocess.Popen(command,
         stdout=log,stderr=subprocess.STDOUT,start_new_session=True)
     peer_stop=threading.Event();peer_errors=[];peer=None
     if websocket:
@@ -169,6 +176,12 @@ def scenario(out, mode, websocket=False, ordinary=False):
     trace_dir=out/(mode+'-diagnostics')
     def pump(seconds):
         end=time.monotonic()+seconds;until(node,lambda:time.monotonic()>end,seconds+1.)
+    def set_delta(value):
+        if physics:
+            start=source['delta']
+            for i in range(30):
+                source['delta']=start+(value-start)*(i+1)/30;pump(.02)
+        else:source['delta']=value
     def wait(predicate, seconds=15.):
         try:until(node,predicate,seconds)
         except AssertionError as exc:raise AssertionError(json.dumps(views[-1] if views else {},ensure_ascii=False)) from exc
@@ -189,19 +202,30 @@ def scenario(out, mode, websocket=False, ordinary=False):
     def click(side,bit):
         source['buttons'][side]|=1<<bit;pump(.12);source['buttons'][side]&=~(1<<bit);pump(.12)
     try:
-        wait(lambda:views and views[-1]['phase']=='standby' and len(grippers)==2,40.)
+        if physics:
+            wait(lambda:states and time.time()-seconds(states[-1].feedback_stamp)<.2 and
+                 len(grippers)==2 and all(g.feedback_valid for g in grippers.values()),60.)
+            pump(2.)  # Finish initial DDS/display discovery before connecting the test hands.
+            source['stream']=True
+        wait(lambda:states and states[-1].feedback_stamp.sec>0 and views and
+             views[-1]['phase']=='standby' and len(grippers)==2,60. if physics else 40.)
         assert not accepted and not packets,'startup actuation'
         initial=dict(zip(states[-1].joints.name,states[-1].joints.position))
-        assert all(n in initial and abs(initial[n]-v)<1e-9
+        assert all(n in initial and abs(initial[n]-v)<(.003 if physics else 1e-9)
                    for n,v in (q if mode=='real' else fixture['device_initial_positions_rad']).items()),'startup feedback differs from configured fixture'
         assert states[-1].simulated==(mode=='simulation') and states[-1].runtime_mode==mode
         assert views[-1]['capabilities']['axial_grasp'] is True
         checks.append('same feedback contract, no startup commands, configured axial position capability explicit')
         observer_log=(out/(mode+'-observer.log')).open('w')
+        from ament_index_python.packages import get_package_share_directory
+        selected_robot=recipe['arguments']['robot_config']
+        observer_robot=(json.loads((out/'unified-session/session.json').read_text())['configs']['robot_config']['path']
+                        if physics else str(Path(get_package_share_directory('bindu_runtime'))/selected_robot[9:])
+                        if selected_robot.startswith('@runtime/') else selected_robot)
         observer=subprocess.Popen([sys.executable,str(ROOT/'tools/snowbot_live.py'),'--observe',
             '--namespace',ns,'--run-id',views[-1]['run_id'],
-            '--robot-config',str(CFG/'robot_snowbot_real.json'),
-            '--runtime-mode',mode,'--device-backend','kinematic' if mode=='simulation' else 'snowbot_vendor',
+            '--robot-config',observer_robot,
+            '--runtime-mode',mode,'--device-backend','external_simulation' if physics else 'kinematic' if mode=='simulation' else 'snowbot_vendor',
             '--state-file',str(out/(mode+'-observer.json')),
             '--trace-file',str(trace_dir/'diagnostics.jsonl')],
             stdout=observer_log,stderr=subprocess.STDOUT,start_new_session=True)
@@ -224,7 +248,7 @@ def scenario(out, mode, websocket=False, ordinary=False):
             wait(lambda:len(accepted)>5 and max(abs(v-baseline[n]) for n,v in
                 zip(states[-1].joints.name,states[-1].joints.position) if n in GROUPS['left_arm'])>1e-5)
             measured=dict(zip(states[-1].joints.name,states[-1].joints.position))
-            assert max(abs(measured[n]-baseline[n]) for n in GROUPS['right_arm']+GROUPS['waist'])<1e-8
+            assert max(abs(measured[n]-baseline[n]) for n in GROUPS['right_arm']+GROUPS['waist'])<(.002 if physics else 1e-8)
             checks.append('zero posture with unknown or empty load accepts left-only clutch; right arm and waist remain fixed')
             count=len(accepted);wait(lambda:len(accepted)>count)
             source['stream']=False;pump(.205);count=len(accepted);source['stream']=True
@@ -335,7 +359,7 @@ def scenario(out, mode, websocket=False, ordinary=False):
         source['buttons'][1]=0;pump(.2)
         assert views[-1]['load_state']=='held' and len(accepted)==before
         checks.append('held-tool A validates coupling and tool CAD; already-reached pose submits no motion or gripper commands')
-        before=len(accepted);source['grip']=1.;phase('following');source['delta']=.006
+        before=len(accepted);source['grip']=1.;phase('following');set_delta(.006)
         wait(lambda:len(accepted)>before+5)
         error_sample('rigid')
         left_position=grippers['left'].measured_position
@@ -344,16 +368,16 @@ def scenario(out, mode, websocket=False, ordinary=False):
              views[-1]['tool_phase']=='follow:right_axial',20.)
         expected_virtual=json.loads((CFG/'snowbot_grippers_sim.json').read_text())['grippers']['right']['virtual']
         assert abs(grippers['right'].measured_position-expected_virtual)<.003
-        assert abs(grippers['left'].measured_position-left_position)<1e-9
+        assert abs(grippers['left'].measured_position-left_position)<(.003 if physics else 1e-9)
         assert all(g.grasp_state=='unknown' for g in grippers.values())
-        before_virtual=len(accepted);source['delta']+=.003
+        before_virtual=len(accepted);set_delta(source['delta']+.003)
         wait(lambda:len(accepted)>before_virtual+5)
         error_sample('right_axial')
         source['buttons'][0]=0
         wait(lambda:views[-1]['phase']=='following' and views[-1]['grasp_applied']=='rigid' and
              views[-1]['tool_phase']=='follow:rigid',20.)
         assert abs(grippers['right'].measured_position)<.003
-        assert abs(grippers['left'].measured_position-left_position)<1e-9
+        assert abs(grippers['left'].measured_position-left_position)<(.003 if physics else 1e-9)
         checks.append('X changes only right gripper position, waits for acknowledgement/hold, captures axial QP and returns to measured rigid grasp')
         source['buttons'][0]=1
         wait(lambda:views[-1]['phase']=='following' and views[-1]['tool_phase']=='follow:right_axial',20.)
@@ -454,8 +478,10 @@ def scenario(out, mode, websocket=False, ordinary=False):
 
 def main():
     p=argparse.ArgumentParser();p.add_argument('--output',type=Path,required=True);p.add_argument('--mode',choices=('simulation','real','both'),default='both')
+    p.add_argument('--physics',action='store_true',help='Use the actual Isaac backend and unified launcher; requires simulation and WebSocket input')
     p.add_argument('--teleop-mode',choices=('ordinary','tool','both'),default='both')
     p.add_argument('--websocket-input',action='store_true');args=p.parse_args()
+    if args.physics and (args.mode!='simulation' or not args.websocket_input):p.error('--physics requires --mode simulation --websocket-input')
     if os.environ.get('ROS_LOCALHOST_ONLY')!='1' or not os.environ.get('ROS_DOMAIN_ID'):
         raise RuntimeError('Isolated localhost ROS domain required')
     args.output=args.output.resolve();args.output.mkdir(parents=True,exist_ok=False)
@@ -465,7 +491,7 @@ def main():
         for m in (('simulation','real') if args.mode=='both' else (args.mode,)):
             for ordinary in ((True,False) if args.teleop_mode=='both' else (args.teleop_mode=='ordinary',)):
                 out=args.output/(('ordinary-' if ordinary else 'tool-')+m);out.mkdir()
-                case=scenario(out,m,args.websocket_input,ordinary);result.append(case)
+                case=scenario(out,m,args.websocket_input,ordinary,physics=args.physics);result.append(case)
                 (out/'verification.json').write_text(json.dumps(case,indent=2))
                 print(out.name+': '+str(len(case['checks']))+' checks passed',flush=True)
         (args.output/'verification.json').write_text(json.dumps(result,indent=2));print(json.dumps(result,indent=2))

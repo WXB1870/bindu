@@ -44,16 +44,21 @@ class PositionOperations:
             raise RuntimeError(msg.code)
         return msg
 
-    def modes(self):
+    def modes(self, *, require_stationary=True):
         result = []
         for side in SIDES:
             try:
                 msg = self.reading(side)
+                # During loaded following, contact can change velocity while
+                # the opening stays inside its calibrated band. Switching and
+                # stop completion still require stationary measured feedback.
+                if not require_stationary and msg.state in ('MOVING','STOPPING'):
+                    result.append('unknown');continue
                 result.append(next((mode for mode in ('closed', 'virtual', 'open') if
                     mode in self.config['grippers'][side] and
                     abs(msg.measured_position-self.config['grippers'][side][mode]) <=
                     self.config['position_tolerance'] and
-                    abs(msg.measured_velocity) <= self.config['velocity_tolerance']), 'unknown'))
+                    (not require_stationary or abs(msg.measured_velocity) <= self.config['velocity_tolerance'])), 'unknown'))
             except RuntimeError:
                 result.append('unknown')
         return tuple(result)

@@ -73,7 +73,7 @@ def observe(args, publish=None, stop=None):
     from rclpy.signals import SignalHandlerOptions
     rclpy.init(args=[], signal_handler_options=SignalHandlerOptions.NO if publish else SignalHandlerOptions.ALL)
     node = rclpy.create_node('snowbot_live_observer')
-    latest = {'state': None, 'pico': {}, 'pico_time': 0.}
+    latest = {'state': None, 'pico': {}, 'pico_time': 0., 'physics':{}}
     if args.state_file:
         args.state_file.parent.mkdir(parents=True, exist_ok=True)
     if args.trace_file:
@@ -94,6 +94,15 @@ def observe(args, publish=None, stop=None):
         except (ValueError, TypeError):
             pass
     node.create_subscription(String, ns+'/teleop/state', pico, 100 if diagnostics else 1)
+    def physics_health(msg):
+        try:
+            value=json.loads(msg.data)
+            if (args.runtime_mode=='simulation' and args.device_backend=='external_simulation' and
+                    value.get('run_id')==args.run_id and value.get('profile_hash')==robot.profile.digest):
+                latest['physics']=value
+                if diagnostics:diagnostics.record('physics-health',value)
+        except (ValueError,TypeError):pass
+    node.create_subscription(String,ns+'/simulation/health',physics_health,1)
     def runtime_event(msg):
         if (msg.run_id != args.run_id or msg.runtime_mode != args.runtime_mode or
                 msg.simulated != (args.runtime_mode == 'simulation')):
@@ -151,6 +160,7 @@ def observe(args, publish=None, stop=None):
                 meta['tool_variant']=latest['pico'].get('tool_variant','shovel')
                 data['tool_variant']=meta['tool_variant']
             data['end_effector_errors'] = errors.sample(data, now)
+            if 0 <= now-latest['physics'].get('stamp',0) <= .2:data['physics']=latest['physics']
             if diagnostics:data['diagnostics']=diagnostics.status()
             if publish:
                 publish(data)
@@ -359,7 +369,7 @@ def main():
     parser.add_argument('--namespace', default='bindu_vr_sim')
     parser.add_argument('--robot-config', default=str(ROOT/'src/integration/bindu_runtime/config/robots/snowbot/robot_snowbot.json'))
     parser.add_argument('--runtime-mode', choices=('simulation','real'), default='simulation')
-    parser.add_argument('--device-backend', choices=('kinematic','snowbot_vendor'), default='kinematic')
+    parser.add_argument('--device-backend', choices=('kinematic','snowbot_vendor','external_simulation'), default='kinematic')
     parser.add_argument('--output', type=Path)
     parser.add_argument('--duration', type=float, default=0.)
     parser.add_argument('--startup-timeout', type=float, default=30.)

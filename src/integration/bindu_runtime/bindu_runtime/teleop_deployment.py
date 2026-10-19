@@ -13,9 +13,9 @@ EXECUTION = {'runtime_mode', 'namespace', 'profile', 'device_backend', 'run_id',
              'recording_mode', 'command_enabled', 'vendor_namespace', 'arm_receiver_node',
              'servo_receiver_node', 'mid_receiver_node'}
 COMMON.add('gripper_config')
-COMMON.add('position_contract')
+COMMON.update(('position_contract','physics_config'))
 EXECUTION.add('gripper_config')
-PATHS = {'profile', 'bimanual_config', 'robot_config', 'cert_file', 'key_file', 'output', 'pico_config', 'gripper_config'}
+PATHS = {'profile', 'bimanual_config', 'robot_config', 'cert_file', 'key_file', 'output', 'pico_config', 'gripper_config', 'physics_config'}
 
 
 def load_deployment(path, share):
@@ -56,8 +56,10 @@ def load_deployment(path, share):
         raise ValueError('RECORDER_DISABLED_REQUIRES_OFF')
     if args.get('tool_input_source', 'tool_pose') not in ('vr', 'tool_pose'):
         raise ValueError('TELEOP_DEPLOYMENT_INPUT')
-    if position_contract and (version!=2 or execution_only or backend not in ('kinematic','snowbot_vendor')):
+    if position_contract and (version!=2 or execution_only or backend not in ('kinematic','snowbot_vendor','external_simulation')):
         raise ValueError('POSITION_CONTRACT_BACKEND')
+    if args.get('physics_config') and (selected_mode!='simulation' or backend!='external_simulation' or not position_contract):
+        raise ValueError('PHYSICS_REQUIRES_SIMULATION_POSITION_BACKEND')
     if args.get('pico_enabled', False) and (args.get('tool_input_source') != 'vr' or
             (backend != 'kinematic' and not position_contract)):
         raise ValueError('PICO_REQUIRES_KINEMATIC_VR')

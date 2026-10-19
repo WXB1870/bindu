@@ -142,6 +142,19 @@ class WebFeedbackTests(unittest.TestCase):
 
 
 class SimulationEntryTests(unittest.TestCase):
+    def test_physics_selects_external_feedback_and_keeps_browser(self):
+        args=entry.parse_args(['--physics','--run-id','physics_test'])
+        physics,control,display=entry.commands(args)
+        self.assertIn('--vr',physics)
+        self.assertIn('device_backend:=external_simulation',control)
+        self.assertEqual(display[display.index('--device-backend')+1],'external_simulation')
+        self.assertIn('--dashboard',display)
+
+    def test_real_recipe_cannot_enable_isaac(self):
+        root=Path(__file__).resolve().parents[1]
+        with self.assertRaises(SystemExit):
+            entry.parse_args(['--physics','--config',str(root/'src/integration/bindu_runtime/config/deployments/snowbot_vr_real.json')])
+
     def test_device_selection_propagates_to_control_and_display(self):
         root=Path(__file__).resolve().parents[1]
         args=entry.parse_args(['--config',str(root/'src/integration/bindu_runtime/config/deployments/snowbot_vr_real.json')])

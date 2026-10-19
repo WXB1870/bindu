@@ -5,8 +5,17 @@ bindu_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 bindu_sdk="${ISAAC_SIM_PATH:-$HOME/isaacsim-6.2.0}"
 bindu_state="${BINDU_ISAAC_STATE:-$bindu_root/artifacts/isaac62-state}"
 bindu_script="$bindu_root/tools/run_shovel_physics.py"
+bindu_ros=false
+if [ "${1:-}" = --vr ]; then
+  bindu_script="$bindu_root/tools/snowbot_isaac.py"
+  bindu_ros=true
+  shift
+fi
 if [ "${1:-}" = --kinematic ]; then
   bindu_script="$bindu_root/tests/validate_shovel_isaac.py"
+  shift
+elif [ "${1:-}" = --live ]; then
+  bindu_script="$bindu_root/tools/snowbot_live.py"
   shift
 fi
 test -x "$bindu_sdk/python.sh"
@@ -25,6 +34,13 @@ for bindu_lib in "$bindu_sdk/exts/isaacsim.pip.nv/pip_prebundle/nvidia"/*/lib; d
   bindu_nv_dirs="${bindu_nv_dirs:+$bindu_nv_dirs:}$bindu_lib"
 done
 test -n "$bindu_nv_dirs"
-export LD_LIBRARY_PATH="$bindu_nv_dirs"
+if "$bindu_ros"; then
+  set +u
+  source /opt/ros/jazzy/setup.bash
+  source "${BINDU_ISAAC_ROS_PREFIX:?VR physics requires the current bindu_interfaces install}/share/bindu_interfaces/local_setup.bash"
+  set -u
+  export PYTHONPATH="$bindu_root/src/shared/bindu_contracts:$bindu_root/src/hardware/bindu_hardware:$PYTHONPATH"
+fi
+export LD_LIBRARY_PATH="$bindu_nv_dirs${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 exec "$bindu_sdk/python.sh" --no-ros-env "$bindu_script" "$@" \
   --portable --portable-root "$bindu_state/kit" --/isaac/startup/ros_bridge_extension=

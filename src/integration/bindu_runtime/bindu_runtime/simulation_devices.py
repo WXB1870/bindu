@@ -16,6 +16,9 @@ class SimulationDevices:
         qos = QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT)
         self.publisher = node.create_publisher(SimulationCommand, 'simulation/command', 8)
         self.subscription = node.create_subscription(SimulationFeedback, 'simulation/feedback', self.receive, qos)
+        from std_msgs.msg import String
+        self.health = {}
+        node.create_subscription(String,'simulation/health',self.receive_health,1)
         self.names = [n for names in profile.groups.values() for n in names]
 
     def receive(self, msg):
@@ -30,7 +33,7 @@ class SimulationDevices:
         if (not msg.ready or not msg.simulator_id or msg.profile_hash != self.profile.digest
                 or list(msg.joints.name) != self.names or len(msg.joints.position) != len(self.names)
                 or len(msg.joints.velocity) != len(self.names) or not all(math.isfinite(v) for v in values)
-                or seconds(msg.stamp) > self.node.now() + .05):
+                or not 0 <= self.node.now()-seconds(msg.stamp) <= .2):
             return
         if self.latest and (msg.sequence <= self.latest.sequence or seconds(msg.stamp) <= seconds(self.latest.stamp)):
             return
@@ -38,6 +41,16 @@ class SimulationDevices:
         if abs(q.x*q.x + q.y*q.y + q.z*q.z + q.w*q.w - 1) > .001:
             return
         self.simulator_id, self.latest = msg.simulator_id, msg
+
+    def receive_health(self, msg):
+        import json
+        try:
+            value=json.loads(msg.data)
+            if (value.get('profile_hash')==self.profile.digest and value.get('run_id')==self.node.run_id and
+                    value.get('runtime_mode')=='simulation' and value.get('simulator_id')==self.simulator_id and
+                    0 <= self.node.now()-value['stamp'] <= .2):
+                self.health=value
+        except (ValueError,KeyError,TypeError):pass
 
     def send(self, group, operation='set', positions=None, velocity=(0., 0.)):
         if self.failed or not self.latest or self.node.now() - seconds(self.latest.stamp) > .2:
@@ -51,6 +64,7 @@ class SimulationDevices:
             msg.positions = [positions[n] for n in msg.joint_names]
         msg.velocity.linear.x, msg.velocity.angular.z = velocity
         self.publisher.publish(msg)
+        return self.sequence
 
     def reading(self):
         if self.failed:

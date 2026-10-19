@@ -42,6 +42,11 @@ def project_state(data, now, identity):
     result = {k:data.get(k) for k in ('run_id','written_at','feedback_stamp','execution','code')}
     result.update(valid=False, pico_fresh=False, pico={}, server_time=now)
     result['diagnostics']=data.get('diagnostics',{})
+    physics=data.get('physics',{})
+    if (identity.get('runtime_mode')=='simulation' and identity.get('device_backend')=='external_simulation' and
+            physics.get('run_id')==identity['run_id'] and physics.get('profile_hash')==identity['profile_hash'] and
+            0 <= now-physics.get('stamp',0) <= .2):
+        result['physics']=physics
     try:
         validate_state(data, now, identity['run_id'], identity['profile_hash'], identity['joint_names'],
                        identity.get('runtime_mode','simulation'), identity.get('device_backend','kinematic'))
@@ -382,10 +387,18 @@ def serve(args, read_state=None, stop=None):
                     for side in ('left','right'):
                         pose=vis.data.oMf[model.getFrameId(config[side+'_frame'])].homogeneous
                         viewer[side+'_tip'].set_transform(pose)
-                        if side=='left':viewer['shovel'].set_transform(pose @ mount)
+                        if side=='left' and args.device_backend!='external_simulation':
+                            viewer['shovel'].set_transform(pose @ mount)
                     last_stamp=value['feedback_stamp'];count+=1
                 pico=value.get('pico',{})
-                viewer['shovel'].set_property('visible',tool_enabled and pico.get('load_state')=='held')
+                if args.device_backend=='external_simulation':
+                    physics=value.get('physics',{})
+                    present=(0 <= time.time()-physics.get('stamp',0) <= .2 and physics.get('tool_present'))
+                    if present:
+                        from snowbot_errors import transform
+                        viewer['shovel'].set_transform(transform(physics['tool_pose']))
+                    viewer['shovel'].set_property('visible',bool(tool_enabled and present))
+                else:viewer['shovel'].set_property('visible',tool_enabled and pico.get('load_state')=='held')
                 status=pico.get('phase','waiting')+' | '+pico.get('reason','')
             except (OSError,ValueError,KeyError) as exc:
                 status=str(exc);viewer['shovel'].set_property('visible',False)

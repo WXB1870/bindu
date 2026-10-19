@@ -158,6 +158,11 @@ class ShovelGeometryTests(unittest.TestCase):
         sample['tool'] = tool.tolist()
         with self.assertRaisesRegex(ValueError,'GRASP_PENETRATION'):
             collision_check(self.urdf,[sample],recipe)
+        recipe['check_grasp_contacts'] = False
+        recipe['acceptance']['ground_policy'] = 'disabled'
+        result = collision_check(self.urdf,[sample],recipe)
+        self.assertFalse(result['grasp_contact_checked'])
+        self.assertEqual(result['violations'],0)
 
     def test_disabled_tool_ground_check_has_no_alarm_or_warning(self):
         recipe=copy.deepcopy(self.recipe)

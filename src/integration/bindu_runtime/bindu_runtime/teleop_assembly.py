@@ -23,7 +23,7 @@ def assemble(context):
         raise ValueError('RECORDER_DISABLED_REQUIRES_OFF')
     mode = resolve_mode(value('runtime_mode', 'simulation'))
     position_contract=enabled('position_contract','false')
-    if position_contract and value('device_backend') not in ('kinematic','snowbot_vendor'):
+    if position_contract and value('device_backend') not in ('kinematic','snowbot_vendor','external_simulation'):
         raise ValueError('POSITION_CONTRACT_BACKEND')
     if value('gripper_config') and mode != 'real' and not position_contract:
         raise ValueError('GRIPPER_REQUIRES_REAL_MODE')
@@ -86,7 +86,7 @@ def assemble(context):
     nodes = [LogInfo(msg=f'Robot {robot.robot_id}: {len(robot.active_joints)} tool DOF, '
                      f'{len(robot.context_joints)} measured context joints; config={robot.digest}')]
     execution = {**common, 'device_backend': backend}
-    if pico and position_contract and mode=='simulation' and settings.get('device_initial_positions_rad'):
+    if pico and position_contract and backend=='kinematic' and settings.get('device_initial_positions_rad'):
         execution['kinematic_initial_positions'] = ParameterValue(
             json.dumps(settings['device_initial_positions_rad']), value_type=str)
     if initial:
