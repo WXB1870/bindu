@@ -19,6 +19,44 @@ from bindu_kinematics.bimanual_worker import BimanualWorker
 ROOT=Path(__file__).resolve().parents[1]
 
 
+class LoadedPreparePathTests(unittest.TestCase):
+    def fixture(self, relative_shift=lambda q:0.):
+        solver=BimanualQP.__new__(BimanualQP)
+        solver.handle=1;solver.model_names=['joint'];solver.nq=1
+        solver.limits={'joint':(-1.,1.)};solver.collision_step=.01
+        solver.grasp_position_tolerance=.001;solver.grasp_rotation_tolerance=.01
+        solver.grasp_reference=np.eye(4);solver.capture=Mock()
+        solver._ptr=lambda value:value
+        def relative(handle,q,nq,out):
+            out[:]=np.eye(4);out[0,3]=relative_shift(q[0]);return 1
+        def tool(handle,q,nq,out):
+            out[:]=np.eye(4);out[0,3]=q[0];return 1
+        solver.lib=S(bq_relative_pose=relative,bq_tool_pose=tool,bq_destroy=Mock())
+        solver.collision_check=Mock(return_value={'samples':5})
+        return solver
+
+    def test_loaded_path_checks_tool_fk_at_every_sample(self):
+        solver=self.fixture()
+        result=solver.check_loaded_prepare({'joint':0.},{'joint':.02})
+        self.assertTrue(result['coupling_checked']);self.assertTrue(result['tool_present'])
+        samples=solver.collision_check.call_args.args[0]
+        self.assertEqual(len(samples),5)
+        self.assertEqual([s['tool'][0,3] for s in samples],[s['q']['joint'] for s in samples])
+
+    def test_closed_chain_violation_inside_path_is_rejected(self):
+        solver=self.fixture(lambda q:.1*np.sin(np.pi*q/.02))
+        with self.assertRaisesRegex(ValueError,'PREPARE_TOOL_COUPLING'):
+            solver.check_loaded_prepare({'joint':0.},{'joint':.02})
+        solver.collision_check.assert_not_called()
+
+    def test_loaded_collision_and_limits_are_not_bypassed(self):
+        solver=self.fixture();solver.collision_check.side_effect=ValueError('TOOL_BODY_COLLISION')
+        with self.assertRaisesRegex(ValueError,'TOOL_BODY_COLLISION'):
+            solver.check_loaded_prepare({'joint':0.},{'joint':.02})
+        with self.assertRaisesRegex(ValueError,'PREPARE_JOINT_LIMIT'):
+            solver.check_loaded_prepare({'joint':0.},{'joint':2.})
+
+
 def propose(solver, feedback, target, dt=.01, reference=None):
     if reference is None:
         reference = [feedback[n] for n in solver.names]

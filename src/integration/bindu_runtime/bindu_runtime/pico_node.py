@@ -330,8 +330,9 @@ class PicoNode(RuntimeNode):
         if targets is None and self.prepare_positions is None:
             raise RuntimeError('PICO_PREPARE_PRESET_REQUIRED')
         if not joints_at_rest(s.joints,self.names,.005 if self.position_contract else 1e-6):raise RuntimeError('PREPARE_REQUIRES_STATIONARY_START')
-        loaded=targets is not None
-        target=targets if loaded else {n:self.prepare_positions[n]
+        gripper_move=targets is not None
+        loaded_prepare=self.position_contract and not gripper_move and self.control.load!='empty'
+        target=targets if gripper_move else {n:self.prepare_positions[n]
                 for g in self.tool_cfg['resource_groups'] for n in self.profile.groups[g]}
         end=time.monotonic()+self.validator.startup_timeout
         while not self.validator.ready or self.validator.busy:
@@ -340,8 +341,11 @@ class PicoNode(RuntimeNode):
             await self.pause()
         names=[n for g in self.tool_cfg['resource_groups'] for n in self.profile.groups[g]]
         self.validation_result=None
-        if not self.validator.submit('gripper_path' if loaded else 'prepare_path',intent.token,q,
-                                     target if loaded else [target[n] for n in names]):
+        operation='loaded_prepare_path' if loaded_prepare else 'gripper_path' if gripper_move else 'prepare_path'
+        self.event('PICO_PREPARE_VALIDATION',json.dumps(dict(operation=operation,load_state=self.control.load,
+            tool_present=loaded_prepare or gripper_move,coupling_checked=loaded_prepare)))
+        if not self.validator.submit(operation,intent.token,q,
+                                     target if loaded_prepare or gripper_move else [target[n] for n in names]):
             raise RuntimeError('PICO_PREPARE_VALIDATOR_BUSY')
         end=time.monotonic()+30.
         while self.validation_result is None:
@@ -351,11 +355,12 @@ class PicoNode(RuntimeNode):
         kind,token,value=self.validation_result
         if token!=intent.token or kind!='result':raise RuntimeError(str(value))
         _,current=self.reading()
-        if any(abs(current[n]-q[n])>.0001 for n in (self.names if loaded else names)):raise RuntimeError('PREPARE_STATE_CHANGED')
+        if any(abs(current[n]-q[n])>.0001 for n in (self.names if gripper_move or loaded_prepare else names)):raise RuntimeError('PREPARE_STATE_CHANGED')
         return target
 
     async def confirm_tool(self,intent):
         f=self.feedback()
+        if not f.healthy:raise RuntimeError('PICO_FEEDBACK_UNAVAILABLE')
         if not f.stopped or f.modes[0]!='closed' or f.modes[1] not in ('closed','virtual'):
             raise RuntimeError('PICO_GRIPPER_CONFIRMATION_REQUIRED')
         end=time.monotonic()+self.tool_cfg.get('worker_startup_timeout',30.)
@@ -369,7 +374,7 @@ class PicoNode(RuntimeNode):
             await self.pause()
         raise RuntimeError('PICO_TOOL_CONFIRM_TIMEOUT')
 
-    async def follow(self,intent):
+    async def select_tool_mode(self,intent):
         self.current(intent)
         if self.mode is None:raise RuntimeError('PICO_MODE_AUTHORITY_UNAVAILABLE')
         self.release_until=float('inf')  # Mode selection requires released projected hands.
@@ -388,6 +393,9 @@ class PicoNode(RuntimeNode):
             self.current(intent)
             if time.monotonic()>end:raise RuntimeError('PICO_MODE_FEEDBACK_TIMEOUT')
             await self.pause()
+
+    async def follow(self,intent):
+        self.current(intent)
         self.release_until=self.now()+.1
         future=self.tools.send_goal_async(TeleopSession.Goal(task_id='pico_'+self.instance_id,
             resource_group='bimanual_tool',duration=3600.),feedback_callback=self.tool_feedback)
@@ -412,14 +420,24 @@ class PicoNode(RuntimeNode):
         self.tool_phase=msg.feedback.mode
 
     async def perform(self,intent):
-        ok=False;reason=''
+        ok=False;reason='';read_only=False;rejected=False
         try:
             await self.cancel_tool()
             self.current(intent)
+            read_only=intent.operation in ('prepare','confirm_tool','follow')
             if intent.operation=='prepare':
-                if self.control.load!='empty':raise RuntimeError('PICO_PREPARE_REQUIRES_EMPTY')
+                # Position-contract preparation always validates the measured
+                # path first. Held/unknown uses loaded_prepare_path, including
+                # tool CAD and captured two-hand coupling at every sample.
+                if not self.position_contract and self.control.load!='empty':raise RuntimeError('PICO_PREPARE_REQUIRES_EMPTY')
                 target=await self.validate_prepare(intent)
-                await self.move(intent,target,self.cfg['prepare_duration'],fit_duration=self.simulation_demo)
+                _,measured=self.reading()
+                error=max(abs(measured[n]-q) for n,q in target.items())
+                if self.position_contract and error<.002:
+                    self.event('PICO_PREPARE_ALREADY_REACHED',json.dumps(dict(max_joint_error_rad=error)))
+                else:
+                    read_only=False
+                    await self.move(intent,target,self.cfg['prepare_duration'],fit_duration=self.simulation_demo)
             elif intent.operation=='grippers':
                 if not self.control.supported or self.control.phase!='loading':raise RuntimeError('PICO_LOADING_REQUIRED')
                 if self.position_ops:
@@ -437,16 +455,27 @@ class PicoNode(RuntimeNode):
                 target={cfg['joint']:cfg['virtual' if intent.value else 'closed']}
                 await self.validate_prepare(intent,target)
                 await self.move(intent,target,self.cfg['gripper_duration'],fit_duration=True)
-            elif intent.operation=='follow':await self.follow(intent)
+            elif intent.operation=='follow':
+                if self.position_contract:
+                    self.event('PICO_ENGAGE_CHECK',json.dumps(dict(token=intent.token,
+                        source_id=self.control.source,seq=self.control.seq,load_state=self.control.load,
+                        feedback_stamp=self.feedback().stamp,mode=self.mode.mode if self.mode else None)))
+                    await self.confirm_tool(intent)
+                    self.current(intent)
+                await self.select_tool_mode(intent)
+                read_only=False
+                await self.follow(intent)
             elif intent.operation!='stop':raise RuntimeError('PICO_OPERATION_UNSUPPORTED')
             ok=True
         except Exception as exc:
             reason=type(exc).__name__+':'+str(exc)
-            try:await self.cancel_tool()
+            try:
+                await self.cancel_tool()
+                rejected=read_only
             except Exception as stop_error:reason+=':'+type(stop_error).__name__+':'+str(stop_error)
-        self.control.complete(intent.token,ok,reason,self.now())
+        self.control.complete(intent.token,ok,reason,self.now(),rejected=rejected)
         self.event('PICO_OPERATION_RESULT',json.dumps(dict(token=intent.token,operation=intent.operation,
-            success=ok,reason=reason,simulated_actuator=self.simulation)))
+            success=ok,reason=reason,read_only_rejection=rejected,simulated_actuator=self.simulation)))
 
     def tick(self):
         tick_at=time.monotonic()

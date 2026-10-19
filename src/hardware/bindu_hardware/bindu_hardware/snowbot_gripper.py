@@ -156,7 +156,8 @@ class GripperController:
                 or stamp < self.command_stamp or not math.isfinite(valid_for) or not 0 < valid_for <= .4 or not 0 <= self.now()-stamp < valid_for):
             raise RuntimeError('GRIPPER_STALE_COMMAND')
         if operation == 'authorize_loading':
-            if side or load_state not in ('empty', 'held') or type(external_support) is not bool:
+            if (side or load_state not in ('empty', 'held', 'unknown') or type(external_support) is not bool or
+                    load_state=='unknown' and not external_support):
                 raise RuntimeError('GRIPPER_LOADING_CONTEXT')
             self.load, self.supported, self.authorized = load_state, external_support, True
             self.authorized_at = self.now()

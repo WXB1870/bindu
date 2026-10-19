@@ -346,6 +346,37 @@ class BimanualQP:
             before=end
         self.collision_check(samples)
 
+    def check_loaded_prepare(self, feedback, targets):
+        """Validate a proposed joint path with the tool and captured rigid grasp.
+
+        This is a discrete rejection guard, not a planner. A joint-space path
+        that breaks the measured two-hand geometry is rejected before motion.
+        """
+        self.capture(feedback,'rigid')
+        reference=np.linalg.inv(self.grasp_reference)
+        before=self._q(feedback)
+        after=self._q({n:targets.get(n,feedback[n]) for n in self.model_names})
+        if any(not self.limits[n][0]<=value<=self.limits[n][1] for n,value in zip(self.model_names,after)):
+            raise ValueError('PREPARE_JOINT_LIMIT')
+        count=max(1,int(np.ceil(np.max(np.abs(after-before))/min(self.collision_step,.005))))
+        samples=[]
+        for fraction in np.linspace(0.,1.,count+1):
+            q=before+fraction*(after-before)
+            relative=np.empty((4,4),dtype=np.float64)
+            tool=np.empty((4,4),dtype=np.float64)
+            if (not self.lib.bq_relative_pose(self.handle,self._ptr(q),self.nq,self._ptr(relative)) or
+                    not self.lib.bq_tool_pose(self.handle,self._ptr(q),self.nq,self._ptr(tool))):
+                raise ValueError('PREPARE_TOOL_FK')
+            error=reference @ relative
+            angle=math.acos(float(np.clip((np.trace(error[:3,:3])-1.)/2.,-1.,1.)))
+            if (np.linalg.norm(error[:3,3])>self.grasp_position_tolerance or
+                    angle>self.grasp_rotation_tolerance):
+                raise ValueError('PREPARE_TOOL_COUPLING: joint path changes the captured two-hand grasp')
+            samples.append(dict(t=float(fraction),q=dict(zip(self.model_names,q)),tool=tool))
+        if self.collision_check is None:raise ValueError('PREPARE_TOOL_COLLISION_CHECK_REQUIRED')
+        result=self.collision_check(samples)
+        return dict(result,tool_present=True,coupling_checked=True)
+
     def set_shared_targets(self, targets=None):
         """Optional named shared-joint posture objective; None clears it."""
         if not self.captured:

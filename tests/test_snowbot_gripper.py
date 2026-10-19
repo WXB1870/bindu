@@ -73,6 +73,16 @@ class GripperTests(unittest.TestCase):
     def setUp(self):
         self.r = Rig()
 
+    def test_unknown_load_requires_explicit_support_without_becoming_empty(self):
+        r=self.r;r.acquire()
+        with self.assertRaisesRegex(RuntimeError,'GRIPPER_LOADING_CONTEXT'):
+            r.authorize('unknown',False)
+        r.authorize('unknown',True)
+        self.assertEqual(r.core.load,'unknown');self.assertTrue(r.core.supported)
+        r.command('open','left')
+        self.assertEqual(r.sent[-1][0],'left')
+        self.assertEqual(r.core.snapshot('left')['grasp_state'],'unknown')
+
     def test_startup_readonly_uncalibrated_or_busy_never_publishes(self):
         r=self.r
         self.assertFalse(r.sent)

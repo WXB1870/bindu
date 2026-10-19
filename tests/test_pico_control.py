@@ -73,13 +73,14 @@ class GuidedLoadingTests(unittest.TestCase):
         rig.modes=('closed','closed');rig.complete();rig.step()
 
     def test_complete_mount_and_unmount_with_only_controller_inputs(self):
-        r=Rig('unknown',guided=True)
-        r.click(1,1)
-        self.assertEqual(r.core.load,'empty')
+        r=Rig('empty',guided=True)
         r.buttons[1]=1
         for _ in range(60):r.step()
         self.assertEqual(r.core.pending.operation,'prepare')
         r.complete();r.buttons[1]=0;r.step()
+        self.assertEqual(r.core.phase,'standby')
+        self.assertIsNone(r.core.pending)
+        r.click(0,2);r.complete();r.step()
         self.assertEqual(r.core.phase,'load_check')
         self.assertEqual(r.core.snapshot(r.now)['operator_guide']['step'],'support')
         r.click(1,1)
@@ -92,13 +93,96 @@ class GuidedLoadingTests(unittest.TestCase):
         r.click(1,1)
         self.assertEqual(r.core.load,'held')
         self.assertEqual(r.core.load_source,'operator_load_confirmation')
-        self.assertEqual(r.core.pending.operation,'confirm_tool')
-        r.complete();r.step()
-        self.assertEqual(r.core.phase,'tool_standby')
+        self.assertEqual(r.core.phase,'standby')
         self.assertIsNone(r.core.pending)
         self.start_loading(r);self.assertEqual(r.core.loading_goal,'empty')
         self.open_close(r);r.click(1,1)
         self.assertEqual(r.core.load,'empty');self.assertEqual(r.core.phase,'standby')
+
+    def test_prepare_accepts_held_or_unknown_without_empty_declaration(self):
+        for load in ('held','unknown'):
+            r=Rig(load,guided=True);r.buttons[1]=1
+            for _ in range(60):r.step()
+            self.assertEqual(r.core.pending.operation,'prepare')
+            self.assertNotIn('load_empty',r.core.last_prepare_check['checks'])
+            self.assertEqual(r.core.load,load)
+            r.complete()
+            self.assertEqual((r.core.phase,r.core.reason),('standby','PREPARED'))
+            self.assertEqual(r.core.load,load)
+
+    def test_prepare_release_fences_late_arrival_and_does_not_enter_loading(self):
+        r=Rig(guided=True);r.buttons[1]=1
+        for _ in range(60):r.step()
+        token=r.core.pending.token
+        r.buttons[1]=0;r.step()
+        self.assertEqual(r.core.pending.operation,'stop')
+        self.assertFalse(r.core.complete(token,True,now=r.now))
+        r.complete();r.step()
+        self.assertEqual(r.core.phase,'standby');self.assertIsNone(r.core.pending)
+
+    def test_loading_completion_requires_released_squeezes(self):
+        r=Rig(guided=True);self.start_loading(r);self.open_close(r)
+        r.grips=[1.,1.];r.step();r.click(1,1)
+        self.assertEqual(r.core.phase,'loading')
+        self.assertEqual(r.core.reason,'RELEASE_SQUEEZES_BEFORE_CONFIRM')
+        r.grips=[0.,0.];r.step();r.click(1,1)
+        self.assertEqual(r.core.phase,'standby');self.assertIsNone(r.core.pending)
+
+    def test_interrupted_loading_recovery_returns_standby_until_new_request(self):
+        r=Rig('unknown',guided=True);self.start_loading(r)
+        r.now+=.3;r.core.update_feedback(PicoFeedback(r.now,True),r.now);r.core.tick(r.now)
+        self.assertEqual(r.core.phase,'locked');r.complete();r.step()
+        r.click(1,1)
+        self.assertEqual(r.core.phase,'standby');self.assertFalse(r.core.supported)
+        self.assertIsNone(r.core.pending)
+        r.click(0,2);r.complete();r.click(1,1)
+        self.assertEqual(r.core.phase,'loading');self.assertEqual(r.core.load,'unknown')
+        self.assertTrue(r.core.supported)
+
+    def test_direct_engagement_does_not_require_a_b_or_load_declaration(self):
+        for load in ('empty','held','unknown'):
+            r=Rig(load,guided=True)
+            self.assertEqual(r.core.phase,'standby');self.assertIsNone(r.core.pending)
+            r.grips=[1.,1.];r.step()
+            self.assertEqual(r.core.phase,'engaging')
+            self.assertEqual(r.core.pending.operation,'follow')
+            r.complete();self.assertEqual(r.core.phase,'following')
+            r.grips=[0.,1.];r.step();r.complete()
+            r.step();self.assertEqual(r.core.phase,'tool_standby')
+            r.grips=[1.,1.];r.step();self.assertIsNone(r.core.pending)
+            r.grips=[0.,0.];r.step();r.grips=[1.,1.];r.step()
+            self.assertEqual(r.core.pending.operation,'follow')
+
+    def test_read_only_rejection_requires_fresh_release_before_retry(self):
+        r=Rig('unknown',guided=True);r.grips=[1.,1.];r.step()
+        token=r.core.pending.token
+        r.core.complete(token,False,'RuntimeError:BIMANUAL_GRASP_POSE',r.now,rejected=True)
+        self.assertEqual(r.core.phase,'standby');self.assertIsNone(r.core.pending)
+        r.step();self.assertIsNone(r.core.pending)
+        self.assertEqual(r.core.snapshot(r.now)['operator_guide']['step'],'retry')
+        r.grips=[0.,0.];r.step();r.grips=[1.,1.];r.step()
+        self.assertEqual(r.core.pending.operation,'follow')
+
+    def test_active_or_unconfirmed_failure_still_locks(self):
+        for stopped,rejected in ((True,False),(False,True)):
+            r=Rig(guided=True);r.grips=[1.,1.];r.step()
+            r.core.update_feedback(PicoFeedback(r.now,stopped),r.now)
+            r.core.complete(r.core.pending.token,False,'TEST_FAILURE',r.now,rejected=rejected)
+            self.assertEqual(r.core.phase,'locked')
+
+    def test_fault_recovery_never_consumes_held_squeeze_or_restarts(self):
+        r=Rig(guided=True);r.grips=[1.,1.];r.step();r.complete()
+        r.click(0,1);r.complete();r.click(1,1)
+        self.assertEqual(r.core.phase,'locked')
+        r.grips=[0.,0.];r.step();r.click(1,1)
+        self.assertEqual(r.core.phase,'standby');self.assertIsNone(r.core.pending)
+        r.step();self.assertIsNone(r.core.pending)
+
+    def test_unknown_load_can_choose_mount_or_unmount(self):
+        r=Rig('unknown',guided=True);r.core.loading_check(r.now);r.step()
+        self.assertEqual(r.core.loading_goal,'held')
+        r.click(0,0)
+        self.assertEqual(r.core.loading_goal,'empty');self.assertEqual(r.core.load,'unknown')
 
     def test_idle_gap_keeps_step_and_held_key_cannot_acknowledge_support(self):
         r=Rig(guided=True);r.core.loading_check(r.now)

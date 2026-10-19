@@ -40,6 +40,8 @@ def _run(config, profile, requests, results, preload_path_checks=False):
             operation,token,feedback,target,reference,dt,grasp_mode,target_stamp=item
             try:
                 if operation == 'capture': value=solver.capture(feedback,grasp_mode)
+                elif operation == 'loaded_prepare_path':
+                    value=solver.check_loaded_prepare(feedback,target)
                 elif operation in ('prepare_path','gripper_path'):
                     import numpy as np
                     loaded=operation=='gripper_path'

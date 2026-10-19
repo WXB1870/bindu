@@ -68,7 +68,14 @@ def scenario(out, mode, websocket=False):
     counters=[ButtonCounters(),ButtonCounters()]
     vr=node.create_publisher(VRInput,ns+'/teleop/vr/raw',10)
     fixture=json.loads((CFG/'pico_snowbot_position_sim.json').read_text())
+    # Exercise an invalid startup posture even if the deployment example is
+    # later calibrated to a valid grasp. Keep this override in the fixture only.
+    fixture['device_initial_positions_rad']={n:0. for n in fixture['device_initial_positions_rad']}
     q=fixture['device_initial_positions_rad'].copy()
+    if mode=='real':
+        # Synthetic measured posture, deliberately independent of an A command.
+        # The actual real deployment continues to use only vendor feedback.
+        q.update(fixture['prepare_positions_rad'])
     session=0;sample=0;acks=[0,0];hold_mask=0;holds=[0.,0.]
     if mode=='real':
         measured=node.create_publisher(RetInformation,vendor+'/dualArmCtl_fdback',1)
@@ -135,6 +142,9 @@ def scenario(out, mode, websocket=False):
         pp=out/'fixture-pico.json';pp.write_text(json.dumps(pc))
         recipe['arguments'].update(gripper_config=str(gp),pico_config=str(pp),vendor_namespace=vendor,
             **{k:'/'+node.get_name() for k in ('arm_receiver_node','servo_receiver_node','mid_receiver_node')})
+    else:
+        pp=out/'fixture-pico-simulation.json';pp.write_text(json.dumps(fixture))
+        recipe['arguments']['pico_config']=str(pp)
     path=out/(mode+'.json');path.write_text(json.dumps(recipe))
     log=(out/(mode+'.log')).open('w')
     process=subprocess.Popen(['ros2','launch','bindu_runtime','teleop_only.launch.py','config:='+str(path)],
@@ -156,6 +166,9 @@ def scenario(out, mode, websocket=False):
     try:
         wait(lambda:views and views[-1]['phase']=='standby' and len(grippers)==2,40.)
         assert not accepted and not packets,'startup actuation'
+        initial=dict(zip(states[-1].joints.name,states[-1].joints.position))
+        assert all(n in initial and abs(initial[n]-v)<1e-9
+                   for n,v in (q if mode=='real' else fixture['device_initial_positions_rad']).items()),'startup feedback differs from configured fixture'
         assert states[-1].simulated==(mode=='simulation') and states[-1].runtime_mode==mode
         assert views[-1]['capabilities']['axial_grasp'] is False
         checks.append('same feedback contract, no startup commands, unavailable capability explicit')
@@ -178,14 +191,30 @@ def scenario(out, mode, websocket=False):
         assert not rejected.accepted and 'UNTIMED_JOINT_TARGET' in rejected.code,rejected.code
         checks.append('coupled arm ownership and unsupported timed trajectory rejected on both backends')
         assert views[-1]['load_state']==('empty' if mode=='simulation' else 'unknown')
-        if mode!='simulation':click(1,1)
-        assert views[-1]['load_state']=='empty'
+        source['grip']=1.
+        if mode=='simulation':
+            wait(lambda:views[-1]['phase']=='standby' and views[-1]['pending'] is None and
+                 'BIMANUAL_GRASP_POSE' in views[-1]['reason'])
+            pump(.3);assert not accepted and not packets
+            checks.append('direct engagement from invalid zero posture is refused with geometric reason and no actuation')
+        else:
+            phase('following')
+            assert views[-1]['load_state']=='unknown'
+            checks.append('unknown load at a valid measured posture engages directly without A, B or an empty declaration')
+        source['grip']=0.;phase('standby' if mode=='simulation' else 'tool_standby')
+        before=len(accepted)
         source['buttons'][1]=1
-        wait(lambda:views[-1]['phase']=='load_check' and views[-1]['pending'] is None,40.)
+        wait(lambda:views[-1]['pending'] is None and views[-1]['reason']=='PREPARED',40.)
         source['buttons'][1]=0;pump(.3)
+        assert views[-1]['phase']=='standby'
         assert accepted and all(m.mode=='joint_target' and not m.points for m in accepted)
         assert all(m.runtime_mode==mode for m in accepted)
-        checks.append('A preparation uses untimed joint_target and measured arrival')
+        if mode=='simulation':assert len(accepted)>before
+        if mode!='simulation':
+            assert views[-1]['load_state']=='unknown'
+            assert len(accepted)==before
+        checks.append('optional A validates the path and measured arrival, returning standby without entering loading')
+        click(0,2);phase('load_check')
         assert views[-1]['operator_guide']['step']=='support'
         source['stream']=False;pump(.4)
         assert views[-1]['phase']=='load_check' and views[-1]['idle_input_lost']
@@ -196,15 +225,33 @@ def scenario(out, mode, websocket=False):
         source['trigger']=[0.,0.]
         wait(lambda:views[-1]['gripper_modes']==['closed','closed'] and views[-1]['pending'] is None)
         checks.append('Trigger open/close uses shared leased gripper services; grasp stays unknown')
-        click(1,1);phase('tool_standby')
+        click(1,1);phase('standby')
         assert views[-1]['load_source']=='operator_load_confirmation'
-        checks.append('guided A/B/Trigger loading completes without CLI declarations; idle input gaps keep the step')
+        pump(.3);assert views[-1]['phase']=='standby' and views[-1]['pending'] is None
+        checks.append('separate loading completes to standby without automatic follow; idle input gaps keep the step')
+        before=len(accepted)
+        source['buttons'][1]=1
+        wait(lambda:views[-1]['reason']=='PREPARED' and views[-1]['pending'] is None)
+        source['buttons'][1]=0;pump(.2)
+        assert views[-1]['load_state']=='held' and len(accepted)==before
+        checks.append('held-tool A validates coupling and tool CAD; already-reached pose submits no motion or gripper commands')
         before=len(accepted);source['grip']=1.;phase('following');source['delta']=.006
         wait(lambda:len(accepted)>before+5)
         source['grip']=0.;phase('tool_standby')
         wait(lambda:states and not states[-1].lease_active and states[-1].state not in ('RUNNING','STOPPING'))
         assert not states[-1].stop_failures
-        checks.append('B tool check, Squeeze follow, release and fresh stop confirmation')
+        checks.append('Squeeze performs tool preflight, captures the current baseline and follows; release confirms fresh stop')
+        paused=len(accepted);source['delta']=.025;pump(.3)
+        assert len(accepted)==paused
+        source['grip']=1.;phase('following')
+        reengaged=states[-1]
+        pump(.2)
+        assert max(abs(a-b) for a,b in zip(reengaged.joints.position,states[-1].joints.position))<.003
+        source['buttons'][0]=2;phase('locked');source['buttons'][0]=0;source['grip']=0.
+        wait(lambda:not states[-1].lease_active and states[-1].state not in ('RUNNING','STOPPING'))
+        pump(.3);click(1,1);phase('standby');paused=len(accepted);pump(.3)
+        assert len(accepted)==paused
+        checks.append('paused controller displacement is discarded on recapture; Y/B recovery never resumes automatically')
         source['grip']=1.;phase('following');source['stream']=False;phase('locked')
         wait(lambda:not states[-1].lease_active and states[-1].state not in ('RUNNING','STOPPING'))
         assert not states[-1].stop_failures
@@ -217,6 +264,20 @@ def scenario(out, mode, websocket=False):
         wait(lambda:all(not g.lease_active and g.state not in ('MOVING','STOPPING') for g in grippers.values()))
         assert all(g.state!='FAULT' and g.grasp_state=='unknown' for g in grippers.values())
         checks.append('input loss during gripper operation releases lease and confirms hold without closing')
+        source.update(stream=True,grip=0.,trigger=[0.,0.]);pump(.4)
+        click(1,1);phase('standby')
+        assert views[-1]['load_state']=='unknown'
+        assert views[-1]['pending'] is None
+        click(0,2);phase('load_check')
+        assert views[-1]['loading_goal']=='empty'
+        click(1,1);phase('loading')
+        source['trigger']=[1.,1.]
+        wait(lambda:views[-1]['gripper_modes']==['open','open'] and views[-1]['pending'] is None)
+        source['trigger']=[0.,0.]
+        wait(lambda:views[-1]['gripper_modes']==['closed','closed'] and views[-1]['pending'] is None)
+        click(1,1);phase('standby')
+        assert views[-1]['load_state']=='empty'
+        checks.append('interrupted unloading recovers to standby; a new request preserves intent but requires fresh support')
         terminate(observer,node);observer=None
         diagnostic_health=json.loads((trace_dir/'diagnostics-health.json').read_text())
         assert not diagnostic_health['active'] and not diagnostic_health['error'] and diagnostic_health['dropped']==0,diagnostic_health
@@ -225,6 +286,11 @@ def scenario(out, mode, websocket=False):
         events=[json.loads(line)['data'] for line in (trace_dir/'runtime-events.jsonl').read_text().splitlines()]
         attempts=[json.loads(e['code']) for e in events if e['state']=='PICO_PREPARE_CHECK']
         assert attempts and attempts[0]['accepted'] and all(attempts[0]['checks'].values()),attempts
+        validations=[json.loads(e['code']) for e in events if e['state']=='PICO_PREPARE_VALIDATION']
+        assert any(v['operation']=='loaded_prepare_path' and v['tool_present'] and v['coupling_checked'] for v in validations)
+        assert any(e['state']=='PICO_ENGAGE_CHECK' for e in events)
+        if mode=='simulation':
+            assert any(json.loads(e['code']).get('read_only_rejection') for e in events if e['state']=='PICO_OPERATION_RESULT')
         checks.append('raw/projected input, commands, feedback and preparation checks persisted without logger queue loss')
         if websocket:
             assert not peer_errors,peer_errors
