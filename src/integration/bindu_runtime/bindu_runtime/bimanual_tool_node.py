@@ -65,8 +65,8 @@ class BimanualToolNode(RuntimeNode):
         if demo:
             from bindu_teleoperation.simulation_fixture import short_rod_config
             self.cfg=short_rod_config(self.cfg)
-        if not self.simulation and 'integration_max_sample_gap' in self.cfg:
-            raise ValueError('BIMANUAL_SAMPLE_GAP_OVERRIDE_REQUIRES_SIMULATION')
+        if self.cfg.get('integration_max_sample_gap',self.cfg.get('max_integration_interval',.1)) > self.cfg['input_max_age']:
+            raise ValueError('BIMANUAL_SAMPLE_GAP_EXCEEDS_INPUT_TIMEOUT')
         self.tool_frame=None
         self.groups=tuple(self.cfg['resource_groups'])
         if (len(self.groups) not in (2,3) or len(set(self.groups))!=len(self.groups) or
@@ -380,6 +380,10 @@ class BimanualToolNode(RuntimeNode):
                         reply=pending.result()
                         if not reply.accepted: raise RuntimeError(reply.code)
                         reference.accept(*pending_reference)
+                        self.event('BIMANUAL_SUBMIT_TIMING',json.dumps({
+                            'input_seq':work_seq,'reference_sampled_at':reference.sampled_at,
+                            'acknowledged_at':self.now(),'submit_round_trip_s':now-pending_at,
+                            'server_monotonic_s':now}),goal.request.task_id)
                         pending_reference=None
                         accepted+=1
                         pending=None
@@ -515,6 +519,8 @@ class BimanualToolNode(RuntimeNode):
                                     'teleop_mode':mode.mode,'recovery_scale':metrics[2],
                                     'input_stamp':work_stamp,'input_seq':work_seq,'integration_dt':work_dt,
                                     'sample_gap_s':work_gap,
+                                    'control_sampled_at':work_sampled_at,'result_received_at':self.now(),
+                                    'result_age_s':self.now()-work_sampled_at,
                                     'target':work_target}),
                                     goal.request.task_id,command.command_id)
                         awaiting=''
@@ -530,8 +536,17 @@ class BimanualToolNode(RuntimeNode):
                     if operation=='solve' and sampled_at<=reference.sampled_at:
                         await self.pause()
                         continue
-                    baseline,dt=reference.step(sampled_at) if operation=='solve' else (None,None)
                     gap=sampled_at-reference.sampled_at if operation=='solve' else None
+                    if gap is not None and gap>.08:
+                        self.event('BIMANUAL_SAMPLE_GAP',json.dumps({
+                            'sample_gap_s':gap,'max_sample_gap_s':reference.max_sample_gap,
+                            'max_integration_interval_s':reference.max_interval,
+                            'reference_sampled_at':reference.sampled_at,'control_sampled_at':sampled_at,
+                            'server_monotonic_s':time.monotonic(),'input_seq':session.seq,
+                            'input_stamp':session.stamp,'input_age_s':sampled_at-session.stamp,
+                            'feedback_stamp':seconds(s.feedback_stamp),'feedback_age_s':sampled_at-seconds(s.feedback_stamp),
+                            'will_reject':gap>reference.max_sample_gap}),goal.request.task_id)
+                    baseline,dt=reference.step(sampled_at) if operation=='solve' else (None,None)
                     if self.worker.submit(operation,worker_token,measured,session.target,
                                           reference=baseline,dt=dt,grasp_mode=session.grasp_mode,
                                           target_stamp=session.stamp):

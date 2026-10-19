@@ -60,7 +60,8 @@ class VRInputNode(RuntimeNode):
         self.last_poll=polled
         for report in self.receiver.poll_health():
             report.update(run_id=self.run_id,runtime_mode=self.runtime_mode,
-                          ros_poll_interval_max_s=self.poll_delay_max,ros_received_at=time.time())
+                          ros_poll_interval_max_s=self.poll_delay_max,ros_received_at=time.time(),
+                          ros_received_monotonic_s=time.monotonic())
             self.health_publisher.publish(String(data=json.dumps(report)))
             self.poll_delay_max=0.
         try:

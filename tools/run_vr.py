@@ -131,14 +131,22 @@ def run(args):
         try:
             resolved_commands=commands(args)
             configs={}
-            for key,value in dict(deployment=str(args.config),**args.deployment).items():
+            from bindu_runtime.robot_setup import RobotSetup
+            robot=RobotSetup.load(args.deployment['robot_config'])
+            config_paths=dict(deployment=str(args.config),**args.deployment,
+                tool_config=str(robot.tool_config),profile_config=str(robot.profile_path))
+            for key,value in config_paths.items():
                 if key=='deployment' or key.endswith('_config'):
                     path=Path(value)
                     if path.is_file():
                         configs[key]=dict(path=str(path),sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
                                           content=json.loads(path.read_text()))
+            from bindu_teleoperation.vr import receiver
+            probe=Path(receiver.__file__).with_name('client_timing.js')
             manifest=dict(schema=1,run_id=args.run_id,started_at=time.time(),domain_id=args.domain_id,
                 namespace=args.namespace,diagnostics=args.diagnostics,commands=resolved_commands,configs=configs,
+                client_timing_probe=dict(path=str(probe),sha256=hashlib.sha256(probe.read_bytes()).hexdigest(),
+                    clock_semantics='browser monotonic send time; never used as control freshness or one-way latency'),
                 diagnostic_format='JSONL: received_at, received_monotonic_ns, data; ROS fields retained',
                 diagnostic_chunk_bytes=128*1024*1024)
             (args.output/'session.json').write_text(json.dumps(manifest,ensure_ascii=False,indent=2))

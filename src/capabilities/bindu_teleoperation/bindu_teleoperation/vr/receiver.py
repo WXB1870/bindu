@@ -75,15 +75,17 @@ class ButtonCounters:
 def _latest_put(output, item):
     try:
         output.put_nowait(item)
+        return False
     except queue.Full:
         try:
             output.get_nowait()
         except queue.Empty:
-            return
+            return True
         try:
             output.put_nowait(item)
         except queue.Full:
             pass
+        return True
 
 
 def _serve(config, output, feedback, health):
@@ -102,12 +104,19 @@ def _serve(config, output, feedback, health):
                     query = dict(request.query)
                     query['ws'] = f'{scheme}://{request.host}{request.path}'
                     raise HTTPFound(location=str(request.rel_url.with_query(query)))
+                if request.headers.get('Upgrade', '').lower() != 'websocket':
+                    from aiohttp.web import Response
+                    html = (self.client_root/'index.html').read_text()
+                    return Response(text=html.replace('<head>',
+                        '<head><script src="/static/client-timing.js"></script>', 1),
+                        content_type='text/html', headers={'Cache-Control': 'no-store'})
                 return await super().socket_index(request)
 
         static = tempfile.TemporaryDirectory(prefix='bindu-vr-static-')
         # Serve Pillow's bundled font locally; the headset needs no font CDN.
         from PIL import ImageFont
         (Path(static.name)/'display.ttf').write_bytes(ImageFont.load_default(size=14).font_bytes)
+        (Path(static.name)/'client-timing.js').write_bytes(Path(__file__).with_name('client_timing.js').read_bytes())
         model_url = None
         if config.get('display_urdf'):
             from .model import prepare_model
@@ -128,6 +137,14 @@ def _serve(config, output, feedback, health):
         last_event = None
         last_report = 0.
         loop_delay = 0.
+        from .timing import ControllerTiming
+        controller_timing = ControllerTiming()
+        health_overflows = 0
+
+        def emit_health(report):
+            nonlocal health_overflows
+            report['health_queue_overflows'] = health_overflows
+            if _latest_put(health, report):health_overflows += 1
 
         async def monitor_loop(session):
             nonlocal loop_delay
@@ -139,7 +156,7 @@ def _serve(config, output, feedback, health):
 
         def report_health(now, gap=None):
             nonlocal last_report, loop_delay
-            _latest_put(health,dict(stamp=now,source_id=identity,seq=seq,
+            emit_health(dict(stamp=now,source_id=identity,seq=seq,
                 event_interval_s=gap,event_loop_delay_max_s=loop_delay,
                 websocket_clients=len(app.ws),last_event_stamp=last_event,
                 stage='websocket_handler',stamp_semantics='server_event_receipt'))
@@ -160,6 +177,8 @@ def _serve(config, output, feedback, health):
                 return  # A second browser must not interleave commands.
             seq += 1
             now = time.time()
+            emit_health(controller_timing.observe(getattr(event, 'bindu_timing', None),
+                now, time.monotonic(), identity, seq))
             gap=now-last_event if last_event is not None else None
             last_event=now
             if now-last_report>=1. or gap is not None and gap>.1:report_health(now,gap)

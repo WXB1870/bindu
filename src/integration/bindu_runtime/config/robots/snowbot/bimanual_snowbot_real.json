@@ -40,6 +40,7 @@
   "operator_yaw_rad": 0.0,
   "sample_period": 0.01,
   "max_integration_interval": 0.1,
+  "integration_max_sample_gap": 0.2,
   "max_reference_error": 0.15,
   "worker_timeout": 0.23,
   "worker_startup_timeout": 30.0,

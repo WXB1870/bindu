@@ -13,6 +13,16 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class AcceptedReferenceTests(unittest.TestCase):
+    def test_200ms_gap_keeps_100ms_step_and_rejects_longer_stall(self):
+        ref = AcceptedReference(.1, max_sample_gap=.2)
+        ref.capture((0.,), 10.)
+        self.assertEqual(ref.step(10.18), ((0.,), .1))
+        ref.accept((.01,), 10.18)
+        with self.assertRaisesRegex(ValueError, 'INTEGRATION_INTERVAL'):
+            ref.step(10.381)
+        self.assertEqual(ref.positions, (.01,))
+        self.assertEqual(ref.sampled_at, 10.18)
+
     def test_only_acceptance_advances_reference_and_elapsed_time(self):
         ref = AcceptedReference()
         ref.capture([.1, .2], 10.)
@@ -38,7 +48,7 @@ class AcceptedReferenceTests(unittest.TestCase):
         ref.capture([.5], 2.)
         self.assertEqual(ref.step(2.02)[0], (.5,))
 
-    def test_explicit_simulation_gap_budget_caps_integration_without_advancing_time(self):
+    def test_explicit_sample_gap_budget_caps_integration_without_advancing_time(self):
         ref=AcceptedReference(.1,max_sample_gap=.25)
         ref.capture([.2],1.)
         self.assertAlmostEqual(ref.step(1.18)[1],.1)

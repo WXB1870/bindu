@@ -48,7 +48,12 @@ def websocket_input(port, source, stop, errors):
                         buttons=source['buttons'][i]
                         value[side+'State']=dict(squeezeValue=source['grips'][i] if source['grips'] is not None else source['grip'],triggerValue=source['trigger'][i],
                             aButton=bool(buttons&1),bButton=bool(buttons&2),thumbstick=bool(buttons&4))
-                    peer.send(packb(dict(etype='CONTROLLER_MOVE',key='motionControllers',value=value),use_bin_type=True))
+                    source['seq']+=1
+                    timing=dict(version=1,seq=source['seq'],perf_ms=time.monotonic()*1000,
+                        wall_ms=time.time()*1000,buffered_bytes=0,loop_max_ms=0,raf_max_ms=0,
+                        xr_max_ms=0,long_task_max_ms=0,long_task_count=0,page_visibility='synthetic')
+                    peer.send(packb(dict(etype='CONTROLLER_MOVE',key='motionControllers',value=value,
+                        bindu_timing=timing),use_bin_type=True))
                 for _ in range(4):
                     try:peer.recv(timeout=.001)
                     except TimeoutError:break
@@ -205,6 +210,10 @@ def scenario(out, mode, websocket=False, ordinary=False):
             measured=dict(zip(states[-1].joints.name,states[-1].joints.position))
             assert max(abs(measured[n]-baseline[n]) for n in GROUPS['right_arm']+GROUPS['waist'])<1e-8
             checks.append('zero posture with unknown or empty load accepts left-only clutch; right arm and waist remain fixed')
+            source['stream']=False;pump(.14);count=len(accepted);source['stream']=True
+            wait(lambda:len(accepted)>count)
+            assert views[-1]['phase']=='following',views[-1]
+            checks.append('140ms controller gap continues with bounded steps under the 200ms sample limit')
             source['grips']=[1.,1.]
             wait(lambda:views[-1]['tool_phase']=='follow:independent:3')
             source['deltas'][1]=-.003;pump(.4)
@@ -245,8 +254,19 @@ def scenario(out, mode, websocket=False, ordinary=False):
             source['grips']=[1.,0.];phase('following');source['stream']=False;phase('locked')
             wait(lambda:not states[-1].lease_active and states[-1].state not in ('RUNNING','STOPPING'))
             assert not states[-1].stop_failures
-            checks.append('ordinary-mode input loss cancels and confirms hold with released execution ownership')
             terminate(observer,node);observer=None
+            if websocket:
+                health=json.loads((trace_dir/'diagnostics-health.json').read_text())
+                assert not health['error'] and health['dropped']==0,health
+                reports=[json.loads(line)['data'] for line in (trace_dir/'vr-health.jsonl').read_text().splitlines()]
+                assert any(r['stage']=='controller_timing' and r['client_timing_available'] for r in reports)
+                events=[json.loads(line)['data'] for line in (trace_dir/'runtime-events.jsonl').read_text().splitlines()]
+                gaps=[json.loads(e['code']) for e in events if e['state']=='BIMANUAL_SAMPLE_GAP']
+                assert any(.1<g['sample_gap_s']<=.2 and not g['will_reject'] for g in gaps),gaps
+                results=[json.loads(e['code']) for e in events if e['state']=='BIMANUAL_QP_RESULT']
+                assert any(r['sample_gap_s']>.1 and r['integration_dt']<=.1 for r in results),results[-5:]
+                checks.append('browser timing, ROS receipt and solver gap/step evidence persisted without logger loss')
+            checks.append('ordinary-mode input loss cancels and confirms hold with released execution ownership')
             health=json.loads((trace_dir/'diagnostics-health.json').read_text())
             assert not health['active'] and health['dropped']==0 and not health['error']
             events=[json.loads(line)['data'] for line in (trace_dir/'runtime-events.jsonl').read_text().splitlines()]
