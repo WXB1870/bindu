@@ -403,15 +403,18 @@ SolveResult QpController::solve(const pinocchio::SE3 &desired_tool, double dt,
       out.reason = "joint position outside hard limits"; return out;
     }
     const double ref = std::clamp(reference[i], lo, hi);
-    // Soft margin prohibits outward motion, but never forces inward motion.
-    // Check both measured and accepted reference positions. The dt bounds
-    // prevent the integrated reference crossing a hard limit even for large dt.
+    // Taper outward speed toward the physical limit, rather than stopping at
+    // the start of the soft margin. Both measured and reference distances
+    // constrain speed; zero is always feasible when holding at a boundary.
+    const double slope = config_.limit_margin > 0.
+        ? std::min(config_.damper_gain, vmax/config_.limit_margin)
+        : config_.damper_gain;
     lower[i] = std::max({-vmax, (lo-ref)/dt,
-        std::min(0., config_.damper_gain * (lo+config_.limit_margin-q[i])),
-        std::min(0., config_.damper_gain * (lo+config_.limit_margin-ref))});
+        std::min(0., slope * (lo-q[i])),
+        std::min(0., slope * (lo-ref))});
     upper[i] = std::min({vmax, (hi-ref)/dt,
-        std::max(0., config_.damper_gain * (hi-config_.limit_margin-q[i])),
-        std::max(0., config_.damper_gain * (hi-config_.limit_margin-ref))});
+        std::max(0., slope * (hi-q[i])),
+        std::max(0., slope * (hi-ref))});
     if (have_posture_policy_) {
       // Additional posture envelope is a hard task bound. Physical limit_margin
       // remains relative to the model/profile bounds, not this comfort envelope.

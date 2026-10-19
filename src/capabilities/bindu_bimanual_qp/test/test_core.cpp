@@ -226,6 +226,37 @@ TEST_F(CoreTest, ReferenceLimitsAndLargeTimestepPreserveBoundsAndClosure) {
   EXPECT_LT((kin_->relativeErrorJacobian()*result.velocity).norm(), 5e-4);
 }
 
+TEST_F(CoreTest, SoftMarginAllowsOutwardTrackingAndTapersAtHardLimit) {
+  for (const double sign : {-1.,1.}) {
+    double previous_speed=std::numeric_limits<double>::infinity();
+    for (const double distance : {.02,.005,.0005,0.}) {
+      auto q=robot_->positions();
+      const double bound=sign>0 ? robot_->upperLimits()[0] : robot_->lowerLimits()[0];
+      q[robot_->qIndex("left_joint_1")]=bound-sign*distance;
+      robot_->update(q);kin_->capture();
+      datq::Config config;
+      config.posture_gain=0.;config.limit_margin=.05;
+      datq::QpController controller(*robot_,*kin_,config,robot_->activePositions());
+      controller.independentArms();
+      auto target_q=q;target_q[robot_->qIndex("left_joint_1")]+=sign*.1;
+      robot_->update(target_q);const auto desired=robot_->leftPose();
+      robot_->update(q);const auto right=robot_->rightPose();
+      const auto reference=robot_->activePositions();
+      const auto result=controller.solve(desired,.1,reference,
+          Eigen::Matrix<double,6,1>::Zero(),nullptr,&right,1);
+      ASSERT_TRUE(result.ok) << result.reason;
+      const double speed=sign*result.velocity[0];
+      if (distance>0.) EXPECT_GT(speed,1e-5);
+      else EXPECT_LE(speed,1e-8);
+      EXPECT_LE(speed,config.damper_gain*distance+1e-7);
+      EXPECT_LE(speed,previous_speed+1e-7);previous_speed=speed;
+      const auto next=(reference+.1*result.velocity).eval();
+      EXPECT_GE(next[0],robot_->lowerLimits()[0]-1e-9);
+      EXPECT_LE(next[0],robot_->upperLimits()[0]+1e-9);
+    }
+  }
+}
+
 TEST_F(CoreTest, HardViolationAndInvalidTimestepFailClosed) {
   datq::QpController controller(*robot_, *kin_, {}, robot_->activePositions());
   auto reference = robot_->activePositions();

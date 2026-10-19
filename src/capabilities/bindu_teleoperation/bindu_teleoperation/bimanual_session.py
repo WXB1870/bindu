@@ -3,7 +3,7 @@ import math
 import uuid
 from dataclasses import dataclass
 import numpy as np
-from .vr.mapping import robot_pose, relative_target, mapping_rotation, pose_matrix
+from .vr.mapping import robot_pose, relative_target, pose_matrix
 from .vr.one_euro import rotation_log, rotation_exp
 
 
@@ -188,23 +188,10 @@ class BimanualSession:
         target=np.asarray(relative_target(self.anchor_input,self.current_input,self.anchor_tool,
             self.cfg['position_scale'],mapping_mode='robot_base',
             operator_yaw_rad=self.cfg['operator_yaw_rad'])).reshape(4,4)
-        if self.cfg.get('two_hand_rod'):
-            basis=mapping_rotation('robot_base',self.cfg['operator_yaw_rad'])
-            robot_axis=self.anchor_tool[:3,:3] @ np.asarray(self.cfg['rod_axis_in_tool'])
-            # Align the two rod directions ONCE at engagement. Without this
-            # relative calibration a human pitch around the robot rod axis
-            # could leave the robot line unchanged (or turn into axial roll).
-            alignment=self.rod_swing(basis @ self.anchor_input[:3,0],robot_axis,
-                                     basis @ self.anchor_input[:3,1])
-            basis=alignment @ basis
-            swing=self.rod_swing(self.anchor_input[:3,0],self.current_input[:3,0],self.anchor_input[:3,1])
-            swing=basis @ swing @ basis.T
-            rotation=swing @ self.anchor_tool[:3,:3]
-            # A relative clutch permits different initial human/robot rod
-            # directions. Roll must still use the ROBOT rod's current axis;
-            # left-composing an input-axis roll would incorrectly tilt it.
-            axis=rotation @ np.asarray(self.cfg['rod_axis_in_tool'])
-            target[:3,:3]=rotation_exp(axis*sum(self.rod_roll)/2) @ rotation
+        # paired_rod_pose already combines line swing and relative wrist twist.
+        # Map that complete rotation through the SAME fixed basis as position.
+        # Aligning human/robot shaft axes here would rotate the operator's axes
+        # on every capture, even for an otherwise identical spatial motion.
         # Human translation moves the grip midpoint. Keep the real tool/CAD
         # origin unchanged and rotate it around that point, not around its tip.
         target[:3,3]+=(self.anchor_tool[:3,:3]-target[:3,:3]) @ self.control_point_in_tool

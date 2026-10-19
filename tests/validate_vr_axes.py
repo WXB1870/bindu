@@ -3,8 +3,8 @@
 
 Runs the production hand mapping and optional native QP/kinematic devices offline.
 No ROS publishers, Isaac commands, vendor drivers or changes to a live session.
-Robot-base rotation directions are reported separately from the current rod-axis
-calibration: a consistent calibrated mapping may still feel unintuitive.
+Translation and complete rotation must share fixed robot-base axes, including
+wrist-only rotation when the initial human/robot shaft directions differ.
 """
 import argparse
 import json
@@ -103,7 +103,8 @@ def main():
         target=session.target.copy();target_mid=target[:3,3]+target[:3,:3]@point
         target_pan=target[:3,3]+target[:3,:3]@pan
         rv=rotation_log(target[:3,:3]@home[:3,:3].T)
-        intended_axis=robot_axis if kind=='fixed_wrist_roll' else axis
+        intended_axis=axis
+        expected_rotation=(np.eye(3) if kind=='translation' else rotation_exp(axis*sign*math.radians(10)))
         direction_error=0. if kind=='translation' else math.degrees(math.acos(float(np.clip(
             (rv@intended_axis*sign)/max(np.linalg.norm(rv),1e-15),-1.,1.))))
         result=dict(kind=kind,axis=name,sign=sign,
@@ -111,6 +112,7 @@ def main():
             target_pan_delta_mm=((target_pan-home_pan)*1000).tolist(),
             target_rotation_vector_deg=np.degrees(rv).tolist(),
             robot_base_rotation_axis_error_deg=direction_error,
+            mapping_rotation_error_deg=angle(expected_rotation.T@target[:3,:3]@home[:3,:3].T),
             mapping_translation_error_mm=float(np.linalg.norm(target_mid-home_mid-
                 (axis*sign*.02 if kind=='translation' else 0)))*1000,
             kinematics=None)
@@ -157,7 +159,7 @@ def main():
         initial_axis_difference_deg=math.degrees(math.acos(float(np.clip(human_axis@robot_axis,-1.,1.)))),
         grip_midpoint_in_tool=point.tolist(),cases=results,
         checks=dict(translation_correct=all(c['mapping_translation_error_mm']<1e-6 for c in results),
-            fixed_robot_rotation_axes=all(c['robot_base_rotation_axis_error_deg']<.1 for c in results if c['kind']=='rotation'),
+            fixed_robot_rotation_axes=all(c['robot_base_rotation_axis_error_deg']<.1 and c['mapping_rotation_error_deg']<1e-4 for c in results),
             kinematic_faults=[c for c in results if c['kinematics'] and c['kinematics']['failure']]))
     (args.output/'verification.json').write_text(json.dumps(result,ensure_ascii=False,indent=2))
     if result['checks']['kinematic_faults'] or not result['checks']['translation_correct']:

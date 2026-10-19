@@ -405,15 +405,13 @@ class RelativeRodMappingTests(unittest.TestCase):
             Rotation.from_euler('z',.15).as_matrix() @ Rotation.from_euler('x',.2).as_matrix(),atol=1e-12)
         feed(.22,angle=.15,left_roll=.3,right_roll=-.3)
         np.testing.assert_allclose(self.session.target[:3,:3],Rotation.from_euler('z',.15).as_matrix(),atol=1e-12)
-        # Human and robot rods need not have the same direction at engagement.
-        # Shared twist must spin around the robot rod, never tilt that axis.
+        # Different initial rod directions must NOT rotate the operator's axes.
         self.session.cfg['rod_axis_in_tool']=[0.,0.,1.]
         self.session.reanchor();feed(.23);self.session.capture(np.eye(4))
         feed(.24,left_roll=.3,right_roll=.3)
-        np.testing.assert_allclose(self.session.target[:3,2],[0.,0.,1.],atol=1e-12)
-        np.testing.assert_allclose(self.session.target[:3,:3],Rotation.from_euler('z',.3).as_matrix(),atol=1e-12)
+        np.testing.assert_allclose(self.session.target[:3,:3],Rotation.from_euler('x',.3).as_matrix(),atol=1e-12)
         feed(.25,angle=.15)
-        self.assertAlmostEqual(np.arccos(np.clip(self.session.target[2,2],-1.,1.)),.15)
+        np.testing.assert_allclose(self.session.target[:3,:3],Rotation.from_euler('z',.15).as_matrix(),atol=1e-12)
 
     def test_repeated_release_reposition_and_reengage_use_current_measured_home(self):
         home=np.eye(4)
@@ -462,13 +460,47 @@ class DeployedToolMappingTests(unittest.TestCase):
         self.engage(.1,home)
         point=self.session.control_point_in_tool
         midpoint=home[:3,3]+home[:3,:3] @ point
-        initial_axis=home[:3,:3] @ np.array(self.session.cfg['rod_axis_in_tool'])
         for i,angle in enumerate((.15,.4,-.2)):
             self.feed(.18+i*.01,angle)
             target=self.session.target
-            self.assertAlmostEqual(Rotation.from_matrix(target[:3,:3] @ home[:3,:3].T).magnitude(),abs(angle))
-            self.assertAlmostEqual(np.arccos(np.clip(initial_axis @ (target[:3,:3] @ np.array(self.session.cfg['rod_axis_in_tool'])),-1.,1.)),abs(angle))
+            np.testing.assert_allclose(target[:3,:3],Rotation.from_euler('z',angle).as_matrix() @ home[:3,:3],atol=1e-12)
             np.testing.assert_allclose(target[:3,3]+target[:3,:3] @ point,midpoint,atol=1e-12)
+
+    def test_arbitrary_clutches_keep_fixed_spatial_axes_and_midpoint(self):
+        from scipy.spatial.transform import Rotation
+        from bindu_teleoperation.vr.mapping import OPENXR_TO_ROBOT
+        # Nonparallel shafts and unrelated wrist orientations reproduce the
+        # real captures that an aligned, identity-pose fixture had hidden.
+        for yaw in (0.,.6):
+            for clutch in ((.3,-.6,.8),(-.5,.2,-.4)):
+                cfg=dict(self.config,operator_yaw_rad=yaw)
+                hands=[np.eye(4),np.eye(4)]
+                line=Rotation.from_euler('xyz',clutch).as_matrix()
+                for hand,x,angles in zip(hands,(.17,-.17),((.4,.1,-.5),(-.2,.7,.3))):
+                    hand[:3,3]=line @ [x,0.,0.]+[.2,-.1,.8]
+                    hand[:3,:3]=Rotation.from_euler('xyz',angles).as_matrix()
+                home=np.eye(4);home[:3,3]=[.6,.1,.7]
+                home[:3,:3]=Rotation.from_euler('xyz',(-.4,.6,-.2)).as_matrix()
+                basis=Rotation.from_euler('z',yaw).as_matrix()
+                for axis in np.eye(3):
+                    for sign in (-1,1):
+                        with self.subTest(yaw=yaw,clutch=clutch,axis=axis,sign=sign):
+                            session=BimanualSession(cfg,1,0.)
+                            for seq,(t,held,moved) in enumerate(((.1,False,False),(.11,True,False),(.18,True,False),(.19,True,True))):
+                                delta=Rotation.from_rotvec(sign*.2*axis).as_matrix() if moved else np.eye(3)
+                                middle=(hands[0][:3,3]+hands[1][:3,3])/2
+                                frames=[]
+                                for side,hand in zip(('left','right'),hands):
+                                    pose=hand.copy();pose[:3,3]=middle+delta @ (hand[:3,3]-middle)
+                                    pose[:3,:3]=delta @ hand[:3,:3]
+                                    raw=OPENXR_TO_ROBOT.T @ pose @ OPENXR_TO_ROBOT
+                                    frames.append(VRFrame('pico',seq,t,side,tuple(raw.ravel()),grip=float(held)))
+                                session.ingest(*frames,t)
+                                if seq==2:session.capture(home)
+                            np.testing.assert_allclose(session.target[:3,:3],basis @ delta @ basis.T @ home[:3,:3],atol=1e-12)
+                            point=session.control_point_in_tool
+                            np.testing.assert_allclose(session.target[:3,3]+session.target[:3,:3] @ point,
+                                                       home[:3,3]+home[:3,:3] @ point,atol=1e-12)
 
     def test_translation_and_recapture_follow_current_midpoint_without_a_jump(self):
         home=np.eye(4);home[:3,3]=[.1,.2,.4]

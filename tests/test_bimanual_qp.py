@@ -171,6 +171,9 @@ class CandidateGeometryBacktracking(unittest.TestCase):
         cls.config=json.loads((ROOT/'src/integration/bindu_runtime/config/robots/snowbot/bimanual_snowbot_real.json').read_text())
         cls.config['urdf']=str(ROOT/'src/hardware/bindu_description/urdf/snowbot_control.urdf')
         cls.config['demo']['max_grasp_penetration_m']=.0005
+        # These historical collision fixtures exercise the optional contact
+        # checker even when the deployed recipe exempts shaft/gripper contact.
+        cls.config['demo']['check_grasp_contacts']=True
         # Freeze the origin-task semantics of these historical fault fixtures.
         cls.config['tool_tracking_point_in_tool_m']=[0.,0.,0.]
         cls.profile=Profile.load(ROOT/'src/integration/bindu_runtime/config/robots/snowbot/snowbot_real_position.json')
