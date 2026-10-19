@@ -165,6 +165,104 @@ class AbiLoadingTests(unittest.TestCase):
                 worker.poll()
 
 
+class CandidateGeometryBacktracking(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.config=json.loads((ROOT/'src/integration/bindu_runtime/config/robots/snowbot/bimanual_snowbot_real.json').read_text())
+        cls.config['urdf']=str(ROOT/'src/hardware/bindu_description/urdf/snowbot_control.urdf')
+        cls.profile=Profile.load(ROOT/'src/integration/bindu_runtime/config/robots/snowbot/snowbot_real_position.json')
+        cls.cases=json.loads((ROOT/'tests/config/teleoperation/snowbot_candidate_steps.json').read_text())['cases']
+
+    def solver(self,case,enabled=True):
+        qp=BimanualQP(dict(self.config,geometry_step_backtracking=enabled),self.profile)
+        qp.capture(case['capture'],case['grasp_mode'])
+        qp.target_sample=(case['previous_target_stamp'],np.array(case['previous_target']).reshape(4,4))
+        return qp
+
+    def step(self,qp,case):
+        return qp.solve(case['feedback'],case['target'],reference=case['reference'],dt=case['dt'],target_stamp=case['target_stamp'])
+
+    def test_three_recorded_rejections_become_valid_common_half_steps(self):
+        for case in self.cases:
+            with self.subTest(dt=case['dt']):
+                before=self.solver(case,False);raw=[];original=before.check_path
+                def record(feedback,*path):
+                    raw.append(np.array(path[0]).copy());return original(feedback,*path)
+                try:
+                    with patch.object(before,'check_path',side_effect=record),self.assertRaisesRegex(ValueError,'GRASP_PENETRATION'):
+                        self.step(before,case)
+                    self.assertFalse(before.captured)
+                finally:before.close()
+                after=self.solver(case)
+                try:
+                    positions,metrics=self.step(after,case);reference=np.array(case['reference'])
+                    np.testing.assert_allclose(np.array(positions)-reference,.5*(raw[0]-reference),atol=1e-8)
+                    self.assertTrue(after.captured)
+                    self.assertEqual(after.last_geometry_step['scale'],.5)
+                    self.assertGreater(np.max(np.abs(np.array(positions)-reference)),.001)
+                    after.check_path(case['feedback'],positions,reference)
+                    self.assertTrue(np.isfinite(metrics).all())
+                finally:after.close()
+
+    def test_boundary_holds_checked_reference_then_accepts_a_new_target(self):
+        case=self.cases[0];qp=self.solver(case)
+        try:
+            reference=np.array(case['reference']);original=qp.check_path
+            def blocked(feedback,*path):
+                original(feedback,*path)
+                if any(np.max(np.abs(np.array(q)-reference))>1e-12 for q in path):
+                    raise ValueError('SHAFT_CLEARANCE: fixture boundary')
+            with patch.object(qp,'check_path',side_effect=blocked):
+                positions,metrics=self.step(qp,case)
+            np.testing.assert_allclose(positions,reference,atol=1e-12)
+            self.assertEqual(qp.last_geometry_step['scale'],0.)
+            self.assertEqual(metrics[2],0.)
+            self.assertTrue(qp.captured)
+            # A fresh goal stays usable; no recapture or automatic fault reset.
+            tool=np.empty((4,4),dtype=np.float64);q=qp._q(case['feedback'])
+            self.assertTrue(qp.lib.bq_tool_pose(qp.handle,qp._ptr(q),qp.nq,qp._ptr(tool)))
+            positions,_=qp.solve(case['feedback'],tool,reference=reference,dt=.02,target_stamp=case['target_stamp']+.2)
+            qp.check_path(case['feedback'],positions,reference)
+            self.assertTrue(qp.captured)
+        finally:qp.close()
+
+    def test_measured_collision_and_non_geometric_failures_still_end_capture(self):
+        for reason in ('SELF_COLLISION: measured body','NONFINITE_COLLISION_SAMPLE'):
+            with self.subTest(reason=reason):
+                qp=self.solver(self.cases[0])
+                try:
+                    with patch.object(qp,'check_path',side_effect=ValueError(reason)),self.assertRaisesRegex(ValueError,reason):
+                        self.step(qp,self.cases[0])
+                    self.assertFalse(qp.captured)
+                finally:qp.close()
+
+    def test_worker_returns_matching_geometry_diagnostic_with_the_result(self):
+        from bindu_kinematics.bimanual_worker import BimanualWorker
+        worker=BimanualWorker(self.config,self.profile);self.addCleanup(worker.close)
+        def result():
+            end=time.monotonic()+30.
+            while time.monotonic()<end:
+                value=worker.poll()
+                if value is not None:return value
+                time.sleep(.005)
+            self.fail('worker result timed out')
+        end=time.monotonic()+30.
+        while not worker.ready and time.monotonic()<end:worker.poll();time.sleep(.005)
+        self.assertTrue(worker.ready)
+        case=self.cases[0]
+        self.assertTrue(worker.submit('capture',1,case['capture']))
+        self.assertEqual(result()[:2],('result',1))
+        self.assertTrue(worker.submit('solve',2,case['feedback'],case['previous_target'],
+            reference=case['reference'],dt=1e-6,target_stamp=case['previous_target_stamp']))
+        self.assertEqual(result()[:2],('result',2))
+        self.assertTrue(worker.submit('solve',3,case['feedback'],case['target'],
+            reference=case['reference'],dt=case['dt'],target_stamp=case['target_stamp']))
+        value=result();self.assertEqual(value[:2],('result',3))
+        self.assertFalse(worker.busy)
+        self.assertEqual(worker.diagnostic[0],3)
+        self.assertEqual(worker.diagnostic[1]['scale'],.5)
+
+
 class NativeBimanual(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

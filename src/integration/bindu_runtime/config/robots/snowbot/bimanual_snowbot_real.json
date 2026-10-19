@@ -182,6 +182,7 @@
     "release_threshold": 0.3
   },
   "collision_joint_step_rad": 0.01,
+  "geometry_step_backtracking": true,
   "posture_policy": {
     "reference": "initial_capture",
     "position_bounds": {

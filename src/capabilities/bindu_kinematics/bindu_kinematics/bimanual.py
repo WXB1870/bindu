@@ -43,6 +43,10 @@ class BimanualQP:
         self.tracking = self.feedforward or self.reference_kinematics
         self.target_sample = None
         self.last_timing = None
+        self.last_geometry_step = None
+        self.geometry_step_backtracking=config.get('geometry_step_backtracking',False)
+        if type(self.geometry_step_backtracking) is not bool:
+            raise ValueError('BIMANUAL_GEOMETRY_BACKTRACKING_CONFIG')
         self.grasp_reference = None
         self.handle = None
         self.groups = tuple(config['resource_groups'])
@@ -346,6 +350,44 @@ class BimanualQP:
             before=end
         self.collision_check(samples)
 
+    def checked_geometry_step(self, feedback, reference, candidate, *, deadline=None):
+        """Bound only a rejected candidate; never skip measured/path validation."""
+        failures=('GRASP_PENETRATION:','SELF_COLLISION:','PAN_CLEARANCE:','SHAFT_CLEARANCE:','BIN_CLEARANCE:')
+        try:
+            self.check_path(feedback,candidate,reference)
+            return candidate,1.
+        except ValueError as exc:
+            reason=str(exc)
+            if not self.geometry_step_backtracking or not reason.startswith(failures):
+                raise
+        # The already accepted hold must still be reachable from fresh feedback.
+        # A measured collision or unsafe hold is a fault, not a step-size limit.
+        self.check_path(feedback,reference)
+        delta=candidate-reference
+        limited=reference.copy();accepted_scale=0.;budget_limited=False
+        # A rejected long path does not predict the cost of the shorter path.
+        # Give the first retry the remaining budget, then use observed retry cost.
+        check_cost=0.
+        for scale in (.5,.25,.125,.0625,.03125):
+            # Keep time for packing/final guards. When search cannot fit, the
+            # already checked hold is usable; the outer hard deadline remains.
+            if deadline is not None and time.perf_counter()+1.5*check_cost+.003>=deadline:
+                budget_limited=True;break
+            limited=reference+scale*delta
+            checked_at=time.perf_counter()
+            try:self.check_path(feedback,limited,reference)
+            except ValueError as exc:
+                if not str(exc).startswith(failures):raise
+                check_cost=time.perf_counter()-checked_at
+                continue
+            accepted_scale=scale;break
+        if not accepted_scale:limited=reference.copy()
+        self.last_geometry_step=dict(scale=accepted_scale,first_rejection=reason,
+            attempted_joint_step_rad=float(np.max(np.abs(delta))),
+            proposed_joint_step_rad=float(np.max(np.abs(limited-reference))),
+            search_limited_by_budget=budget_limited)
+        return limited,accepted_scale
+
     def check_loaded_prepare(self, feedback, targets):
         """Validate a proposed joint path with the tool and captured rigid grasp.
 
@@ -494,6 +536,7 @@ class BimanualQP:
         if not self.captured:
             raise ValueError('BIMANUAL_NOT_CAPTURED')
         self.last_timing = None
+        self.last_geometry_step = None
         try:
             return self._solve(feedback, target, reference, float(dt), target_stamp, tool_feedback)
         except (ValueError, TypeError):
@@ -605,7 +648,11 @@ class BimanualQP:
         geometry_started = time.perf_counter()
         # A synchronized position device follows measured -> candidate directly;
         # also check candidate -> prior reference to retain both endpoints.
-        self.check_path(feedback,out,reference)
+        out,geometry_scale=self.checked_geometry_step(feedback,reference,out,
+            deadline=started+self.cfg['solve_timeout_us']*1e-6)
+        metrics[2]*=geometry_scale
+        if any(not self.limits[n][0]<=v<=self.limits[n][1] for n,v in zip(self.names,out)):
+            raise ValueError('BIMANUAL_POSITION_LIMIT:geometry_step')
         geometry_us = (time.perf_counter()-geometry_started)*1e6
         result = tuple(float(v) for v in out), tuple(float(v) for v in metrics)
         next_target_sample = None

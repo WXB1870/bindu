@@ -72,6 +72,8 @@ def _run(config, profile, requests, results, preload_path_checks=False):
                              reference=reference,dt=dt) if independent else
                            solver.solve(feedback,target,reference=reference,dt=dt,target_stamp=target_stamp))
                 else: raise ValueError('BIMANUAL_WORKER_OPERATION')
+                diagnostic=getattr(solver,'last_geometry_step',None) if operation=='solve' and not independent else None
+                if diagnostic is not None:results.put(('diagnostic',token,diagnostic))
                 results.put(('result',token,value))
             except (ValueError,RuntimeError) as exc:
                 results.put(('error',token,str(exc)))
@@ -93,6 +95,7 @@ class BimanualWorker:
         self.process=ctx.Process(target=_run,args=(config,profile,self.requests,self.results,preload_path_checks),daemon=True)
         self.ready=self.busy=False
         self.error=''
+        self.diagnostic=None
         self.submitted=0.
         self.started=time.monotonic()
         self.process.start()
@@ -100,6 +103,7 @@ class BimanualWorker:
     def submit(self,operation,token,feedback,target=None,*,reference=None,dt=None,grasp_mode='rigid',target_stamp=None):
         if not self.ready or self.busy: return False
         self.requests.put_nowait((operation,token,feedback,target,reference,dt,grasp_mode,target_stamp))
+        self.diagnostic=None
         self.busy=True
         self.submitted=time.monotonic()
         return True
@@ -111,6 +115,7 @@ class BimanualWorker:
             except queue.Empty: break
             if kind == 'ready': self.ready=True
             elif kind == 'fatal': self.error=value
+            elif kind == 'diagnostic': self.diagnostic=(token,value)
             else:
                 self.busy=False
                 item=(kind,token,value)

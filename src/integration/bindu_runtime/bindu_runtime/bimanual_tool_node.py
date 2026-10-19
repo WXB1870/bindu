@@ -484,6 +484,11 @@ class BimanualToolNode(RuntimeNode):
                     kind,token,value=self.worker_result
                     self.worker_result=None
                     if token==worker_token and session.mode=='follow' and awaiting:
+                        geometry=(self.worker.diagnostic[1] if self.worker.diagnostic and
+                                  self.worker.diagnostic[0]==token else None)
+                        if geometry is not None:
+                            self.event('BIMANUAL_GEOMETRY_STEP',json.dumps(dict(geometry,
+                                input_seq=work_seq,control_sampled_at=work_sampled_at)),goal.request.task_id)
                         if kind=='error':
                             self.event('BIMANUAL_WORK_REJECTED',json.dumps({
                                 'code':value,'operation':awaiting,'input_seq':work_seq,'input_stamp':work_stamp,
@@ -499,6 +504,7 @@ class BimanualToolNode(RuntimeNode):
                             # integration clock here; capture latency is not dt.
                             reference.capture(work_positions,self.now())
                             self.event('BIMANUAL_CAPTURED',json.dumps({'tool_pose':value.tolist(),
+                                'feedback':work_feedback,
                                 'input_stamp':session.stamp,'input_seq':session.seq,'grasp_mode':session.grasp_mode,
                                 'controller_pose':session.anchor_input.tolist(),
                                 'control_point_in_tool_m':session.control_point_in_tool.tolist() if isinstance(session,BimanualSession) else None,
@@ -526,6 +532,7 @@ class BimanualToolNode(RuntimeNode):
                                 self.event('BIMANUAL_QP_RESULT',json.dumps({'solve_us':metrics[0],
                                     'relative_error':None if isinstance(session,IndependentArmsSession) else metrics[1],
                                     'relative_error_source':('accepted_reference' if self.cfg.get('reference_kinematics') else 'measured'),
+                                    'geometry_step_scale':geometry['scale'] if geometry else 1.,
                                     'teleop_mode':mode.mode,'recovery_scale':metrics[2],
                                     'input_stamp':work_stamp,'input_seq':work_seq,'integration_dt':work_dt,
                                     'sample_gap_s':work_gap,
