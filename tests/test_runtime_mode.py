@@ -124,6 +124,57 @@ class RuntimeModeTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'SHUTDOWN'):
             node.accept(MotionCommand(runtime_mode='simulation'))
 
+    def startup_feedback_node(self):
+        from bindu_contracts.contracts import Event
+        from bindu_execution.executor import Executor
+        node=ExecutionNode.__new__(ExecutionNode)
+        engine=S(feedback=Feedback(10.,{'j':.3},0.,0.,(0.,0.),joint_velocities={'j':0.}),
+                 tick=lambda now:None,events=deque(),active=None,revision=1,lease_id='',epoch=0,
+                 groups=(),reference=None,stopping=None,stop_fault='')
+        node.profile=S(digest='hash',limits={'j':(-1.,1.)},feedback_tolerances={'joint_velocity':.01})
+        engine.profile=node.profile;engine.joint_at_rest=lambda n:Executor.joint_at_rest(engine,n)
+        node.engine=engine
+        node.robot_io=S(feedback=S(source_stamps={'arm':10.}),reference_positions={},stop_failures=())
+        node.instance_id='test';node.runtime_mode='simulation';node.device_backend='external_simulation'
+        node.state_pub=Mock();node.event=Mock()
+        node.last_event=Event(9.9,'','','FAILED','DEVICE_FEEDBACK_ERROR')
+        return node
+
+    def test_fresh_stationary_feedback_recovers_only_pre_ownership_startup_status(self):
+        node=self.startup_feedback_node()
+        with patch.object(node,'now',return_value=10.01):node.tick();node.tick()
+        self.assertEqual(node.state_pub.publish.call_args.args[0].state,'IDLE')
+        self.assertEqual(node.state_pub.publish.call_args.args[0].code,'OK')
+        node.event.assert_called_once_with('DEVICE_FEEDBACK_RECOVERED','STARTUP_READY')
+        self.assertFalse(node.engine.lease_id)
+        self.assertIsNone(node.engine.active)
+
+    def test_startup_recovery_cannot_clear_control_faults_or_use_invalid_rest_evidence(self):
+        for change in ('owned','lease','stop_fault','stop_failed','older','stale','moving','unknown_velocity','nan_velocity','base_moving'):
+            with self.subTest(change=change):
+                node=self.startup_feedback_node();e=node.engine
+                if change=='owned':e.epoch=1
+                elif change=='lease':e.lease_id='lease'
+                elif change=='stop_fault':e.stop_fault='STOP_UNCONFIRMED'
+                elif change=='stop_failed':node.robot_io.stop_failures=('vendor_hold',)
+                elif change=='older':e.feedback.stamp=9.9
+                elif change=='stale':e.feedback.stamp=9.95
+                elif change=='moving':e.feedback.joint_velocities['j']=.2
+                elif change=='unknown_velocity':e.feedback.joint_velocities.clear()
+                elif change=='nan_velocity':e.feedback.joint_velocities['j']=float('nan')
+                elif change=='base_moving':e.feedback.base_velocity=(.1,0.)
+                with patch.object(node,'now',return_value=10.3 if change=='stale' else 10.01):node.tick()
+                self.assertEqual(node.state_pub.publish.call_args.args[0].state,'FAILED')
+                node.event.assert_not_called()
+
+    def test_failure_in_current_tick_cannot_be_erased_by_previous_fresh_sample(self):
+        from bindu_contracts.contracts import Event
+        node=self.startup_feedback_node()
+        node.engine.events.append(Event(10.01,'','','FAILED','DEVICE_FEEDBACK_ERROR'))
+        with patch.object(node,'now',return_value=10.01):node.tick()
+        self.assertEqual(node.state_pub.publish.call_args.args[0].state,'FAILED')
+        self.assertEqual(node.event.call_count,1)
+
 
 if __name__ == '__main__':
     unittest.main()

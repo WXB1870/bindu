@@ -132,6 +132,21 @@ class ExecutionNode(RuntimeNode):
             self.event(e.state, e.code, e.task_id, e.command_id, e.observation_id)
         fb = self.engine.feedback
         active = self.engine.active
+        # Before the first ownership grant, a recovered startup read failure
+        # has no motion result to latch. Keep its event, but report ready only
+        # after newer, fresh, stationary feedback. Never clear execution faults
+        # or stop failures after ownership has been granted.
+        e = self.last_event
+        if (e and e.state=='FAILED' and e.code=='DEVICE_FEEDBACK_ERROR' and
+                not e.command_id and self.engine.epoch==0 and not self.engine.lease_id and
+                not active and not self.engine.stopping and not self.engine.stop_fault and
+                not self.robot_io.stop_failures and fb.stamp>e.stamp and
+                0<=now-fb.stamp<=.2 and
+                all(self.engine.joint_at_rest(n) for n in self.profile.limits) and
+                all(abs(v)<=self.profile.feedback_tolerances.get('base_'+axis+'_velocity',0.)
+                    for axis,v in zip(('linear','angular'),fb.base_velocity))):
+            self.last_event = None
+            self.event('DEVICE_FEEDBACK_RECOVERED','STARTUP_READY')
         msg = ExecutionState(stamp=stamp(now), feedback_stamp=stamp(fb.stamp),
                              instance_id=self.instance_id, profile_hash=self.profile.digest,
                              simulated=fb.simulated, runtime_mode=self.runtime_mode, device_backend=self.device_backend,
