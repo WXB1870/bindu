@@ -309,7 +309,7 @@ footer { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wr
       </section>
       <section class="panel diagnostics-panel">
       <details id="diagnostics"><summary class="diagnostic-head"><div>诊断详情<span>按键原始值、坐标与原因代码</span></div></summary><div class="diagnostic-body">
-        <dl class="diagnostic-list"><dt>状态代码</dt><dd id="reason-code" class="reason-code mono">WAITING</dd><dt>控制映射</dt><dd id="mapping-info">—</dd><dt>距最近输入</dt><dd id="input-age">—</dd><dt>模型更新帧数</dt><dd id="frame-count">0</dd><dt>会话标识</dt><dd id="run-id" class="mono">等待会话</dd></dl>
+        <dl class="diagnostic-list"><dt>状态代码</dt><dd id="reason-code" class="reason-code mono">WAITING</dd><dt>装载状态来源</dt><dd id="load-source">—</dd><dt>准备条件</dt><dd id="prepare-checks">—</dd><dt>控制映射</dt><dd id="mapping-info">—</dd><dt>距最近输入</dt><dd id="input-age">—</dd><dt>模型更新帧数</dt><dd id="frame-count">0</dd><dt>会话标识</dt><dd id="run-id" class="mono">等待会话</dd></dl>
         <div id="raw-controllers"></div>
         <div class="diagnostic-export"><span>当前快照与事件</span><a href="/export" download>导出诊断 ↗</a></div>
         <div class="session-meta">数据来源 <strong>ROS 2 本机反馈</strong><br>页面仅调整视图，机器人操作由 PICO 发起。</div>
@@ -339,6 +339,10 @@ function explainReason(reason){
   if((reason||'').includes('LIMIT'))return '目标触发关节或工作范围限制。';
   return '控制条件未满足；具体原因可在诊断详情中查看。';
 }
+function prepareFailures(check){
+  const labels={load_empty:check?.load_state==='held'?'当前已装载':'空手状态未确认',feedback_fresh:'关节反馈无效或过期',motion_stopped:'机器人尚未停稳',input_fresh:'手柄输入过期',left_squeeze_released:'左侧握未松开',right_squeeze_released:'右侧握未松开'};
+  return Object.entries(check?.checks||{}).filter(([,v])=>v===false).map(([k])=>labels[k]||k).join('；');
+}
 function operatorState(p,online,fresh,pcFresh,tracked){
   const result={status:phases[p.phase]||'状态待确认',reason:explainReason(p.reason),next:'保持松握，等待控制条件确认。',key:'',tone:'warn'};
   if(!online)return {...result,status:'网页连接中断',reason:'未收到操作台服务的最新状态，画面可能保留末帧。',next:'保持松握，检查本机状态服务。',tone:'bad'};
@@ -356,6 +360,7 @@ function operatorState(p,online,fresh,pcFresh,tracked){
   if(p.phase==='confirming_tool')return {...result,status:'正在检查工具',next:'保持双侧握松开，等待工具就绪。'};
   if(p.phase==='checking')return {...result,reason:'正在检查手柄输入与关节反馈。',next:'保持双侧握松开，等待连接就绪。'};
   if(p.phase==='standby'){
+    if(p.reason==='PREPARE_REQUIRES_EMPTY_AND_RELEASED_SQUEEZE')return {...result,status:'准备被拒绝',reason:'上次检查：'+(prepareFailures(p.last_prepare_check)||explainReason(p.reason)),next:'排除上述原因后，松开 A 再重新长按。',key:'A'};
     if(p.load_state==='held')return {...result,status:'等待工具确认',next:p.simulation_demo?'保持松握，等待工具检查。':'按既有装夹流程确认工具，再按 B。',key:p.simulation_demo?'':'B'};
     if(p.reason==='PREPARED')return {...result,status:'准备姿态已到达',next:p.simulation_demo?'保持松握，等待工具就绪。':'按既有装夹流程放置并确认工具。'};
     if(p.capabilities?.prepare===false)return {...result,status:'等待装夹确认',next:'尚未配置准备位；装夹完成并声明持物后，按 B 检查工具。',key:'B'};
@@ -460,6 +465,9 @@ function render(data,online){
   badge('demo-mode',pcFresh?(p.simulation_demo?'快捷流程':'标准装夹流程'):'流程待确认');
   text('execution',fresh?(executions[data.execution]||'状态待确认'):'未知');
   const load=pcFresh?p.load_state:null;const loadText=load==='held'?'已装载':load==='empty'?'未装载':'未知';
+  const sources={configured_initial_state:'场景初始配置',simulation_scene:'场景状态',operator_declaration:'操作员声明',unknown:'未确认'};
+  text('load-source',pcFresh?sources[p.load_source]||p.load_source||'未确认':'—');
+  text('prepare-checks',pcFresh?(prepareFailures({checks:p.prepare_checks,load_state:p.load_state})||'条件已满足；长按 A 后检查执行'):'—');
   text('load',loadText);text('tool-state',(p.tool_variant==='short_rod'?'短棍':'工具')+'：'+loadText);
   text('mapping-info',pcFresh&&Number.isFinite(p.position_scale)?`平移 ${p.position_scale} 倍，旋转 1∶1，${p.control_point==='grip_midpoint'?'双握点中点':'工具原点'}`:'—');
   const applied=pcFresh?p.grasp_applied:null;
@@ -467,7 +475,8 @@ function render(data,online){
   link('vr-link',vrFresh?'输入在线':pcFresh?'输入中断':'等待输入',vrFresh?'good':'warn');
   text('input-age',vrFresh?ms(rawAge):'数据未更新');text('feedback-age',fresh?ms(data.server_time-data.feedback_stamp)+' 前更新':'未更新');
   text('frame-count',data.model?.applied_frames||0);text('run-id',data.run_id||'等待会话');
-  text('record-state',online&&data.recording?'诊断记录中':'诊断未记录');$('record-state').className=online&&data.recording?'event-record good':'event-record muted';
+  const diag=data.diagnostics||{},logFault=!!diag.error||diag.dropped>0;
+  text('record-state',!online?'记录状态未知':diag.error?'记录失败：'+diag.error:data.recording?`记录中，队列丢弃 ${diag.dropped||0} 条`:'诊断未记录');$('record-state').className=logFault?'event-record bad':online&&data.recording?'event-record good':'event-record muted';
   text('guide-note',!pcFresh?'当前流程尚未确认，等待控制状态。':!p.simulation_demo?'当前为标准装夹流程；夹爪位置反馈不代表已夹稳，装载状态与支撑需操作员声明。':'准备完成后自动检查工具，等待就绪后接合。');
   for(const side of ['left','right']){
     const c=p.controller_states?.[side]||{},tracking=vrFresh&&(p.tracking_valid?.[side]??c.valid),valid=tracked&&c.valid===true&&tracking===true;

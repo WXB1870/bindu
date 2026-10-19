@@ -489,6 +489,8 @@ class StateTests(unittest.TestCase):
         effects=[]
         for _ in range(60):effects+=rig.step()
         self.assertEqual([x.operation for x in effects],['prepare'])
+        self.assertTrue(rig.core.last_prepare_check['accepted'])
+        self.assertTrue(all(rig.core.last_prepare_check['checks'].values()))
         rig.buttons[1]=0
         self.assertEqual(rig.step()[-1].operation,'stop')
 
@@ -497,6 +499,24 @@ class StateTests(unittest.TestCase):
         for _ in range(60):self.assertEqual(rig.step(),[])
         rig.core.load='empty'
         for _ in range(60):self.assertEqual(rig.step(),[])
+
+    def test_prepare_failure_snapshot_retains_attempt_conditions(self):
+        rig=Rig('unknown');rig.grips[0]=.8;rig.stopped=False;rig.buttons[1]=1
+        for _ in range(60):self.assertEqual(rig.step(),[])
+        check=rig.core.last_prepare_check
+        self.assertFalse(check['accepted'])
+        self.assertEqual({k for k,v in check['checks'].items() if not v},
+                         {'load_empty','left_squeeze_released','motion_stopped'})
+        self.assertEqual(check['load_source'],'unknown')
+        rig.stopped=True;rig.grips[0]=0.;rig.step();rig.context('empty')
+        self.assertEqual(rig.core.snapshot()['load_source'],'operator_declaration')
+        self.assertTrue(all(rig.core.prepare_checks(rig.now).values()))
+        self.assertIs(rig.core.last_prepare_check,check)
+        self.assertEqual(check['load_state'],'unknown')
+        from bindu_teleoperation.vr.hud import hud_spec
+        hud=hud_spec(dict(mode='standby',reason=rig.core.reason,last_prepare_check=check))
+        self.assertIn('空手状态未确认',hud['detail'])
+        self.assertIn('左侧握未松开',hud['detail'])
 
     def test_startup_held_a_and_triggers_are_not_actions(self):
         rig=Rig();rig.core=PicoControl(initial_load='empty');rig.buttons[1]=1;rig.triggers=[1.,1.]

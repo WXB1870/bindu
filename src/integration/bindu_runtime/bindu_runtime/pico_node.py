@@ -68,7 +68,8 @@ class PicoNode(RuntimeNode):
             if (any(type(q) not in (float,int) or not math.isfinite(q) or
                     not self.profile.limits[item['joint']][0]<=q<=self.profile.limits[item['joint']][1] for q in targets)
                     or len(set(targets))!=3):raise ValueError('PICO_GRIPPER_TARGETS')
-        if self.cfg.get('initial_load_state','unknown')!='unknown':
+        initial_load=self.cfg.get('initial_load_state','unknown')
+        if initial_load not in ('unknown','empty') or (initial_load!='unknown' and not (self.simulation and self.position_contract)):
             raise ValueError('PICO_STARTUP_LOAD_MUST_BE_UNKNOWN')
         if not self.simulation and self.cfg.get('device_initial_positions_rad'):
             raise ValueError('REAL_REQUIRES_MEASURED_INITIAL_STATE')
@@ -92,7 +93,7 @@ class PicoNode(RuntimeNode):
             raise ValueError('PICO_PREPARE_PRESET_INVALID')
         if not 0 < float(self.cfg['prepare_duration']) <= 60:
             raise ValueError('PICO_PREPARE_DURATION_INVALID')
-        self.control=PicoControl(initial_load='unknown',simulation_demo=self.simulation_demo,
+        self.control=PicoControl(initial_load=initial_load,simulation_demo=self.simulation_demo,
                                  max_age=float(self.tool_cfg['input_max_age']))
         validation_cfg=dict(self.tool_cfg,worker_timeout=30.)
         self.validator=BimanualWorker(validation_cfg,self.profile,preload_path_checks=True)
@@ -102,6 +103,7 @@ class PicoNode(RuntimeNode):
         self.lease=None;self.pending_intent=None;self.running=None
         self.waiters=set();self.stop_deadline=None;self.release_until=0.;self.recording=None;self.record_future=None
         self.last_status=0.;self.last_phase=None
+        self.last_prepare_check=None
         self.position_ops = None
         if self.position_contract:
             from .pico_position import PositionOperations
@@ -184,6 +186,9 @@ class PicoNode(RuntimeNode):
         previous=(self.control.source,self.control.seq)
         previous_reason=self.control.reason
         self.control.ingest(*pair,self.now())
+        if self.control.last_prepare_check is not self.last_prepare_check:
+            self.last_prepare_check=self.control.last_prepare_check
+            self.event('PICO_PREPARE_CHECK',json.dumps(self.last_prepare_check))
         if self.control.reason=='PICO_PAIR_INVALID' and previous_reason!=self.control.reason:
             self.event('PICO_PAIR_DIAGNOSTIC',json.dumps(dict(now=self.now(),frames=[
                 dict(stamp=f.stamp,seq=f.seq,side=f.side,source=f.source_id,mapping=f.mapping,

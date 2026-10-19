@@ -31,6 +31,8 @@ class PicoControl:
         if initial_load not in ('empty','held','unknown'):
             raise ValueError('PICO_LOAD_STATE')
         self.load, self.supported = initial_load, False
+        self.load_source = 'configured_initial_state' if initial_load!='unknown' else 'unknown'
+        self.last_prepare_check = None
         self.max_age, self.prepare_hold = max_age, prepare_hold
         self.phase, self.reason = 'checking', 'WAITING_FOR_INPUT_AND_FEEDBACK'
         self.generation = 0
@@ -64,7 +66,7 @@ class PicoControl:
         effects,self.effects = self.effects,[]
         return effects
 
-    def context(self, source, generation, load, supported, now):
+    def context(self, source, generation, load, supported, now, *, origin='operator_declaration'):
         if (source != self.source or generation != self.generation or
                 load not in ('empty','held','unknown') or type(supported) is not bool):
             raise ValueError('PICO_CONTEXT_STALE_OR_INVALID')
@@ -72,6 +74,7 @@ class PicoControl:
                 ('standby','tool_standby','load_check','loading','locked','checking')):
             raise ValueError('PICO_CONTEXT_NOT_AT_REST')
         self.load,self.supported = load,supported
+        self.load_source=origin
         if self.simulation_demo:
             self.fixture_load = load
         self.context_at=now
@@ -84,6 +87,15 @@ class PicoControl:
     def rest(self, now):
         f=self.feedback
         return bool(f and f.healthy and f.stopped and 0 <= now-f.stamp <= self.max_age)
+
+    def prepare_checks(self, now):
+        hands={f.side:f for f in self.frames or ()}
+        return dict(load_empty=self.load=='empty',
+            feedback_fresh=bool(self.feedback and self.feedback.healthy and 0<=now-self.feedback.stamp<=self.max_age),
+            motion_stopped=bool(self.feedback and self.feedback.stopped),
+            input_fresh=bool(self.frames and 0<=now-self.stamp<=self.max_age),
+            left_squeeze_released=bool('left' in hands and hands['left'].grip<.3),
+            right_squeeze_released=bool('right' in hands and hands['right'].grip<.3))
 
     def lock(self, reason, now):
         if self.phase != 'locked' or self.pending and self.pending.operation != 'stop':
@@ -134,6 +146,7 @@ class PicoControl:
             self.a_since=None
             if old:
                 self.load='unknown';self.supported=False
+                self.load_source='unknown'
                 self.lock('PICO_CONNECTION_CHANGED',now)
         if left.seq<=self.seq:return
         if min(f.stamp for f in pair)<self.stamp:
@@ -245,6 +258,11 @@ class PicoControl:
                 if self.a_since is None:self.a_since=now
                 if now-self.a_since>=self.prepare_hold:
                     self.prepare_blocked=True
+                    self.last_prepare_check=dict(stamp=now,source_id=self.source,seq=self.seq,
+                        load_state=self.load,load_source=self.load_source,checks=self.prepare_checks(now),
+                        held_s=now-self.a_since,required_hold_s=self.prepare_hold,
+                        accepted=self.load=='empty' and self.rest(now) and all(f.grip<.3 for f in pair),
+                        squeeze=[f.grip for f in pair],feedback_stamp=self.feedback.stamp if self.feedback else None)
                     if self.load=='empty' and self.rest(now) and all(f.grip<.3 for f in pair):
                         self.phase='preparing';self.emit('prepare')
                     else:self.reason='PREPARE_REQUIRES_EMPTY_AND_RELEASED_SQUEEZE'
@@ -299,22 +317,24 @@ class PicoControl:
             return
         if self.load == 'unknown':
             load = self.fixture_load or ('held' if prepared else 'empty')
-            self.context(self.source, self.generation, load, False, now)
+            self.context(self.source, self.generation, load, False, now, origin='simulation_scene')
         if self.load == 'empty' and prepared and self.reason == 'PREPARED':
-            self.context(self.source, self.generation, 'held', False, now)
+            self.context(self.source, self.generation, 'held', False, now, origin='simulation_scene')
         if self.load == 'held' and self.feedback.modes == ('closed','closed'):
             self.phase,self.reason = 'confirming_tool','SIMULATED_TOOL_PREFLIGHT'
             self.emit('confirm_tool')
 
     def snapshot(self, now=None):
         view = dict(phase=self.phase,reason=self.reason,generation=self.generation,
-                    source_id=self.source,load_state=self.load,external_support=self.supported,
+                    source_id=self.source,load_state=self.load,load_source=self.load_source,external_support=self.supported,
+                    last_prepare_check=self.last_prepare_check,
                     grasp_requested='right_axial' if (self.pending.value if self.pending and self.pending.operation=='switch_grasp' else self.virtual) else 'rigid',
                     pending=self.pending.operation if self.pending else None)
         if now is not None:
             age = now-self.stamp
             fresh = 0 <= age <= self.max_age
             view.update(input_age_s=age if math.isfinite(age) else None, input_fresh=fresh,
+                        prepare_checks=self.prepare_checks(now),
                         simulation_demo=self.simulation_demo, controller_states={})
             for f in self.frames or ():
                 view['controller_states'][f.side] = dict(seq=f.seq, valid=f.valid and fresh,

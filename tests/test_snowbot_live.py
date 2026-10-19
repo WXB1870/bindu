@@ -147,7 +147,8 @@ class SimulationEntryTests(unittest.TestCase):
 
     def test_partial_start_failure_stops_already_started_control(self):
         with tempfile.TemporaryDirectory() as directory:
-            args = entry.parse_args(['--output', str(Path(directory)/'run')])
+            args = entry.parse_args(['--output', str(Path(directory)/'run'), '--no-diagnostics',
+                                     '--namespace', 'test_'+Path(directory).name])
             control = object()
             with patch.object(entry, 'check'), patch.object(entry.subprocess, 'Popen',
                     side_effect=[control, OSError('display could not start')]), \
@@ -168,9 +169,9 @@ class SimulationEntryTests(unittest.TestCase):
         self.assertIn('--dashboard', display)
         self.assertFalse(any(value.endswith(':=') for value in control))
         self.assertNotIn('--state-file', display)
-        self.assertNotIn('--trace-file', display)
-        args.diagnostics = True
-        self.assertIn('--trace-file', entry.commands(args)[1])
+        self.assertIn('--trace-file', display)
+        args.diagnostics = False
+        self.assertNotIn('--trace-file', entry.commands(args)[1])
 
     def test_bad_parameters_fail_before_processes_start(self):
         for argv in (['--run-id', '../escape'], ['--namespace', 'bad:ns'],

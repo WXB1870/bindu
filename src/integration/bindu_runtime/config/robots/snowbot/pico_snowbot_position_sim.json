@@ -2,7 +2,7 @@
   "schema_version": 2,
   "simulation_only": true,
   "mapping": "pico_snowbot_v1",
-  "initial_load_state": "unknown",
+  "initial_load_state": "empty",
   "prepare_duration": 8.0,
   "prepare_positions_rad": {
     "body_joint_1": 0.11854734088355395,

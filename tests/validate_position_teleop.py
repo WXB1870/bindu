@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import time
 import uuid
 import rclpy
@@ -104,7 +105,8 @@ def scenario(out, mode):
     log=(out/(mode+'.log')).open('w')
     process=subprocess.Popen(['ros2','launch','bindu_runtime','teleop_only.launch.py','config:='+str(path)],
         stdout=log,stderr=subprocess.STDOUT,start_new_session=True)
-    checks=[]
+    checks=[];observer=None;observer_log=None
+    trace_dir=out/(mode+'-diagnostics')
     def pump(seconds):
         end=time.monotonic()+seconds;until(node,lambda:time.monotonic()>end,seconds+1.)
     def wait(predicate, seconds=15.):
@@ -124,6 +126,15 @@ def scenario(out, mode):
         assert states[-1].simulated==(mode=='simulation') and states[-1].runtime_mode==mode
         assert views[-1]['capabilities']['axial_grasp'] is False
         checks.append('same feedback contract, no startup commands, unavailable capability explicit')
+        observer_log=(out/(mode+'-observer.log')).open('w')
+        observer=subprocess.Popen([sys.executable,str(ROOT/'tools/snowbot_live.py'),'--observe',
+            '--namespace',ns,'--run-id',views[-1]['run_id'],
+            '--robot-config',str(CFG/'robot_snowbot_real.json'),
+            '--runtime-mode',mode,'--device-backend','kinematic' if mode=='simulation' else 'snowbot_vendor',
+            '--state-file',str(out/(mode+'-observer.json')),
+            '--trace-file',str(trace_dir/'diagnostics.jsonl')],
+            stdout=observer_log,stderr=subprocess.STDOUT,start_new_session=True)
+        wait(lambda:(trace_dir/'diagnostics-health.json').exists())
         leases=node.create_client(Lease,ns+'/execution/lease')
         rejected=call(node,leases,Lease.Request(operation='acquire',owner='contract_test',resources=['left_arm']))
         assert not rejected.ok and 'COUPLED' in rejected.code,rejected.code
@@ -131,7 +142,8 @@ def scenario(out, mode):
         rejected=call(node,submit,SubmitMotion.Request(command=MotionCommand(mode='joint_reference_segment',runtime_mode=mode)))
         assert not rejected.accepted and 'UNTIMED_JOINT_TARGET' in rejected.code,rejected.code
         checks.append('coupled arm ownership and unsupported timed trajectory rejected on both backends')
-        context('empty',False)
+        assert views[-1]['load_state']==('empty' if mode=='simulation' else 'unknown')
+        if mode!='simulation':context('empty',False)
         source['buttons'][1]=1
         wait(lambda:views[-1]['reason']=='PREPARED',40.)
         source['buttons'][1]=0;pump(.3)
@@ -164,9 +176,20 @@ def scenario(out, mode):
         wait(lambda:all(not g.lease_active and g.state not in ('MOVING','STOPPING') for g in grippers.values()))
         assert all(g.state!='FAULT' and g.grasp_state=='unknown' for g in grippers.values())
         checks.append('input loss during gripper operation releases lease and confirms hold without closing')
+        terminate(observer,node);observer=None
+        diagnostic_health=json.loads((trace_dir/'diagnostics-health.json').read_text())
+        assert not diagnostic_health['active'] and not diagnostic_health['error'] and diagnostic_health['dropped']==0,diagnostic_health
+        for stream in ('vr-raw','vr-projected','execution-state','gripper-state','mode-state','teleop-state','accepted-commands'):
+            assert (trace_dir/(stream+'.jsonl')).stat().st_size>0,stream
+        events=[json.loads(line)['data'] for line in (trace_dir/'runtime-events.jsonl').read_text().splitlines()]
+        attempts=[json.loads(e['code']) for e in events if e['state']=='PICO_PREPARE_CHECK']
+        assert attempts and attempts[0]['accepted'] and all(attempts[0]['checks'].values()),attempts
+        checks.append('raw/projected input, commands, feedback and preparation checks persisted without logger queue loss')
         return dict(mode=mode,checks=checks,accepted=len(accepted),vendor_packets=len(packets))
     finally:
         (out/(mode+'-final.json')).write_text(json.dumps(views[-1] if views else {},indent=2))
+        if observer:terminate(observer,node)
+        if observer_log:observer_log.close()
         terminate(process,node);log.close();node.destroy_node()
 
 

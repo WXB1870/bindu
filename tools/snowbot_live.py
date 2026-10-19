@@ -58,7 +58,7 @@ class LatestState:
 def observe(args, publish=None, stop=None):
     import rclpy
     from std_msgs.msg import String
-    from bindu_interfaces.msg import ExecutionState, RuntimeEvent
+    from bindu_interfaces.msg import ExecutionState, RuntimeEvent, VRInput, MotionCommand, GripperState, TeleopModeState
     from bindu_runtime.common import EVENT_QOS
     from bindu_runtime.robot_setup import RobotSetup
     robot = RobotSetup.load(args.robot_config)
@@ -75,32 +75,41 @@ def observe(args, publish=None, stop=None):
         args.state_file.parent.mkdir(parents=True, exist_ok=True)
     if args.trace_file:
         args.trace_file.parent.mkdir(parents=True, exist_ok=True)
+    from snowbot_diagnostics import DiagnosticWriter
+    diagnostics=DiagnosticWriter(args.trace_file) if args.trace_file else None
     ns = '/'+args.namespace.strip('/')
-    node.create_subscription(ExecutionState, ns+'/execution/state',
-        lambda msg: latest.update(state=msg), 1)
+    def execution(msg):
+        latest.update(state=msg)
+        if diagnostics:diagnostics.record('execution-state',msg,ros=True)
+    node.create_subscription(ExecutionState, ns+'/execution/state',execution,100)
     def pico(msg):
         try:
             value = json.loads(msg.data)
             if value.get('run_id') == args.run_id and value.get('profile_hash') == robot.profile.digest:
                 latest.update(pico=value, pico_time=time.time())
+                if diagnostics:diagnostics.record('teleop-state',value)
         except (ValueError, TypeError):
             pass
-    node.create_subscription(String, ns+'/teleop/state', pico, 1)
+    node.create_subscription(String, ns+'/teleop/state', pico, 100 if diagnostics else 1)
     if args.trace_file:
-        def runtime_event(msg):
-            if msg.run_id!=args.run_id:return
-            event=dict(stamp=msg.stamp.sec+msg.stamp.nanosec*1e-9,run_id=msg.run_id,
-                       component=msg.component,state=msg.state,code=msg.code,
-                       task_id=msg.task_id,command_id=msg.command_id)
-            with args.trace_file.with_name('runtime-events.jsonl').open('a') as stream:
-                stream.write(json.dumps(event,allow_nan=False)+'\n')
-        node.create_subscription(RuntimeEvent,ns+'/events',runtime_event,EVENT_QOS)
+        node.create_subscription(RuntimeEvent,ns+'/events',lambda msg:
+            diagnostics.record('runtime-events',msg,ros=True) if msg.run_id==args.run_id else None,EVENT_QOS)
+        for cls,topic,stream,qos in ((VRInput,'teleop/vr/raw','vr-raw',200),
+                (VRInput,'teleop/vr/input','vr-projected',200),
+                (MotionCommand,'execution/accepted','accepted-commands',EVENT_QOS),
+                (GripperState,'gripper/state','gripper-state',100),
+                (TeleopModeState,'teleop/mode_state','mode-state',100)):
+            node.create_subscription(cls,ns+'/'+topic,lambda msg,key=stream:
+                diagnostics.record(key,msg,ros=True),qos)
     start = time.monotonic()
     last_trace = 0.
+    next_snapshot=0.
     print('LIVE_OBSERVER_READY '+('memory' if publish else str(args.state_file)), flush=True)
     try:
         while rclpy.ok() and not (stop and stop.is_set()) and (not args.duration or time.monotonic()-start < args.duration):
-            rclpy.spin_once(node, timeout_sec=.02)
+            rclpy.spin_once(node, timeout_sec=.005)
+            if time.monotonic()<next_snapshot:continue
+            next_snapshot=time.monotonic()+1/30.
             msg = latest['state']
             now = time.time()
             data = dict(meta, written_at=now, valid=False, q={}, feedback_stamp=0.,
@@ -122,6 +131,7 @@ def observe(args, publish=None, stop=None):
                 data['pico'] = latest['pico']
                 meta['tool_variant']=latest['pico'].get('tool_variant','shovel')
                 data['tool_variant']=meta['tool_variant']
+            if diagnostics:data['diagnostics']=diagnostics.status()
             if publish:
                 publish(data)
             elif args.state_file:
@@ -129,13 +139,16 @@ def observe(args, publish=None, stop=None):
                 temporary.write_text(json.dumps(data, allow_nan=False))
                 temporary.replace(args.state_file)
             if args.trace_file and time.monotonic()-last_trace >= .1:
-                with args.trace_file.open('a') as stream:
-                    stream.write(json.dumps(data,allow_nan=False)+'\n')
+                diagnostics.record('diagnostics',data)
                 last_trace = time.monotonic()
-            time.sleep(.025)
+    except (KeyboardInterrupt,rclpy.executors.ExternalShutdownException):
+        pass
     finally:
-        node.destroy_node()
-        rclpy.shutdown()
+        try:
+            node.destroy_node()
+            rclpy.try_shutdown()
+        finally:
+            if diagnostics:diagnostics.close()
 
 
 def dashboard(args):
@@ -321,7 +334,7 @@ def main():
                         help='Operator load/support declaration through PicoContext')
     parser.add_argument('--external-support', action='store_true')
     parser.add_argument('--state-file', type=Path)
-    parser.add_argument('--trace-file', type=Path, help='Local diagnostic JSONL, at most 10 Hz; separate from training recording')
+    parser.add_argument('--trace-file', type=Path, help='Async diagnostics: snapshots up to 10 Hz plus received ROS inputs, feedback and events')
     parser.add_argument('--run-id', required=True)
     parser.add_argument('--namespace', default='bindu_vr_sim')
     parser.add_argument('--robot-config', default=str(ROOT/'src/integration/bindu_runtime/config/robots/snowbot/robot_snowbot.json'))

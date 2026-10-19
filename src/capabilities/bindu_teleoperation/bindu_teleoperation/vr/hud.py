@@ -71,9 +71,15 @@ def hud_spec(view):
         notice('松开双侧握，再同时握住' if confirmed else '等待机器人停稳',
                 '重新接合后继续跟随' if confirmed else '保持双侧握松开；停稳后再重新接合')
     elif mode == 'standby':
-        if reason in ('PREPARE_RELEASED','PREPARE_REQUIRES_EMPTY_AND_RELEASED_SQUEEZE'):
-            notice('准备已暂停' if reason=='PREPARE_RELEASED' else '当前不能准备',
-                    '松开双侧握，确认空手后重新长按 A')
+        if reason=='PREPARE_REQUIRES_EMPTY_AND_RELEASED_SQUEEZE':
+            check=view.get('last_prepare_check') or {}
+            labels={'load_empty':'当前已装载' if check.get('load_state')=='held' else '空手状态未确认',
+                    'feedback_fresh':'反馈无效或过期','motion_stopped':'尚未停稳',
+                    'input_fresh':'输入过期','left_squeeze_released':'左侧握未松开','right_squeeze_released':'右侧握未松开'}
+            failures=[labels[k] for k,v in check.get('checks',{}).items() if v is False and k in labels]
+            notice('准备被拒绝；排除原因后重新长按 A', '、'.join(failures[:3]) or '保持松握，查看电脑端检查详情')
+        elif reason=='PREPARE_RELEASED':
+            notice('准备已暂停', '松开双侧握，确认空手后重新长按 A')
         elif view.get('load_state')=='held':
             notice('工具待确认', '保持松握，等待检查；严格流程按 B 确认')
         elif view.get('capabilities',{}).get('prepare') is False:

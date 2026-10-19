@@ -41,6 +41,7 @@ def project_state(data, now, identity):
     from snowbot_live import validate_state
     result = {k:data.get(k) for k in ('run_id','written_at','feedback_stamp','execution','code')}
     result.update(valid=False, pico_fresh=False, pico={}, server_time=now)
+    result['diagnostics']=data.get('diagnostics',{})
     try:
         validate_state(data, now, identity['run_id'], identity['profile_hash'], identity['joint_names'],
                        identity.get('runtime_mode','simulation'), identity.get('device_backend','kinematic'))
@@ -139,10 +140,7 @@ def _server(read_state, trace_file, output, port, ready, views, identity, stop, 
         log.sample(latest)
         latest.update(events=log.events[-40:], recording=False)
         if trace_file:
-            try:
-                latest['recording'] = 0 <= time.time()-Path(trace_file).stat().st_mtime <= 1.
-            except OSError:
-                pass
+            latest['recording'] = bool(latest.get('diagnostics',{}).get('active'))
         model = model_status.read()
         if 0 <= time.time()-model.get('updated_at', 0.) <= 2.:
             latest['model'] = model

@@ -3,6 +3,7 @@
 import argparse
 import fcntl
 import hashlib
+import json
 import math
 import os
 from pathlib import Path
@@ -126,10 +127,28 @@ def run(args):
                    ROS_LOG_DIR=str(args.output/'ros-log'))
         stop = threading.Event()
         handlers = {s: signal.signal(s, lambda *_: stop.set()) for s in (signal.SIGINT, signal.SIGTERM)}
-        children, result = [], 0
+        children, readers, result = [], [], 0
         try:
-            for command in commands(args):
-                children.append(subprocess.Popen(command, cwd=ROOT, env=env, start_new_session=True))
+            resolved_commands=commands(args)
+            configs={}
+            for key,value in dict(deployment=str(args.config),**args.deployment).items():
+                if key=='deployment' or key.endswith('_config'):
+                    path=Path(value)
+                    if path.is_file():
+                        configs[key]=dict(path=str(path),sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
+                                          content=json.loads(path.read_text()))
+            manifest=dict(schema=1,run_id=args.run_id,started_at=time.time(),domain_id=args.domain_id,
+                namespace=args.namespace,diagnostics=args.diagnostics,commands=resolved_commands,configs=configs,
+                diagnostic_format='JSONL: received_at, received_monotonic_ns, data; ROS fields retained',
+                diagnostic_chunk_bytes=128*1024*1024)
+            (args.output/'session.json').write_text(json.dumps(manifest,ensure_ascii=False,indent=2))
+            for name,command in zip(('control','display'),resolved_commands):
+                options=dict(stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True,errors='replace') if args.diagnostics else {}
+                child=subprocess.Popen(command,cwd=ROOT,env=env,start_new_session=True,**options)
+                children.append(child)
+                if args.diagnostics:
+                    reader=threading.Thread(target=copy_output,args=(child,args.output/(name+'.log')),daemon=True)
+                    reader.start();readers.append(reader)
             print(f'遥操作会话 {args.run_id}，ROS 域 {args.domain_id}，/{args.namespace}', flush=True)
             print(f'电脑界面：http://127.0.0.1:{args.port}/\n'
                   f'头显：{"https" if args.cert_file else "http"}://{"<开发机局域网 IP>" if args.host=="0.0.0.0" else args.host}:{args.vr_port}/\n'
@@ -148,15 +167,26 @@ def run(args):
                 if not stop_group(child):
                     print(f'进程组 {child.pid} 超过正常退出期限；已升级终止，不能视为停稳确认。', file=sys.stderr)
                     result = 1
+            for reader in readers:reader.join(timeout=2.)
             for sig, handler in handlers.items():
                 signal.signal(sig, handler)
         return result
 
 
+def copy_output(child, path):
+    # Drain child output outside control threads; preserve stderr in the same log.
+    with path.open('a',buffering=1) as output:
+        for line in child.stdout:
+            output.write(line)
+            print(line,end='',flush=True)
+    child.stdout.close()
+
+
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description='从部署配置启动 VR 遥操作与电脑界面。')
     parser.add_argument('--config', type=Path, default=ROOT/'src/integration/bindu_runtime/config/deployments/snowbot_vr_sim.json')
-    parser.add_argument('--diagnostics', action='store_true', help='开启诊断 JSONL 落盘（默认仅内存近期事件）')
+    parser.add_argument('--diagnostics', action=argparse.BooleanOptionalAction, default=True,
+                        help='当前调试阶段默认记录完整输入、反馈和事件；--no-diagnostics 关闭')
     parser.add_argument('--check', action='store_true', help='仅检查环境、证书和端口')
     parser.add_argument('--domain-id', type=int, default=int(os.environ.get('ROS_DOMAIN_ID','0')))
     parser.add_argument('--namespace')
