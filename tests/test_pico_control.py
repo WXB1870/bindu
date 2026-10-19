@@ -642,6 +642,26 @@ class GraspContinuationTests(unittest.TestCase):
 
 
 class StateTests(unittest.TestCase):
+    def test_pair_skew_compares_each_hand_with_its_own_previous_time(self):
+        rig=Rig();core=rig.core;t=rig.now+.02
+        pair=tuple(replace(f,seq=rig.seq+1,stamp=t+i*.0007) for i,f in enumerate(core.frames))
+        core.ingest(*pair,t+.005)
+        newer=tuple(replace(f,seq=f.seq+1,stamp=t+dt) for f,dt in zip(pair,(.00056,.001)))
+        core.ingest(*newer,t+.006)
+        self.assertEqual(core.seq,newer[0].seq)
+        self.assertEqual(core.phase,'standby')
+
+    def test_real_time_reversal_of_either_hand_still_locks_and_stops(self):
+        for side in (0,1):
+            with self.subTest(side=side):
+                rig=Rig();core=rig.core;previous=core.frames
+                pair=tuple(replace(f,seq=f.seq+1,stamp=f.stamp+(-.0001 if i==side else .001))
+                           for i,f in enumerate(previous))
+                core.ingest(*pair,rig.now+.005)
+                self.assertEqual((core.phase,core.reason),('locked','PICO_TIME_REVERSED'))
+                self.assertEqual(core.pending.operation,'stop')
+                self.assertEqual(core.frames,previous)
+
     def test_stop_fault_keeps_its_cause_instead_of_claiming_feedback_loss(self):
         rig=Rig();core=rig.core
         code='PICO_STOP_UNCONFIRMED:STOP_UNCONFIRMED:vendor_hold'

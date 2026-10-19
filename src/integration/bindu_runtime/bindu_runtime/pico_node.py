@@ -214,6 +214,7 @@ class PicoNode(RuntimeNode):
                    for m in (a,b))
         self.control.update_feedback(self.feedback(),self.now())
         previous=(self.control.source,self.control.seq)
+        previous_frames=self.control.frames
         previous_reason=self.control.reason
         previous_jump=self.control.last_pose_jump
         self.control.ingest(*pair,self.now())
@@ -227,6 +228,12 @@ class PicoNode(RuntimeNode):
                 dict(stamp=f.stamp,seq=f.seq,side=f.side,source=f.source_id,mapping=f.mapping,
                      valid=f.valid,init=f.init,grip=f.grip,trigger=f.trigger,buttons=f.buttons,
                      edges=f.button_edges,clutch_seq=f.clutch_seq) for f in pair])))
+        if self.control.reason=='PICO_TIME_REVERSED' and previous_reason!=self.control.reason:
+            self.event('PICO_TIME_DIAGNOSTIC',json.dumps(dict(
+                now=self.now(),source=a.source_id,previous_seq=previous[1],input_seq=a.seq,
+                frames=[dict(side=new.side,previous_stamp=old.stamp,input_stamp=new.stamp,
+                             interval_s=new.stamp-old.stamp)
+                        for old,new in zip(previous_frames,pair)])))
         if self.control.source!=a.source_id or self.control.seq!=a.seq or previous==(a.source_id,a.seq):return
         allowed=self.control.phase in ('engaging','following') and self.now()>=self.release_until
         for i,m in enumerate((a,b)):

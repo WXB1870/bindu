@@ -186,7 +186,8 @@ class PicoControl:
                 self.load_source='unknown'
                 self.lock('PICO_CONNECTION_CHANGED',now)
         if left.seq<=self.seq:return
-        if min(f.stamp for f in pair)<self.stamp:
+        if (self.frames and self.frames[0].source_id==left.source_id and
+                any(new.stamp<old.stamp for old,new in zip(self.frames,pair))):
             self.lock('PICO_TIME_REVERSED',now);return
         if self.frames and self.phase in ('engaging','following','switching'):
             before=tuple(pose_matrix(f.pose) for f in self.frames)

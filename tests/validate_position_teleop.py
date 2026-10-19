@@ -83,7 +83,7 @@ def scenario(out, mode, websocket=False, ordinary=False, physics=False, replay=N
     node.create_subscription(String,ns+'/teleop/state',lambda m:views.append(json.loads(m.data)),10)
     node.create_subscription(MotionCommand,ns+'/execution/accepted',accepted.append,100)
     node.create_subscription(GripperState,ns+'/gripper/state',lambda m:grippers.update({m.side:m}),10)
-    source=dict(buttons=[0,0],trigger=[0.,0.],grip=0.,grips=None,delta=0.,deltas=[0.,0.],stream=not physics,seq=0)
+    source=dict(buttons=[0,0],trigger=[0.,0.],grip=0.,grips=None,delta=0.,deltas=[0.,0.],stream=False,seq=0)
     counters=[ButtonCounters(),ButtonCounters()]
     vr=node.create_publisher(VRInput,ns+'/teleop/vr/raw',10)
     fixture=json.loads((CFG/'pico_snowbot_position_sim.json').read_text())
@@ -234,12 +234,11 @@ def scenario(out, mode, websocket=False, ordinary=False, physics=False, replay=N
         wait(lambda:(trace_dir/'teleop-state.jsonl').exists() and
                     (trace_dir/'teleop-state.jsonl').stat().st_size>0,30.)
     try:
-        if physics:
-            wait(lambda:states and time.time()-seconds(states[-1].feedback_stamp)<.2 and
-                 len(grippers)==2 and all(g.feedback_valid for g in grippers.values()),60.)
-            start_observer()
-            pump(2.)  # Discover every reader before connecting the recorded hands.
-            source['stream']=True
+        wait(lambda:states and views and time.time()-seconds(states[-1].feedback_stamp)<.2 and
+             len(grippers)==2 and all(g.feedback_valid for g in grippers.values()),60. if physics else 40.)
+        start_observer()
+        pump(2.)  # Discover every reader before connecting the test hands, on either backend.
+        source['stream']=True
         wait(lambda:states and states[-1].feedback_stamp.sec>0 and views and
              views[-1]['phase']=='standby' and len(grippers)==2,60. if physics else 40.)
         assert not accepted and not packets,'startup actuation'
@@ -249,7 +248,6 @@ def scenario(out, mode, websocket=False, ordinary=False, physics=False, replay=N
         assert states[-1].simulated==(mode=='simulation') and states[-1].runtime_mode==mode
         assert views[-1]['capabilities']['axial_grasp'] is True
         checks.append('same feedback contract, no startup commands, configured axial position capability explicit')
-        if observer is None:start_observer()
         pump(.3)
         if replay:
             # The only synthetic inputs are a stationary released/pressed

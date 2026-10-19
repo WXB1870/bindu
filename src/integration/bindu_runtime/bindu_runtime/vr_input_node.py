@@ -64,6 +64,7 @@ class VRInputNode(RuntimeNode):
             args=(self.resolve_topic_name('teleop/vr/health'),self.health_reports),daemon=True)
         self.health_process.start()
         self.last_frame = None
+        self.input_clock_offset = None
         self.last_poll = None
         self.poll_delay_max = 0.
         self.timer = self.create_timer(.005, self.poll)
@@ -122,8 +123,17 @@ class VRInputNode(RuntimeNode):
             age = time.time()-item.stamp
             if age < 0 or age > 1.:
                 continue
+            if self.input_clock_offset is None:
+                before = time.time()
+                node_time = self.now()
+                after = time.time()
+                self.input_clock_offset = node_time-(before+after)/2
+            # Map the receiver clock once for this node. Re-estimating the
+            # offset per hand/event turns scheduler/DDS delay into timestamp
+            # skew and can reverse two closely spaced received packets.
+            # Preserve source intervals; never clamp or refresh old input.
             started=time.monotonic()
-            self.publisher.publish(VRInput(stamp=stamp(self.now()-age), source_id=item.source_id,
+            self.publisher.publish(VRInput(stamp=stamp(item.stamp+self.input_clock_offset), source_id=item.source_id,
                 seq=item.seq, side=item.side, runtime_mode=self.runtime_mode,
                 pose=list(item.pose) if item.valid else [0.]*16,
                 grip=item.grip, trigger=item.trigger, init=item.init, stop=item.stop,

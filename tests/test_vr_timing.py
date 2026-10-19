@@ -15,6 +15,58 @@ def sample(perf, seq=1):
                 long_task_count=0, page_visibility='visible', xr_visibility='visible')
 
 
+class VRInputClockTests(unittest.TestCase):
+    def owner(self, wall, delays):
+        from types import SimpleNamespace as S
+        from unittest.mock import Mock
+        from bindu_contracts.teleoperation import VRFrame
+        from bindu_teleoperation.pico import PICO_MAPPING
+        pose=(1.,0.,0.,0.,0.,1.,0.,0.,0.,0.,1.,0.,0.,0.,0.,1.)
+        packets=[];published=[]
+        owner=S(last_poll=None,poll_delay_max=0.,last_frame=None,input_clock_offset=None,
+                run_id='clock-test',runtime_mode='simulation',emit_health=Mock(),
+                receiver=S(poll_health=lambda:[],poll=lambda:packets.pop(0)),
+                publisher=S(publish=published.append),now=Mock(side_effect=lambda:wall[0]+next(delays)))
+        def pair(seq,at):
+            return tuple(VRFrame('headset',seq,at,side,pose,0.,0.,mapping=PICO_MAPPING)
+                         for side in ('left','right'))
+        return owner,packets,published,pair
+
+    def test_burst_events_keep_one_pair_stamp_and_original_intervals_despite_clock_read_jitter(self):
+        from unittest.mock import patch
+        from bindu_runtime.vr_input_node import VRInputNode
+        from bindu_runtime.common import seconds
+        wall=[1000.01]
+        owner,packets,published,pair=self.owner(wall,iter((.000630,.000005,.000005,.000005)))
+        with patch('bindu_runtime.vr_input_node.time.time',side_effect=lambda:wall[0]):
+            packets.append(pair(6719,1000.));VRInputNode.poll(owner)
+            wall[0]=1000.015
+            packets.append(pair(6720,1000.000560));VRInputNode.poll(owner)
+        stamps=[seconds(m.stamp) for m in published]
+        self.assertEqual(stamps[0],stamps[1])
+        self.assertEqual(stamps[2],stamps[3])
+        self.assertAlmostEqual(stamps[2]-stamps[0],.000560,places=6)
+        owner.now.assert_called_once()
+
+    def test_original_stale_future_and_reversed_event_times_are_not_refreshed_or_clamped(self):
+        from unittest.mock import patch
+        from bindu_runtime.vr_input_node import VRInputNode
+        from bindu_runtime.common import seconds
+        wall=[1000.01]
+        owner,packets,published,pair=self.owner(wall,iter((-950.,)))
+        with patch('bindu_runtime.vr_input_node.time.time',side_effect=lambda:wall[0]):
+            packets.append(pair(1,1000.));VRInputNode.poll(owner)
+            packets.append(pair(2,999.9999));VRInputNode.poll(owner)
+            self.assertLess(seconds(published[-1].stamp),seconds(published[0].stamp))
+            wall[0]=1000.4
+            packets.append(pair(3,1000.));VRInputNode.poll(owner)
+            self.assertAlmostEqual(wall[0]-950.-seconds(published[-1].stamp),.4)
+            packets.extend((pair(4,1001.),pair(5,998.)))
+            VRInputNode.poll(owner);VRInputNode.poll(owner)
+        self.assertEqual(len(published),6)
+        owner.now.assert_called_once()
+
+
 class ControllerTimingTests(unittest.TestCase):
     def test_blocked_diagnostic_dds_publish_does_not_block_input_report_enqueue(self):
         import queue
