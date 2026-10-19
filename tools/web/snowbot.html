@@ -20,13 +20,13 @@
   --mint: #b7a794;
   --mint-bg: #1c1a17;
   --green: #b9d5c4;
-  --green-bg: #14271f;
-  --green-line: #426350;
+  --green-bg: #0d3024;
+  --green-line: #2a7b57;
   --amber: #d3b38a;
   --amber-bg: #211c16;
   --red: #e0b1b6;
-  --red-bg: #301b21;
-  --red-line: #77454f;
+  --red-bg: #3a1722;
+  --red-line: #84314d;
 }
 * { box-sizing: border-box; }
 html { scroll-behavior: smooth; scroll-padding-top: 105px; }
@@ -52,7 +52,7 @@ a:hover { text-decoration: underline; }
 .pill.warn { color: var(--amber); }
 .pill.bad { color: var(--red); }
 .shell { max-width: 1880px; margin: auto; padding: 0 36px 28px; }
-.masthead { position: sticky; top: 0; z-index: 10; display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 24px; min-height: 91px; border-bottom: 1px solid var(--line-soft); background: var(--bg); }
+.masthead { position: sticky; top: 0; z-index: 10; display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 24px; min-height: 74px; border-bottom: 1px solid var(--line-soft); background: var(--bg); }
 .brand { display: flex; align-items: baseline; gap: 15px; white-space: nowrap; }
 .brand h1 { margin: 0; font-size: 24px; line-height: 1.2; font-weight: 700; letter-spacing: -.025em; }
 .brand small { color: var(--muted); font-size: 12px; }
@@ -62,18 +62,17 @@ a:hover { text-decoration: underline; }
 .capsule-nav a[aria-current=location] { color: #101114; background: #e8e9eb; }
 .top-meta { display: flex; align-items: center; justify-content: flex-end; min-width: 0; gap: 10px; }
 .status-icon { width: 15px; height: 15px; color: var(--muted); flex: none; }
-.mode-banner { display: grid; grid-template-columns: minmax(230px,1fr) minmax(240px,.9fr) minmax(230px,.85fr); align-items: center; gap: 32px; padding: 29px 0 30px; margin-bottom: 29px; border-bottom: 1px solid var(--line); }
+.mode-banner { --mode-ink: #d2d5db; --mode-bg: #111215; --mode-edge: #343840; --mode-glow: transparent; display: grid; grid-template-columns: minmax(230px,1fr) minmax(240px,.9fr) minmax(230px,.85fr); align-items: center; gap: 32px; padding: 20px 0; margin-bottom: 22px; border-bottom: 1px solid var(--line); }
 .mode-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
-.mode-heading { display: flex; align-items: center; gap: 15px; }
-.mode-symbol { width: 30px; height: 30px; flex: none; color: #afb5c0; }
+.mode-heading { display: inline-flex; align-items: center; gap: 12px; padding: 7px 15px 8px 12px; max-width: 100%; background: var(--mode-bg); border-left: 3px solid var(--mode-edge); box-shadow: -10px 0 28px -16px var(--mode-glow); }
+.mode-symbol { width: 30px; height: 30px; flex: none; color: var(--mode-ink); }
 .mode-symbol .coupled-glyph { display: none; }
 .mode-banner[data-mode=bimanual_tool] .mode-symbol .independent-glyph { display: none; }
 .mode-banner[data-mode=bimanual_tool] .mode-symbol .coupled-glyph { display: inline; }
-.mode-banner[data-mode=bimanual_tool] { border-bottom-color: #2c4136; }
-.mode-banner[data-mode=bimanual_tool] .mode-symbol { color: #8fb29f; }
-.mode-banner[data-mode=bimanual_tool] .mode-name { color: #c1d4c9; }
-.mode-name { font-size: 36px; font-weight: 700; letter-spacing: -.025em; line-height: 1.3; }
-.mode-description { margin: 7px 0 0 45px; color: var(--muted); font-size: 12px; }
+.mode-banner[data-mode=independent_arms] { --mode-ink: #edc1ce; --mode-bg: #4a1028; --mode-edge: #b8446f; --mode-glow: rgba(188,44,85,.5); }
+.mode-banner[data-mode=bimanual_tool] { --mode-ink: #c1e1ce; --mode-bg: #07452f; --mode-edge: #329b6e; --mode-glow: rgba(48,149,102,.5); }
+.mode-name { color: var(--mode-ink); font-size: 36px; font-weight: 700; letter-spacing: -.025em; line-height: 1.3; }
+.mode-description { margin: 7px 0 0 57px; color: var(--muted); font-size: 12px; }
 .mode-flow { display: grid; gap: 9px; font-size: 12px; color: var(--muted); }
 .mode-route { display: grid; grid-template-columns: 84px 18px minmax(0,1fr); align-items: center; gap: 12px; }
 .mode-route svg { width: 16px; height: 16px; color: #777e8a; }
@@ -81,10 +80,14 @@ a:hover { text-decoration: underline; }
 .mode-switch { justify-self: end; max-width: 285px; color: var(--muted); font-size: 12px; }
 .mode-switch p { display: flex; align-items: center; gap: 10px; margin: 0; }
 .mode-switch kbd { display: inline-grid; place-items: center; flex: none; width: 25px; height: 25px; border: 1px solid #3a3e46; border-radius: 7px; font-family: inherit; color: #cfd3da; }
-.mode-pending { margin: 8px 0 0 45px; color: var(--amber); font-size: 12px; }
-.workspace { display: grid; grid-template-columns: minmax(0,1fr) 318px; column-gap: 38px; align-items: start; }
-.visual-column, .panel, .sidebar { min-width: 0; }
-.sidebar { padding-left: 30px; border-left: 1px solid var(--line); }
+.mode-pending { margin: 8px 0 0 57px; color: var(--amber); font-size: 12px; }
+.workspace { display: grid; grid-template-areas: "model feedback"; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 22px 30px; align-items: start; }
+.visual-column, .feedback-column, .observation-column, .panel, .sidebar { min-width: 0; }
+.visual-column { grid-area: model; }
+.feedback-column { grid-area: feedback; padding-left: 24px; border-left: 1px solid var(--line); }
+.observation-column { margin-top: 22px; }
+.sidebar { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,.95fr); gap: 28px; }
+.observation-column .panel-head { flex-wrap: wrap; gap: 8px 14px; padding-bottom: 12px; }
 .panel-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 0 0 18px; }
 h2 { margin: 0; color: #dfe1e5; font-size: 17px; font-weight: 700; line-height: 1.5; }
 h2 small { margin-left: 10px; color: var(--muted); font-size: 11px; font-weight: 400; }
@@ -95,7 +98,7 @@ h2 small { margin-left: 10px; color: var(--muted); font-size: 11px; font-weight:
 .display-options { display: flex; align-items: center; gap: 18px; }
 .display-options label { display: flex; align-items: center; gap: 7px; min-height: 30px; font-size: 11px; color: var(--muted); cursor: pointer; }
 .display-options input { width: 12px; height: 12px; margin: 0; accent-color: #c4c9d3; }
-.stage { position: relative; height: clamp(440px,calc(100vh - 370px),760px); overflow: hidden; background: var(--bg); }
+.stage { position: relative; height: clamp(320px,40vh,420px); overflow: hidden; background: var(--bg); }
 .stage #meshcat-pane { position: absolute; inset: 0; overflow: hidden; }
 .stage .dg { display: none !important; }
 .stage canvas { display: block; }
@@ -107,8 +110,8 @@ h2 small { margin-left: 10px; color: var(--muted); font-size: 11px; font-weight:
 .view-foot output { font-variant-numeric: tabular-nums; }
 .state-summary { padding: 0 0 20px; }
 .control[data-tone=good] .state-summary, .control[data-tone=bad] .state-summary { margin-bottom: 18px; padding: 16px 18px 17px; border-left: 3px solid; }
-.control[data-tone=good] .state-summary { background: var(--green-bg); border-color: var(--green-line); }
-.control[data-tone=bad] .state-summary { background: var(--red-bg); border-color: var(--red-line); }
+.control[data-tone=good] .state-summary { background: var(--green-bg); border-color: var(--green-line); box-shadow: -10px 0 24px -15px rgba(48,149,102,.5); }
+.control[data-tone=bad] .state-summary { background: var(--red-bg); border-color: var(--red-line); box-shadow: -10px 0 24px -15px rgba(188,44,85,.5); }
 .phase { color: var(--text); font-size: 29px; font-weight: 700; letter-spacing: -.02em; line-height: 1.4; text-wrap: balance; }
 .phase.good, .phase.warn { color: var(--text); }
 .control[data-tone=good] .phase { color: var(--green); }
@@ -124,7 +127,7 @@ h2 small { margin-left: 10px; color: var(--muted); font-size: 11px; font-weight:
 .stats dt { color: var(--muted); font-size: 12px; }
 .stats dd { margin: 0; font-size: 12px; font-weight: 600; overflow-wrap: anywhere; text-align: right; }
 .grasp-note { margin: 13px 0 0; color: var(--muted); font-size: 11px; line-height: 1.8; }
-.controllers-panel { margin-top: 25px; padding-top: 22px; border-top: 1px solid var(--line); }
+.controllers-panel { margin: 0; padding: 0 0 0 24px; border-left: 1px solid var(--line); }
 .controllers-panel .panel-head { padding-bottom: 15px; }
 #vr-link { font-size: 11px; font-weight: 400; }
 .controller-grid { display: grid; grid-template-columns: 44px repeat(2,minmax(0,1fr)); column-gap: 14px; }
@@ -155,22 +158,23 @@ details[open]>summary:after { transform: rotate(225deg); }
 .step kbd { padding: 2px 5px; border: 1px solid var(--line); border-radius: 5px; font-family: inherit; font-size: 11px; line-height: 1.7; text-align: center; }
 .step.stop kbd { color: var(--red); background: var(--red-bg); border-color: var(--red-line); }
 .guide-note { margin-top: 14px; color: var(--muted); font-size: 11px; line-height: 1.8; }
-.error-panel { margin-top: 32px; padding-top: 22px; border-top: 1px solid var(--line); }
+.error-panel { margin: 0; padding: 0; }
+#error-status { font-size: 11px; }
 .error-legend { display: flex; gap: 18px; flex-wrap: wrap; color: var(--muted); font-size: 11px; }
 .error-legend i { display: inline-block; width: 20px; margin-right: 6px; vertical-align: middle; border-top: 2px solid var(--blue); }
 .error-legend .right { border-color: var(--mint); border-top-style: dashed; }
 .error-legend .coupled { border-color: var(--text); border-top-style: dotted; }
-.error-charts { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 24px; }
+.error-charts { display: grid; grid-template-columns: repeat(auto-fit,minmax(min(100%,260px),1fr)); gap: 0 20px; }
 .error-chart { display: block; width: 100%; height: 124px; margin-top: 15px; }
 .error-note, .error-values { margin: 8px 0 0; color: var(--muted); font-size: 11px; line-height: 1.8; }
 .error-values { color: #d3d6dc; font-variant-numeric: tabular-nums; }
-.events-panel { margin-top: 31px; padding-top: 22px; border-top: 1px solid var(--line); }
+.events-panel { margin-top: 22px; padding-top: 18px; border-top: 1px solid var(--line); }
 .events-panel .panel-head { padding-bottom: 13px; }
 .event-actions { display: flex; align-items: center; gap: 10px; font-size: 11px; }
 .event-actions button, .event-actions select { min-height: 30px; padding: 4px 11px; font-size: 11px; }
 .event-actions select { max-width: 125px; color: var(--muted); background: var(--bg); border: 1px solid var(--line); border-radius: 999px; cursor: pointer; }
-.events { height: 144px; overflow: auto; scrollbar-width: thin; scrollbar-color: #3a3e47 transparent; }
-.event { display: grid; grid-template-columns: 76px 34px minmax(0,1fr); align-items: baseline; gap: 13px; padding: 11px 0; border-bottom: 1px solid var(--line-soft); font-size: 12px; line-height: 1.8; }
+.events { height: 176px; overflow: auto; scrollbar-width: thin; scrollbar-color: #3a3e47 transparent; }
+.event { display: grid; grid-template-columns: 65px 28px minmax(0,1fr); align-items: baseline; gap: 10px; padding: 11px 0; border-bottom: 1px solid var(--line-soft); font-size: 12px; line-height: 1.8; }
 .event:last-child { border-bottom: 0; }
 .event time { color: var(--muted); font-size: 10px; }
 .event>span { font-size: 11px; }
@@ -202,21 +206,24 @@ details[open]>summary:after { transform: rotate(225deg); }
 .notice:empty { display: none; }
 @media(min-width:1650px) {
   .shell { padding-left: 48px; padding-right: 48px; }
-  .workspace { grid-template-columns: minmax(0,1fr) 352px; column-gap: 46px; }
-  .sidebar { padding-left: 36px; }
-  .stage { height: clamp(520px,calc(100vh - 360px),820px); }
+  .workspace { column-gap: 36px; }
 }
-@media(max-width:1100px) {
+@media(max-width:1199px) {
   .shell { padding-left: 25px; padding-right: 25px; }
   .masthead { gap: 15px; }
   .brand small { display: none; }
-  .workspace { grid-template-columns: minmax(0,1fr) 282px; column-gap: 25px; }
-  .sidebar { padding-left: 23px; }
+  .workspace { column-gap: 24px; }
+  .sidebar { gap: 20px; }
+  .controllers-panel { padding-left: 18px; }
+  .controller-grid { grid-template-columns: 32px repeat(2,minmax(0,1fr)); column-gap: 8px; }
+  .hand-head { flex-direction: column; justify-content: center; gap: 4px; }
+  .hand-head strong { font-size: 11px; }
+  .controller-icon { width: 22px; height: 28px; }
+  .feedback-column { padding-left: 18px; }
   .mode-banner { grid-template-columns: minmax(190px,1fr) minmax(180px,.8fr) minmax(160px,.8fr); gap: 24px; }
   .mode-route { grid-template-columns: 72px 16px minmax(0,1fr); gap: 8px; }
   .view-buttons button { min-width: 43px; padding-left: 10px; padding-right: 10px; }
   .phase { font-size: 27px; }
-  .stage { height: 500px; }
 }
 @media(max-width:850px) {
   .shell { padding-left: 22px; padding-right: 22px; }
@@ -224,13 +231,17 @@ details[open]>summary:after { transform: rotate(225deg); }
   .brand small { display: inline; }
   .capsule-nav { grid-column: 1/-1; grid-row: 2; justify-self: start; margin-top: 15px; }
   .top-meta { grid-column: 2; grid-row: 1; }
-  .mode-banner { grid-template-columns: minmax(0,1fr) minmax(0,1fr); gap: 19px 24px; padding: 24px 0; }
+  .mode-banner { grid-template-columns: minmax(0,1fr) minmax(0,1fr); gap: 19px 24px; padding: 18px 0; }
   .mode-switch { grid-column: 1/-1; justify-self: start; max-width: none; }
-  .workspace { grid-template-columns: minmax(0,1fr); row-gap: 32px; }
-  .sidebar { display: grid; grid-template-columns: 1fr 1fr; gap: 26px; padding: 25px 0 0; border-left: 0; border-top: 1px solid var(--line); }
+  .workspace { grid-template-areas: "model" "controls" "observations" "events"; grid-template-columns: minmax(0,1fr); row-gap: 24px; }
+  .visual-column { display: contents; }
+  .feedback-column { display: contents; }
+  .viewer-panel { grid-area: model; }
+  .events-panel { grid-area: events; margin-top: 0; }
+  .observation-column { grid-area: observations; margin: 0; padding: 22px 0 0; border-top: 1px solid var(--line); }
+  .sidebar { grid-area: controls; display: grid; grid-template-columns: 1fr 1fr; gap: 26px; padding: 25px 0 0; border-top: 1px solid var(--line); }
   .controllers-panel { margin: 0; padding: 0; border: 0; }
-  .diagnostics-panel { grid-column: 1/-1; margin-top: 0; }
-  .stage { height: 490px; }
+  .stage { height: 360px; }
 }
 @media(max-width:580px) {
   html { scroll-padding-top: 136px; }
@@ -239,12 +250,12 @@ details[open]>summary:after { transform: rotate(225deg); }
   .brand small { display: none; }
   .capsule-nav { width: 100%; justify-content: center; }
   .capsule-nav a { flex: 1; padding: 7px 10px; text-align: center; }
-  .mode-banner { gap: 17px; margin-bottom: 23px; }
+  .mode-banner { gap: 17px; margin-bottom: 22px; }
   .mode-banner>div:first-child { grid-column: 1/-1; }
   .mode-heading { gap: 11px; }
   .mode-symbol { width: 25px; height: 25px; }
   .mode-name { font-size: 32px; }
-  .mode-description, .mode-pending { margin-left: 36px; }
+  .mode-description, .mode-pending { margin-left: 51px; }
   .mode-flow { grid-column: 1/-1; grid-template-columns: 1fr 1fr; gap: 13px; font-size: 11px; }
   .mode-route { display: flex; gap: 7px; flex-wrap: wrap; }
   .mode-route svg { width: 13px; height: 13px; }
@@ -253,7 +264,7 @@ details[open]>summary:after { transform: rotate(225deg); }
   .toolbar { gap: 12px; }
   .view-buttons button { min-width: 47px; }
   .display-options { gap: 14px; }
-  .stage { height: 390px; }
+  .stage { height: 320px; }
   .stage-status { flex-wrap: wrap; gap: 5px; font-size: 10px; }
   .overlay { font-size: 11px; }
   .sidebar { display: block; }
@@ -308,16 +319,9 @@ details[open]>summary:after { transform: rotate(225deg); }
       </div>
       <div class="view-foot"><span>关节反馈 <output id="feedback-age">等待更新</output></span></div>
     </section>
-      <section class="panel error-panel" id="error-panel" hidden aria-label="双臂末端误差曲线">
-        <div class="panel-head"><h2>双臂末端误差 <small>最近 30 秒</small></h2><span class="muted" id="error-status">等待接合</span></div>
-        <div class="error-legend"><span><i></i>左握点跟踪</span><span><i class="right"></i>右握点跟踪</span><span><i class="coupled"></i>双臂耦合</span></div>
-        <div class="error-charts"><canvas class="error-chart" id="position-chart" role="img" aria-label="位置误差，单位毫米"></canvas>
-        <canvas class="error-chart" id="rotation-chart" role="img" aria-label="角度误差，单位度"></canvas></div>
-        <p class="error-values" id="error-values">等待反馈</p>
-        <p class="error-note" id="error-note">跟踪：握点目标与关节反馈 FK；耦合：双握点约束。虚握角度仅计杆轴偏差。</p>
-      </section>
       <section class="panel events-panel" id="events-panel"><div class="panel-head"><h2>最近事件 <small id="event-count">0 条</small></h2><div class="event-actions"><select id="event-filter" aria-label="事件显示范围"><option value="state">状态与异常</option><option value="all">全部事件</option><option value="input">手柄按键</option></select><button id="pause" aria-pressed="false" title="仅暂停事件列表，实时状态继续更新">暂停事件</button></div></div><div class="events" id="events" role="log" aria-label="最近状态变化"><div class="empty">等待状态更新</div></div></section>
     </div>
+    <div class="feedback-column">
     <aside class="sidebar" aria-label="当前状态与手柄输入">
       <section class="panel control" id="control-panel" data-tone="warn" aria-live="polite">
         <div class="state-summary">
@@ -340,6 +344,18 @@ details[open]>summary:after { transform: rotate(225deg); }
           <div class="guide-note" id="guide-note">等待确认当前操作流程。</div>
         </div></details>
       </section>
+
+    </aside>
+    <div class="observation-column">
+      <section class="panel error-panel" id="error-panel" hidden aria-label="双臂末端误差曲线">
+        <div class="panel-head"><h2>双臂末端误差 <small>最近 30 秒</small></h2><span class="muted" id="error-status">等待接合</span></div>
+        <div class="error-legend"><span><i></i>左握点跟踪</span><span><i class="right"></i>右握点跟踪</span><span><i class="coupled"></i>双臂耦合</span></div>
+        <div class="error-charts"><canvas class="error-chart" id="position-chart" role="img" aria-label="位置误差，单位毫米"></canvas>
+        <canvas class="error-chart" id="rotation-chart" role="img" aria-label="角度误差，单位度"></canvas></div>
+        <p class="error-values" id="error-values">等待反馈</p>
+        <p class="error-note" id="error-note">跟踪：握点目标与关节反馈 FK；耦合：双握点约束。虚握角度仅计杆轴偏差。</p>
+      </section>
+
       <section class="panel diagnostics-panel">
       <details id="diagnostics"><summary class="diagnostic-head">诊断详情</summary><div class="diagnostic-body">
         <dl class="diagnostic-list"><dt>操作流程</dt><dd><span class="pill" id="demo-mode">流程待确认</span></dd><dt>事件记录</dt><dd class="event-record muted" id="record-state">诊断未记录</dd><dt>状态代码</dt><dd id="reason-code" class="reason-code mono">WAITING</dd><dt>工具装载</dt><dd id="load">未知</dd><dt>装载状态来源</dt><dd id="load-source">—</dd><dt>准备条件</dt><dd id="prepare-checks">—</dd><dt>控制映射</dt><dd id="mapping-info">—</dd><dt>距最近输入</dt><dd id="input-age">—</dd><dt>模型更新帧数</dt><dd id="frame-count">0</dd><dt>会话标识</dt><dd id="run-id" class="mono">等待会话</dd></dl>
@@ -347,7 +363,8 @@ details[open]>summary:after { transform: rotate(225deg); }
         <div class="diagnostic-export"><a href="/export" download>导出诊断<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.25" aria-hidden="true"><path d="M4 12 12 4M4 4h8v8"/></svg></a></div>
       </div></details>
     </section>
-    </aside>
+    </div>
+    </div>
   </div>
   <div class="notice" id="notice" role="status"></div>
 </main>
@@ -468,10 +485,17 @@ function cameraView(action){
   if(tool.visible)box.union(new T.Box3().setFromObject(tool));
   viewer.camera.fov=42;
   if(!box.isEmpty()){
-    const center=box.getCenter(new T.Vector3()),size=box.getSize(new T.Vector3());
-    const tangent=Math.tan(viewer.camera.fov*Math.PI/360)*Math.min(1,viewer.camera.aspect||1);
-    const distance=Math.max(size.x,size.y,size.z)/(2*tangent)*1.35;
-    viewer.camera.position.copy(center).add(new T.Vector3(...positions[action]).normalize().multiplyScalar(distance));
+    const center=box.getCenter(new T.Vector3()),direction=new T.Vector3(...positions[action]).normalize();
+    const right=new T.Vector3().crossVectors(viewer.camera.up,direction).normalize();
+    const up=new T.Vector3().crossVectors(direction,right).normalize();
+    const vertical=Math.tan(viewer.camera.fov*Math.PI/360),horizontal=vertical*(viewer.camera.aspect||1);
+    let distance=0;
+    // Fit the scene bounds with room for the view legend at every pane aspect ratio.
+    for(const x of [box.min.x,box.max.x])for(const y of [box.min.y,box.max.y])for(const z of [box.min.z,box.max.z]){
+      const offset=new T.Vector3(x,y,z).sub(center);
+      distance=Math.max(distance,offset.dot(direction)+1.16*Math.max(Math.abs(offset.dot(right))/horizontal,Math.abs(offset.dot(up))/vertical));
+    }
+    viewer.camera.position.copy(center).add(direction.multiplyScalar(distance));
     viewer.controls.target.copy(center);
   }else{
     viewer.camera.position.set(...positions[action]);viewer.controls.target.set(.3,.6,0);
@@ -509,7 +533,11 @@ try{
   viewer.renderer.setPixelRatio(Math.min(window.devicePixelRatio||1,2));
   const resize=viewer.set_3d_pane_size.bind(viewer),pane=$('meshcat-pane');
   viewer.set_3d_pane_size=()=>resize(pane.clientWidth,pane.clientHeight);
-  new ResizeObserver(()=>viewer.set_3d_pane_size()).observe(pane);
+  new ResizeObserver(()=>{
+    viewer.set_3d_pane_size();
+    const preset=document.querySelector('[data-view][aria-pressed=true]')?.dataset.view;
+    if(viewer.snowbotFramed&&preset)cameraView(preset);
+  }).observe(pane);
   cameraView('perspective');connectModel();
 }catch(e){text('stale','三维显示不可用：'+e.message);$('notice').textContent='请使用支持 WebGL 的浏览器。';}
 async function reportModel(){
