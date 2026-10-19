@@ -486,7 +486,7 @@ class BimanualToolNode(RuntimeNode):
                     if token==worker_token and session.mode=='follow' and awaiting:
                         geometry=(self.worker.diagnostic[1] if self.worker.diagnostic and
                                   self.worker.diagnostic[0]==token else None)
-                        if geometry is not None:
+                        if geometry is not None and geometry['scale']<1.:
                             self.event('BIMANUAL_GEOMETRY_STEP',json.dumps(dict(geometry,
                                 input_seq=work_seq,control_sampled_at=work_sampled_at)),goal.request.task_id)
                         if kind=='error':
@@ -509,6 +509,7 @@ class BimanualToolNode(RuntimeNode):
                                 'controller_pose':session.anchor_input.tolist(),
                                 'control_point_in_tool_m':session.control_point_in_tool.tolist() if isinstance(session,BimanualSession) else None,
                                 'feedback_sampled_at':work_sampled_at,'capture_completed_at':reference.sampled_at,
+                                'input_after_capture':reference.input_after_capture,
                                 'grasp_generation':session.grasp_generation,
                                 'grasp_continuation':getattr(session,'resumed_grasp',False)}),goal.request.task_id)
                         else:
@@ -530,6 +531,8 @@ class BimanualToolNode(RuntimeNode):
                                 pending_reference=(positions,work_sampled_at)
                                 pending_at=now
                                 self.event('BIMANUAL_QP_RESULT',json.dumps({'solve_us':metrics[0],
+                                    'timing':geometry.get('timing') if geometry else None,
+                                    'geometry_step':geometry if geometry and geometry['scale']<1. else None,
                                     'relative_error':None if isinstance(session,IndependentArmsSession) else metrics[1],
                                     'relative_error_source':('accepted_reference' if self.cfg.get('reference_kinematics') else 'measured'),
                                     'geometry_step_scale':geometry['scale'] if geometry else 1.,
@@ -551,6 +554,12 @@ class BimanualToolNode(RuntimeNode):
                     # A capture and this loop can share a clock tick. The next
                     # fresh controller frame will provide a positive interval.
                     if operation=='solve' and sampled_at<=reference.sampled_at:
+                        await self.pause()
+                        continue
+                    if operation=='solve' and not reference.permits_input(session.stamp):
+                        # Stop raises the executor's timestamp fence. A frame
+                        # already queued during FK capture must not cross it.
+                        # Wait for real input; never relabel its timestamp.
                         await self.pause()
                         continue
                     gap=sampled_at-reference.sampled_at if operation=='solve' else None

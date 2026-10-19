@@ -137,8 +137,8 @@ class AbiLoadingTests(unittest.TestCase):
                 patch('bindu_kinematics.bimanual_worker.gc.collect'), \
                 patch('bindu_kinematics.bimanual_worker.gc.freeze'):
             _run(cfg,profile,requests,S(put=results.append),True)
-        self.assertEqual(constructed,[{'conservative_convex':True,'tool_present':False},
-                                     {'conservative_convex':True,'tool_present':True}])
+        self.assertEqual(constructed,[{'conservative_convex':True,'tool_present':False,'validation_only':True},
+                                     {'conservative_convex':True,'tool_present':True,'validation_only':True}])
         self.assertEqual([r[0] for r in results],['ready','result','result','error'])
         self.assertIn('GRASP_PENETRATION',results[-1][2])
         self.assertEqual([p[0]['q']['joint'] for p in paths],[0.,.01,.02])
@@ -170,8 +170,14 @@ class CandidateGeometryBacktracking(unittest.TestCase):
     def setUpClass(cls):
         cls.config=json.loads((ROOT/'src/integration/bindu_runtime/config/robots/snowbot/bimanual_snowbot_real.json').read_text())
         cls.config['urdf']=str(ROOT/'src/hardware/bindu_description/urdf/snowbot_control.urdf')
+        cls.config['demo']['max_grasp_penetration_m']=.0005
+        # Freeze the origin-task semantics of these historical fault fixtures.
+        cls.config['tool_tracking_point_in_tool_m']=[0.,0.,0.]
         cls.profile=Profile.load(ROOT/'src/integration/bindu_runtime/config/robots/snowbot/snowbot_real_position.json')
-        cls.cases=json.loads((ROOT/'tests/config/teleoperation/snowbot_candidate_steps.json').read_text())['cases']
+        recorded=json.loads((ROOT/'tests/config/teleoperation/snowbot_candidate_steps.json').read_text())
+        cls.config.update(recorded['recorded_config'])
+        cls.profile=replace(cls.profile,max_speed=recorded['recorded_joint_speed'],joint_dynamics={})
+        cls.cases=recorded['cases']
 
     def solver(self,case,enabled=True):
         qp=BimanualQP(dict(self.config,geometry_step_backtracking=enabled),self.profile)
@@ -261,6 +267,57 @@ class CandidateGeometryBacktracking(unittest.TestCase):
         self.assertFalse(worker.busy)
         self.assertEqual(worker.diagnostic[0],3)
         self.assertEqual(worker.diagnostic[1]['scale'],.5)
+
+    def test_budget_exhaustion_can_only_hold_a_freshly_checked_reference(self):
+        from bindu_kinematics.tool_geometry import GeometryBudgetExceeded
+        case=self.cases[0];qp=self.solver(case)
+        try:
+            original=qp.check_path;reference=np.array(case['reference']);checked=[]
+            def exhausted(feedback,*path):
+                if any(np.max(np.abs(np.array(q)-reference))>1e-12 for q in path):
+                    raise GeometryBudgetExceeded('candidate budget')
+                original(feedback,*path);checked.append(True)
+            with patch.object(qp,'check_path',side_effect=exhausted):
+                result,_=self.step(qp,case)
+            np.testing.assert_allclose(result,reference)
+            self.assertEqual(checked,[True])
+            self.assertTrue(qp.last_geometry_step['search_limited_by_budget'])
+            self.assertTrue(qp.captured)
+            with patch.object(qp,'check_path',side_effect=ValueError('SELF_COLLISION: measured')):
+                with self.assertRaisesRegex(ValueError,'SELF_COLLISION'):
+                    self.step(qp,case)
+        finally:qp.close()
+
+    def test_actual_grip_point_acceptance_remains_five_mm(self):
+        for displacement,passes in ((.0049,True),(.0051,False)):
+            qp=self.solver(self.cases[0]);qp.grasp_position_tolerance=.005
+            try:
+                relative=qp.expected_relative.copy();relative[0,3]+=displacement
+                def measured(handle,q,nq,out):
+                    np.ctypeslib.as_array(out,shape=(16,))[:]=relative.ravel();return 1
+                with patch.object(qp.lib,'bq_relative_pose',side_effect=measured):
+                    if passes:
+                        self.assertLess(qp._grip_error(relative)[0],.005)
+                        self.step(qp,self.cases[0])
+                    else:
+                        with self.assertRaisesRegex(ValueError,'BIMANUAL_MEASURED_GRASP_ERROR'):
+                            self.step(qp,self.cases[0])
+            finally:qp.close()
+
+    def test_solver_and_hand_line_mapping_use_same_point_without_moving_cad(self):
+        from bindu_teleoperation.bimanual_session import BimanualSession
+        cfg=dict(self.config);cfg.pop('tool_tracking_point_in_tool_m')
+        qp=BimanualQP(cfg,self.profile)
+        try:
+            session=BimanualSession(cfg,1,0.)
+            np.testing.assert_allclose(qp.tracking_point,session.control_point_in_tool,atol=1e-12)
+            self.assertGreater(np.linalg.norm(qp.tracking_point),.1)
+            tool=qp.capture(self.cases[0]['capture'])
+            q=qp._q(self.cases[0]['capture']);origin=np.empty((4,4),dtype=np.float64)
+            self.assertTrue(qp.lib.bq_tool_pose(qp.handle,qp._ptr(q),qp.nq,qp._ptr(origin)))
+            np.testing.assert_allclose(tool,origin,atol=1e-12)
+            np.testing.assert_allclose(qp.tool,np.array(cfg['left_to_tool']).reshape(4,4),atol=1e-12)
+        finally:qp.close()
 
 
 class NativeBimanual(unittest.TestCase):

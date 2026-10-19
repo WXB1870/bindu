@@ -314,6 +314,12 @@ void QpController::reset() {
   fresh_start_ = true;
 }
 
+void QpController::setTrackingPoint(const Eigen::Vector3d &point) {
+  if (!point.allFinite() || point.norm()>3.)
+    throw std::invalid_argument("invalid tool tracking point");
+  tracking_point_=point;
+}
+
 SolveResult QpController::solve(const pinocchio::SE3 &desired_tool, double dt,
                                 const Eigen::VectorXd &reference,
                                 const Eigen::Matrix<double, 6, 1> &world_velocity,
@@ -339,22 +345,25 @@ SolveResult QpController::solve(const pinocchio::SE3 &desired_tool, double dt,
   }
   // Integrate closure/Jacobians at the accepted reference, but track the
   // measured tool: reference error alone cannot correct position-servo lag.
-  const auto actual = measured_tool ? *measured_tool : kin_.toolPose();
-  auto tool_error = pinocchio::log6(actual.actInv(desired_tool)).toVector().eval();
-  const auto error_rotation = (kin_.toolPose().rotation().transpose()*actual.rotation()).eval();
+  const pinocchio::SE3 offset(Eigen::Matrix3d::Identity(),tracking_point_);
+  const auto actual = (measured_tool ? *measured_tool : kin_.toolPose())*offset;
+  const auto desired_point=desired_tool*offset;
+  const auto reference_point=kin_.toolPose()*offset;
+  auto tool_error = pinocchio::log6(actual.actInv(desired_point)).toVector().eval();
+  const auto error_rotation = (reference_point.rotation().transpose()*actual.rotation()).eval();
   tool_error.head<3>() = (error_rotation*tool_error.head<3>()).eval();
   tool_error.tail<3>() = (error_rotation*tool_error.tail<3>()).eval();
   if (!tool_error.allFinite()) { out.reason = "invalid tool pose error"; return out; }
   Eigen::Matrix<double, 6, 1> target_twist = config_.tool_gain * tool_error;
   // World velocity is at the tool origin, not a spatial twist at world zero.
   // Feedforward is inferred from past input only; the same task limits apply.
-  const auto local = kin_.toolPose().rotation().transpose().eval();
+  const auto local = reference_point.rotation().transpose().eval();
   target_twist.head<3>() += local * world_velocity.head<3>();
   target_twist.tail<3>() += local * world_velocity.tail<3>();
   clampTwist(target_twist, config_.max_linear_speed, config_.max_angular_speed);
 
   const int n = robot_.variables();
-  Eigen::MatrixXd jt = kin_.toolJacobian();
+  Eigen::MatrixXd jt = offset.inverse().toActionMatrix()*kin_.toolJacobian();
   Eigen::VectorXd task_twist = target_twist;
   Eigen::MatrixXd a = independent_ ? Eigen::MatrixXd(0,n) : kin_.relativeErrorJacobian();
   if (independent_) {

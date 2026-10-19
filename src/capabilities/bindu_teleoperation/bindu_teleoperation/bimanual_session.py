@@ -25,6 +25,7 @@ class AcceptedReference:
     def reset(self):
         self.positions = None
         self.sampled_at = None
+        self.input_after_capture = None
 
     def capture(self, positions, sampled_at):
         self.reset()
@@ -32,6 +33,12 @@ class AcceptedReference:
         if not positions or not all(math.isfinite(v) for v in (*positions, sampled_at)):
             raise ValueError('BIMANUAL_REFERENCE_INVALID')
         self.positions, self.sampled_at = positions, sampled_at
+        self.input_after_capture = sampled_at
+
+    def permits_input(self, stamp):
+        """Never submit a hand frame from before the confirmed-stop capture."""
+        return (self.input_after_capture is not None and math.isfinite(stamp) and
+                stamp>self.input_after_capture)
 
     def step(self, sampled_at):
         if self.positions is None:

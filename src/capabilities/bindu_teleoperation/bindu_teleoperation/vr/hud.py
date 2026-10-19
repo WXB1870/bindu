@@ -72,6 +72,15 @@ def hud_spec(view):
         else:
             spec.update(state='virtual' if applied=='right_axial' else 'following',
                         status='跟随中',tone='good')
+            limit=view.get('motion_limit')
+            if limit:
+                budget=limit.get('search_limited_by_budget')
+                reason=limit.get('first_rejection','')
+                cause=('控制更新暂时延迟' if budget else
+                       '手臂接近本体' if reason.startswith('SELF_COLLISION:') else
+                       '工具接近头部或本体' if '_CLEARANCE:' in reason else '握持处接近几何边界')
+                spec.update(status='跟随受限',tone='warn')
+                notice(cause,'保持握住，稍向反方向移动；松握可暂停')
     elif mode == 'tool_standby':
         spec['status']='已暂停' if confirmed else '正在暂停'
         notice('松开双侧握，再同时握住' if confirmed else '等待机器人停稳',

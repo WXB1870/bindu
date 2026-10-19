@@ -87,6 +87,24 @@ class IndependentNativeTests(unittest.TestCase):
             conservative_convex=True,tool_present=False)
         self.feedback={n:0. for n in self.solver.model_names}
 
+    def test_recorded_collision_candidates_shrink_without_ending_control(self):
+        from bindu_contracts.profile import Profile
+        data=json.loads((ROOT/'tests/config/teleoperation/snowbot_candidate_steps.json').read_text())
+        cfg=dict(self.cfg,**data['recorded_config'])
+        profile=replace(Profile.load(ROOT/'src/integration/bindu_runtime/config/robots/snowbot/snowbot_real_position.json'),
+                        max_speed=data['recorded_joint_speed'],joint_dynamics={})
+        solver=BimanualQP(cfg,profile);solver.empty_collision_check=self.solver.empty_collision_check
+        self.addCleanup(solver.close)
+        for case,scale in zip(data['independent_cases'],(.25,.5)):
+            with self.subTest(code=case['recorded_code']):
+                solver.capture_independent(case['capture'])
+                positions,_=solver.solve_independent(case['feedback'],
+                    np.array(case['target']).reshape(2,4,4),active_mask=case['active_mask'],
+                    reference=case['reference'],dt=case['dt'])
+                self.assertTrue(solver.captured)
+                self.assertEqual(solver.last_geometry_step['scale'],scale)
+                solver.check_independent_path(case['feedback'],positions,case['reference'])
+
     def test_zero_can_capture_normally_but_tool_grasp_still_rejects(self):
         with self.assertRaisesRegex(ValueError,'BIMANUAL_GRASP_POSE'):self.solver.capture(self.feedback)
         poses=self.solver.capture_independent(self.feedback)

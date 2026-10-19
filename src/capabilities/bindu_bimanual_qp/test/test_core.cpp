@@ -31,6 +31,7 @@ TEST(CAbi, NullHandlesAndConfigLayoutFailWithoutCrashing) {
   EXPECT_EQ(bq_set_limits(nullptr, nullptr, nullptr, nullptr, 0), 0);
   EXPECT_EQ(bq_capture(nullptr, nullptr, 0, nullptr, &config), 0);
   EXPECT_EQ(bq_shared_targets(nullptr, nullptr, 0), 0);
+  EXPECT_EQ(bq_tracking_point(nullptr, nullptr), 0);
   EXPECT_EQ(bq_solve(nullptr, nullptr, 0, nullptr, 0, nullptr, .01, nullptr, nullptr), 0);
   EXPECT_EQ(bq_tool_pose(nullptr, nullptr, 0, nullptr), 0);
   EXPECT_EQ(bq_relative_pose(nullptr, nullptr, 0, nullptr), 0);
@@ -116,6 +117,29 @@ TEST_F(CoreTest, ToolJacobianMatchesFiniteDifferences) {
   checkJacobian(kin_->toolJacobian(), [this]() { return kin_->toolPose(); });
   const auto captured = robot_->leftPose() * kin_->leftToTool();
   EXPECT_LT((captured.translation() - robot_->urdfToolPose().translation()).norm(), 1e-12);
+}
+
+TEST_F(CoreTest, TrackingPointMatchesShiftedTaskWithoutChangingToolOrClosure) {
+  const auto original=kin_->toolPose();
+  const Eigen::Vector3d point(.3,-.08,.12);
+  const pinocchio::SE3 offset(Eigen::Matrix3d::Identity(),point);
+  datq::QpController at_point(*robot_,*kin_,{},robot_->activePositions());
+  at_point.setTrackingPoint(point);
+  datq::RigidToolKinematics shifted(*robot_);
+  shifted.capture(kin_->leftToTool()*offset);
+  datq::QpController explicit_task(*robot_,shifted,{},robot_->activePositions());
+  auto target=original;
+  target.translation()+=Eigen::Vector3d(.01,-.005,.008);
+  target.rotation()=target.rotation()*pinocchio::exp3(Eigen::Vector3d(.01,-.015,.005));
+  const auto a=at_point.solve(target,.02,robot_->activePositions());
+  const auto b=explicit_task.solve(target*offset,.02,robot_->activePositions());
+  ASSERT_TRUE(a.ok) << a.reason;ASSERT_TRUE(b.ok) << b.reason;
+  EXPECT_GT(a.velocity.norm(),1e-5);
+  EXPECT_LT((a.velocity-b.velocity).norm(),1e-7);
+  EXPECT_LT((kin_->toolPose().toHomogeneousMatrix()-original.toHomogeneousMatrix()).norm(),1e-12);
+  EXPECT_LT((kin_->relativeErrorJacobian()-shifted.relativeErrorJacobian()).norm(),1e-12);
+  EXPECT_THROW(at_point.setTrackingPoint(Eigen::Vector3d(0.,0.,4.)),std::invalid_argument);
+  EXPECT_THROW(at_point.setTrackingPoint(Eigen::Vector3d(0.,std::numeric_limits<double>::quiet_NaN(),0.)),std::invalid_argument);
 }
 
 TEST_F(CoreTest, RelativeErrorJacobianMatchesFiniteDifferences) {

@@ -1,12 +1,34 @@
 """Explicitly launched Vuer input process; no hardware output."""
 import time
 import json
+import multiprocessing as mp
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 from std_msgs.msg import String
 from rcl_interfaces.msg import ParameterDescriptor
-from bindu_teleoperation.vr.receiver import VuerReceiver
+from bindu_teleoperation.vr.receiver import VuerReceiver, _latest_put
 from bindu_interfaces.msg import VRInput
 from .common import RuntimeNode, stamp, spin
+
+
+def _publish_health(topic, reports):
+    """DDS diagnostic backpressure must not hold the input polling interpreter."""
+    import rclpy
+    rclpy.init(args=[])
+    node=rclpy.create_node('vr_diagnostics')
+    publisher=node.create_publisher(String,topic,10)
+    previous_publish=0.
+    try:
+        while True:
+            report=reports.get()
+            if report is None:break
+            report['health_sink_queue_age_s']=time.time()-report.pop('health_queued_at')
+            report['previous_health_publish_wall_s']=previous_publish
+            started=time.monotonic()
+            publisher.publish(String(data=json.dumps(report)))
+            previous_publish=time.monotonic()-started
+    except (KeyboardInterrupt,rclpy.executors.ExternalShutdownException):pass
+    finally:
+        node.destroy_node();rclpy.try_shutdown()
 
 
 class VRInputNode(RuntimeNode):
@@ -34,7 +56,13 @@ class VRInputNode(RuntimeNode):
         # Both sides share one receiver event; retain both messages until DDS
         # delivers the pair to mode, single-arm and bimanual subscribers.
         self.publisher = self.create_publisher(VRInput, 'teleop/vr/input', 5)
-        self.health_publisher = self.create_publisher(String,'teleop/vr/health',10)
+        ctx=mp.get_context('spawn')
+        self.health_reports=ctx.Queue(maxsize=256)
+        self.health_dropped=0
+        self.health_failed=False
+        self.health_process=ctx.Process(target=_publish_health,
+            args=(self.resolve_topic_name('teleop/vr/health'),self.health_reports),daemon=True)
+        self.health_process.start()
         self.last_frame = None
         self.last_poll = None
         self.poll_delay_max = 0.
@@ -54,6 +82,13 @@ class VRInputNode(RuntimeNode):
         except (ValueError, KeyError, TypeError):
             pass
 
+    def emit_health(self, report):
+        if not self.health_process.is_alive() and not self.health_failed:
+            self.health_failed=True
+            self.get_logger().error('VR_DIAGNOSTICS_EXITED: input polling continues')
+        report.update(health_queued_at=time.time(),health_delivery_dropped=self.health_dropped)
+        if _latest_put(self.health_reports,report):self.health_dropped+=1
+
     def poll(self):
         polled=time.monotonic()
         if self.last_poll is not None:self.poll_delay_max=max(self.poll_delay_max,polled-self.last_poll)
@@ -62,7 +97,7 @@ class VRInputNode(RuntimeNode):
             report.update(run_id=self.run_id,runtime_mode=self.runtime_mode,
                           ros_poll_interval_max_s=self.poll_delay_max,ros_received_at=time.time(),
                           ros_received_monotonic_s=time.monotonic())
-            self.health_publisher.publish(String(data=json.dumps(report)))
+            self.emit_health(report)
             self.poll_delay_max=0.
         try:
             frame = self.receiver.poll()
@@ -77,25 +112,37 @@ class VRInputNode(RuntimeNode):
         if self.last_frame and self.last_frame.source_id==first.source_id:
             gap=first.stamp-self.last_frame.stamp
             if gap>.1 or first.seq-self.last_frame.seq>1:
-                self.health_publisher.publish(String(data=json.dumps(dict(
+                self.emit_health(dict(
                     run_id=self.run_id,runtime_mode=self.runtime_mode,stage='ros_input_publish',
                     stamp=time.time(),source_id=first.source_id,seq=first.seq,
                     event_interval_s=gap,skipped_events=first.seq-self.last_frame.seq-1,
-                    receiver_to_ros_age_s=time.time()-first.stamp))))
+                    receiver_to_ros_age_s=time.time()-first.stamp))
         self.last_frame=first
         for item in frame if isinstance(frame, tuple) else (frame,):
             age = time.time()-item.stamp
             if age < 0 or age > 1.:
                 continue
+            started=time.monotonic()
             self.publisher.publish(VRInput(stamp=stamp(self.now()-age), source_id=item.source_id,
                 seq=item.seq, side=item.side, runtime_mode=self.runtime_mode,
                 pose=list(item.pose) if item.valid else [0.]*16,
                 grip=item.grip, trigger=item.trigger, init=item.init, stop=item.stop,
                 valid=item.valid, clutch_seq=item.clutch_seq, mapping=item.mapping,
                 buttons=item.buttons, button_edges=list(item.button_edges), virtual_grip=item.virtual_grip))
+            duration=time.monotonic()-started
+            if duration>.02:
+                self.emit_health(dict(stage='ros_input_publish_duration',stamp=time.time(),
+                    run_id=self.run_id,runtime_mode=self.runtime_mode,seq=item.seq,
+                    side=item.side,publish_wall_s=duration))
 
     def destroy_node(self):
         self.receiver.close()
+        _latest_put(self.health_reports,None)
+        self.health_process.join(timeout=2.)
+        if self.health_process.is_alive():
+            self.health_process.terminate();self.health_process.join(timeout=1.)
+        self.health_reports.cancel_join_thread()
+        self.health_reports.close()
         return super().destroy_node()
 
 

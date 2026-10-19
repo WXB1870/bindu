@@ -36,6 +36,25 @@ class ShovelGeometryTests(unittest.TestCase):
         cls.sample = {'t':0., 'q':positions, 'tool':tool.tolist()}
         cls.body_point = data.oMf[model.getFrameId('body_link_2')].translation.copy()
 
+    def test_online_cache_uses_exact_complete_state_and_respects_deadline(self):
+        import time
+        from unittest.mock import patch
+        from bindu_kinematics.tool_geometry import make_collision_checker, GeometryBudgetExceeded
+        checker=make_collision_checker(self.urdf,self.recipe,conservative_convex=True,validation_only=True)
+        with patch.object(pin,'computeCollisions',wraps=pin.computeCollisions) as compute:
+            checker([self.sample]);self.assertEqual(compute.call_count,1)
+            checker([self.sample],deadline=time.perf_counter()-1)
+            self.assertEqual(compute.call_count,1)
+            changed=copy.deepcopy(self.sample);changed['q']['head_joint_1']+=1e-10
+            with self.assertRaises(GeometryBudgetExceeded):
+                checker([changed],deadline=time.perf_counter()-1)
+            checker([changed]);self.assertEqual(compute.call_count,2)
+            changed=copy.deepcopy(self.sample);changed['tool'][0][3]+=1e-10
+            checker([changed]);self.assertEqual(compute.call_count,3)
+            bad=copy.deepcopy(self.sample);bad['q']['head_joint_1']=float('nan')
+            with self.assertRaisesRegex(ValueError,'NONFINITE'):
+                checker([bad])
+
     def coupling_sample(self,t,right=None,world=None):
         world=np.eye(4) if world is None else world
         left=np.linalg.inv(np.array(self.config['left_to_tool']).reshape(4,4))

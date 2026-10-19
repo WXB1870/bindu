@@ -470,6 +470,17 @@ class PicoHUDTests(unittest.TestCase):
         stopped=hud_spec({**self.view('locked',stop_confirmed=True),'reason':'PICO_Y_STOP'})
         self.assertEqual((stopped['state'],stopped['title'],stopped['action']),('stopped','已确认停稳','B 恢复待命'))
 
+    def test_current_limit_is_explained_without_claiming_a_fault_stop(self):
+        from bindu_teleoperation.vr.hud import hud_spec
+        limit=dict(scale=0.,first_rejection='SELF_COLLISION: arm / head',search_limited_by_budget=False)
+        spec=hud_spec(self.view(motion_limit=limit))
+        self.assertEqual(spec['status'],'跟随受限')
+        self.assertIn('本体',spec['title']);self.assertIn('反方向',spec['detail'])
+        limit['search_limited_by_budget']=True
+        self.assertEqual(hud_spec(self.view(motion_limit=limit))['title'],'控制更新暂时延迟')
+        spec=hud_spec({**self.view(motion_limit=limit),'input_fresh':False})
+        self.assertEqual(spec['status'],'输入失效')
+
     def test_y_request_and_stale_observer_never_claim_confirmed_stop(self):
         from bindu_teleoperation.vr.hud import hud_spec
         from bindu_teleoperation.feedback import display_snapshot

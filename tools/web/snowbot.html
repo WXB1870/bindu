@@ -412,6 +412,11 @@ function operatorState(p,online,fresh,pcFresh,tracked){
   if(p.idle_input_lost&&['standby','tool_standby','load_check'].includes(p.phase))return {...result,status:'等待手柄输入',reason:'手柄输入暂停，机器人已停稳，当前操作步骤已保留。',next:'保持松握，等待输入恢复后继续当前步骤。'};
   if(p.operator_guide?.title&&['standby','loading','load_check'].includes(p.phase))return {...result,status:p.operator_guide.title,reason:p.operator_guide.step==='retry'?explainReason(p.reason):result.reason,next:p.operator_guide.detail,key:p.operator_guide.key};
   if(p.phase==='selecting_mode')return {...result,status:'正在切换到'+(p.mode_target==='independent_arms'?'普通双臂':'扫雪工具'),reason:'正在检查目标模式条件。',next:'保持松握；切换完成后仍待命，不自动运动。',key:'B'};
+  if(p.phase==='following'&&tracked&&p.motion_limit){
+    const limit=p.motion_limit,reason=limit.first_rejection||'';
+    const cause=limit.search_limited_by_budget?'控制更新暂时延迟，正在保持当前目标。':reason.startsWith('SELF_COLLISION:')?'手臂接近本体，当前方向的运动受到限制。':reason.includes('_CLEARANCE:')?'工具与头部或本体距离过近。':'握持姿态接近允许偏差。';
+    return {...result,status:'跟随受限',reason:cause,next:'保持握住，稍向反方向移动；松握可暂停。',tone:'warn'};
+  }
   if(p.teleop_mode==='independent_arms'&&p.phase==='following')return tracked?{...result,status:'普通双臂跟随中',reason:'左右手柄分别控制对应手臂，腰部保持。',next:'松开哪侧握，就暂停哪侧；Y 停止双臂。',tone:'good'}:{...result,status:'输入失效，等待停止确认',next:'松开双侧握，等待停止反馈。',tone:'bad'};
   if(p.teleop_mode==='independent_arms'&&p.phase==='tool_standby')return {...result,status:p.stop_confirmed===true?'普通双臂已暂停':'正在暂停',next:p.stop_confirmed===true?'先松开侧握，再握住对应侧控制该臂；B 切模式。':'松开双侧握，等待停稳确认。'};
   if(p.phase==='following')return tracked?{...result,status:'跟随中',next:'移动双手柄控制工具；松握即可暂停。',tone:'good'}:{...result,status:'输入失效，停止待确认',reason:'当前手柄输入不可用，尚不能确认机器人已停稳。',next:'松开双侧握，等待停止反馈。',tone:'bad'};

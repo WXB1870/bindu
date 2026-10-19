@@ -21,7 +21,7 @@ def _run(config, profile, requests, results, preload_path_checks=False):
                 recipe['left_grip_in_tool_m']=(np.linalg.inv(solver.tool) @
                     np.r_[recipe['grip_offset_m'],1.])[:3].tolist()
                 path_checks[loaded]=make_collision_checker(Path(config['urdf']).parent/recipe['display_urdf'],
-                    recipe,conservative_convex=True,tool_present=loaded)
+                    recipe,conservative_convex=True,tool_present=loaded,validation_only=True)
             return path_checks[loaded]
         if preload_path_checks:
             # PICO uses immutable tool/model configuration. Load both CAD
@@ -72,8 +72,10 @@ def _run(config, profile, requests, results, preload_path_checks=False):
                              reference=reference,dt=dt) if independent else
                            solver.solve(feedback,target,reference=reference,dt=dt,target_stamp=target_stamp))
                 else: raise ValueError('BIMANUAL_WORKER_OPERATION')
-                diagnostic=getattr(solver,'last_geometry_step',None) if operation=='solve' and not independent else None
-                if diagnostic is not None:results.put(('diagnostic',token,diagnostic))
+                if operation=='solve':
+                    diagnostic=dict(getattr(solver,'last_geometry_step',None) or {'scale':1.},
+                                    timing=getattr(solver,'last_timing',None))
+                    results.put(('diagnostic',token,diagnostic))
                 results.put(('result',token,value))
             except (ValueError,RuntimeError) as exc:
                 results.put(('error',token,str(exc)))

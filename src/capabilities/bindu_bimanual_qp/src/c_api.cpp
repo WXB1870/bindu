@@ -227,6 +227,14 @@ int bq_posture_reference_margin(void *ptr, double margin) {
     } catch (...) { h.qp.reset(); h.kin->reset(); throw; }
   });
 }
+int bq_tracking_point(void *ptr, const double *point) {
+  return checked(ptr, [&](Handle &h) {
+    try {
+      if (!h.qp || !point) throw std::invalid_argument("tracking point requires capture");
+      h.qp->setTrackingPoint(Eigen::Map<const Eigen::Vector3d>(point));
+    } catch (...) { h.qp.reset(); h.kin->reset(); throw; }
+  });
+}
 int bq_solve(void *ptr, const double *q, int nq, const double *reference, int n,
              const double *target, double dt, double *out, double *metrics) {
   return bq_solve_tracking(ptr,q,nq,reference,n,target,nullptr,nullptr,dt,out,metrics);

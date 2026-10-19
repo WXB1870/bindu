@@ -136,6 +136,7 @@ public:
   void setPosturePolicy(const Eigen::VectorXd &reference,
                         const Eigen::VectorXd &lower, const Eigen::VectorXd &upper);
   void setPostureReferenceMargin(double margin);
+  void setTrackingPoint(const Eigen::Vector3d &point);
   SolveResult solve(const pinocchio::SE3 &desired_tool, double dt,
                     const Eigen::VectorXd &reference,
                     const Eigen::Matrix<double, 6, 1> &world_velocity = Eigen::Matrix<double, 6, 1>::Zero(),
@@ -158,6 +159,7 @@ private:
   bool initialized_{false};
   bool fresh_start_{true};
   bool independent_{false};
+  Eigen::Vector3d tracking_point_{Eigen::Vector3d::Zero()};
 };
 
 }  // namespace dual_arm_tool_qp

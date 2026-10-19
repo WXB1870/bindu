@@ -16,6 +16,38 @@ def sample(perf, seq=1):
 
 
 class ControllerTimingTests(unittest.TestCase):
+    def test_blocked_diagnostic_dds_publish_does_not_block_input_report_enqueue(self):
+        import queue
+        import threading
+        from types import SimpleNamespace as S
+        from unittest.mock import Mock,patch
+        from bindu_runtime.vr_input_node import VRInputNode,_publish_health
+        from bindu_teleoperation.vr.receiver import _latest_put
+        entered=threading.Event();release=threading.Event();delivered=[]
+        def publish(msg):
+            if not delivered:entered.set();release.wait(2.)
+            delivered.append(json.loads(msg.data))
+        node=Mock();node.create_publisher.return_value=S(publish=publish)
+        fake_ros=S(init=Mock(),create_node=Mock(return_value=node),try_shutdown=Mock(),
+                   executors=S(ExternalShutdownException=RuntimeError))
+        pending=queue.Queue(maxsize=2)
+        owner=S(health_reports=pending,health_dropped=0,health_failed=False,
+                health_process=S(is_alive=lambda:True))
+        with patch.dict('sys.modules',rclpy=fake_ros):
+            worker=threading.Thread(target=_publish_health,args=('/test/health',pending))
+            worker.start()
+            try:
+                VRInputNode.emit_health(owner,dict(seq=0))
+                self.assertTrue(entered.wait(2.))
+                for seq in range(1,101):VRInputNode.emit_health(owner,dict(seq=seq))
+                self.assertEqual(owner.health_dropped,98)
+                self.assertEqual(pending.qsize(),2)
+            finally:
+                release.set();_latest_put(pending,None);worker.join(3.)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(delivered[-1]['seq'],100)
+        node.destroy_node.assert_called_once()
+
     def test_browser_stall_and_transport_stall_have_different_evidence(self):
         probe = ControllerTiming()
         probe.observe(sample(1000.), 50., 10., 'source', 1)

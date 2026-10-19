@@ -4,6 +4,7 @@ No solver residuals or commanded joints stand in for device feedback. All pose
 math runs in the display process. Event identity is checked by its ROS observer.
 """
 import math
+from collections import deque
 
 import numpy as np
 
@@ -44,6 +45,7 @@ class EndEffectorErrors:
         self.left_grip = np.eye(4)
         self.left_grip[:3, 3] = config['demo']['grip_offset_m']
         self.capture = self.target = None
+        self.targets = deque(maxlen=64)
         self.serial = 0
         self.last_stamp = None
         self.last = None
@@ -54,6 +56,7 @@ class EndEffectorErrors:
             if payload.get('grasp_mode') not in ('rigid', 'right_axial'):
                 return
             self.capture = self.target = None
+            self.targets.clear()
             left, right = self.fk(payload['feedback'])
             self.serial += 1
             self.capture = dict(task=task_id, stamp=stamp, mode=payload['grasp_mode'],
@@ -62,7 +65,9 @@ class EndEffectorErrors:
             if payload.get('teleop_mode') != 'bimanual_tool':
                 return
             target = transform(payload['target'])
+            if self.target is None:self.targets.clear()
             self.target = dict(pose=target, stamp=stamp, input_stamp=payload['input_stamp'])
+            self.targets.append(self.target)
 
     def sample(self, data, now):
         p = data.get('pico', {})
@@ -73,6 +78,7 @@ class EndEffectorErrors:
                       rotation_limit_deg=math.degrees(self.config['grasp_rotation_tolerance_rad']))
         if p.get('teleop_mode') != 'bimanual_tool':
             self.capture = self.target = self.last = None
+            self.targets.clear()
             self.last_stamp = None
             return dict(result, reason='普通双臂模式')
         if (not data.get('valid') or not 0 <= now-stamp <= .2 or
@@ -98,7 +104,10 @@ class EndEffectorErrors:
             coupled[1] = angle(c['relative'][:3, :3].T @ (np.linalg.inv(left) @ right)[:3, :3])
         result.update(valid=True, reason='', capture=f"{c['task']}:{c['stamp']}:{c['serial']}", grasp_mode=c['mode'],
                       coupled=coupled, left=None, right=None, target_stamp=None)
-        t = self.target
+        # Faster QP events can always be newer than the latest vendor feedback.
+        # Keep bounded history and align to feedback, rather than dropping all
+        # target errors simply because the newest event is in its future.
+        t = next((t for t in reversed(self.targets) if t['stamp']<=stamp),None) if self.target else None
         if (t and p.get('phase') == 'following' and
                 0 <= now-t['stamp'] <= .4 and 0 <= now-t['input_stamp'] <= .25 and
                 # Never apply a future target to an older feedback sample.

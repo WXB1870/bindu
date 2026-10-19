@@ -6,6 +6,10 @@ solid obstacle across its mouth. Robot geometry dependencies are loaded lazily.
 import numpy as np
 
 
+class GeometryBudgetExceeded(TimeoutError):
+    """A candidate search ran out of time; not proof of safe geometry."""
+
+
 def tracking_acceptance(recipe, position_m, rotation_rad):
     """Keep task tracking quality separate from relative-grasp safety."""
     gate=recipe['acceptance'];policy=gate.get('tool_tracking_policy','required')
@@ -143,14 +147,15 @@ def check_dump(samples, recipe):
             'scope':'pan envelope above bin; no snow or contact dynamics'}
 
 
-def make_collision_checker(urdf, recipe, conservative_convex=False, *, tool_present=True):
+def make_collision_checker(urdf, recipe, conservative_convex=False, *, tool_present=True,
+                           validation_only=False):
     """Discrete CAD and tool clearance; only bounded grip bands allow contact.
 
     The ground is expressed in the fixed URDF base frame and cross-checked
     against configured supporting links. Missing meshes require explicit
     conservative proxies. This is not a contact/dynamics or continuous check.
     """
-    if type(tool_present) is not bool:
+    if type(tool_present) is not bool or type(validation_only) is not bool:
         raise ValueError('INVALID_TOOL_PRESENCE')
     import coal as fcl
     import hashlib
@@ -204,7 +209,10 @@ def make_collision_checker(urdf, recipe, conservative_convex=False, *, tool_pres
     # tool/body and bin queries; mesh self-collision pairs stay unchanged.
     check_grasp_contacts = recipe.get('check_grasp_contacts', False)
     grasp_penetration = float(recipe.get('max_grasp_penetration_m', 0.0005))
-    if type(check_grasp_contacts) is not bool or not 0 <= grasp_penetration <= .001:
+    # Contact meshes have their own radial modelling tolerance. It must stay
+    # inside the rod, and never exempts other body/tool collision pairs.
+    if (type(check_grasp_contacts) is not bool or not np.isfinite(grasp_penetration) or
+            not 0 <= grasp_penetration <= .005 or grasp_penetration >= float(recipe['shaft_radius_m'])):
         raise ValueError('INVALID_GRASP_CONTACT_CHECK')
     contact_names = set(recipe['shaft_contacts'])
     query_shapes = []
@@ -328,7 +336,11 @@ def make_collision_checker(urdf, recipe, conservative_convex=False, *, tool_pres
     bin_bounds = [world_bounds(box, pose.getRotation(), pose.getTranslation())
                   for _, box, pose in bin_parts]
 
-    def check(samples, collect_failures=False):
+    from collections import OrderedDict
+    validated=OrderedDict()
+
+    def check(samples, collect_failures=False, *, deadline=None):
+        fast=validation_only and not collect_failures
         if not samples:
             raise ValueError('EMPTY_COLLISION_SAMPLES')
         bin_minimum, bin_worst = float('inf'), None
@@ -354,12 +366,24 @@ def make_collision_checker(urdf, recipe, conservative_convex=False, *, tool_pres
             tool = BimanualQP._transform(sample['tool'])
             if not np.isfinite(q).all() or not np.isfinite(sample['t']):
                 raise ValueError('NONFINITE_COLLISION_SAMPLE')
+            # Exact full-state keys, scoped to this immutable CAD context.
+            # No rounding, TTL extension, or reuse across model/config changes.
+            key=q.tobytes()+tool.tobytes()
+            if fast and key in validated:
+                validated.move_to_end(key)
+                continue
+            if deadline is not None:
+                import time
+                if time.perf_counter() >= deadline:
+                    raise GeometryBudgetExceeded('GEOMETRY_VALIDATION_BUDGET')
             pin.computeCollisions(model, data, geometry, geometry_data, q, False)
             failure = None
             for pair, result in zip(geometry.collisionPairs, geometry_data.collisionResults):
                 if result.isCollision():
                     failure = f'SELF_COLLISION: {names[pair.first]} / {names[pair.second]}'
                     break
+            if fast and failure:
+                raise ValueError(f"{failure} t={sample['t']}")
             if sample_index == 0:
                 for name, obj, placement in zip(names, geometry.geometryObjects, geometry_data.oMg):
                     if name in ground['support_links']:
@@ -431,6 +455,8 @@ def make_collision_checker(urdf, recipe, conservative_convex=False, *, tool_pres
                     kind = 'GRASP_PENETRATION' if grasp_query else part+'_CLEARANCE'
                     failure = (f'{kind}: {name} inner_cylinder_intersection=true tolerance_m={grasp_penetration:.6g}'
                                if grasp_query else f'{kind}: {name} distance={distance:.6g}')
+                    if fast:
+                        raise ValueError(f"{failure} t={sample['t']}")
             # No grip exemptions apply to the receiving bin. Check every body mesh,
             # the full shaft and the pan against its four walls and floor.
             shaft_pose = fcl.Transform3s(tool[:3,:3] @ rotation,tool[:3,3]+tool[:3,:3] @ shaft_center)
@@ -459,6 +485,11 @@ def make_collision_checker(urdf, recipe, conservative_convex=False, *, tool_pres
                 if not collect_failures:
                     raise ValueError(f"{failure} t={sample['t']}")
                 failures.append({'sample': sample['t'], 'reason': failure})
+            elif fast:
+                validated[key]=True
+                if len(validated)>256:validated.popitem(last=False)
+        if fast:
+            return {'samples':len(samples),'validation_only':True}
         return {'samples': len(samples), 'geometry_kind':geometry_kind,
                 'tool_body_representation':'convex_outer' if conservative_convex else 'cad_mesh',
                 'mesh_pairs': len(geometry.collisionPairs),
@@ -473,6 +504,7 @@ def make_collision_checker(urdf, recipe, conservative_convex=False, *, tool_pres
                 'exact_distance_queries': exact_queries, 'aabb_bounded_queries': bounded_queries,
                 'min_bin_clearance_m': bin_minimum if bin_parts else None, 'closest_bin_pair': bin_worst,
                 'source_sha256': asset_hashes, 'violations': len(failures), 'failures': failures}
+    check.validation_only=validation_only
     return check
 
 

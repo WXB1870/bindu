@@ -68,6 +68,10 @@ int bq_posture_policy(void *handle, const double *reference,
 /* Optional ABI v1 extension: inset the reference velocity damper; physical
  * posture bounds and measured capture checks remain unchanged. */
 int bq_posture_reference_margin(void *handle, double margin);
+/* Additive ABI v1: local tool tracking point [x,y,z] metres. Default zero.
+ * Changes only the tracking task/Jacobian; tool FK and grasp/CAD stay fixed.
+ * Set after each capture. Supplied world linear feedforward is at this point. */
+int bq_tracking_point(void *handle, const double *point);
 /* reference/out follow active-name order. reference is the last accepted
  * command (capture feedback for the first step), never an unaccepted result.
  * dt is the elapsed reference sampling interval, 0 < dt <= 0.1 s. The caller
@@ -78,7 +82,8 @@ int bq_posture_reference_margin(void *handle, double margin);
 int bq_solve(void *handle, const double *q, int nq, const double *reference, int n,
              const double *target, double dt, double *out, double *metrics);
 /* Additive v1 entry: optional 6-vector [world linear m/s, world angular rad/s]
- * at the tool origin, and optional measured tool pose for feedback error.
+ * at the configured tracking point (default tool origin), and optional measured
+ * tool-origin pose for feedback error.
  * Both NULL preserve the old pose-only solve exactly. */
 int bq_solve_tracking(void *handle, const double *q, int nq, const double *reference, int n,
                         const double *target, const double *world_velocity, const double *measured_tool, double dt,

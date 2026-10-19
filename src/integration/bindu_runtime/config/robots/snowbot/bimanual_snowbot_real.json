@@ -45,10 +45,10 @@
   "max_reference_error": 0.15,
   "worker_timeout": 0.23,
   "worker_startup_timeout": 30.0,
-  "relative_gain": 6.0,
+  "relative_gain": 12.0,
   "max_relative_error": 0.03,
-  "max_linear_speed": 0.7,
-  "max_angular_speed": 1.2,
+  "max_linear_speed": 1.2,
+  "max_angular_speed": 2.4,
   "solve_timeout_us": 30000,
   "demo": {
     "description": "Nominal CAD geometry for Snowbot real position teleoperation. Verify tool mounting, ground and limits onsite. No startup/preparation trajectory or gripper actuation.",
@@ -141,7 +141,7 @@
       0.0
     ],
     "check_grasp_contacts": true,
-    "max_grasp_penetration_m": 0.0005
+    "max_grasp_penetration_m": 0.005
   },
   "right_to_tool": [
     -0.7180654330047566,
@@ -163,10 +163,10 @@
   ],
   "grasp_position_tolerance_m": 0.005,
   "grasp_rotation_tolerance_rad": 0.02,
-  "tool_gain": 6.0,
+  "tool_gain": 10.0,
   "posture_gain": 0.1,
   "limit_margin": 0.15,
-  "damper_gain": 2.0,
+  "damper_gain": 6.0,
   "right_axial_grasp": {
     "grip_in_right_flange_m": [
       0.119,

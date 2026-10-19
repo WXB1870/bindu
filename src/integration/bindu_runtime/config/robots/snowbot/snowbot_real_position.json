@@ -116,7 +116,7 @@
       0.524
     ]
   },
-  "max_speed": 0.75,
+  "max_speed": 1.5,
   "capabilities": [
     "joint_position"
   ],
@@ -130,6 +130,26 @@
       "joint_position": 0.002,
       "joint_velocity": 0.01
     },
-    "joint_target_interpolation": "adaptive"
+    "joint_target_interpolation": "adaptive",
+    "joint_dynamics": {
+      "body_joint_1": {
+        "velocity": 1.2
+      },
+      "body_joint_2": {
+        "velocity": 1.2
+      },
+      "head_joint_1": {
+        "velocity": 0.75
+      },
+      "head_joint_2": {
+        "velocity": 0.75
+      },
+      "arm_l_joint_8": {
+        "velocity": 0.75
+      },
+      "arm_r_joint_8": {
+        "velocity": 0.75
+      }
+    }
   }
 }

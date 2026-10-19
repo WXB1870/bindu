@@ -197,6 +197,14 @@ class BimanualQP:
                 if not all(math.isfinite(v) and v > 0 for v in
                            (self.grasp_position_tolerance, self.grasp_rotation_tolerance)):
                     raise ValueError('BIMANUAL_GRASP_TOLERANCE')
+            point=config.get('tool_tracking_point_in_tool_m')
+            if point is None and config.get('vr_tool_mapping')=='hand_line_midpoint':
+                point=np.mean([(np.linalg.inv(self._transform(config[side+'_to_tool'])) @
+                    np.r_[config['demo'][key],1.])[:3] for side,key in
+                    (('left','grip_offset_m'),('right','right_grip_offset_m'))],axis=0)
+            self.tracking_point=np.ascontiguousarray(np.zeros(3) if point is None else point,dtype=np.float64)
+            if self.tracking_point.shape!=(3,) or not np.isfinite(self.tracking_point).all() or np.linalg.norm(self.tracking_point)>3.:
+                raise ValueError('BIMANUAL_TRACKING_POINT')
         except (KeyError, TypeError, ValueError):
             self.close()
             raise
@@ -208,7 +216,8 @@ class BimanualQP:
                 recipe['left_grip_in_tool_m'] = (np.linalg.inv(self.tool) @
                     np.r_[recipe['grip_offset_m'],1.])[:3].tolist()
                 self.collision_check = make_collision_checker(
-                    Path(config['urdf']).parent/recipe['display_urdf'],recipe,conservative_convex=True)
+                    Path(config['urdf']).parent/recipe['display_urdf'],recipe,
+                    conservative_convex=True,validation_only=True)
                 self.collision_step = float(config.get('collision_joint_step_rad',.01))
                 if not math.isfinite(self.collision_step) or not 0 < self.collision_step <= .01:
                     raise ValueError('BIMANUAL_COLLISION_STEP')
@@ -295,6 +304,13 @@ class BimanualQP:
                                      c.byref(self.native_config))
         if not ok:
             raise ValueError('BIMANUAL_CAPTURE:'+self._error())
+        if np.any(self.tracking_point):
+            try:fn=self.lib.bq_tracking_point
+            except AttributeError as exc:
+                raise ValueError('BIMANUAL_TRACKING_POINT_ABI_MISSING: rebuild bindu_bimanual_qp') from exc
+            fn.argtypes,fn.restype=[c.c_void_p,c.POINTER(c.c_double)],c.c_int
+            if not fn(self.handle,self._ptr(self.tracking_point)):
+                raise ValueError('BIMANUAL_TRACKING_POINT:'+self._error())
         posture_reference = self.posture_reference
         if self.posture_policy is not None:
             if posture_reference is None:
@@ -345,44 +361,67 @@ class BimanualQP:
                 tool=np.empty((4,4),dtype=np.float64)
                 if not self.lib.bq_tool_pose(self.handle,self._ptr(q),self.nq,self._ptr(tool)):
                     raise ValueError('BIMANUAL_COLLISION_FK:'+self._error())
+                if self.expected_relative is not None and self.captured:
+                    relative=np.empty((4,4),dtype=np.float64)
+                    if not self.lib.bq_relative_pose(self.handle,self._ptr(q),self.nq,self._ptr(relative)):
+                        raise ValueError('BIMANUAL_COLLISION_FK:'+self._error())
+                    distance,angle=self._grip_error(relative)
+                    if distance>self.grasp_position_tolerance or angle>self.grasp_rotation_tolerance:
+                        raise ValueError(f'GRASP_CLOSURE: position_m={distance:.6g} rotation_rad={angle:.6g}')
                 samples.append({'t':float(len(samples)),'q':dict(zip(self.model_names,q)),
                                 'tool':tool})
             before=end
-        self.collision_check(samples)
+        self._validate_geometry(self.collision_check,samples)
 
-    def checked_geometry_step(self, feedback, reference, candidate, *, deadline=None):
+    def _validate_geometry(self, checker, samples):
+        if getattr(checker,'validation_only',False):
+            checker(samples,deadline=getattr(self,'_geometry_deadline',None))
+        else:
+            checker(samples)
+
+    def _grip_error(self, relative):
+        error=np.linalg.inv(self.grasp_reference) @ relative
+        angle=math.acos(float(np.clip((np.trace(error[:3,:3])-1.)/2.,-1.,1.)))
+        distance=np.linalg.norm(relative[:3,3]-self.expected_relative[:3,3])
+        if self.axial is not None:
+            actual=np.linalg.inv(self.tool) @ relative @ self.right_grip
+            distance=np.linalg.norm(actual[:3,3]-self.tool_grip[:3,3])
+            if self.grasp_mode=='right_axial':
+                angle=math.acos(float(np.clip(actual[:3,2] @ self.tool_grip[:3,2],-1.,1.)))
+        return distance,angle
+
+    def checked_geometry_step(self, feedback, reference, candidate, *, deadline=None, independent=False):
         """Bound only a rejected candidate; never skip measured/path validation."""
-        failures=('GRASP_PENETRATION:','SELF_COLLISION:','PAN_CLEARANCE:','SHAFT_CLEARANCE:','BIN_CLEARANCE:')
-        try:
-            self.check_path(feedback,candidate,reference)
+        from .tool_geometry import GeometryBudgetExceeded
+        check=self.check_independent_path if independent else self.check_path
+        failures=('GRASP_PENETRATION:','GRASP_CLOSURE:','SELF_COLLISION:','PAN_CLEARANCE:','SHAFT_CLEARANCE:','BIN_CLEARANCE:')
+        if not self.geometry_step_backtracking:
+            check(feedback,candidate,reference)
             return candidate,1.
-        except ValueError as exc:
-            reason=str(exc)
-            if not self.geometry_step_backtracking or not reason.startswith(failures):
-                raise
-        # The already accepted hold must still be reachable from fresh feedback.
-        # A measured collision or unsafe hold is a fault, not a step-size limit.
-        self.check_path(feedback,reference)
+        # Validate a safe fallback BEFORE spending time on candidate search.
+        # Actual collisions and an unsafe reference still fail this operation.
+        check(feedback,reference)
         delta=candidate-reference
-        limited=reference.copy();accepted_scale=0.;budget_limited=False
-        # A rejected long path does not predict the cost of the shorter path.
-        # Give the first retry the remaining budget, then use observed retry cost.
-        check_cost=0.
-        for scale in (.5,.25,.125,.0625,.03125):
-            # Keep time for packing/final guards. When search cannot fit, the
-            # already checked hold is usable; the outer hard deadline remains.
-            if deadline is not None and time.perf_counter()+1.5*check_cost+.003>=deadline:
-                budget_limited=True;break
-            limited=reference+scale*delta
-            checked_at=time.perf_counter()
-            try:self.check_path(feedback,limited,reference)
-            except ValueError as exc:
-                if not str(exc).startswith(failures):raise
-                check_cost=time.perf_counter()-checked_at
-                continue
-            accepted_scale=scale;break
+        limited=reference.copy();accepted_scale=0.;budget_limited=False;reason=None
+        self._geometry_deadline=None if deadline is None else deadline-.003
+        try:
+            for scale in (1.,.5,.25,.125,.0625,.03125):
+                if self._geometry_deadline is not None and time.perf_counter()>=self._geometry_deadline:
+                    budget_limited=True;break
+                limited=reference+scale*delta
+                try:check(feedback,limited,reference)
+                except GeometryBudgetExceeded:
+                    budget_limited=True;break
+                except ValueError as exc:
+                    if not str(exc).startswith(failures):raise
+                    if reason is None:reason=str(exc)
+                    continue
+                accepted_scale=scale;break
+        finally:
+            self._geometry_deadline=None
+        if accepted_scale==1.:return candidate,1.
         if not accepted_scale:limited=reference.copy()
-        self.last_geometry_step=dict(scale=accepted_scale,first_rejection=reason,
+        self.last_geometry_step=dict(scale=accepted_scale,first_rejection=reason or 'GEOMETRY_VALIDATION_BUDGET',
             attempted_joint_step_rad=float(np.max(np.abs(delta))),
             proposed_joint_step_rad=float(np.max(np.abs(limited-reference))),
             search_limited_by_budget=budget_limited)
@@ -459,7 +498,7 @@ class BimanualQP:
                 q=dict(feedback);q.update(zip(self.names,before+fraction*(end-before)))
                 samples.append(dict(t=float(len(samples)),q=q,tool=np.eye(4)))
             before=end
-        self.empty_collision_check(samples)
+        self._validate_geometry(self.empty_collision_check,samples)
 
     def capture_independent(self, feedback):
         self.captured=False;self.independent_abi()
@@ -477,6 +516,7 @@ class BimanualQP:
         if not self.captured or self.grasp_mode!='independent':
             raise ValueError('INDEPENDENT_ARMS_NOT_CAPTURED')
         started=time.perf_counter();cpu_started=time.thread_time()
+        self.last_geometry_step=self.last_timing=None
         try:
             if not math.isfinite(dt) or not 0<dt<=self.max_interval:
                 raise ValueError('BIMANUAL_INTEGRATION_INTERVAL')
@@ -513,7 +553,9 @@ class BimanualQP:
             if np.max(np.abs(out-measured))>self.max_reference_error:
                 raise ValueError('BIMANUAL_REFERENCE_TRACKING_ERROR')
             geometry_at=time.perf_counter()
-            self.check_independent_path(feedback,out,reference)
+            out,geometry_scale=self.checked_geometry_step(feedback,reference,out,independent=True,
+                deadline=started+self.cfg['solve_timeout_us']*1e-6)
+            metrics[2]*=geometry_scale
             self._check_solve_budget('independent',started,cpu_started,native_us,metrics[0],
                                      (time.perf_counter()-geometry_at)*1e6)
             return tuple(float(v) for v in out),tuple(float(v) for v in metrics)
@@ -576,6 +618,13 @@ class BimanualQP:
                 angle = math.acos(float(np.clip(actual[:3,2] @ self.tool_grip[:3,2],-1.,1.)))
             if math.hypot(distance,angle) > self.cfg['max_relative_error']:
                 raise ValueError('BIMANUAL_MEASURED_GRASP_ERROR')
+            if self.expected_relative is not None:
+                # Enforce the configured measured grip-point acceptance
+                # separately from CAD contact tolerance and mixed QP residuals.
+                point_error,angle=self._grip_error(relative)
+                if (point_error>self.grasp_position_tolerance or
+                        angle>self.grasp_rotation_tolerance):
+                    raise ValueError('BIMANUAL_MEASURED_GRASP_ERROR')
             if tool_feedback is not None:
                 observed = self._transform(tool_feedback)
                 position_bound = float(self.cfg.get('max_tool_feedback_translation_m',0.))
@@ -609,7 +658,8 @@ class BimanualQP:
                         raise ValueError('BIMANUAL_TARGET_TIME')
                     if 0 < gap <= self.max_interval:
                         import pinocchio as pin
-                        velocity[:3] = (target[:3,3]-previous[:3,3])/gap
+                        velocity[:3] = (target[:3,3]+target[:3,:3]@self.tracking_point-
+                            previous[:3,3]-previous[:3,:3]@self.tracking_point)/gap
                         velocity[3:] = pin.log3(target[:3,:3] @ previous[:3,:3].T)/gap
             native_started = time.perf_counter()
             ok = self.lib.bq_solve_tracking(*args, self._ptr(velocity),

@@ -101,6 +101,20 @@ class EndEffectorErrorTests(unittest.TestCase):
         self.assertFalse(self.sample()['valid'])
         self.assertIsNone(self.metric.capture)
 
+    def test_fast_target_stream_selects_latest_target_not_after_feedback(self):
+        self.target(x=.2,stamp=10.02)
+        value=self.sample(10.03)
+        np.testing.assert_allclose(value['left'],[100.,0.],atol=1e-9)
+        self.assertEqual(value['target_stamp'],9.99)
+        self.data['feedback_stamp']=10.12;self.data['pico']['stamp']=10.12
+        self.target(x=.3,stamp=10.14)
+        value=self.sample(10.15)
+        np.testing.assert_allclose(value['left'],[200.,0.],atol=1e-9)
+        self.assertEqual(value['target_stamp'],10.02)
+        self.capture();self.metric.last=None
+        self.assertIsNone(self.sample(10.15)['left'])
+        self.assertLessEqual(len(self.metric.targets),64)
+
     def test_timestamp_reversal_requires_recapture_and_samples_are_bounded_rate(self):
         first = self.sample()
         self.data['feedback_stamp'] += .02

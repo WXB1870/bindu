@@ -13,6 +13,20 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class AcceptedReferenceTests(unittest.TestCase):
+    def test_capture_requires_new_input_without_moving_fence_on_acceptance(self):
+        ref=AcceptedReference()
+        # Field failure: frame .545738 preceded stop .549435 and capture .557080.
+        ref.capture([0.],10.557080)
+        for stamp in (10.545738,10.549435,10.557080,float('nan')):
+            self.assertFalse(ref.permits_input(stamp))
+        self.assertTrue(ref.permits_input(10.56))
+        ref.accept([.01],10.58)
+        self.assertTrue(ref.permits_input(10.56))
+        ref.reset();self.assertFalse(ref.permits_input(10.6))
+        ref.capture([.01],10.7)
+        self.assertFalse(ref.permits_input(10.6))
+        self.assertTrue(ref.permits_input(10.71))
+
     def test_deployment_tolerates_205ms_gap_without_integrating_more_than_100ms(self):
         import json
         config=json.loads((ROOT/'src/integration/bindu_runtime/config/robots/snowbot/bimanual_snowbot_real.json').read_text())

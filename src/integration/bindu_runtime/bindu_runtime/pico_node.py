@@ -19,7 +19,7 @@ from builtin_interfaces.msg import Duration
 from bindu_contracts.teleoperation import VRFrame
 from bindu_teleoperation.pico import PicoControl, PicoFeedback, PICO_MAPPING
 from bindu_kinematics.bimanual_worker import BimanualWorker
-from bindu_interfaces.msg import VRInput, ExecutionState, MotionCommand, TeleopModeState, RecorderHealth
+from bindu_interfaces.msg import VRInput, ExecutionState, MotionCommand, TeleopModeState, RecorderHealth, RuntimeEvent
 from bindu_execution.interpolation import Curve, State
 from bindu_interfaces.srv import Lease, SubmitMotion, ControlExecution, PicoContext
 from bindu_interfaces.action import SelectTeleopMode, TeleopSession
@@ -111,6 +111,7 @@ class PicoNode(RuntimeNode):
         self.last_context_at=self.control.context_at
         self.last_pair_at=None
         self.last_tick_at=None
+        self.motion_limit=None;self.motion_limit_stamp=0.
         self.position_ops = None
         if self.position_contract:
             from .pico_position import PositionOperations
@@ -128,6 +129,7 @@ class PicoNode(RuntimeNode):
         self.operator_state=self.create_publisher(String,'teleop/state',10)
         self.create_subscription(VRInput,'teleop/vr/raw',self.on_frame,10)
         self.create_subscription(ExecutionState,'execution/state',self.on_state,10)
+        self.create_subscription(RuntimeEvent,'events',self.on_motion_event,20)
         if self.recording_enabled:
             self.create_subscription(RecorderHealth,'recorder/health',self.on_recording,5)
         self.create_subscription(TeleopModeState,'teleop/mode_state',self.on_mode,
@@ -180,6 +182,18 @@ class PicoNode(RuntimeNode):
         except ValueError as exc:reply.success,reply.code=False,str(exc)
         reply.generation=self.control.generation
         return reply
+
+    def on_motion_event(self,msg):
+        if (msg.run_id!=self.run_id or msg.runtime_mode!=self.runtime_mode or
+                msg.task_id!='pico_'+self.instance_id):return
+        if msg.state in ('BIMANUAL_CAPTURED','BIMANUAL_ENDED'):
+            self.motion_limit=None
+        elif msg.state=='BIMANUAL_QP_RESULT':
+            try:
+                value=json.loads(msg.code)
+                self.motion_limit=value.get('geometry_step')
+                self.motion_limit_stamp=seconds(msg.stamp)
+            except (ValueError,TypeError):pass
 
     def on_frame(self,msg):
         if not self.matches_mode(msg) or msg.side not in ('left','right'):return
@@ -564,6 +578,7 @@ class PicoNode(RuntimeNode):
                 source_id=(self.control.source+':'+self.instance_id) if self.control.source else None,
                 schema=1,device_backend=self.backend,coordinator_id=self.instance_id,stamp=self.now(),simulated=self.simulation,runtime_mode=self.runtime_mode,
                 handoff_complete=self.handoff_complete,gripper_modes=list(self.feedback().modes),tool_phase=self.tool_phase,recording=self.recording,recording_enabled=self.recording_enabled,
+                motion_limit=self.motion_limit if self.control.phase=='following' and 0<=self.now()-self.motion_limit_stamp<=.25 else None,
                 physical_gripper_confirmed=None,actuator_feedback='joint_position',
                 capabilities=dict(prepare=self.prepare_positions is not None,
                     independent_arms=self.position_contract,mode_switch=self.position_contract,
