@@ -67,6 +67,10 @@ def project_state(data, now, identity):
                     hand.update(valid=False,squeeze=None,trigger=None,buttons=None,
                                 button_edges=None,position_m=None)
             result.update(pico=pico, pico_fresh=True)
+            errors = data.get('end_effector_errors', {})
+            if (errors and type(errors.get('stamp')) in (float,int) and
+                    0 <= data['feedback_stamp']-errors['stamp'] <= .12 and 0 <= now-errors['stamp'] <= .2):
+                result['end_effector_errors'] = errors
     except (ValueError, TypeError) as exc:
         result['code'] = str(exc)
     return result

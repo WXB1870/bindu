@@ -173,6 +173,19 @@ def scenario(out, mode, websocket=False, ordinary=False):
         try:until(node,predicate,seconds)
         except AssertionError as exc:raise AssertionError(json.dumps(views[-1] if views else {},ensure_ascii=False)) from exc
     def phase(value):wait(lambda:views and views[-1]['phase']==value and views[-1]['pending'] is None)
+    def error_sample(grasp):
+        def ready():
+            path=out/(mode+'-observer.json')
+            if not path.exists():return False
+            value=json.loads(path.read_text()).get('end_effector_errors',{})
+            return (value.get('valid') and value.get('grasp_mode')==grasp and
+                    all(isinstance(value.get(k),list) and len(value[k])==2 and
+                        all(math.isfinite(v) for v in value[k]) for k in ('left','right','coupled')))
+        wait(ready,5.)
+        value=json.loads((out/(mode+'-observer.json')).read_text())['end_effector_errors']
+        assert value['runtime_mode']==mode and value['source']=='关节反馈 FK'
+        assert value['position_limit_mm']==5. and value['coupled'][0]<5.,value
+        checks.append(grasp+' measured FK tracking/coupling errors are available to the display observer')
     def click(side,bit):
         source['buttons'][side]|=1<<bit;pump(.12);source['buttons'][side]&=~(1<<bit);pump(.12)
     try:
@@ -324,6 +337,7 @@ def scenario(out, mode, websocket=False, ordinary=False):
         checks.append('held-tool A validates coupling and tool CAD; already-reached pose submits no motion or gripper commands')
         before=len(accepted);source['grip']=1.;phase('following');source['delta']=.006
         wait(lambda:len(accepted)>before+5)
+        error_sample('rigid')
         left_position=grippers['left'].measured_position
         source['buttons'][0]=1
         wait(lambda:views[-1]['phase']=='following' and views[-1]['grasp_applied']=='right_axial' and
@@ -334,6 +348,7 @@ def scenario(out, mode, websocket=False, ordinary=False):
         assert all(g.grasp_state=='unknown' for g in grippers.values())
         before_virtual=len(accepted);source['delta']+=.003
         wait(lambda:len(accepted)>before_virtual+5)
+        error_sample('right_axial')
         source['buttons'][0]=0
         wait(lambda:views[-1]['phase']=='following' and views[-1]['grasp_applied']=='rigid' and
              views[-1]['tool_phase']=='follow:rigid',20.)

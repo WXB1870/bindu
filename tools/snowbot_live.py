@@ -62,6 +62,9 @@ def observe(args, publish=None, stop=None):
     from bindu_runtime.common import EVENT_QOS
     from bindu_runtime.robot_setup import RobotSetup
     robot = RobotSetup.load(args.robot_config)
+    from snowbot_errors import EndEffectorErrors, pinocchio_fk
+    error_config = json.loads(robot.tool_config.read_text())
+    errors = EndEffectorErrors(error_config, pinocchio_fk(robot.urdf, error_config))
     meta = dict(schema=1, run_id=args.run_id, profile_hash=robot.profile.digest,
                 runtime_mode=args.runtime_mode, device_backend=args.device_backend,
                 display_urdf=str(robot.display_urdf),
@@ -91,6 +94,18 @@ def observe(args, publish=None, stop=None):
         except (ValueError, TypeError):
             pass
     node.create_subscription(String, ns+'/teleop/state', pico, 100 if diagnostics else 1)
+    def runtime_event(msg):
+        if (msg.run_id != args.run_id or msg.runtime_mode != args.runtime_mode or
+                msg.simulated != (args.runtime_mode == 'simulation')):
+            return
+        if diagnostics:diagnostics.record('runtime-events',msg,ros=True)
+        if msg.state in ('BIMANUAL_CAPTURED','BIMANUAL_QP_RESULT'):
+            try:
+                errors.event(msg.state,json.loads(msg.code),msg.task_id,
+                             msg.stamp.sec+msg.stamp.nanosec*1e-9)
+            except (ValueError,KeyError,TypeError):
+                errors.capture = errors.target = None
+    node.create_subscription(RuntimeEvent,ns+'/events',runtime_event,EVENT_QOS)
     if args.trace_file:
         def receiver_health(msg):
             try:
@@ -98,8 +113,6 @@ def observe(args, publish=None, stop=None):
                 if value.get('run_id')==args.run_id:diagnostics.record('vr-health',value)
             except (ValueError,TypeError):pass
         node.create_subscription(String,ns+'/teleop/vr/health',receiver_health,100)
-        node.create_subscription(RuntimeEvent,ns+'/events',lambda msg:
-            diagnostics.record('runtime-events',msg,ros=True) if msg.run_id==args.run_id else None,EVENT_QOS)
         for cls,topic,stream,qos in ((VRInput,'teleop/vr/raw','vr-raw',200),
                 (VRInput,'teleop/vr/input','vr-projected',200),
                 (MotionCommand,'execution/accepted','accepted-commands',EVENT_QOS),
@@ -137,6 +150,7 @@ def observe(args, publish=None, stop=None):
                 data['pico'] = latest['pico']
                 meta['tool_variant']=latest['pico'].get('tool_variant','shovel')
                 data['tool_variant']=meta['tool_variant']
+            data['end_effector_errors'] = errors.sample(data, now)
             if diagnostics:data['diagnostics']=diagnostics.status()
             if publish:
                 publish(data)

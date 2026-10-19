@@ -58,6 +58,15 @@ class LiveFeedbackTests(unittest.TestCase):
 
 
 class WebFeedbackTests(unittest.TestCase):
+    def test_error_samples_require_fresh_matching_feedback_and_pico_identity(self):
+        metric=dict(valid=True,stamp=10.,coupled=[2.,.1])
+        data=dict(self.data,end_effector_errors=metric)
+        self.assertEqual(self.project(data)['end_effector_errors'],metric)
+        self.assertNotIn('end_effector_errors',self.project(data,10.3))
+        self.assertNotIn('end_effector_errors',self.project(dict(data,valid=False)))
+        self.assertNotIn('end_effector_errors',self.project(dict(data,pico=dict(data['pico'],run_id='old'))))
+        self.assertNotIn('end_effector_errors',self.project(dict(data,end_effector_errors=dict(metric,stamp=9.7))))
+
     def setUp(self):
         LiveFeedbackTests.setUp(self)
         self.data.update(joint_names=['joint'],instance_id='executor',pico=dict(

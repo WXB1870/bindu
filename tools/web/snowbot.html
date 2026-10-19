@@ -154,6 +154,15 @@ details[open]>summary:after { content: '−'; }
 .step kbd { padding: 2px 5px; border: 1px solid var(--line); border-radius: 3px; font-family: inherit; font-size: 12px; line-height: 1.7; text-align: center; }
 .step.stop kbd { color: var(--red); }
 .guide-note { margin-top: 14px; color: var(--muted); font-size: 12px; line-height: 1.8; }
+.error-panel { margin-top: 24px; padding-top: 18px; border-top: 1px solid var(--line); }
+.error-panel[hidden] { display: none; }
+.error-legend { display: flex; gap: 18px; flex-wrap: wrap; color: var(--muted); font-size: 12px; }
+.error-legend i { display: inline-block; width: 20px; margin-right: 6px; vertical-align: middle; border-top: 2px solid var(--blue); }
+.error-legend .right { border-color: var(--mint); border-top-style: dashed; }
+.error-legend .coupled { border-color: var(--text); border-top-style: dotted; }
+.error-chart { width: 100%; height: 124px; display: block; margin-top: 10px; }
+.error-note, .error-values { color: var(--muted); font-size: 12px; line-height: 1.7; margin: 8px 0 0; }
+.error-values { color: var(--text); font-variant-numeric: tabular-nums; }
 .events-panel { margin-top: 30px; padding-top: 20px; border-top: 1px solid var(--line); }
 .events-panel .panel-head { padding-bottom: 12px; }
 .event-actions { display: flex; align-items: center; justify-content: flex-end; gap: 14px; flex-wrap: wrap; font-size: 12px; }
@@ -288,6 +297,14 @@ footer { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wr
       </div>
       <div class="view-foot"><span>拖动旋转，滚轮缩放，右键平移</span><span>关节反馈 <output id="feedback-age">等待更新</output></span></div>
     </section>
+      <section class="panel error-panel" id="error-panel" hidden aria-label="双臂末端误差曲线">
+        <div class="panel-head"><h2>双臂末端误差 <small>最近 30 秒</small></h2><span class="muted" id="error-status">等待接合</span></div>
+        <div class="error-legend"><span><i></i>左握点跟踪</span><span><i class="right"></i>右握点跟踪</span><span><i class="coupled"></i>双臂耦合</span></div>
+        <canvas class="error-chart" id="position-chart" role="img" aria-label="位置误差，单位毫米"></canvas>
+        <canvas class="error-chart" id="rotation-chart" role="img" aria-label="角度误差，单位度"></canvas>
+        <p class="error-values" id="error-values">等待反馈</p>
+        <p class="error-note" id="error-note">跟踪：握点目标与关节反馈 FK；耦合：双握点约束。虚握角度仅计杆轴偏差。</p>
+      </section>
       <section class="panel events-panel"><div class="panel-head"><h2>最近事件 <small id="event-count">0 条</small></h2><div class="event-actions"><span class="event-record muted" id="record-state">诊断未记录</span><select id="event-filter" aria-label="事件显示范围"><option value="state">状态与异常</option><option value="all">全部事件</option><option value="input">手柄按键</option></select><button id="pause" aria-pressed="false" title="仅暂停事件列表，实时状态继续更新">暂停事件</button></div></div><div class="events" id="events" role="log" aria-label="最近状态变化"><div class="empty">等待状态更新</div></div></section>
     </div>
     <aside class="sidebar" aria-label="当前状态与手柄输入">
@@ -490,12 +507,68 @@ async function reportModel(){
 }
 setInterval(reportModel,3000);
 const finite=x=>typeof x==='number'&&Number.isFinite(x);
+// Display-only, bounded history. Gaps and grasp generations are never joined.
+let errorHistory=[],errorRun=null;
+function renderErrorCharts(data,online){
+  const p=data.pico||{},panel=$('error-panel'),e=data.end_effector_errors;
+  panel.hidden=p.teleop_mode!=='bimanual_tool';
+  if(errorRun!==data.run_id||panel.hidden){errorHistory=[];errorRun=data.run_id;}
+  if(panel.hidden)return;
+  const now=finite(data.server_time)?data.server_time:Date.now()/1000;
+  const valid=online&&data.valid&&data.pico_fresh&&e?.valid&&finite(e.stamp)&&now-e.stamp>=0&&now-e.stamp<=.2;
+  const prior=errorHistory.at(-1);
+  if(valid){
+    if(!prior||prior.stamp!==e.stamp||!prior.valid)errorHistory.push({...e,key:data.run_id+':'+e.capture+':'+e.grasp_mode});
+  }else if(prior?.valid)errorHistory.push({stamp:now,valid:false});
+  errorHistory=errorHistory.filter(x=>x.stamp>=now-30).slice(-320);
+  text('error-status',valid?(e.runtime_mode==='real'?'真机关节反馈':'仿真关节反馈'):online?e?.reason||'等待反馈与接合':'状态服务断连');
+  const value=x=>Array.isArray(x)&&x.length===2&&x.every(finite)?`${x[0].toFixed(2)} mm / ${x[1].toFixed(2)}°`:'—';
+  text('error-values',`左 ${valid?value(e.left):'—'}　右 ${valid?value(e.right):'—'}　耦合 ${valid?value(e.coupled):'—'}`);
+  text('error-note','跟踪：握点目标与关节反馈 FK；耦合：标定握点位置与'+(e?.grasp_mode==='right_axial'?'杆轴夹角（允许右手绕杆转动）':'接合时相对姿态')+'。仅反映运动学误差，不能检测夹持滑移。');
+  const styles=getComputedStyle(document.documentElement);
+  for(const [id,index,title,unit,minimum,limit] of [
+    ['position-chart',0,'位置误差','mm',5,e?.position_limit_mm],
+    ['rotation-chart',1,'角度误差','°',1.2,e?.rotation_limit_deg]]){
+    const canvas=$(id),width=canvas.getBoundingClientRect().width;if(!width)continue;
+    const height=124,dpr=window.devicePixelRatio||1;
+    canvas.width=Math.round(width*dpr);canvas.height=height*dpr;
+    const c=canvas.getContext('2d');c.scale(dpr,dpr);c.font='11px sans-serif';
+    const ink=styles.getPropertyValue('--text').trim(),muted=styles.getPropertyValue('--muted').trim();
+    const series=[['left','--blue',[]],['right','--mint',[6,3]],['coupled','--text',[2,3]]];
+    const values=errorHistory.flatMap(s=>series.map(([key])=>s.valid&&finite(s[key]?.[index])?s[key][index]:0));
+    const rawMax=Math.max(minimum,finite(limit)?limit:0,...values)*1.12;
+    const step=10**Math.floor(Math.log10(rawMax));const max=Math.ceil(rawMax/step)*step;
+    const left=47,right=width-14,top=24,bottom=102;
+    const x=t=>left+(t-now+30)/30*(right-left),y=v=>bottom-v/max*(bottom-top);
+    c.fillStyle=ink;c.fillText(`${title} (${unit})`,0,12);
+    c.textAlign='right';
+    for(const v of [0,max/2,max]){
+      c.fillStyle=muted;c.fillText(v<10?v.toFixed(1):v.toFixed(0),left-7,y(v)+4);
+      c.strokeStyle=styles.getPropertyValue('--line').trim();c.lineWidth=1;c.beginPath();c.moveTo(left,y(v));c.lineTo(right,y(v));c.stroke();
+    }
+    if(finite(limit)&&limit>0){
+      c.setLineDash([4,4]);c.strokeStyle=muted;c.beginPath();c.moveTo(left,y(limit));c.lineTo(right,y(limit));c.stroke();c.setLineDash([]);
+      c.fillStyle=muted;c.fillText(`耦合参考 ${limit.toFixed(index?2:1)} ${unit}`,right,12);
+    }
+    c.save();c.beginPath();c.rect(left,top,right-left,bottom-top);c.clip();
+    for(const [key,color,dash] of series){
+      c.strokeStyle=styles.getPropertyValue(color).trim();c.lineWidth=1.7;c.setLineDash(dash);c.beginPath();let last=null;
+      for(const s of errorHistory){
+        const v=s[key]?.[index];if(!s.valid||!finite(v)){last=null;continue;}
+        if(last&&last.key===s.key&&s.stamp-last.stamp<=.65)c.lineTo(x(s.stamp),y(v));else c.moveTo(x(s.stamp),y(v));last=s;
+      }c.stroke();
+    }c.restore();c.setLineDash([]);c.fillStyle=muted;
+    for(const t of [-30,-20,-10,0]){c.textAlign=t===-30?'left':t===0?'right':'center';c.fillText(t===0?'现在':`${t} s`,x(now+t),120);}
+    canvas.setAttribute('aria-label',`${title}，单位${unit}，最近30秒。${$('error-values').textContent}`);
+  }
+}
 const ms=x=>finite(x)?Math.round(x*1000)+' ms':'—';
 function displayText(value){return String(value??'').replace(/[ \t]*[\u00b7\u2022\u2219\u22c5\u2027\u25cf][ \t]*/g,'，');}
 function text(id,value){$(id).textContent=displayText(value);}
 function badge(id,label,tone=''){text(id,label);$(id).className='pill '+tone;}
 function link(id,label,tone){const e=$(id);e.className=(id==='vr-link'?'':'hand-tracking ')+tone;e.querySelector('span').textContent=displayText(label);}
 function render(data,online){
+  renderErrorCharts(data,online);
   const p=data.pico||{},fresh=online&&data.valid===true,pcFresh=fresh&&data.pico_fresh===true;
   const rawAge=p.raw_input_age_s,vrFresh=pcFresh&&finite(rawAge)&&rawAge>=0&&rawAge<=.25;
   const tracked=vrFresh&&p.input_fresh===true&&p.raw_input_valid===true;
@@ -570,7 +643,9 @@ function setTheme(theme){
   document.documentElement.dataset.theme=theme;
   text('theme-toggle',theme==='dark'?'浅色外观':'深色外观');
   $('theme-toggle').setAttribute('aria-label',theme==='dark'?'切换为浅色外观':'切换为深色外观');
+  if(lastData)renderErrorCharts(lastData,performance.now()-lastPoll<1500);
 }
+new ResizeObserver(()=>{if(lastData)renderErrorCharts(lastData,performance.now()-lastPoll<1500);}).observe($('error-panel'));
 let theme='light';try{if(localStorage.getItem('bindu-web-theme')==='dark')theme='dark';}catch{}
 setTheme(theme);
 $('theme-toggle').addEventListener('click',()=>{theme=theme==='dark'?'light':'dark';setTheme(theme);try{localStorage.setItem('bindu-web-theme',theme);}catch{}});
