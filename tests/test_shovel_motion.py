@@ -140,6 +140,26 @@ class ShovelGeometryTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'GRASP_PENETRATION'):
             collision_check(self.urdf,[sample],recipe)
 
+    def test_disabled_tool_ground_check_has_no_alarm_or_warning(self):
+        recipe=copy.deepcopy(self.recipe)
+        recipe['acceptance'].update(ground_policy='disabled',min_ground_clearance_m=.05)
+        result=collision_check(self.urdf,[self.sample],recipe)
+        self.assertEqual(result['violations'],0)
+        self.assertEqual(result['ground_warning_samples'],0)
+        self.assertLess(result['min_tool_ground_clearance_m'],.05)
+
+    def test_real_deployment_relative_grip_acceptance_is_five_mm(self):
+        config=json.loads((ROOT/'src/integration/bindu_runtime/config/robots/snowbot/bimanual_snowbot_real.json').read_text())
+        self.assertEqual(config['demo']['acceptance']['max_grip_error_m'],.005)
+        reference=dict(t=0.,flanges={config['left_frame']:np.linalg.inv(np.array(config['left_to_tool']).reshape(4,4)),
+                                    config['right_frame']:np.linalg.inv(np.array(config['right_to_tool']).reshape(4,4))})
+        captures=[dict(t=0.,mode='rigid')]
+        for offset,passed in ((.0049,True),(.0051,False)):
+            row=copy.deepcopy(reference);row['t']=1.
+            row['flanges'][config['right_frame']][:3,3]+=np.array([offset,0.,0.])
+            result=coupling_metrics([reference,row],config,captures)
+            self.assertEqual(result['passed'],passed)
+
     def test_wrong_ground_empty_mesh_and_empty_motion_fail(self):
         with self.assertRaisesRegex(ValueError,'EMPTY_COLLISION'):
             collision_check(self.urdf, [], self.recipe)

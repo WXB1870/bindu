@@ -516,6 +516,7 @@ class BimanualToolNode(RuntimeNode):
                                 pending_at=now
                                 self.event('BIMANUAL_QP_RESULT',json.dumps({'solve_us':metrics[0],
                                     'relative_error':None if isinstance(session,IndependentArmsSession) else metrics[1],
+                                    'relative_error_source':('accepted_reference' if self.cfg.get('reference_kinematics') else 'measured'),
                                     'teleop_mode':mode.mode,'recovery_scale':metrics[2],
                                     'input_stamp':work_stamp,'input_seq':work_seq,'integration_dt':work_dt,
                                     'sample_gap_s':work_gap,

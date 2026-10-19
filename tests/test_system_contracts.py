@@ -7,13 +7,57 @@ from pathlib import Path
 from unittest.mock import patch
 from bindu_contracts.profile import Profile
 from bindu_contracts.contracts import Motion, Observation
-from bindu_hardware.drivers.simulated_joints import SimJointDriver
+from bindu_hardware.drivers.simulated_joints import SimJointDriver, SynchronizedJointProgress
 from bindu_hardware.drivers.simulated_hand import SimHandDriver
 from bindu_hardware.drivers.simulated_base import SimBaseDriver
 from bindu_hardware.robot_io.system import RobotIO
 from bindu_tasks.scene import Scene
 from bindu_execution.executor import Executor, Rejected
 from bindu_recording.recorder import AsyncRecorder
+
+
+class SynchronizedProgressTests(unittest.TestCase):
+    def devices(self):
+        left=SimJointDriver(['l1','l2'],1.)
+        right=SimJointDriver(['r1'],1.)
+        progress=SynchronizedJointProgress([left,right],dict(l1=1.,l2=.5,r1=.25))
+        left.write_positions(dict(l1=1.,l2=.1));right.write_positions(dict(r1=.5))
+        return left,right,progress
+
+    def test_unequal_distances_and_limits_use_one_progress(self):
+        left,right,progress=self.devices()
+        a=left.read(1.,.02);b=right.read(1.,.02)
+        self.assertAlmostEqual(a.positions['l1'],a.positions['l2']/.1)
+        self.assertAlmostEqual(a.positions['l1'],b.positions['r1']/.5)
+        self.assertAlmostEqual(progress.progress,.01)
+        self.assertLessEqual(abs(b.velocities['r1']),.25)
+
+    def test_read_order_does_not_advance_the_vector_twice(self):
+        left,right,_=self.devices()
+        right.read(1.,.02);first=dict(left.positions)
+        left.read(1.,.02);self.assertEqual(left.positions,first)
+        left.read(1.02,.02);second=dict(right.positions)
+        right.read(1.02,.02);self.assertEqual(right.positions,second)
+
+    def test_retarget_and_stop_keep_actual_positions_and_feedback_loss_visible(self):
+        left,right,_=self.devices();left.read(1.,.02);right.read(1.,.02)
+        start=(left.positions['l1'],right.positions['r1'])
+        left.write_positions(dict(l1=-.3,l2=.2));right.write_positions(dict(r1=.1))
+        left.read(1.02,.02);right.read(1.02,.02)
+        self.assertAlmostEqual((left.positions['l1']-start[0])/(-.3-start[0]),
+                               (right.positions['r1']-start[1])/(.1-start[1]))
+        left.inject_fault('feedback_loss');before_stamp=left.reading.stamp
+        self.assertEqual(left.read(1.04,.02).stamp,before_stamp)
+        self.assertEqual(right.read(1.04,.02).stamp,1.04)
+        left.request_stop();right.request_stop();held=(dict(left.positions),dict(right.positions))
+        left.read(1.06,.02);right.read(1.06,.02)
+        self.assertEqual((left.positions,right.positions),held)
+        self.assertTrue(all(v==0. for v in (*left.velocities.values(),*right.velocities.values())))
+
+    def test_invalid_layout_or_speed_cannot_install_a_synchronizer(self):
+        for speeds in ({'l1':1.},{'l1':float('nan'),'l2':1.},{'l1':-1.,'l2':1.}):
+            with self.assertRaisesRegex(ValueError,'SYNCHRONIZED_JOINT'):
+                SynchronizedJointProgress([SimJointDriver(['l1','l2'],1.)],speeds)
 
 
 class Contracts(unittest.TestCase):

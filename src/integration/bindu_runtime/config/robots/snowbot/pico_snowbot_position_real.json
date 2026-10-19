@@ -5,5 +5,7 @@
   "initial_teleop_mode": "independent_arms",
   "initial_load_state": "unknown",
   "prepare_duration": 8.0,
-  "prepare_positions_rad": null
+  "prepare_positions_rad": null,
+  "pose_jump_translation_m": 0.35,
+  "pose_jump_rotation_rad": 1.2
 }

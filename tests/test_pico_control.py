@@ -679,12 +679,36 @@ class StateTests(unittest.TestCase):
         for _ in range(70):self.assertEqual(rig.step(),[])
 
     def test_pose_origin_jump_locks_active_follow(self):
-        rig=Rig('held');rig.core.phase='following';left,right=rig.core.frames
+        rig=Rig('held');rig.grips=[1.,1.];rig.step();rig.core.phase='following';left,right=rig.core.frames
         pose=np.eye(4);pose[0,3]=1.
         rig.core.ingest(replace(left,pose=tuple(pose.ravel()),seq=left.seq+1,stamp=rig.now+.01),
                         replace(right,seq=right.seq+1,stamp=rig.now+.01),rig.now+.01)
         self.assertEqual(rig.core.phase,'locked')
         self.assertEqual(rig.core.reason,'PICO_POSE_ORIGIN_JUMP')
+        self.assertEqual(rig.core.last_pose_jump['translation_limit_m'],.35)
+        self.assertAlmostEqual(rig.core.last_pose_jump['translation_m'],1.)
+
+    def test_moderate_displacement_and_wrist_rotation_survive_a_frame_gap(self):
+        rig=Rig('held');rig.grips=[1.,1.];rig.step();rig.core.phase='following';left,right=rig.core.frames
+        angle=.8;pose=np.eye(4);pose[:2,:2]=[[np.cos(angle),-np.sin(angle)],[np.sin(angle),np.cos(angle)]]
+        pose[0,3]=.25
+        rig.core.ingest(replace(left,pose=tuple(pose.ravel()),seq=left.seq+1,stamp=rig.now+.14),
+                        replace(right,seq=right.seq+1,stamp=rig.now+.14),rig.now+.14)
+        self.assertEqual(rig.core.phase,'following')
+        self.assertIsNone(rig.core.last_pose_jump)
+
+    def test_release_takes_priority_over_a_large_paused_hand_displacement(self):
+        rig=Rig('held');rig.grips=[1.,1.];rig.step();rig.core.phase='following';left,right=rig.core.frames
+        pose=np.eye(4);pose[0,3]=1.
+        rig.core.ingest(replace(left,pose=tuple(pose.ravel()),grip=0.,seq=left.seq+1,stamp=rig.now+.01),
+                        replace(right,seq=right.seq+1,stamp=rig.now+.01),rig.now+.01)
+        self.assertNotEqual(rig.core.reason,'PICO_POSE_ORIGIN_JUMP')
+        self.assertEqual(rig.core.pending.operation,'stop')
+
+    def test_invalid_pose_jump_limits_are_rejected(self):
+        for options in ({'pose_jump_translation_m':0.},{'pose_jump_rotation_rad':float('nan')},
+                        {'pose_jump_rotation_rad':4.}):
+            with self.assertRaisesRegex(ValueError,'POSE_JUMP_CONFIG'):PicoControl(**options)
 
     def test_invalid_pose_never_reaches_actuator_requests(self):
         rig=Rig();left,right=rig.core.frames

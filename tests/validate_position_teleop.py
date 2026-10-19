@@ -13,6 +13,7 @@ import socket
 import threading
 import time
 import uuid
+import math
 import rclpy
 from std_msgs.msg import String, Float64MultiArray, UInt64MultiArray
 from snowbot_ctl_msgs.msg import RetInformation, JointPositionCommand, CtlInformation, MidNodeCtlMsgSend
@@ -43,7 +44,8 @@ def websocket_input(port, source, stop, errors):
                 if source['stream']:
                     value={}
                     for i,side in enumerate(('left','right')):
-                        value[side]=[1.,0.,0.,0.,0.,1.,0.,0.,0.,0.,1.,0.,
+                        angle=source.get('rotation',0.);c,s=math.cos(angle),math.sin(angle)
+                        value[side]=[c,s,0.,0.,-s,c,0.,0.,0.,0.,1.,0.,
                                      .34*i+source['delta']+source['deltas'][i],0.,0.,1.]
                         buttons=source['buttons'][i]
                         value[side+'State']=dict(squeezeValue=source['grips'][i] if source['grips'] is not None else source['grip'],triggerValue=source['trigger'][i],
@@ -386,6 +388,18 @@ def scenario(out, mode, websocket=False, ordinary=False):
         click(1,1);phase('standby')
         assert views[-1]['load_state']=='empty'
         checks.append('interrupted unloading recovers to standby; a new request preserves intent but requires fresh support')
+        if websocket:
+            baseline_delta=source['delta'];source['grip']=1.;phase('following')
+            for i in range(60):
+                source['delta']=baseline_delta+.012*math.sin(i*.15)
+                source['rotation']=.06*math.sin(i*.15)
+                pump(.1)
+                assert views[-1]['phase']=='following',views[-1]
+            source['rotation']=0.;source['delta']=baseline_delta;pump(.5)
+            source['grip']=0.;phase('tool_standby')
+            wait(lambda:not states[-1].lease_active and states[-1].state not in ('RUNNING','STOPPING'))
+            assert not states[-1].stop_failures
+            checks.append('six seconds of small translation and wrist rotation follow without ground or grip alarms')
         terminate(observer,node);observer=None
         diagnostic_health=json.loads((trace_dir/'diagnostics-health.json').read_text())
         assert not diagnostic_health['active'] and not diagnostic_health['error'] and diagnostic_health['dropped']==0,diagnostic_health

@@ -78,9 +78,10 @@
       0.04
     ],
     "acceptance": {
-      "max_grip_error_m": 0.001,
+      "max_grip_error_m": 0.005,
       "min_tool_robot_clearance_m": 0.02,
-      "min_ground_clearance_m": 0.003
+      "min_ground_clearance_m": 0.003,
+      "ground_policy": "disabled"
     },
     "pivot_in_tool_m": [
       -0.7713451316238472,

@@ -96,7 +96,9 @@ class PicoNode(RuntimeNode):
         self.control=PicoControl(initial_load=initial_load,simulation_demo=self.simulation_demo,
                                  max_age=float(self.tool_cfg['input_max_age']),guided_loading=self.position_contract,
                                  dual_modes=self.position_contract,
-                                 initial_mode=self.cfg.get('initial_teleop_mode','independent_arms'))
+                                 initial_mode=self.cfg.get('initial_teleop_mode','independent_arms'),
+                                 pose_jump_translation_m=self.cfg.get('pose_jump_translation_m',.35),
+                                 pose_jump_rotation_rad=self.cfg.get('pose_jump_rotation_rad',1.2))
         validation_cfg=dict(self.tool_cfg,worker_timeout=30.)
         self.validator=BimanualWorker(validation_cfg,self.profile,preload_path_checks=True)
         self.validation_result=None
@@ -196,7 +198,10 @@ class PicoNode(RuntimeNode):
         self.control.update_feedback(self.feedback(),self.now())
         previous=(self.control.source,self.control.seq)
         previous_reason=self.control.reason
+        previous_jump=self.control.last_pose_jump
         self.control.ingest(*pair,self.now())
+        if self.control.last_pose_jump is not previous_jump:
+            self.event('PICO_POSE_JUMP',json.dumps(self.control.last_pose_jump))
         if self.control.last_prepare_check is not self.last_prepare_check:
             self.last_prepare_check=self.control.last_prepare_check
             self.event('PICO_PREPARE_CHECK',json.dumps(self.last_prepare_check))

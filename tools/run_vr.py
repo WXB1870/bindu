@@ -158,6 +158,7 @@ def run(args):
                     reader=threading.Thread(target=copy_output,args=(child,args.output/(name+'.log')),daemon=True)
                     reader.start();readers.append(reader)
             print(f'遥操作会话 {args.run_id}，ROS 域 {args.domain_id}，/{args.namespace}', flush=True)
+            print(f'日志目录：{args.output}', flush=True)
             print(f'电脑界面：http://127.0.0.1:{args.port}/\n'
                   f'头显：{"https" if args.cert_file else "http"}://{"<开发机局域网 IP>" if args.host=="0.0.0.0" else args.host}:{args.vr_port}/\n'
                   '等待 SNOWBOT_WEB_READY 后打开页面；Ctrl+C 统一停止。', flush=True)
@@ -206,7 +207,7 @@ def parse_args(argv=None):
     parser.add_argument('--port', type=int, default=8013, help='电脑页面端口，仅监听本机')
     parser.add_argument('--cert-file', type=Path)
     parser.add_argument('--key-file', type=Path)
-    parser.add_argument('--output', type=Path, help='新的运行目录，默认 artifacts/vr/<run-id>')
+    parser.add_argument('--output', type=Path, help='新的运行日志目录，默认 log/vr/<run-id>')
     parser.add_argument('--startup-timeout', type=float, default=30.)
     parser.add_argument('--duration', type=float, default=0., help='验收用运行秒数，0 表示持续运行')
     args = parser.parse_args(argv)
@@ -243,7 +244,7 @@ def parse_args(argv=None):
     if (not math.isfinite(args.duration) or args.duration < 0 or
             not math.isfinite(args.startup_timeout) or args.startup_timeout <= 0):
         parser.error('运行时间必须非负且有限，启动超时必须为正且有限')
-    args.output = (args.output or ROOT/'artifacts/vr'/args.run_id).resolve()
+    args.output = (args.output or ROOT/'log/vr'/args.run_id).resolve()
     for key in ('cert_file','key_file'):
         value=getattr(args,key)
         if value:

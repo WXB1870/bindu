@@ -471,7 +471,7 @@ class BimanualQP:
             if np.max(np.abs(out-measured))>self.max_reference_error:
                 raise ValueError('BIMANUAL_REFERENCE_TRACKING_ERROR')
             geometry_at=time.perf_counter()
-            self.check_independent_path(feedback,reference,out)
+            self.check_independent_path(feedback,out,reference)
             self._check_solve_budget('independent',started,cpu_started,native_us,metrics[0],
                                      (time.perf_counter()-geometry_at)*1e6)
             return tuple(float(v) for v in out),tuple(float(v) for v in metrics)
@@ -603,7 +603,9 @@ class BimanualQP:
                                                 np.any(out>self.posture_upper+1e-9)):
             raise ValueError('BIMANUAL_POSTURE_LIMIT')
         geometry_started = time.perf_counter()
-        self.check_path(feedback,reference,out)
+        # A synchronized position device follows measured -> candidate directly;
+        # also check candidate -> prior reference to retain both endpoints.
+        self.check_path(feedback,out,reference)
         geometry_us = (time.perf_counter()-geometry_started)*1e6
         result = tuple(float(v) for v in out), tuple(float(v) for v in metrics)
         next_target_sample = None

@@ -18,6 +18,11 @@ from .device_assembly import assemble_devices
 def position_devices(node, profile):
     """Reuse the real IO contract; replace only transport and measured samples."""
     transport, devices = assemble_devices(node, profile)
+    from bindu_hardware.drivers.simulated_joints import SimJointDriver, SynchronizedJointProgress
+    coupled=[devices[g] for g in ('waist','left_arm','right_arm')]
+    if all(isinstance(driver,SimJointDriver) for driver in coupled):
+        SynchronizedJointProgress(coupled,{n:profile.speed(n) for driver in coupled for n in driver.positions})
+        node.position_progress_synchronized=True
     node.declare_parameter('command_enabled', False, descriptor=ParameterDescriptor(read_only=True))
     node.commands_enabled = node.get_parameter('command_enabled').value
     io = SnowbotIO(profile, lambda groups, q: transport.write_joints(q), node.now,
@@ -85,6 +90,11 @@ class PositionSimulation(ExecutionNode):
         super().__init__(device_factory=position_devices, executor_factory=DelegatedPositionExecutor)
         if self.device_backend != 'kinematic':
             raise ValueError('POSITION_SIM_REQUIRES_KINEMATIC')
+        synchronization=json.dumps(dict(
+            shared_vector_progress=getattr(self,'position_progress_synchronized',False),
+            groups=['waist','left_arm','right_arm'],clock='execution_feedback'))
+        self.get_logger().info('POSITION_SYNCHRONIZATION '+synchronization)
+        self.event('POSITION_SYNCHRONIZATION',synchronization)
         self.grippers = SimulatedGrippers(self)
 
     def lease(self, request, reply):

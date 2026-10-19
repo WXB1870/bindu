@@ -28,12 +28,19 @@ class PicoFeedback:
 
 class PicoControl:
     def __init__(self, *, initial_load='unknown', max_age=.25, prepare_hold=1., simulation_demo=False,
-                 guided_loading=False, dual_modes=False, initial_mode='independent_arms'):
+                 guided_loading=False, dual_modes=False, initial_mode='independent_arms',
+                 pose_jump_translation_m=.35, pose_jump_rotation_rad=1.2):
         if initial_load not in ('empty','held','unknown'):
             raise ValueError('PICO_LOAD_STATE')
         self.load, self.supported = initial_load, False
         self.load_source = 'configured_initial_state' if initial_load!='unknown' else 'unknown'
         self.last_prepare_check = None
+        self.pose_jump_translation_m=float(pose_jump_translation_m)
+        self.pose_jump_rotation_rad=float(pose_jump_rotation_rad)
+        if (not math.isfinite(self.pose_jump_translation_m) or not 0<self.pose_jump_translation_m<=1. or
+                not math.isfinite(self.pose_jump_rotation_rad) or not 0<self.pose_jump_rotation_rad<=math.pi):
+            raise ValueError('PICO_POSE_JUMP_CONFIG')
+        self.last_pose_jump=None
         self.max_age, self.prepare_hold = max_age, prepare_hold
         self.phase, self.reason = 'checking', 'WAITING_FOR_INPUT_AND_FEEDBACK'
         self.generation = 0
@@ -182,11 +189,17 @@ class PicoControl:
             self.lock('PICO_TIME_REVERSED',now);return
         if self.frames and self.phase in ('engaging','following','switching'):
             before=tuple(pose_matrix(f.pose) for f in self.frames)
-            if any((not self.dual_modes or self.teleop_mode!='independent_arms' or
-                    old.grip>.7 and new.grip>.7) and (np.linalg.norm(a[:3,3]-b[:3,3])>.2 or
-                   math.acos(float(np.clip((np.trace(a[:3,:3] @ b[:3,:3].T)-1)/2,-1.,1.)))>.6
-                   ) for a,b,old,new in zip(poses,before,self.frames,pair)):
-                self.lock('PICO_POSE_ORIGIN_JUMP',now);return
+            ordinary=self.dual_modes and self.teleop_mode=='independent_arms'
+            tool_held=all(f.grip>.7 for f in self.frames+pair)
+            for a,b,old,new in zip(poses,before,self.frames,pair):
+                if not (old.grip>.7 and new.grip>.7 and (ordinary or tool_held)):continue
+                distance=float(np.linalg.norm(a[:3,3]-b[:3,3]))
+                angle=math.acos(float(np.clip((np.trace(a[:3,:3] @ b[:3,:3].T)-1)/2,-1.,1.)))
+                if distance>self.pose_jump_translation_m or angle>self.pose_jump_rotation_rad:
+                    self.last_pose_jump=dict(stamp=now,side=new.side,previous_seq=old.seq,input_seq=new.seq,
+                        input_interval_s=new.stamp-old.stamp,translation_m=distance,rotation_rad=angle,
+                        translation_limit_m=self.pose_jump_translation_m,rotation_limit_rad=self.pose_jump_rotation_rad)
+                    self.lock('PICO_POSE_ORIGIN_JUMP',now);return
         clutch=tuple(f.clutch_seq for f in pair)
         if self.clutch_counts is not None and any(a<b for a,b in zip(clutch,self.clutch_counts)):
             self.lock('PICO_CLUTCH_COUNTER_REVERSED',now);return
@@ -426,6 +439,7 @@ class PicoControl:
                     mode_target=self.pending.value if self.pending and self.pending.operation=='select_mode' else None,
                     source_id=self.source,load_state=self.load,load_source=self.load_source,external_support=self.supported,
                     last_prepare_check=self.last_prepare_check,
+                    last_pose_jump=self.last_pose_jump,
                     guided_loading=self.guided_loading,loading_goal=self.loading_goal,
                     loading_opened=list(self.loading_opened),idle_input_lost=self.idle_input_lost,
                     grasp_requested='right_axial' if (self.pending.value if self.pending and self.pending.operation=='switch_grasp' else self.virtual) else 'rigid',

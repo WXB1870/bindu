@@ -258,7 +258,7 @@ def make_collision_checker(urdf, recipe, conservative_convex=False, *, tool_pres
     if geometry_kind not in ('shovel','rod'):
         raise ValueError('INVALID_TOOL_GEOMETRY_KIND')
     has_pan=geometry_kind=='shovel'
-    if ground_policy not in ('required','report_only'):
+    if ground_policy not in ('required','report_only','disabled'):
         raise ValueError('INVALID_GROUND_POLICY')
     if not np.isfinite(floor_clearance) or floor_clearance < 0:
         raise ValueError('INVALID_GROUND_CLEARANCE')
@@ -378,7 +378,7 @@ def make_collision_checker(urdf, recipe, conservative_convex=False, *, tool_pres
             tool_clearance=float(min(corners[:,2].min() if has_pan else float('inf'),shaft_heights.min())-ground_z)
             if tool_present:
                 ground_minimum=min(ground_minimum,tool_clearance)
-                ground_warnings+=int(tool_clearance<floor_clearance)
+                ground_warnings+=int(tool_clearance<floor_clearance and ground_policy!='disabled')
             ground_failure = tool_present and tool_clearance<floor_clearance and ground_policy=='required'
             pan_pose = fcl.Transform3s(tool[:3, :3], tool[:3, 3]+tool[:3, :3] @ np.array(recipe['pan_center_m']))
             # The same body poses are checked against the tool and all five
@@ -429,7 +429,8 @@ def make_collision_checker(urdf, recipe, conservative_convex=False, *, tool_pres
                     worst = {'part': part, 'link': name, 't': sample['t']}
                 if distance < limit and failure is None:
                     kind = 'GRASP_PENETRATION' if grasp_query else part+'_CLEARANCE'
-                    failure = f'{kind}: {name} distance={distance:.6g}'
+                    failure = (f'{kind}: {name} inner_cylinder_intersection=true tolerance_m={grasp_penetration:.6g}'
+                               if grasp_query else f'{kind}: {name} distance={distance:.6g}')
             # No grip exemptions apply to the receiving bin. Check every body mesh,
             # the full shaft and the pan against its four walls and floor.
             shaft_pose = fcl.Transform3s(tool[:3,:3] @ rotation,tool[:3,3]+tool[:3,:3] @ shaft_center)

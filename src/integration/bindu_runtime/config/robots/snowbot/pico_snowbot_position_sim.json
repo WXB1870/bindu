@@ -48,5 +48,7 @@
     "arm_r_joint_8": 0.0,
     "head_joint_1": 0.0,
     "head_joint_2": 0.0
-  }
+  },
+  "pose_jump_translation_m": 0.35,
+  "pose_jump_rotation_rad": 1.2
 }
