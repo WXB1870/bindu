@@ -15,7 +15,7 @@ def status_lines(view):
     if view.get('connectivity'):
         from .connectivity import status_lines as connectivity_lines
         return connectivity_lines(view)
-    if view.get('runtime_mode')=='real':
+    if view.get('runtime_mode')=='real' and not view.get('pico'):
         return [('BINDU | REAL | BIMANUAL POSITION','#f1f5f9'),
                 ('Session status: check ROS feedback','#ffffff'),
                 ('Squeeze: relative follow | Y: stop','#cbd5e1'),
@@ -43,13 +43,13 @@ def status_lines(view):
 
 def render(view):
     from vuer.schemas import Group, CoordsMarker, Sphere, Plane, SceneElement
-    if view.get('pico') and view.get('runtime_mode')!='real':
+    if view.get('pico'):
         from .hud import render_hud
         from .model import render_model
         model=render_model(view)
         children=([model] if model is not None else [])+[render_hud(view)]
         return Group(*children,key='teleopFeedback',
-            userData={'mode':view['mode'],'reason':view['reason'],'simulated':True})
+            userData={'mode':view['mode'],'reason':view['reason'],'simulated':view.get('runtime_mode')!='real'})
 
     # These components exist in Vuer 0.0.60's frontend. Its Python package
     # exposes HUDPlane through Image and does not yet wrap the Text component.

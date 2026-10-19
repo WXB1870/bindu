@@ -13,6 +13,7 @@ EXECUTION = {'runtime_mode', 'namespace', 'profile', 'device_backend', 'run_id',
              'recording_mode', 'command_enabled', 'vendor_namespace', 'arm_receiver_node',
              'servo_receiver_node', 'mid_receiver_node'}
 COMMON.add('gripper_config')
+COMMON.add('position_contract')
 EXECUTION.add('gripper_config')
 PATHS = {'profile', 'bimanual_config', 'robot_config', 'cert_file', 'key_file', 'output', 'pico_config', 'gripper_config'}
 
@@ -39,24 +40,30 @@ def load_deployment(path, share):
     if 'runtime_mode' in args and args['runtime_mode'] not in ('simulation', 'real'):
         raise ValueError('RUNTIME_MODE_INVALID')
     selected_mode = resolve_mode(args.get('runtime_mode', 'simulation'))
-    if args.get('gripper_config') and selected_mode != 'real':
+    position_contract=args.get('position_contract',False)
+    if type(position_contract) is not bool:
+        raise ValueError('TELEOP_DEPLOYMENT_BOOLEAN:position_contract')
+    if args.get('gripper_config') and selected_mode != 'real' and not position_contract:
         raise ValueError('GRIPPER_REQUIRES_REAL_MODE')
     backend = args.get('device_backend', '') if execution_only else args.get('device_backend', 'kinematic')
     allowed_backends = ('', 'snowbot_vendor') if selected_mode == 'real' else ('', 'kinematic', 'external_simulation')
     if backend not in allowed_backends:
         raise ValueError('RUNTIME_MODE_BACKEND_CONFLICT')
     if selected_mode == 'real' and not execution_only and (
-            version!=2 or args.get('single_arm_enabled',True) or args.get('pico_enabled',False)):
+            version!=2 or args.get('single_arm_enabled',True)):
         raise ValueError('REAL_REQUIRES_SNOWBOT_BIMANUAL_POSITION')
     if args.get('recorder_enabled',True) is False and args.get('recording_mode','compact')!='off':
         raise ValueError('RECORDER_DISABLED_REQUIRES_OFF')
     if args.get('tool_input_source', 'tool_pose') not in ('vr', 'tool_pose'):
         raise ValueError('TELEOP_DEPLOYMENT_INPUT')
-    if args.get('pico_enabled', False) and (args.get('tool_input_source') != 'vr' or backend != 'kinematic'):
+    if position_contract and (version!=2 or execution_only or backend not in ('kinematic','snowbot_vendor')):
+        raise ValueError('POSITION_CONTRACT_BACKEND')
+    if args.get('pico_enabled', False) and (args.get('tool_input_source') != 'vr' or
+            (backend != 'kinematic' and not position_contract)):
         raise ValueError('PICO_REQUIRES_KINEMATIC_VR')
     if 'pico_simulation_demo' in args and type(args['pico_simulation_demo']) is not bool:
         raise ValueError('TELEOP_DEPLOYMENT_BOOLEAN:pico_simulation_demo')
-    if args.get('pico_simulation_demo',False) and (not args.get('pico_enabled',False) or
+    if args.get('pico_simulation_demo',False) and (position_contract or not args.get('pico_enabled',False) or
             selected_mode!='simulation' or backend!='kinematic'):
         raise ValueError('PICO_DEMO_REQUIRES_KINEMATIC_SIMULATION')
     if args.get('recording_mode', 'compact') not in ('off', 'compact', 'normal'):

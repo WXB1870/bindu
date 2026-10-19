@@ -154,8 +154,16 @@ class MappingTests(unittest.TestCase):
                                 external_support=True,gripper_modes=['closed','open']))
         self.assertEqual(len(lines),3)
         text=' '.join(line for line,_ in lines)
-        self.assertIn('仿真',text);self.assertIn('装卸',text);self.assertIn('既有流程',text)
+        self.assertIn('双手工具',text);self.assertIn('装卸',text);self.assertIn('既有流程',text)
         self.assertNotIn('SINGLE ARM',text)
+
+    def test_position_coordinator_uses_same_hud_in_both_modes(self):
+        from bindu_teleoperation.vr.display import status_lines
+        from bindu_teleoperation.vr.hud import hud_spec
+        view=dict(pico=True,mode='standby',load_state='empty',capabilities={'prepare':False})
+        self.assertEqual(status_lines(dict(view,runtime_mode='simulation')),
+                         status_lines(dict(view,runtime_mode='real')))
+        self.assertEqual(hud_spec(view)['title'],'现场准备位尚未配置')
 
     def test_normal_hud_hides_raw_tracking_and_physical_keys(self):
         from bindu_teleoperation.vr.display import status_lines

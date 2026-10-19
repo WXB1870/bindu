@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read-only Snowbot display and a supervised VR simulation entry point."""
+"""Read-only Snowbot display for an explicitly selected deployment."""
 import argparse
 import hashlib
 import json
@@ -22,10 +22,10 @@ def display_tool_config(data):
     return config
 
 
-def validate_state(data, now, run_id, profile_hash, names):
+def validate_state(data, now, run_id, profile_hash, names, runtime_mode='simulation', device_backend='kinematic'):
     if (data.get('schema') != 1 or data.get('run_id') != run_id or
-            data.get('profile_hash') != profile_hash or data.get('runtime_mode') != 'simulation' or
-            data.get('device_backend') != 'kinematic' or not data.get('valid')):
+            data.get('profile_hash') != profile_hash or data.get('runtime_mode') != runtime_mode or
+            data.get('device_backend') != device_backend or not data.get('valid')):
         raise ValueError('LIVE_STATE_IDENTITY_OR_INVALID')
     for field in ('written_at', 'feedback_stamp'):
         value = data.get(field)
@@ -63,6 +63,7 @@ def observe(args, publish=None, stop=None):
     from bindu_runtime.robot_setup import RobotSetup
     robot = RobotSetup.load(args.robot_config)
     meta = dict(schema=1, run_id=args.run_id, profile_hash=robot.profile.digest,
+                runtime_mode=args.runtime_mode, device_backend=args.device_backend,
                 display_urdf=str(robot.display_urdf),
                 display_sha256=hashlib.sha256(robot.display_urdf.read_bytes()).hexdigest(),
                 tool_config=str(robot.tool_config), joint_names=sorted(robot.profile.limits))
@@ -84,7 +85,7 @@ def observe(args, publish=None, stop=None):
                 latest.update(pico=value, pico_time=time.time())
         except (ValueError, TypeError):
             pass
-    node.create_subscription(String, ns+'/teleop/pico/state', pico, 1)
+    node.create_subscription(String, ns+'/teleop/state', pico, 1)
     if args.trace_file:
         def runtime_event(msg):
             if msg.run_id!=args.run_id:return
@@ -108,12 +109,13 @@ def observe(args, publish=None, stop=None):
                 data.update(runtime_mode=msg.runtime_mode, device_backend=msg.device_backend,
                     feedback_stamp=msg.feedback_stamp.sec+msg.feedback_stamp.nanosec*1e-9,
                     execution=msg.state, code=msg.code, instance_id=msg.instance_id,
-                    valid=(msg.simulated and msg.profile_hash == robot.profile.digest and
+                    valid=(msg.simulated == (args.runtime_mode=='simulation') and msg.profile_hash == robot.profile.digest and
                            not msg.stop_failures and len(msg.joints.name) == len(msg.joints.position) and
                            len(set(msg.joints.name)) == len(msg.joints.name)),
                     q=dict(zip(msg.joints.name, msg.joints.position)))
                 try:
-                    validate_state(data, now, args.run_id, robot.profile.digest, robot.profile.limits)
+                    validate_state(data, now, args.run_id, robot.profile.digest, robot.profile.limits,
+                                   args.runtime_mode, args.device_backend)
                 except ValueError:
                     data.update(valid=False, q={})
             if 0 <= now-latest['pico_time'] <= .6:
@@ -164,17 +166,34 @@ def dashboard(args):
 
 
 def declare_load(args):
-    """Explicit simulation-fixture declaration; never a physical grasp claim."""
+    """Operator declaration, fenced to the current coordinator generation."""
     import rclpy
     from bindu_interfaces.srv import PicoContext
-    data = json.loads(args.state_file.read_text())
-    validate_state(data, time.time(), args.run_id, data['profile_hash'], data['joint_names'])
-    pico = data['pico']
-    if not pico.get('source_id') or not 0 <= time.time()-pico.get('stamp', 0.) <= .6:
-        raise ValueError('LIVE_PICO_CONTEXT_STALE')
+    from std_msgs.msg import String
+    from bindu_runtime.robot_setup import RobotSetup
+    robot=RobotSetup.load(args.robot_config)
     rclpy.init(args=[])
-    node = rclpy.create_node('snowbot_simulation_context')
+    node = rclpy.create_node('snowbot_operator_context')
     try:
+        received=[]
+        topic='/'+args.namespace.strip('/')+'/teleop/state'
+        def receive(msg):
+            try:
+                value=json.loads(msg.data)
+                if (value.get('runtime_mode')==args.runtime_mode and value.get('profile_hash')==robot.profile.digest and
+                        (not args.run_id or value.get('run_id')==args.run_id)):
+                    received.append(value)
+            except (TypeError,ValueError):
+                pass
+        node.create_subscription(String,topic,receive,1)
+        end=time.monotonic()+3.
+        while not received and time.monotonic()<end:rclpy.spin_once(node,timeout_sec=.02)
+        writers=node.get_publishers_info_by_topic(topic)
+        if len(writers)!=1 or writers[0].node_namespace.rstrip('/')+'/'+writers[0].node_name != '/'+args.namespace.strip('/')+'/pico_control':
+            raise ValueError('LIVE_COORDINATOR_PUBLISHER_MISMATCH')
+        pico=received[-1] if received else {}
+        if not pico.get('source_id') or not 0 <= time.time()-pico.get('stamp',0.) <= .6:
+            raise ValueError('LIVE_PICO_CONTEXT_STALE')
         client = node.create_client(PicoContext, '/'+args.namespace.strip('/')+'/teleop/pico/context')
         if not client.wait_for_service(timeout_sec=3.):
             raise RuntimeError('PICO_CONTEXT_UNAVAILABLE')
@@ -299,13 +318,15 @@ def main():
     parser.add_argument('--dashboard', action='store_true', help='ROS + browser display in one process, without a state file')
     parser.add_argument('--port',type=int,default=8013)
     parser.add_argument('--declare-load', choices=('empty','held','unknown'),
-                        help='Explicit simulation fixture declaration through existing PicoContext')
+                        help='Operator load/support declaration through PicoContext')
     parser.add_argument('--external-support', action='store_true')
     parser.add_argument('--state-file', type=Path)
     parser.add_argument('--trace-file', type=Path, help='Local diagnostic JSONL, at most 10 Hz; separate from training recording')
     parser.add_argument('--run-id', required=True)
     parser.add_argument('--namespace', default='bindu_vr_sim')
     parser.add_argument('--robot-config', default=str(ROOT/'src/integration/bindu_runtime/config/robots/snowbot/robot_snowbot.json'))
+    parser.add_argument('--runtime-mode', choices=('simulation','real'), default='simulation')
+    parser.add_argument('--device-backend', choices=('kinematic','snowbot_vendor'), default='kinematic')
     parser.add_argument('--output', type=Path)
     parser.add_argument('--duration', type=float, default=0.)
     parser.add_argument('--startup-timeout', type=float, default=30.)
@@ -320,13 +341,13 @@ def main():
         args.output.mkdir(parents=True, exist_ok=True)
         dashboard(args)
         return
+    if args.declare_load:
+        declare_load(args)
+        return
     if args.state_file is None:
         parser.error('legacy observation / file display requires --state-file')
     if args.observe:
         observe(args)
-        return
-    if args.declare_load:
-        declare_load(args)
         return
     if args.output is None:
         parser.error('Isaac display requires --output')

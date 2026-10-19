@@ -22,11 +22,17 @@ class SnowbotGrippers:
             return
         self.config_hash = hashlib.sha256(Path(path).read_bytes()).hexdigest()
         cfg = json.loads(Path(path).read_text())
+        if cfg.get('simulation_only', False) is not False:
+            raise ValueError('REAL_GRIPPER_CONFIG_REQUIRED')
         self.topic = node.get_parameter('vendor_namespace').value.rstrip('/')+'/bindu/gripper_command'
         self.publisher = (node.create_publisher(devices.array_type, self.topic, 1)
             if node.robot_io.command_enabled and cfg.get('calibrated') else None)
         self.core = GripperController(node.profile, cfg, self.send, self.health, node.now, self.arms_idle,
                                       enabled=node.robot_io.command_enabled)
+        self.bind_services()
+
+    def bind_services(self):
+        node = self.node
         self.state_pub = node.create_publisher(GripperState, 'gripper/state', 10)
         node.create_service(Lease, 'gripper/lease', self.lease)
         node.create_service(GripperControl, 'gripper/control', self.control)
@@ -99,7 +105,7 @@ class SnowbotGrippers:
             data = self.core.snapshot(side)
             when = data.pop('feedback_stamp')
             self.state_pub.publish(GripperState(stamp=stamp(self.node.now()), feedback_stamp=stamp(when),
-                runtime_mode='real', instance_id=self.node.instance_id, profile_hash=self.node.profile.digest,
+                runtime_mode=self.node.runtime_mode, instance_id=self.node.instance_id, profile_hash=self.node.profile.digest,
                 config_hash=self.config_hash, **data))
 
     def stop(self):

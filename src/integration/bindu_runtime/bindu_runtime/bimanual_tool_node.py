@@ -28,7 +28,9 @@ class BimanualToolNode(RuntimeNode):
         self.declare_parameter('tool_config',str(share/'config/robots/g1/bimanual_g1_sim.json'))
         self.declare_parameter('model_root',str(Path(get_package_share_directory('bindu_description'))/'urdf'))
         self.cfg=json.loads(Path(self.get_parameter('tool_config').value).read_text())
-        if (self.cfg.get('simulation_only') is not self.simulation or
+        self.declare_parameter('position_contract',False)
+        position_contract=self.get_parameter('position_contract').value
+        if (self.cfg.get('simulation_only') is not (self.simulation and not position_contract) or
                 self.cfg.get('collision_scope') not in ('empty_scene_only','configured_tool_geometry')):
             raise ValueError('BIMANUAL_CONFIG_RUNTIME_MODE_MISMATCH')
         if not self.simulation and self.cfg.get('collision_scope')!='configured_tool_geometry':

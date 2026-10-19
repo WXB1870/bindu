@@ -22,12 +22,17 @@ def assemble(context):
     if not recorder_enabled and value('recording_mode')!='off':
         raise ValueError('RECORDER_DISABLED_REQUIRES_OFF')
     mode = resolve_mode(value('runtime_mode', 'simulation'))
-    if value('gripper_config') and mode != 'real':
+    position_contract=enabled('position_contract','false')
+    if position_contract and value('device_backend') not in ('kinematic','snowbot_vendor'):
+        raise ValueError('POSITION_CONTRACT_BACKEND')
+    if value('gripper_config') and mode != 'real' and not position_contract:
         raise ValueError('GRIPPER_REQUIRES_REAL_MODE')
     legacy = not value('robot_config')
     selection = value('robot_config') or str(Path(get_package_share_directory('bindu_runtime'))/'config/robots/snowbot/robot_snowbot.json')
     overrides = {'profile': value('profile'), 'tool': value('bimanual_config')} if legacy else None
     robot = RobotSetup.load(selection, overrides=overrides)
+    if position_contract and (robot.robot_id!='snowbot' or single_enabled):
+        raise ValueError('POSITION_CONTRACT_REQUIRES_SNOWBOT_BIMANUAL')
     side, backend = value('side'), value('device_backend')
     if single_enabled and side not in robot.single_arm:
         raise ValueError('ROBOT_SINGLE_ARM_UNAVAILABLE:' + side)
@@ -35,10 +40,10 @@ def assemble(context):
     # unsupported backend can silently become a simulated device.
     if backend not in (('snowbot_vendor',) if mode=='real' else ('kinematic','external_simulation')):
         raise ValueError('ROBOT_HARDWARE_BACKEND_NOT_IMPLEMENTED:' + backend)
-    if mode=='real' and (robot.robot_id!='snowbot' or single_enabled or enabled('pico_enabled','false')):
+    if mode=='real' and (robot.robot_id!='snowbot' or single_enabled):
         raise ValueError('REAL_REQUIRES_SNOWBOT_BIMANUAL_POSITION')
     tool_settings=json.loads(robot.tool_config.read_text())
-    if tool_settings.get('simulation_only') is not (mode=='simulation'):
+    if tool_settings.get('simulation_only') is not (mode=='simulation' and not position_contract):
         raise ValueError('BIMANUAL_CONFIG_RUNTIME_MODE_MISMATCH')
     if value('tool_input_source') not in ('tool_pose', 'vr'):
         raise ValueError('ROBOT_TOOL_INPUT')
@@ -52,18 +57,28 @@ def assemble(context):
         raise ValueError('INITIAL_POSE_ONLY_FOR_KINEMATIC_FIXTURE')
     pico = value('pico_enabled','false').lower() == 'true'
     pico_demo=enabled('pico_simulation_demo','false')
-    if pico_demo and (not pico or mode!='simulation' or backend!='kinematic'):
+    if pico_demo and (position_contract or not pico or mode!='simulation' or backend!='kinematic'):
         raise ValueError('PICO_DEMO_REQUIRES_KINEMATIC_SIMULATION')
-    if pico and (robot.robot_id != 'snowbot' or backend != 'kinematic' or value('tool_input_source') != 'vr'):
+    if pico and (robot.robot_id != 'snowbot' or (backend != 'kinematic' and not position_contract) or value('tool_input_source') != 'vr'):
         raise ValueError('PICO_REQUIRES_SNOWBOT_KINEMATIC_VR')
     pico_config = value('pico_config') or str(Path(get_package_share_directory('bindu_runtime'))/'config/robots/snowbot/pico_snowbot_sim.json')
     if pico:
         tool_settings=json.loads(robot.tool_config.read_text())
-        if not tool_settings.get('right_axial_grasp') or tool_settings.get('collision_scope')!='configured_tool_geometry' or not tool_settings.get('demo',{}).get('initial_positions_rad'):
+        if not tool_settings.get('right_axial_grasp') or tool_settings.get('collision_scope')!='configured_tool_geometry' or (not position_contract and not tool_settings.get('demo',{}).get('initial_positions_rad')):
             raise ValueError('PICO_REQUIRES_AXIAL_SHOVEL_CONFIG')
         settings=json.loads(Path(pico_config).read_text())
-        if settings.get('simulation_only') is not True or settings.get('mapping')!='pico_snowbot_v1':
+        if (settings.get('simulation_only') is not (mode=='simulation') or settings.get('mapping')!='pico_snowbot_v1' or
+                settings.get('schema_version') != (2 if position_contract else 1)):
             raise ValueError('PICO_CONFIG_UNAVAILABLE')
+        if position_contract and not value('gripper_config'):
+            raise ValueError('PICO_GRIPPER_CONFIG_REQUIRED')
+        if position_contract:
+            from bindu_hardware.snowbot_gripper import validate_config
+            grippers=validate_config(json.loads(Path(value('gripper_config')).read_text()),robot.profile)
+            if grippers.get('simulation_only',False) is not (mode=='simulation'):
+                raise ValueError('PICO_GRIPPER_CONFIG_MODE_MISMATCH')
+        if mode=='real' and settings.get('device_initial_positions_rad'):
+            raise ValueError('REAL_REQUIRES_MEASURED_INITIAL_STATE')
     ns = LaunchConfiguration('namespace')
     common = {'profile': str(robot.profile_path), 'run_id': LaunchConfiguration('run_id'), 'runtime_mode': mode,
               **({} if legacy else {'robot_config': str(robot.path), 'robot_config_digest': robot.digest})}
@@ -71,15 +86,18 @@ def assemble(context):
     nodes = [LogInfo(msg=f'Robot {robot.robot_id}: {len(robot.active_joints)} tool DOF, '
                      f'{len(robot.context_joints)} measured context joints; config={robot.digest}')]
     execution = {**common, 'device_backend': backend}
+    if pico and position_contract and mode=='simulation' and settings.get('device_initial_positions_rad'):
+        execution['kinematic_initial_positions'] = ParameterValue(
+            json.dumps(settings['device_initial_positions_rad']), value_type=str)
     if initial:
         pose = json.loads(robot.tool_config.read_text())['demo']['initial_positions_rad']
         execution['kinematic_initial_positions'] = ParameterValue(json.dumps(pose), value_type=str)
-    if mode=='real':
+    if mode=='real' or position_contract:
         execution.update(command_enabled=enabled('command_enabled','false'),
             **{key:value(key,default) for key,default in (
                 ('gripper_config',''),('vendor_namespace','/snowbot'),('arm_receiver_node',''),
                 ('servo_receiver_node',''),('mid_receiver_node',''))})
-    nodes.append(Node(package='bindu_runtime', executable='snowbot_adapter' if mode=='real' else 'execution', namespace=ns,
+    nodes.append(Node(package='bindu_runtime', executable='snowbot_adapter' if mode=='real' else 'snowbot_position_sim' if position_contract else 'execution', namespace=ns,
                       output='screen', parameters=[execution]))
     if recorder_enabled:
         nodes.append(Node(package='bindu_runtime', executable='recorder', namespace=ns,
@@ -107,6 +125,7 @@ def assemble(context):
     nodes.append(Node(package='bindu_runtime', executable='teleop_tool', namespace=ns,
                       output='screen', parameters=[{**common, **model, **tool,'require_recording':recorder_enabled,
                           'simulation_demo':pico_demo,
+                          'position_contract':position_contract,
                           'tool_ground_policy':'report_only' if pico_demo else 'configured'}]))
     nodes.append(Node(package='bindu_runtime', executable='teleop_display', namespace=ns,
                       condition=IfCondition(LaunchConfiguration('tool_display_enabled')),
@@ -117,6 +136,7 @@ def assemble(context):
         nodes.append(Node(package='bindu_runtime',executable='pico_control',namespace=ns,output='screen',
             parameters=[{**common,**model,'tool_config':str(robot.tool_config),
                          'pico_config':pico_config,'device_backend':backend,'recording_enabled':recorder_enabled,
+                         'gripper_config':value('gripper_config'),
                          'simulation_demo':pico_demo}]))
     nodes.append(Node(package='bindu_runtime', executable='vr_input', namespace=ns,
                       condition=IfCondition(LaunchConfiguration('vr_enabled')), output='screen',

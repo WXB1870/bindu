@@ -26,7 +26,7 @@ class VRInputNode(RuntimeNode):
         cfg['cert_file'] = cfg['cert_file'] or None
         cfg['key_file'] = cfg['key_file'] or None
         self.mapping=cfg['mapping']
-        if self.simulation and self.mapping=='pico_snowbot_v1' and self.get_parameter('robot_config').value:
+        if self.mapping=='pico_snowbot_v1' and self.get_parameter('robot_config').value:
             from .robot_setup import RobotSetup
             robot=RobotSetup.load(self.get_parameter('robot_config').value)
             cfg.update(display_urdf=str(robot.display_urdf),display_tool_config=str(robot.tool_config))
@@ -35,7 +35,7 @@ class VRInputNode(RuntimeNode):
         # delivers the pair to mode, single-arm and bimanual subscribers.
         self.publisher = self.create_publisher(VRInput, 'teleop/vr/input', 5)
         self.timer = self.create_timer(.005, self.poll)
-        self.create_subscription(String, 'teleop/pico/state' if self.mapping=='pico_snowbot_v1' else 'teleop/display', self.on_display,
+        self.create_subscription(String, 'teleop/state' if self.mapping=='pico_snowbot_v1' else 'teleop/display', self.on_display,
                                  QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT))
 
     def on_display(self, msg):

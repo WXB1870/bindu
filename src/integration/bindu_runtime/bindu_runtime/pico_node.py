@@ -1,4 +1,4 @@
-"""PICO simulation coordinator. Hardware is deliberately not a simulated fallback.
+"""PICO coordinator over shared position operations or legacy demo actuators.
 
 Use the existing mode/tool Actions and shared execution lease. All motion and
 actuator handoffs wait for fresh stop feedback; stale completions cannot rearm.
@@ -32,7 +32,7 @@ class Superseded(RuntimeError):
 
 class PicoNode(RuntimeNode):
     def __init__(self):
-        super().__init__('pico_control')
+        super().__init__('pico_control', allow_hardware=True, default_mode='simulation')
         self.declare_parameter('recording_enabled',True,descriptor=ParameterDescriptor(read_only=True))
         self.recording_enabled=self.get_parameter('recording_enabled').value
         share=Path(get_package_share_directory('bindu_runtime'))
@@ -40,21 +40,28 @@ class PicoNode(RuntimeNode):
         self.declare_parameter('tool_config',str(share/'config/robots/snowbot/bimanual_snowbot_shovel.json'),descriptor=ParameterDescriptor(read_only=True))
         self.declare_parameter('model_root',str(Path(get_package_share_directory('bindu_description'))/'urdf'),descriptor=ParameterDescriptor(read_only=True))
         self.declare_parameter('device_backend','kinematic',descriptor=ParameterDescriptor(read_only=True))
+        self.declare_parameter('gripper_config','',descriptor=ParameterDescriptor(read_only=True))
         self.cfg=json.loads(Path(self.get_parameter('pico_config').value).read_text())
-        if self.cfg.get('simulation_only') is not True or self.cfg.get('mapping')!=PICO_MAPPING:
-            raise ValueError('PICO_REQUIRES_EXPLICIT_SIMULATION_CONFIG')
+        self.position_contract = self.cfg.get('schema_version') == 2
+        if self.cfg.get('schema_version') not in (1,2):
+            raise ValueError('PICO_CONFIG_SCHEMA')
+        if self.cfg.get('simulation_only') is not self.simulation or self.cfg.get('mapping')!=PICO_MAPPING:
+            raise ValueError('PICO_CONFIG_RUNTIME_MODE_MISMATCH')
         self.backend=self.get_parameter('device_backend').value
-        if self.backend!='kinematic':
+        if (not self.position_contract and not self.simulation or
+                self.backend != ('kinematic' if self.simulation else 'snowbot_vendor')):
             raise ValueError('PICO_ACTUATOR_BACKEND_UNAVAILABLE:'+self.backend)
         self.tool_cfg=json.loads(Path(self.get_parameter('tool_config').value).read_text())
-        if not self.tool_cfg.get('right_axial_grasp') or self.tool_cfg.get('collision_scope')!='configured_tool_geometry' or not self.tool_cfg.get('demo',{}).get('initial_positions_rad'):
+        if (not self.tool_cfg.get('right_axial_grasp') or self.tool_cfg.get('collision_scope')!='configured_tool_geometry' or
+                not self.position_contract and not self.tool_cfg.get('demo',{}).get('initial_positions_rad')):
             raise ValueError('PICO_REQUIRES_AXIAL_SHOVEL_CONFIG')
         self.tool_cfg['urdf']=str(Path(self.get_parameter('model_root').value)/self.tool_cfg['urdf'])
-        self.groups=tuple(self.tool_cfg['resource_groups'])+tuple(self.cfg['grippers'][s]['group'] for s in ('left','right'))
+        self.groups=tuple(self.tool_cfg['resource_groups'])+(() if self.position_contract else
+            tuple(self.cfg['grippers'][s]['group'] for s in ('left','right')))
         if len(set(self.groups))!=len(self.groups) or any(g not in self.profile.groups for g in self.groups):
             raise ValueError('PICO_RESOURCE_LAYOUT')
         self.names=tuple(n for g in self.groups for n in self.profile.groups[g])
-        for side in ('left','right'):
+        for side in (() if self.position_contract else ('left','right')):
             item=self.cfg['grippers'][side]
             if tuple(self.profile.groups[item['group']])!=(item['joint'],):raise ValueError('PICO_GRIPPER_LAYOUT')
             targets=[item[k] for k in ('open','closed','virtual')]
@@ -63,23 +70,28 @@ class PicoNode(RuntimeNode):
                     or len(set(targets))!=3):raise ValueError('PICO_GRIPPER_TARGETS')
         if self.cfg.get('initial_load_state','unknown')!='unknown':
             raise ValueError('PICO_STARTUP_LOAD_MUST_BE_UNKNOWN')
+        if not self.simulation and self.cfg.get('device_initial_positions_rad'):
+            raise ValueError('REAL_REQUIRES_MEASURED_INITIAL_STATE')
         self.declare_parameter('simulation_demo',False)
         self.simulation_demo=self.get_parameter('simulation_demo').value
         if type(self.simulation_demo) is not bool or (self.simulation_demo and
-                (not self.simulation or self.backend!='kinematic')):
+                (not self.simulation or self.backend!='kinematic' or self.position_contract)):
             raise ValueError('PICO_DEMO_REQUIRES_KINEMATIC_SIMULATION')
         if self.simulation_demo:
             from bindu_teleoperation.simulation_fixture import short_rod_config
             self.tool_cfg=short_rod_config(self.tool_cfg)
-        self.prepare_positions=(self.cfg.get('simulation_demo_prepare_positions_rad',
+        self.prepare_positions=(self.cfg.get('prepare_positions_rad') if self.position_contract else
+            (self.cfg.get('simulation_demo_prepare_positions_rad',
             self.tool_cfg['demo']['initial_positions_rad']) if self.simulation_demo else
-            self.tool_cfg['demo']['initial_positions_rad'])
+            self.tool_cfg['demo']['initial_positions_rad']))
         prepare_names=[n for g in self.tool_cfg['resource_groups'] for n in self.profile.groups[g]]
-        if (not set(prepare_names)<=set(self.prepare_positions) or any(
+        if self.prepare_positions is not None and (not set(prepare_names)<=set(self.prepare_positions) or any(
                 type(self.prepare_positions[n]) not in (float,int) or not math.isfinite(self.prepare_positions[n]) or
                 not self.profile.limits[n][0]<=self.prepare_positions[n]<=self.profile.limits[n][1]
                 for n in prepare_names)):
             raise ValueError('PICO_PREPARE_PRESET_INVALID')
+        if not 0 < float(self.cfg['prepare_duration']) <= 60:
+            raise ValueError('PICO_PREPARE_DURATION_INVALID')
         self.control=PicoControl(initial_load='unknown',simulation_demo=self.simulation_demo,
                                  max_age=float(self.tool_cfg['input_max_age']))
         validation_cfg=dict(self.tool_cfg,worker_timeout=30.)
@@ -90,6 +102,10 @@ class PicoNode(RuntimeNode):
         self.lease=None;self.pending_intent=None;self.running=None
         self.waiters=set();self.stop_deadline=None;self.release_until=0.;self.recording=None;self.record_future=None
         self.last_status=0.;self.last_phase=None
+        self.position_ops = None
+        if self.position_contract:
+            from .pico_position import PositionOperations
+            self.position_ops = PositionOperations(self, self.get_parameter('gripper_config').value)
         self.leases=self.create_client(Lease,'execution/lease')
         self.submit=self.create_client(SubmitMotion,'execution/submit')
         self.stop_client=self.create_client(ControlExecution,'execution/control')
@@ -99,6 +115,7 @@ class PicoNode(RuntimeNode):
         self.tools=ActionClient(self,TeleopSession,'teleop/tool_session')
         self.projected=self.create_publisher(VRInput,'teleop/vr/input',10)
         self.display=self.create_publisher(String,'teleop/pico/state',10)
+        self.operator_state=self.create_publisher(String,'teleop/state',10)
         self.create_subscription(VRInput,'teleop/vr/raw',self.on_frame,10)
         self.create_subscription(ExecutionState,'execution/state',self.on_state,10)
         if self.recording_enabled:
@@ -120,7 +137,7 @@ class PicoNode(RuntimeNode):
 
     def reading(self):
         s=self.state
-        if (s is None or s.device_backend!=self.backend or not s.simulated or
+        if (s is None or s.device_backend!=self.backend or s.simulated != self.simulation or
                 not 0<=self.now()-seconds(s.feedback_stamp)<=self.tool_cfg['feedback_max_age'] or
                 len(s.joints.name)!=len(s.joints.position) or len(set(s.joints.name))!=len(s.joints.name) or
                 not all(math.isfinite(q) for q in s.joints.position) or s.stop_failures):
@@ -132,12 +149,12 @@ class PicoNode(RuntimeNode):
     def feedback(self):
         try:
             s,q=self.reading()
-            modes=[]
-            for side in ('left','right'):
+            modes=list(self.position_ops.modes()) if self.position_ops else []
+            for side in (() if self.position_ops else ('left','right')):
                 cfg=self.cfg['grippers'][side];value=q[cfg['joint']]
                 modes.append(next((m for m in ('closed','open','virtual') if abs(value-cfg[m])<.003),'unknown'))
             stopped=((self.handoff_complete or not s.lease_active) and s.state not in ('RUNNING','STOPPING') and not s.reference.name and
-                     joints_at_rest(s.joints,self.names,.005))
+                     joints_at_rest(s.joints,self.names,.005) and (not self.position_ops or self.position_ops.stopped()))
             return PicoFeedback(seconds(s.feedback_stamp),stopped,tuple(modes))
         except RuntimeError:
             return PicoFeedback(0.,False,healthy=False)
@@ -176,9 +193,10 @@ class PicoNode(RuntimeNode):
         allowed=self.control.phase in ('engaging','following') and self.now()>=self.release_until
         for m in (a,b):
             self.projected.publish(VRInput(stamp=m.stamp,source_id=m.source_id+':'+self.instance_id,runtime_mode=m.runtime_mode,
-                seq=m.seq,side=m.side,pose=m.pose,grip=m.grip if allowed else 0.,trigger=m.trigger,
+                seq=m.seq,side=m.side,pose=m.pose,grip=m.grip if allowed else 0.,trigger=0. if self.position_contract else m.trigger,
                 init=False,stop=self.control.phase=='locked' or not self.handoff_complete,valid=m.valid,clutch_seq=m.clutch_seq,
-                mapping=PICO_MAPPING,buttons=m.buttons,button_edges=m.button_edges,
+                mapping=PICO_MAPPING,buttons=0 if self.position_contract else m.buttons,
+                button_edges=[0]*8 if self.position_contract else m.button_edges,
                 virtual_grip=self.control.virtual))
 
     async def pause(self):
@@ -190,7 +208,7 @@ class PicoNode(RuntimeNode):
         if not self.control.pending or self.control.pending.token!=intent.token:
             raise Superseded('PICO_OPERATION_SUPERSEDED')
         self.control.tick(self.now())
-        if self.control.pending.token!=intent.token:raise Superseded('PICO_OPERATION_SUPERSEDED')
+        if not self.control.pending or self.control.pending.token!=intent.token:raise Superseded('PICO_OPERATION_SUPERSEDED')
 
     async def wait(self,future,timeout=2.):
         end=time.monotonic()+timeout
@@ -260,7 +278,7 @@ class PicoNode(RuntimeNode):
                     if not candidate.valid(self.profile,self.names):break
                     duration*=.75;curve=candidate
             self.event('PICO_ACTUATOR_STARTED',json.dumps(dict(operation=intent.operation,
-                duration_s=duration,fit_duration=fit_duration,simulated_actuator=True)))
+                duration_s=duration,fit_duration=fit_duration,simulated_actuator=self.simulation)))
             started=self.now();command_id=self.instance_id+'_'+str(intent.token)
             deadline=time.monotonic()+duration+6.;renew_at=0.;next_submit=0.
             while time.monotonic()<deadline:
@@ -276,13 +294,14 @@ class PicoNode(RuntimeNode):
                     if not reply.ok:raise RuntimeError(reply.code)
                     renew_at=time.monotonic()+.2
                 if now>=next_submit:
-                    sample=curve.sample(min(duration,max(0.,now-started)+.12))
+                    sample=curve.sample(min(duration,max(0.,now-started)+(0. if self.position_contract else .12)))
                     point=JointTrajectoryPoint(positions=list(sample.q),velocities=list(sample.v),
                         accelerations=list(sample.a),time_from_start=Duration(nanosec=120000000))
                     msg=MotionCommand(schema_version=2,runtime_mode=self.runtime_mode,command_id=command_id+'_'+str(segment),
                         task_id='pico_'+intent.operation,expected_revision=revision,profile_hash=self.profile.digest,lease_id=lease.lease_id,
-                        epoch=lease.epoch,mode='joint_reference_segment',resource_groups=list(self.groups),
-                        stamp=stamp(now),valid_for=.25,joint_names=list(self.names),points=[point])
+                        epoch=lease.epoch,mode='joint_target' if self.position_contract else 'joint_reference_segment',resource_groups=list(self.groups),
+                        stamp=stamp(now),valid_for=.25,joint_names=list(self.names),
+                        positions=list(sample.q) if self.position_contract else [],points=[] if self.position_contract else [point])
                     self.current(intent)
                     response=await self.wait(self.submit.call_async(SubmitMotion.Request(command=msg)))
                     if not response.accepted:raise RuntimeError(response.code)
@@ -295,7 +314,9 @@ class PicoNode(RuntimeNode):
 
     async def validate_prepare(self,intent,targets=None):
         self.current(intent);s,q=self.reading()
-        if not joints_at_rest(s.joints,self.names,1e-6):raise RuntimeError('PREPARE_REQUIRES_STATIONARY_START')
+        if targets is None and self.prepare_positions is None:
+            raise RuntimeError('PICO_PREPARE_PRESET_REQUIRED')
+        if not joints_at_rest(s.joints,self.names,.005 if self.position_contract else 1e-6):raise RuntimeError('PREPARE_REQUIRES_STATIONARY_START')
         loaded=targets is not None
         target=targets if loaded else {n:self.prepare_positions[n]
                 for g in self.tool_cfg['resource_groups'] for n in self.profile.groups[g]}
@@ -388,11 +409,16 @@ class PicoNode(RuntimeNode):
                 await self.move(intent,target,self.cfg['prepare_duration'],fit_duration=self.simulation_demo)
             elif intent.operation=='grippers':
                 if not self.control.supported or self.control.phase!='loading':raise RuntimeError('PICO_LOADING_REQUIRED')
-                target={self.cfg['grippers'][side]['joint']:self.cfg['grippers'][side][mode]
-                        for side,mode in zip(('left','right'),intent.value)}
-                await self.move(intent,target,self.cfg['gripper_duration'])
+                if self.position_ops:
+                    await self.position_ops.move_grippers(intent)
+                else:
+                    target={self.cfg['grippers'][side]['joint']:self.cfg['grippers'][side][mode]
+                            for side,mode in zip(('left','right'),intent.value)}
+                    await self.move(intent,target,self.cfg['gripper_duration'])
             elif intent.operation=='confirm_tool':await self.confirm_tool(intent)
             elif intent.operation=='switch_grasp':
+                if self.position_contract:
+                    raise RuntimeError('PICO_AXIAL_GRASP_UNAVAILABLE')
                 if self.control.load!='held' or self.feedback().modes[0]!='closed':raise RuntimeError('PICO_LEFT_SUPPORT_REQUIRED')
                 cfg=self.cfg['grippers']['right']
                 target={cfg['joint']:cfg['virtual' if intent.value else 'closed']}
@@ -407,7 +433,7 @@ class PicoNode(RuntimeNode):
             except Exception as stop_error:reason+=':'+type(stop_error).__name__+':'+str(stop_error)
         self.control.complete(intent.token,ok,reason,self.now())
         self.event('PICO_OPERATION_RESULT',json.dumps(dict(token=intent.token,operation=intent.operation,
-            success=ok,reason=reason,simulated_actuator=True)))
+            success=ok,reason=reason,simulated_actuator=self.simulation)))
 
     def tick(self):
         for f in tuple(self.waiters):
@@ -450,9 +476,12 @@ class PicoNode(RuntimeNode):
                     pass
             view=dict(self.control.snapshot(self.now()),run_id=self.run_id,profile_hash=self.profile.digest,vr_source_id=self.control.source,
                 source_id=(self.control.source+':'+self.instance_id) if self.control.source else None,
-                coordinator_id=self.instance_id,stamp=self.now(),simulated=True,runtime_mode=self.runtime_mode,
+                schema=1,device_backend=self.backend,coordinator_id=self.instance_id,stamp=self.now(),simulated=self.simulation,runtime_mode=self.runtime_mode,
                 handoff_complete=self.handoff_complete,gripper_modes=list(self.feedback().modes),tool_phase=self.tool_phase,recording=self.recording,recording_enabled=self.recording_enabled,
-                physical_gripper_confirmed=None,actuator_feedback='simulated_joint_position',
+                physical_gripper_confirmed=None,actuator_feedback='joint_position',
+                capabilities=dict(prepare=self.prepare_positions is not None,
+                    grippers=bool(self.position_ops.config['calibrated']) if self.position_ops else True,
+                    axial_grasp=not self.position_contract),
                 execution_state=self.state.state if self.state is not None else 'unavailable',
                 feedback_age_s=self.now()-seconds(self.state.feedback_stamp) if self.state is not None else None)
             raw=tuple(self.frames.values())
@@ -472,6 +501,7 @@ class PicoNode(RuntimeNode):
             view['raw_input_valid']=(len(raw)==2 and all(f.valid for f in raw) and
                 len({(f.source_id,f.seq) for f in raw})==1)
             self.display.publish(String(data=json.dumps(view)))
+            self.operator_state.publish(String(data=json.dumps(view)))
             if self.last_phase!=(self.control.phase,self.control.reason):
                 self.last_phase=(self.control.phase,self.control.reason)
                 self.event('PICO_STATE',json.dumps(view))

@@ -109,7 +109,7 @@ def _serve(config, output, feedback):
         from PIL import ImageFont
         (Path(static.name)/'display.ttf').write_bytes(ImageFont.load_default(size=14).font_bytes)
         model_url = None
-        if config.get('display_urdf') and config.get('runtime_mode')=='simulation':
+        if config.get('display_urdf'):
             from .model import prepare_model
             model_url=prepare_model(config['display_urdf'],static.name,config.get('display_tool_config'),
                                     short_rod=config.get('simulation_demo',False))

@@ -9,6 +9,31 @@ SHARE=ROOT/'src/integration/bindu_runtime'
 
 
 class DeploymentTests(unittest.TestCase):
+    def test_position_assembly_rejects_cross_mode_calibration_before_launch(self):
+        from launch import LaunchContext
+        from bindu_runtime.teleop_assembly import assemble
+        for mode in ('sim','real'):
+            _,args=load_deployment(SHARE/f'config/deployments/snowbot_vr_{mode}.json',SHARE)
+            context=LaunchContext();context.launch_configurations.update(args)
+            self.assertTrue(assemble(context))
+            other='real' if mode=='sim' else 'sim'
+            context.launch_configurations['gripper_config']=str(SHARE/f'config/robots/snowbot/snowbot_grippers_{other}.json')
+            with self.assertRaisesRegex(ValueError,'GRIPPER_CONFIG_MODE_MISMATCH'):assemble(context)
+
+    def test_position_recipes_share_robot_and_reject_demo_shortcut(self):
+        _,sim=load_deployment(SHARE/'config/deployments/snowbot_vr_sim.json',SHARE)
+        _,real=load_deployment(SHARE/'config/deployments/snowbot_vr_real.json',SHARE)
+        self.assertEqual(sim['robot_config'],real['robot_config'])
+        self.assertEqual(real['pico_enabled'],'true')
+        self.assertEqual(real['command_enabled'],'false')
+        recipe=json.loads((SHARE/'config/deployments/snowbot_vr_sim.json').read_text())
+        for key,value in (('position_contract','true'),('pico_simulation_demo',True),
+                          ('device_backend','external_simulation')):
+            bad=json.loads(json.dumps(recipe));bad['arguments'][key]=value
+            with tempfile.TemporaryDirectory() as tmp:
+                path=Path(tmp)/'bad.json';path.write_text(json.dumps(bad))
+                with self.assertRaises(ValueError):load_deployment(path,SHARE)
+
     def test_default_recipe_has_no_startup_motion_or_vr_requirement(self):
         launch,args=load_deployment(SHARE/'config/deployments/teleop_robot_deployment.json',SHARE)
         self.assertEqual(launch,'robot_teleop.launch.py')

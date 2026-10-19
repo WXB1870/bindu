@@ -42,14 +42,17 @@ def project_state(data, now, identity):
     result = {k:data.get(k) for k in ('run_id','written_at','feedback_stamp','execution','code')}
     result.update(valid=False, pico_fresh=False, pico={}, server_time=now)
     try:
-        validate_state(data, now, identity['run_id'], identity['profile_hash'], identity['joint_names'])
-        if data.get('instance_id') != identity.get('instance_id'):
+        validate_state(data, now, identity['run_id'], identity['profile_hash'], identity['joint_names'],
+                       identity.get('runtime_mode','simulation'), identity.get('device_backend','kinematic'))
+        if identity.get('instance_id') and data.get('instance_id') != identity['instance_id']:
             raise ValueError('LIVE_EXECUTOR_CHANGED')
+        if not identity.get('instance_id'):
+            identity['instance_id'] = data.get('instance_id')
         result['valid'] = True
         pico = data.get('pico', {})
         if (pico.get('run_id') == identity['run_id'] and
                 pico.get('profile_hash') == identity['profile_hash'] and
-                pico.get('runtime_mode') == 'simulation' and
+                pico.get('runtime_mode') == identity.get('runtime_mode','simulation') and
                 0 <= now-pico.get('stamp', 0.) <= .6):
             pico = json.loads(json.dumps(pico))
             elapsed = now-pico['stamp']
@@ -274,15 +277,19 @@ def serve(args, read_state=None, stop=None):
     while not stop.is_set():
         data = read_state()
         try:
-            validate_state(data, time.time(), args.run_id, data.get('profile_hash'), data.get('joint_names', []))
+            # Metadata is available before hardware feedback. Render a waiting
+            # page without turning absent feedback into a startup failure.
+            if data.get('run_id') != args.run_id or not data.get('display_urdf'):
+                raise ValueError('WAITING_FOR_METADATA')
             pico = data.get('pico', {})
-            if (not data.get('instance_id') or pico.get('run_id') != args.run_id or
+            if (pico.get('run_id') != args.run_id or
                     not 0 <= time.time()-pico.get('stamp', 0.) <= .6):
                 raise ValueError('WAITING_FOR_PICO')
+            data.update(runtime_mode=args.runtime_mode,device_backend=args.device_backend)
             break
         except (ValueError, TypeError):
             if time.monotonic() >= deadline:
-                raise TimeoutError('等待仿真反馈超时，请检查控制终端日志。')
+                raise TimeoutError('等待遥操作状态超时，请检查控制终端日志。')
             stop.wait(.05)
     else:
         return
@@ -358,9 +365,12 @@ def serve(args, read_state=None, stop=None):
             status='WAITING'
             try:
                 value=read_state()
-                q=validate_state(value,time.time(),args.run_id,data['profile_hash'],names)
-                if value.get('instance_id')!=data.get('instance_id'):
+                q=validate_state(value,time.time(),args.run_id,data['profile_hash'],names,
+                                 args.runtime_mode,args.device_backend)
+                if data.get('instance_id') and value.get('instance_id')!=data['instance_id']:
                     raise ValueError('LIVE_EXECUTOR_CHANGED')
+                if not data.get('instance_id'):
+                    data['instance_id']=value.get('instance_id')
                 if last_stamp is not None and value['feedback_stamp']<last_stamp:
                     raise ValueError('LIVE_TIME_REVERSED')
                 if value['feedback_stamp']!=last_stamp:

@@ -15,7 +15,7 @@ spec.loader.exec_module(helper)
 webspec = importlib.util.spec_from_file_location('snowbot_web', Path(__file__).resolve().parents[1]/'tools/snowbot_web.py')
 web = importlib.util.module_from_spec(webspec)
 webspec.loader.exec_module(web)
-entryspec = importlib.util.spec_from_file_location('run_vr_sim', Path(__file__).resolve().parents[1]/'tools/run_vr_sim.py')
+entryspec = importlib.util.spec_from_file_location('run_vr_sim', Path(__file__).resolve().parents[1]/'tools/run_vr.py')
 entry = importlib.util.module_from_spec(entryspec)
 entryspec.loader.exec_module(entry)
 
@@ -30,6 +30,13 @@ class LiveFeedbackTests(unittest.TestCase):
 
     def test_fresh_complete_feedback_is_displayable(self):
         self.assertEqual(self.validate(self.data), {'joint':.2})
+
+    def test_real_feedback_requires_explicit_matching_backend(self):
+        real=dict(self.data,runtime_mode='real',device_backend='snowbot_vendor')
+        self.assertEqual(helper.validate_state(real,10.1,'run','profile',('joint',),'real','snowbot_vendor'),{'joint':.2})
+        with self.assertRaises(ValueError):self.validate(real)
+        with self.assertRaises(ValueError):
+            helper.validate_state(self.data,10.1,'run','profile',('joint',),'real','snowbot_vendor')
 
     def test_recent_file_does_not_refresh_old_device_feedback(self):
         for field in ('feedback_stamp', 'written_at'):
@@ -126,6 +133,18 @@ class WebFeedbackTests(unittest.TestCase):
 
 
 class SimulationEntryTests(unittest.TestCase):
+    def test_device_selection_propagates_to_control_and_display(self):
+        root=Path(__file__).resolve().parents[1]
+        args=entry.parse_args(['--config',str(root/'src/integration/bindu_runtime/config/deployments/snowbot_vr_real.json')])
+        control,display=entry.commands(args)
+        self.assertIn('runtime_mode:=real',control)
+        self.assertIn('device_backend:=snowbot_vendor',control)
+        self.assertIn('command_enabled:=false',control)
+        self.assertIn('position_contract:=true',control)
+        self.assertNotIn('pico_simulation_demo:=true',control)
+        self.assertEqual(display[display.index('--runtime-mode')+1],'real')
+        self.assertEqual(display[display.index('--device-backend')+1],'snowbot_vendor')
+
     def test_partial_start_failure_stops_already_started_control(self):
         with tempfile.TemporaryDirectory() as directory:
             args = entry.parse_args(['--output', str(Path(directory)/'run')])
@@ -147,6 +166,7 @@ class SimulationEntryTests(unittest.TestCase):
         self.assertEqual(display[display.index('--run-id')+1], 'test')
         self.assertEqual(display[display.index('--namespace')+1], 'test_ns')
         self.assertIn('--dashboard', display)
+        self.assertFalse(any(value.endswith(':=') for value in control))
         self.assertNotIn('--state-file', display)
         self.assertNotIn('--trace-file', display)
         args.diagnostics = True
@@ -154,7 +174,8 @@ class SimulationEntryTests(unittest.TestCase):
 
     def test_bad_parameters_fail_before_processes_start(self):
         for argv in (['--run-id', '../escape'], ['--namespace', 'bad:ns'],
-                     ['--port', '8012'], ['--duration', 'nan'], ['--domain-id', '233']):
+                     ['--port', '8012'], ['--duration', 'nan'], ['--domain-id', '233'],
+                     ['--check','--declare-load','empty'], ['--external-support']):
             with self.subTest(argv=argv), patch('sys.stderr'), self.assertRaises(SystemExit):
                 entry.parse_args(argv)
 

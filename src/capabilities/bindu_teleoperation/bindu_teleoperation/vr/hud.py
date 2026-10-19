@@ -15,8 +15,8 @@ def hud_spec(view):
     # Older observers cannot prove the applied grasp from a requested value.
     grip = '右手虚握' if applied == 'right_axial' else '刚握' if applied == 'rigid' else '握持待确认'
     spec = dict(state='paused', status='待命', grip=grip, tone='warning',
-                title='', detail='', action='Y 停止', context='仿真 · 扫雪')
-    if view.get('tool_variant')=='short_rod':spec['context']='仿真 · 双手短棍'
+                title='', detail='', action='Y 停止', context='双手工具')
+    if view.get('tool_variant')=='short_rod':spec['context']='双手短棍'
     def notice(title, detail):
         spec.update(title=title, detail=detail)
     input_fault = any(x in reason for x in ('INPUT_TIMEOUT','PAIR_INVALID','POSE_INVALID','TRACKING','CONNECTION_CHANGED','POSE_ORIGIN','TIME_REVERSED'))
@@ -44,14 +44,14 @@ def hud_spec(view):
                     '查看工具长度与场景策略；松握后按 B 恢复' if confirmed else detail)
         if confirmed:spec['action']='B 恢复待命'
     elif mode in ('checking','DISPLAY_WAITING'):
-        spec.update(status='连接检查',grip='虚拟工具')
+        spec.update(status='连接检查',grip='工具')
         notice('等待手柄与关节反馈', '保持双侧握松开，等待连接就绪')
     elif mode == 'preparing':
-        spec.update(status='准备中',grip='虚拟工具')
+        spec.update(status='准备中',grip='工具')
         notice('正在前往准备姿态', '继续按住 A；松开 A 即暂停准备')
     elif mode in ('confirming_tool','engaging'):
         spec['status']='工具检查中' if mode=='confirming_tool' else '正在接合'
-        notice('正在确认虚拟工具' if mode=='confirming_tool' else '正在建立相对跟随基准',
+        notice('正在确认工具' if mode=='confirming_tool' else '正在建立相对跟随基准',
                 '保持双侧握松开，等待检查完成' if mode=='confirming_tool' else '保持双侧握；松开任一侧可暂停')
     elif mode == 'switching':
         requested = view.get('grasp_requested')
@@ -75,10 +75,12 @@ def hud_spec(view):
             notice('准备已暂停' if reason=='PREPARE_RELEASED' else '当前不能准备',
                     '松开双侧握，确认空手后重新长按 A')
         elif view.get('load_state')=='held':
-            notice('虚拟工具待确认', '保持松握，等待检查；严格流程按 B 确认')
+            notice('工具待确认', '保持松握，等待检查；严格流程按 B 确认')
+        elif view.get('capabilities',{}).get('prepare') is False:
+            notice('现场准备位尚未配置', '装夹并声明持物后，松握按 B 检查工具')
         else:
-            spec['grip']='虚拟工具未放置'
-            notice('长按 A 前往准备姿态', '保持双侧握松开，准备完成后放置虚拟工具' if view.get('simulation_demo') else '保持双侧握松开；准备后单独装夹并确认工具')
+            spec['grip']='工具未放置'
+            notice('长按 A 前往准备姿态', '保持双侧握松开，准备完成后放置工具' if view.get('simulation_demo') else '保持双侧握松开；准备后单独装夹并确认工具')
     elif mode in ('loading','load_check'):
         spec['status']='装卸待命'
         notice('装卸需要独立确认', '查看电脑端工具与支撑状态，按既有流程操作')

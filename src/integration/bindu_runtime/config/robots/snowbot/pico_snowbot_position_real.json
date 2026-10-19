@@ -1,0 +1,8 @@
+{
+  "schema_version": 2,
+  "simulation_only": false,
+  "mapping": "pico_snowbot_v1",
+  "initial_load_state": "unknown",
+  "prepare_duration": 8.0,
+  "prepare_positions_rad": null
+}
