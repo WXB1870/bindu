@@ -86,7 +86,7 @@ def _latest_put(output, item):
             pass
 
 
-def _serve(config, output, feedback):
+def _serve(config, output, feedback, health):
     try:
         from vuer import Vuer
         from vuer.schemas import MotionControllers, Scene, Grid
@@ -125,21 +125,44 @@ def _serve(config, output, feedback):
         counters = {side: ButtonCounters() for side in ('left','right')}
         latest_display = None
         display_received = float('-inf')
+        last_event = None
+        last_report = 0.
+        loop_delay = 0.
+
+        async def monitor_loop(session):
+            nonlocal loop_delay
+            while session.CURRENT_WS_ID in app.ws:
+                due = time.monotonic()+.02
+                await asyncio.sleep(.02)
+                loop_delay=max(loop_delay,time.monotonic()-due)
+                if time.time()-last_report>=1.:report_health(time.time())
+
+        def report_health(now, gap=None):
+            nonlocal last_report, loop_delay
+            _latest_put(health,dict(stamp=now,source_id=identity,seq=seq,
+                event_interval_s=gap,event_loop_delay_max_s=loop_delay,
+                websocket_clients=len(app.ws),last_event_stamp=last_event,
+                stage='websocket_handler',stamp_semantics='server_event_receipt'))
+            last_report=now;loop_delay=0.
         from .connectivity import VRConnectivity
         connectivity = VRConnectivity() if config.get('connectivity_check') else None
 
         async def on_controller(event, session):
-            nonlocal owner, identity, seq, clutch_seq, previous_grip, stop_latched, counters
+            nonlocal owner, identity, seq, clutch_seq, previous_grip, stop_latched, counters, last_event
             if owner is None or owner.CURRENT_WS_ID not in app.ws:
                 owner, identity = session, uuid.uuid4().hex
                 clutch_seq = {'left': 0, 'right': 0}
                 previous_grip = {'left': 0., 'right': 0.}
                 stop_latched = False
                 counters = {side: ButtonCounters() for side in ('left','right')}
+                last_event=None
             if owner is not session:
                 return  # A second browser must not interleave commands.
             seq += 1
             now = time.time()
+            gap=now-last_event if last_event is not None else None
+            last_event=now
+            if now-last_report>=1. or gap is not None and gap>.1:report_health(now,gap)
             sides = ('left', 'right') if config['side'] == 'both' else (config['side'],)
             frames = [decode_controller(event.value, side, identity, seq, now, config.get("mapping", "v34")) for side in sides]
             stop_latched = stop_latched or any(frame.stop for frame in frames)
@@ -167,6 +190,7 @@ def _serve(config, output, feedback):
                             MotionControllers(stream=True, key='motionControllers', left=True, right=True)]))
             render_error = ''
             render_key = None
+            loop_probe = asyncio.create_task(monitor_loop(session))
             try:
                 while session.CURRENT_WS_ID in app.ws:
                     for _ in range(2):
@@ -185,7 +209,8 @@ def _serve(config, output, feedback):
                         key = None
                         if view.get('pico') and view.get('runtime_mode')!='real':
                             from .hud import hud_spec
-                            key=(tuple(hud_spec(view).items()),tuple(sorted((view.get('model_joints') or {}).items())))
+                            key=(tuple(hud_spec(view).items()),view.get('load_state'),
+                                 tuple(sorted((n,round(q,4)) for n,q in (view.get('model_joints') or {}).items())))
                         if key is None or key!=render_key:
                             scene = await asyncio.to_thread(render, view)
                             session.upsert(scene, to='bgChildren')
@@ -198,9 +223,14 @@ def _serve(config, output, feedback):
                             render_error = str(exc)
                     await asyncio.sleep(.1)
             finally:
+                loop_probe.cancel()
+                try:await loop_probe
+                except asyncio.CancelledError:pass
                 if owner is session:
                     owner = None
 
+        # Probe the event loop independently of frames; never publish a
+        # heartbeat as a new controller input or refresh a frame timestamp.
         app.add_handler('CONTROLLER_MOVE', on_controller)
         app.spawn(display, start=False)
         app.run()
@@ -213,7 +243,8 @@ class VuerReceiver:
         ctx = mp.get_context('spawn')
         self.output = ctx.Queue(maxsize=2)
         self.feedback = ctx.Queue(maxsize=1)
-        self.process = ctx.Process(target=_serve, args=(config, self.output, self.feedback), daemon=True)
+        self.health = ctx.Queue(maxsize=128)
+        self.process = ctx.Process(target=_serve, args=(config, self.output, self.feedback, self.health), daemon=True)
         self.process.start()
 
     def display(self, snapshot):
@@ -234,6 +265,13 @@ class VuerReceiver:
             raise RuntimeError('VR_RECEIVER_EXITED')
         return latest
 
+    def poll_health(self):
+        reports=[]
+        for _ in range(128):
+            try:reports.append(self.health.get_nowait())
+            except queue.Empty:break
+        return reports
+
     def close(self):
         if self.process.is_alive():
             self.process.terminate()
@@ -245,3 +283,5 @@ class VuerReceiver:
         self.output.cancel_join_thread()
         self.feedback.close()
         self.feedback.cancel_join_thread()
+        self.health.close()
+        self.health.cancel_join_thread()

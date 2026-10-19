@@ -34,6 +34,10 @@ class VRInputNode(RuntimeNode):
         # Both sides share one receiver event; retain both messages until DDS
         # delivers the pair to mode, single-arm and bimanual subscribers.
         self.publisher = self.create_publisher(VRInput, 'teleop/vr/input', 5)
+        self.health_publisher = self.create_publisher(String,'teleop/vr/health',10)
+        self.last_frame = None
+        self.last_poll = None
+        self.poll_delay_max = 0.
         self.timer = self.create_timer(.005, self.poll)
         self.create_subscription(String, 'teleop/state' if self.mapping=='pico_snowbot_v1' else 'teleop/display', self.on_display,
                                  QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT))
@@ -51,6 +55,14 @@ class VRInputNode(RuntimeNode):
             pass
 
     def poll(self):
+        polled=time.monotonic()
+        if self.last_poll is not None:self.poll_delay_max=max(self.poll_delay_max,polled-self.last_poll)
+        self.last_poll=polled
+        for report in self.receiver.poll_health():
+            report.update(run_id=self.run_id,runtime_mode=self.runtime_mode,
+                          ros_poll_interval_max_s=self.poll_delay_max,ros_received_at=time.time())
+            self.health_publisher.publish(String(data=json.dumps(report)))
+            self.poll_delay_max=0.
         try:
             frame = self.receiver.poll()
         except RuntimeError as exc:
@@ -60,6 +72,16 @@ class VRInputNode(RuntimeNode):
             return
         if frame is None:
             return
+        first=frame[0] if isinstance(frame,tuple) else frame
+        if self.last_frame and self.last_frame.source_id==first.source_id:
+            gap=first.stamp-self.last_frame.stamp
+            if gap>.1 or first.seq-self.last_frame.seq>1:
+                self.health_publisher.publish(String(data=json.dumps(dict(
+                    run_id=self.run_id,runtime_mode=self.runtime_mode,stage='ros_input_publish',
+                    stamp=time.time(),source_id=first.source_id,seq=first.seq,
+                    event_interval_s=gap,skipped_events=first.seq-self.last_frame.seq-1,
+                    receiver_to_ros_age_s=time.time()-first.stamp))))
+        self.last_frame=first
         for item in frame if isinstance(frame, tuple) else (frame,):
             age = time.time()-item.stamp
             if age < 0 or age > 1.:

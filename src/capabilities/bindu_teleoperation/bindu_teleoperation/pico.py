@@ -27,7 +27,8 @@ class PicoFeedback:
 
 
 class PicoControl:
-    def __init__(self, *, initial_load='unknown', max_age=.25, prepare_hold=1., simulation_demo=False):
+    def __init__(self, *, initial_load='unknown', max_age=.25, prepare_hold=1., simulation_demo=False,
+                 guided_loading=False):
         if initial_load not in ('empty','held','unknown'):
             raise ValueError('PICO_LOAD_STATE')
         self.load, self.supported = initial_load, False
@@ -54,6 +55,15 @@ class PicoControl:
         self.context_at = self.loading_since = float('-inf')
         self.simulation_demo = simulation_demo
         self.fixture_load = None
+        self.guided_loading = guided_loading
+        self.loading_goal = None
+        self.loading_opened = [False, False]
+        self.idle_input_lost = False
+
+    def loading_check(self, now):
+        self.loading_goal = 'held' if self.load == 'empty' else 'empty'
+        self.loading_opened = [False, False]
+        self.phase, self.reason, self.changed_at = 'load_check', 'CONFIRM_SUPPORT_THEN_B', now
 
     def emit(self, operation, value=None):
         self.generation += 1
@@ -99,6 +109,8 @@ class PicoControl:
 
     def lock(self, reason, now):
         if self.phase != 'locked' or self.pending and self.pending.operation != 'stop':
+            if self.guided_loading and self.phase == 'loading':
+                self.load, self.load_source = 'unknown', 'interrupted_loading'
             self.phase,self.reason,self.changed_at='locked',reason,now
             self.a_since=None
             self.supported=False
@@ -106,6 +118,9 @@ class PicoControl:
 
     def update_feedback(self, feedback, now):
         self.feedback=feedback
+        if self.guided_loading and self.phase == 'loading' and feedback.healthy and 0 <= now-feedback.stamp <= self.max_age:
+            for i, mode in enumerate(feedback.modes):
+                if mode == 'open': self.loading_opened[i] = True
         if not feedback.healthy or not 0 <= now-feedback.stamp <= self.max_age:
             if self.source and self.phase!='checking': self.lock('PICO_FEEDBACK_UNAVAILABLE',now)
         elif (self.phase=='checking' and feedback.stopped and self.frames and
@@ -114,7 +129,17 @@ class PicoControl:
 
     def tick(self, now):
         if self.phase!='checking' and self.source and not 0 <= now-self.stamp <= self.max_age:
-            self.lock('PICO_INPUT_TIMEOUT',now)
+            if (self.guided_loading and self.phase in ('standby','tool_standby','load_check') and
+                    not self.pending and self.rest(now)):
+                # There is no active command to cancel. Require a new released
+                # input baseline, while keeping the operator's workflow step.
+                self.idle_input_lost = True
+                self.previous = None
+                self.armed = [False]*8
+                self.squeeze_released = [False,False]
+                self.a_since = None
+            else:
+                self.lock('PICO_INPUT_TIMEOUT',now)
         if self.phase!='checking' and self.feedback and not 0 <= now-self.feedback.stamp <= self.max_age:
             self.lock('PICO_FEEDBACK_STALE',now)
 
@@ -164,6 +189,7 @@ class PicoControl:
                         for a,b in zip(clutch,self.clutch_counts or clutch)]
         self.clutch_counts=clutch
         self.seq,self.stamp,self.frames=left.seq,max(f.stamp for f in pair),pair
+        self.idle_input_lost = False
         states=[];counts=[]
         for side,f in enumerate(pair):
             physical=[bool(f.buttons & (1<<i)) for i in range(3)]
@@ -215,6 +241,13 @@ class PicoControl:
         if self.stamp <= self.changed_at:return
         if self.phase=='load_check':
             if presses[5] and self.rest(now) and all(f.grip<.3 for f in pair):
+                if self.guided_loading:
+                    if states[3] or states[7]:
+                        self.reason='RELEASE_TRIGGERS_BEFORE_LOADING';return
+                    self.context(self.source,self.generation,
+                        'empty' if self.loading_goal=='held' else 'held',True,now,
+                        origin='operator_support_confirmation')
+                    self.desired=[m if m in ('closed','open') else 'closed' for m in self.feedback.modes]
                 if not self.supported:
                     self.reason='EXTERNAL_SUPPORT_CONFIRMATION_REQUIRED'
                 else:
@@ -231,6 +264,13 @@ class PicoControl:
             if changed:
                 self.desired=desired;self.emit('grippers',tuple(desired));return
             if presses[5] and not self.pending and self.rest(now):
+                if self.guided_loading:
+                    if not all(self.loading_opened):
+                        self.reason='OPEN_BOTH_GRIPPERS_BEFORE_CONFIRM';return
+                    if self.feedback.modes!=('closed','closed') or states[3] or states[7]:
+                        self.reason='CLOSE_BOTH_GRIPPERS_BEFORE_CONFIRM';return
+                    self.context(self.source,self.generation,self.loading_goal,True,now,
+                                 origin='operator_load_confirmation')
                 if self.context_at<=self.loading_since:
                     self.reason='FRESH_LOAD_DECLARATION_REQUIRED';return
                 if self.load=='held' and self.feedback.modes==('closed','closed'):
@@ -240,7 +280,8 @@ class PicoControl:
                 else:self.reason='GRIP_OR_TOOL_CONFIRMATION_REQUIRED'
             return
         if presses[2]:
-            self.phase,self.reason='load_check','CHECK_SUPPORT_THEN_B'
+            if self.guided_loading:self.loading_check(now)
+            else:self.phase,self.reason='load_check','CHECK_SUPPORT_THEN_B'
             self.emit('stop');return
         if presses[3] or presses[7]:
             # A work-time open request stops, but is never queued for later opening.
@@ -253,6 +294,11 @@ class PicoControl:
                 self.phase='switching';self.emit('switch_grasp',desired)
             return
         if self.phase in ('standby','tool_standby'):
+            if self.guided_loading and self.phase=='standby' and self.load=='unknown' and presses[5] and self.rest(now) and release:
+                if all(f.grip<.3 for f in pair) and not states[3] and not states[7]:
+                    self.context(self.source,self.generation,'empty',False,now,origin='operator_empty_confirmation')
+                    self.reason='EMPTY_CONFIRMED_PRESS_A'
+                return
             if not states[4]:self.a_since=None;self.prepare_blocked=False
             elif self.armed[4] and not self.prepare_blocked:
                 if self.a_since is None:self.a_since=now
@@ -290,7 +336,9 @@ class PicoControl:
             return True
         if operation=='stop':
             pass  # Stop does not acknowledge a latched reason or start another action.
-        elif operation=='prepare':self.phase,self.reason='standby','PREPARED'
+        elif operation=='prepare':
+            if self.guided_loading:self.loading_check(now)
+            else:self.phase,self.reason='standby','PREPARED'
         elif operation=='confirm_tool':
             self.phase,self.reason='tool_standby','TOOL_GRASP_VERIFIED'
             self.virtual=bool(self.feedback and self.feedback.modes[1]=='virtual')
@@ -328,6 +376,8 @@ class PicoControl:
         view = dict(phase=self.phase,reason=self.reason,generation=self.generation,
                     source_id=self.source,load_state=self.load,load_source=self.load_source,external_support=self.supported,
                     last_prepare_check=self.last_prepare_check,
+                    guided_loading=self.guided_loading,loading_goal=self.loading_goal,
+                    loading_opened=list(self.loading_opened),idle_input_lost=self.idle_input_lost,
                     grasp_requested='right_axial' if (self.pending.value if self.pending and self.pending.operation=='switch_grasp' else self.virtual) else 'rigid',
                     pending=self.pending.operation if self.pending else None)
         if now is not None:
@@ -342,4 +392,25 @@ class PicoControl:
                     buttons=f.buttons if fresh else None,
                     button_edges=list(f.button_edges) if fresh else None,
                     position_m=[f.pose[i] for i in (3,7,11)] if fresh else None)
+        if self.guided_loading:view['operator_guide']=loading_guide(view,self.feedback.modes if self.feedback else ())
         return view
+
+
+def loading_guide(view, modes):
+    """One operator instruction shared by the headset and computer view."""
+    phase, goal = view['phase'], view.get('loading_goal')
+    operation = '装夹' if goal=='held' else '卸载'
+    if phase=='standby' and view['load_state']=='unknown':
+        return dict(title='请确认当前工具状态',detail='空手时按 B 确认；已持工具则按左摇杆进入卸载',key='B',step='context')
+    if phase=='load_check':
+        return dict(title='步骤 1/4：确认支撑，进入'+operation,
+                    detail='确保工具已有外部支撑，松开双侧握和扳机，按 B 确认',key='B',step='support')
+    if phase=='loading':
+        if not all(view.get('loading_opened',())):
+            return dict(title='步骤 2/4：打开两侧夹爪',detail='按住左右扳机，等待两侧夹爪完全打开',key='Trigger',step='open')
+        if tuple(modes)!=('closed','closed') or view.get('pending'):
+            return dict(title='步骤 3/4：'+('放入工具，再闭爪' if goal=='held' else '取出工具，再闭爪'),
+                        detail='保持工具有支撑；'+('工具就位' if goal=='held' else '取出工具')+'后松开两扳机，等待闭合',key='Trigger',step='close')
+        return dict(title='步骤 4/4：确认'+operation+'完成',
+                    detail='松开双侧握，按 B 确认'+('工具已装夹，并检查跟随条件' if goal=='held' else '工具已取出，返回空手待命'),key='B',step='confirm')
+    return {}

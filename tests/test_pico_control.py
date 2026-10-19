@@ -11,8 +11,8 @@ from bindu_teleoperation.bimanual_session import BimanualSession
 
 
 class Rig:
-    def __init__(self,load='empty'):
-        self.core=PicoControl(initial_load=load)
+    def __init__(self,load='empty',guided=False):
+        self.core=PicoControl(initial_load=load,guided_loading=guided)
         self.now=1.;self.seq=0;self.source='headset-1'
         self.buttons=[0,0];self.triggers=[0.,0.];self.grips=[0.,0.]
         self.counters=[ButtonCounters(),ButtonCounters()]
@@ -58,6 +58,82 @@ class Rig:
         self.context('held')
         self.click(1,1);self.complete();self.step()
         assert self.core.phase=='tool_standby'
+
+
+class GuidedLoadingTests(unittest.TestCase):
+    def start_loading(self, rig):
+        rig.click(0,2);rig.complete();rig.click(1,1)
+        self.assertEqual(rig.core.phase,'loading')
+        self.assertTrue(rig.core.supported)
+
+    def open_close(self, rig):
+        rig.triggers=[1.,1.];rig.step()
+        rig.modes=('open','open');rig.complete();rig.step()
+        rig.triggers=[0.,0.];rig.step()
+        rig.modes=('closed','closed');rig.complete();rig.step()
+
+    def test_complete_mount_and_unmount_with_only_controller_inputs(self):
+        r=Rig('unknown',guided=True)
+        r.click(1,1)
+        self.assertEqual(r.core.load,'empty')
+        r.buttons[1]=1
+        for _ in range(60):r.step()
+        self.assertEqual(r.core.pending.operation,'prepare')
+        r.complete();r.buttons[1]=0;r.step()
+        self.assertEqual(r.core.phase,'load_check')
+        self.assertEqual(r.core.snapshot(r.now)['operator_guide']['step'],'support')
+        r.click(1,1)
+        self.assertEqual(r.core.phase,'loading')
+        r.click(1,1)
+        self.assertEqual(r.core.reason,'OPEN_BOTH_GRIPPERS_BEFORE_CONFIRM')
+        self.assertEqual(r.core.load,'empty')
+        self.open_close(r)
+        self.assertEqual(r.core.snapshot(r.now)['operator_guide']['step'],'confirm')
+        r.click(1,1)
+        self.assertEqual(r.core.load,'held')
+        self.assertEqual(r.core.load_source,'operator_load_confirmation')
+        self.assertEqual(r.core.pending.operation,'confirm_tool')
+        r.complete();r.step()
+        self.assertEqual(r.core.phase,'tool_standby')
+        self.assertIsNone(r.core.pending)
+        self.start_loading(r);self.assertEqual(r.core.loading_goal,'empty')
+        self.open_close(r);r.click(1,1)
+        self.assertEqual(r.core.load,'empty');self.assertEqual(r.core.phase,'standby')
+
+    def test_idle_gap_keeps_step_and_held_key_cannot_acknowledge_support(self):
+        r=Rig(guided=True);r.core.loading_check(r.now)
+        r.now+=.4;r.core.update_feedback(PicoFeedback(r.now,True),r.now);r.core.tick(r.now)
+        self.assertEqual(r.core.phase,'load_check');self.assertEqual(r.core.drain(),[])
+        self.assertTrue(r.core.idle_input_lost)
+        r.buttons[1]=2;r.step();r.step()
+        self.assertEqual(r.core.phase,'load_check')
+        r.buttons[1]=0;r.step();r.click(1,1)
+        self.assertEqual(r.core.phase,'loading')
+
+    def test_active_loss_still_locks_and_interrupted_loading_becomes_unknown(self):
+        for phase in ('preparing','following','loading'):
+            r=Rig(guided=True);r.core.phase=phase
+            r.now+=.26;r.core.update_feedback(PicoFeedback(r.now,True),r.now);r.core.tick(r.now)
+            self.assertEqual(r.core.phase,'locked')
+            self.assertEqual(r.core.drain()[-1].operation,'stop')
+            if phase=='loading':self.assertEqual(r.core.load,'unknown')
+
+    def test_support_confirmation_requires_released_squeezes_and_triggers(self):
+        r=Rig(guided=True);r.core.loading_check(r.now);r.triggers=[1.,0.]
+        r.step();r.click(1,1)
+        self.assertEqual(r.core.phase,'load_check');self.assertFalse(r.core.supported)
+        r.triggers=[0.,0.];r.grips=[1.,0.];r.step();r.click(1,1)
+        self.assertEqual(r.core.phase,'load_check');self.assertFalse(r.core.supported)
+
+    def test_shared_guide_reaches_hud_and_never_claims_sensor_proof(self):
+        from bindu_teleoperation.vr.hud import hud_spec
+        r=Rig(guided=True);r.core.loading_check(r.now)
+        view=r.core.snapshot(r.now);view['mode']=view['phase']
+        spec=hud_spec(view)
+        self.assertIn('步骤 1/4',spec['title']);self.assertIn('外部支撑',spec['detail'])
+        r.click(1,1)
+        view=r.core.snapshot(r.now);view['mode']=view['phase']
+        self.assertIn('步骤 2/4',hud_spec(view)['title'])
 
 
 class SimulationDemoTests(unittest.TestCase):

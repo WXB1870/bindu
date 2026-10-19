@@ -301,6 +301,9 @@ footer { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wr
         <div class="controller-grid" id="controllers"><div class="controller-labels" aria-hidden="true"><span></span><span>追踪</span><span>侧握键</span><span>扳机</span></div></div>
         <details class="guide-details"><summary>手柄操作说明</summary><div class="guide"><p class="controller-note">侧握控制跟随；扳机仅表示开爪输入。</p>
           <div class="step" id="guide-prepare"><kbd>A</kbd><span>空手且松握时，长按并保持至准备完成。</span></div>
+          <div class="step"><kbd>B</kbd><span>准备到位后确认支撑；两爪开合完成后确认装夹。</span></div>
+          <div class="step"><kbd>扳机</kbd><span>装夹中按住打开对应夹爪，松开闭合。</span></div>
+          <div class="step"><kbd>左摇杆</kbd><span>点击请求装夹或卸载，再按屏幕提示操作。</span></div>
           <div class="step"><kbd>双侧握</kbd><span>双侧先松开，再同时握住接合；松开任一侧暂停。</span></div>
           <div class="step" id="guide-axial"><kbd>X</kbd><span>按住请求右手虚握，释放后请求重新锁定。</span></div>
           <div class="step stop"><kbd>Y / B</kbd><span>Y 请求停止；确认停稳后，松握并按 B 恢复待命。</span></div>
@@ -349,6 +352,8 @@ function operatorState(p,online,fresh,pcFresh,tracked){
   if(!fresh)return {...result,status:'关节反馈不可用',reason:'当前模型不能代表最新机器人姿态。',next:'保持松握，等待关节反馈恢复。',tone:'bad'};
   if(!pcFresh)return {...result,status:'遥操作状态未知',reason:'关节反馈已收到，PICO 控制状态未更新。',next:'保持松握，检查遥操作节点。',tone:'bad'};
   if(p.phase==='locked')return {...result,status:p.stop_confirmed===true?'已停止（锁定）':'停止未确认',next:p.stop_confirmed===true?'排除原因，松开双侧握后按 B 恢复待命。':'保持双侧握松开，等待停稳确认。',key:p.stop_confirmed===true?'B':'',tone:'bad'};
+  if(p.idle_input_lost&&['standby','tool_standby','load_check'].includes(p.phase))return {...result,status:'等待手柄输入',reason:'手柄输入暂停，机器人已停稳，当前操作步骤已保留。',next:'保持松握，等待输入恢复后继续当前步骤。'};
+  if(p.operator_guide?.title&&['standby','loading','load_check'].includes(p.phase))return {...result,status:p.operator_guide.title,reason:p.operator_guide.detail,next:p.operator_guide.detail,key:p.operator_guide.key};
   if(p.phase==='following')return tracked?{...result,status:'跟随中',next:'移动双手柄控制工具；松握即可暂停。',tone:'good'}:{...result,status:'输入失效，停止待确认',reason:'当前手柄输入不可用，尚不能确认机器人已停稳。',next:'松开双侧握，等待停止反馈。',tone:'bad'};
   if(p.phase==='tool_standby')return {...result,status:p.stop_confirmed===true?'已暂停，可以接合':'正在暂停',reason:p.stop_confirmed===true?'机器人已停稳，工具保持当前姿态。':'已收到暂停请求，正在等待停稳反馈。',next:p.stop_confirmed===true?'先松开双侧握，再同时握住开始跟随。':'保持双侧握松开，等待停稳确认。',tone:p.stop_confirmed===true?'good':'warn'};
   if(p.phase==='preparing')return {...result,status:'正在前往准备姿态',reason:'机器人正移动到装夹准备位置。',next:'继续按住 A；松开 A 可中断准备。',key:'A'};
@@ -363,7 +368,7 @@ function operatorState(p,online,fresh,pcFresh,tracked){
     if(p.reason==='PREPARE_REQUIRES_EMPTY_AND_RELEASED_SQUEEZE')return {...result,status:'准备被拒绝',reason:'上次检查：'+(prepareFailures(p.last_prepare_check)||explainReason(p.reason)),next:'排除上述原因后，松开 A 再重新长按。',key:'A'};
     if(p.load_state==='held')return {...result,status:'等待工具确认',next:p.simulation_demo?'保持松握，等待工具检查。':'按既有装夹流程确认工具，再按 B。',key:p.simulation_demo?'':'B'};
     if(p.reason==='PREPARED')return {...result,status:'准备姿态已到达',next:p.simulation_demo?'保持松握，等待工具就绪。':'按既有装夹流程放置并确认工具。'};
-    if(p.capabilities?.prepare===false)return {...result,status:'等待装夹确认',next:'尚未配置准备位；装夹完成并声明持物后，按 B 检查工具。',key:'B'};
+    if(p.capabilities?.prepare===false)return {...result,status:'等待装夹确认',next:'尚未配置准备位；点击左摇杆开始装夹，按屏幕步骤操作。',key:'左摇杆'};
     return {...result,status:p.reason==='PREPARE_RELEASED'?'准备已暂停':'等待准备',next:'确认空手并松开双侧握，长按并保持 A。',key:'A'};
   }
   if(['loading','load_check'].includes(p.phase))return {...result,next:'确认工具与外部支撑，按既有装卸流程操作。'};
@@ -465,7 +470,7 @@ function render(data,online){
   badge('demo-mode',pcFresh?(p.simulation_demo?'快捷流程':'标准装夹流程'):'流程待确认');
   text('execution',fresh?(executions[data.execution]||'状态待确认'):'未知');
   const load=pcFresh?p.load_state:null;const loadText=load==='held'?'已装载':load==='empty'?'未装载':'未知';
-  const sources={configured_initial_state:'场景初始配置',simulation_scene:'场景状态',operator_declaration:'操作员声明',unknown:'未确认'};
+  const sources={configured_initial_state:'场景初始配置',simulation_scene:'场景状态',operator_declaration:'操作员声明',operator_empty_confirmation:'B 键确认空手',operator_support_confirmation:'B 键确认外部支撑',operator_load_confirmation:'B 键确认装卸完成',interrupted_loading:'装卸中断，需重新确认',unknown:'未确认'};
   text('load-source',pcFresh?sources[p.load_source]||p.load_source||'未确认':'—');
   text('prepare-checks',pcFresh?(prepareFailures({checks:p.prepare_checks,load_state:p.load_state})||'条件已满足；长按 A 后检查执行'):'—');
   text('load',loadText);text('tool-state',(p.tool_variant==='short_rod'?'短棍':'工具')+'：'+loadText);
@@ -477,7 +482,7 @@ function render(data,online){
   text('frame-count',data.model?.applied_frames||0);text('run-id',data.run_id||'等待会话');
   const diag=data.diagnostics||{},logFault=!!diag.error||diag.dropped>0;
   text('record-state',!online?'记录状态未知':diag.error?'记录失败：'+diag.error:data.recording?`记录中，队列丢弃 ${diag.dropped||0} 条`:'诊断未记录');$('record-state').className=logFault?'event-record bad':online&&data.recording?'event-record good':'event-record muted';
-  text('guide-note',!pcFresh?'当前流程尚未确认，等待控制状态。':!p.simulation_demo?'当前为标准装夹流程；夹爪位置反馈不代表已夹稳，装载状态与支撑需操作员声明。':'准备完成后自动检查工具，等待就绪后接合。');
+  text('guide-note',!pcFresh?'当前流程尚未确认，等待控制状态。':p.guided_loading?'按照上方当前步骤操作；B 是支撑和装卸完成的人工确认，夹爪位置不作为夹稳检测。':!p.simulation_demo?'当前为标准装夹流程；夹爪位置反馈不代表已夹稳，装载状态与支撑需操作员声明。':'准备完成后自动检查工具，等待就绪后接合。');
   for(const side of ['left','right']){
     const c=p.controller_states?.[side]||{},tracking=vrFresh&&(p.tracking_valid?.[side]??c.valid),valid=tracked&&c.valid===true&&tracking===true;
     link(side+'-link',tracking?'追踪有效':vrFresh?'追踪无效':'未更新',tracking?'good':'warn');

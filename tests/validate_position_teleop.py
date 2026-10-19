@@ -9,13 +9,15 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import socket
+import threading
 import time
 import uuid
 import rclpy
 from std_msgs.msg import String, Float64MultiArray, UInt64MultiArray
 from snowbot_ctl_msgs.msg import RetInformation, JointPositionCommand, CtlInformation, MidNodeCtlMsgSend
 from bindu_interfaces.msg import VRInput, ExecutionState, MotionCommand, GripperState
-from bindu_interfaces.srv import PicoContext, Lease, SubmitMotion
+from bindu_interfaces.srv import Lease, SubmitMotion
 from bindu_runtime.common import stamp
 from bindu_contracts.teleoperation import VRFrame
 from bindu_teleoperation.vr.receiver import ButtonCounters
@@ -26,7 +28,35 @@ ROOT=Path(__file__).resolve().parents[1]
 CFG=ROOT/'src/integration/bindu_runtime/config/robots/snowbot'
 
 
-def scenario(out, mode):
+def websocket_input(port, source, stop, errors):
+    """Real Vuer wire input for this isolated fixture, including downlink drain."""
+    from websockets.sync.client import connect
+    from msgpack import packb
+    end=time.monotonic()+35.;peer=None
+    try:
+        while peer is None and not stop.is_set() and time.monotonic()<end:
+            try:peer=connect(f'ws://127.0.0.1:{port}/',open_timeout=1.)
+            except OSError:stop.wait(.1)
+        if peer is None:raise RuntimeError('VUER_CONNECT_TIMEOUT')
+        with peer:
+            while not stop.is_set():
+                if source['stream']:
+                    value={}
+                    for i,side in enumerate(('left','right')):
+                        value[side]=[1.,0.,0.,0.,0.,1.,0.,0.,0.,0.,1.,0.,.34*i+source['delta'],0.,0.,1.]
+                        buttons=source['buttons'][i]
+                        value[side+'State']=dict(squeezeValue=source['grip'],triggerValue=source['trigger'][i],
+                            aButton=bool(buttons&1),bButton=bool(buttons&2),thumbstick=bool(buttons&4))
+                    peer.send(packb(dict(etype='CONTROLLER_MOVE',key='motionControllers',value=value),use_bin_type=True))
+                for _ in range(4):
+                    try:peer.recv(timeout=.001)
+                    except TimeoutError:break
+                stop.wait(.01)
+    except Exception as exc:
+        if not stop.is_set():errors.append(type(exc).__name__+':'+str(exc))
+
+
+def scenario(out, mode, websocket=False):
     token=uuid.uuid4().hex[:8];ns='/position_'+token;vendor='/fixture_'+token
     node=rclpy.create_node('position_fixture_'+token)
     states=[];views=[];accepted=[];grippers={};packets=[]
@@ -81,7 +111,7 @@ def scenario(out, mode):
                 guard_session=session,wkc=40,expected_wkc=40,present_mask=0xfffff,fault_mask=0,
                 enable_requested_mask=0xfffff,operation_enabled_mask=0xfffff,gripper_control_enabled=True,
                 gripper_latched_mask=0,gripper_sequence=acks,gripper_hold_mask=hold_mask,gripper_hold_position=holds))))
-        if source['stream']:
+        if source['stream'] and not websocket:
             source['seq']+=1
             for i,side in enumerate(('left','right')):
                 pose=(1.,0.,0.,.34*i+source['delta'],0.,1.,0.,0.,0.,0.,1.,0.,0.,0.,0.,1.)
@@ -92,7 +122,11 @@ def scenario(out, mode):
                     buttons=f.buttons,button_edges=list(f.button_edges)))
     node.create_timer(.01,publish)
     recipe=json.loads((ROOT/f'src/integration/bindu_runtime/config/deployments/snowbot_vr_{"sim" if mode=="simulation" else "real"}.json').read_text())
-    recipe['arguments'].update(namespace=ns,vr_enabled=False,command_enabled=True)
+    recipe['arguments'].update(namespace=ns,vr_enabled=websocket,command_enabled=True)
+    if websocket:
+        with socket.socket() as probe:
+            probe.bind(('127.0.0.1',0));port=probe.getsockname()[1]
+        recipe['arguments'].update(host='127.0.0.1',port=port)
     if mode=='real':
         # This is explicitly synthetic calibration, written only under test output.
         gc=json.loads((CFG/'snowbot_grippers_real.json').read_text());gc['calibrated']=True
@@ -105,6 +139,10 @@ def scenario(out, mode):
     log=(out/(mode+'.log')).open('w')
     process=subprocess.Popen(['ros2','launch','bindu_runtime','teleop_only.launch.py','config:='+str(path)],
         stdout=log,stderr=subprocess.STDOUT,start_new_session=True)
+    peer_stop=threading.Event();peer_errors=[];peer=None
+    if websocket:
+        peer=threading.Thread(target=websocket_input,args=(port,source,peer_stop,peer_errors),daemon=True)
+        peer.start()
     checks=[];observer=None;observer_log=None
     trace_dir=out/(mode+'-diagnostics')
     def pump(seconds):
@@ -115,11 +153,6 @@ def scenario(out, mode):
     def phase(value):wait(lambda:views and views[-1]['phase']==value and views[-1]['pending'] is None)
     def click(side,bit):
         source['buttons'][side]|=1<<bit;pump(.12);source['buttons'][side]&=~(1<<bit);pump(.12)
-    context_client=node.create_client(PicoContext,ns+'/teleop/pico/context')
-    def context(load,support):
-        v=views[-1];reply=call(node,context_client,PicoContext.Request(source_id=v['source_id'],
-            expected_generation=v['generation'],load_state=load,external_support=support))
-        assert reply.success,reply.code;pump(.15)
     try:
         wait(lambda:views and views[-1]['phase']=='standby' and len(grippers)==2,40.)
         assert not accepted and not packets,'startup actuation'
@@ -134,7 +167,9 @@ def scenario(out, mode):
             '--state-file',str(out/(mode+'-observer.json')),
             '--trace-file',str(trace_dir/'diagnostics.jsonl')],
             stdout=observer_log,stderr=subprocess.STDOUT,start_new_session=True)
-        wait(lambda:(trace_dir/'diagnostics-health.json').exists())
+        wait(lambda:(trace_dir/'teleop-state.jsonl').exists() and
+                    (trace_dir/'teleop-state.jsonl').stat().st_size>0,30.)
+        pump(.3)
         leases=node.create_client(Lease,ns+'/execution/lease')
         rejected=call(node,leases,Lease.Request(operation='acquire',owner='contract_test',resources=['left_arm']))
         assert not rejected.ok and 'COUPLED' in rejected.code,rejected.code
@@ -143,21 +178,27 @@ def scenario(out, mode):
         assert not rejected.accepted and 'UNTIMED_JOINT_TARGET' in rejected.code,rejected.code
         checks.append('coupled arm ownership and unsupported timed trajectory rejected on both backends')
         assert views[-1]['load_state']==('empty' if mode=='simulation' else 'unknown')
-        if mode!='simulation':context('empty',False)
+        if mode!='simulation':click(1,1)
+        assert views[-1]['load_state']=='empty'
         source['buttons'][1]=1
-        wait(lambda:views[-1]['reason']=='PREPARED',40.)
+        wait(lambda:views[-1]['phase']=='load_check' and views[-1]['pending'] is None,40.)
         source['buttons'][1]=0;pump(.3)
         assert accepted and all(m.mode=='joint_target' and not m.points for m in accepted)
         assert all(m.runtime_mode==mode for m in accepted)
         checks.append('A preparation uses untimed joint_target and measured arrival')
-        click(0,2);phase('load_check');context('empty',True);click(1,1);phase('loading')
+        assert views[-1]['operator_guide']['step']=='support'
+        source['stream']=False;pump(.4)
+        assert views[-1]['phase']=='load_check' and views[-1]['idle_input_lost']
+        source['stream']=True;pump(.3);click(1,1);phase('loading')
         source['trigger']=[1.,1.]
         wait(lambda:views[-1]['gripper_modes']==['open','open'] and views[-1]['pending'] is None)
         assert all(g.grasp_state=='unknown' for g in grippers.values())
         source['trigger']=[0.,0.]
         wait(lambda:views[-1]['gripper_modes']==['closed','closed'] and views[-1]['pending'] is None)
         checks.append('Trigger open/close uses shared leased gripper services; grasp stays unknown')
-        context('held',True);click(1,1);phase('tool_standby')
+        click(1,1);phase('tool_standby')
+        assert views[-1]['load_source']=='operator_load_confirmation'
+        checks.append('guided A/B/Trigger loading completes without CLI declarations; idle input gaps keep the step')
         before=len(accepted);source['grip']=1.;phase('following');source['delta']=.006
         wait(lambda:len(accepted)>before+5)
         source['grip']=0.;phase('tool_standby')
@@ -169,7 +210,7 @@ def scenario(out, mode):
         assert not states[-1].stop_failures
         checks.append('input loss cancels follow and releases ownership after stop')
         source.update(stream=True,grip=0.);pump(.4);click(1,1);phase('standby')
-        context('empty',True);click(0,2);phase('load_check');click(1,1);phase('loading')
+        click(0,2);phase('load_check');click(1,1);phase('loading')
         source['trigger']=[1.,0.]
         wait(lambda:grippers['left'].state=='MOVING')
         source['stream']=False;phase('locked')
@@ -185,8 +226,16 @@ def scenario(out, mode):
         attempts=[json.loads(e['code']) for e in events if e['state']=='PICO_PREPARE_CHECK']
         assert attempts and attempts[0]['accepted'] and all(attempts[0]['checks'].values()),attempts
         checks.append('raw/projected input, commands, feedback and preparation checks persisted without logger queue loss')
+        if websocket:
+            assert not peer_errors,peer_errors
+            reports=[json.loads(line)['data'] for line in (trace_dir/'vr-health.jsonl').read_text().splitlines()]
+            assert any(r['stage']=='websocket_handler' for r in reports),reports
+            assert any((r.get('event_interval_s') or 0)>.25 for r in reports),reports[-3:]
+            checks.append('real Vuer WebSocket input and event-loop diagnostics cover induced controller gaps')
         return dict(mode=mode,checks=checks,accepted=len(accepted),vendor_packets=len(packets))
     finally:
+        peer_stop.set()
+        if peer:peer.join(timeout=2.)
         (out/(mode+'-final.json')).write_text(json.dumps(views[-1] if views else {},indent=2))
         if observer:terminate(observer,node)
         if observer_log:observer_log.close()
@@ -194,13 +243,14 @@ def scenario(out, mode):
 
 
 def main():
-    p=argparse.ArgumentParser();p.add_argument('--output',type=Path,required=True);p.add_argument('--mode',choices=('simulation','real','both'),default='both');args=p.parse_args()
+    p=argparse.ArgumentParser();p.add_argument('--output',type=Path,required=True);p.add_argument('--mode',choices=('simulation','real','both'),default='both')
+    p.add_argument('--websocket-input',action='store_true');args=p.parse_args()
     if os.environ.get('ROS_LOCALHOST_ONLY')!='1' or not os.environ.get('ROS_DOMAIN_ID'):
         raise RuntimeError('Isolated localhost ROS domain required')
     args.output=args.output.resolve();args.output.mkdir(parents=True,exist_ok=False)
     rclpy.init()
     try:
-        result=[scenario(args.output,m) for m in (('simulation','real') if args.mode=='both' else (args.mode,))]
+        result=[scenario(args.output,m,args.websocket_input) for m in (('simulation','real') if args.mode=='both' else (args.mode,))]
         (args.output/'verification.json').write_text(json.dumps(result,indent=2));print(json.dumps(result,indent=2))
     finally:rclpy.shutdown()
 

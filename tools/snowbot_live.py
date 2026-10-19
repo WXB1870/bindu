@@ -92,6 +92,12 @@ def observe(args, publish=None, stop=None):
             pass
     node.create_subscription(String, ns+'/teleop/state', pico, 100 if diagnostics else 1)
     if args.trace_file:
+        def receiver_health(msg):
+            try:
+                value=json.loads(msg.data)
+                if value.get('run_id')==args.run_id:diagnostics.record('vr-health',value)
+            except (ValueError,TypeError):pass
+        node.create_subscription(String,ns+'/teleop/vr/health',receiver_health,100)
         node.create_subscription(RuntimeEvent,ns+'/events',lambda msg:
             diagnostics.record('runtime-events',msg,ros=True) if msg.run_id==args.run_id else None,EVENT_QOS)
         for cls,topic,stream,qos in ((VRInput,'teleop/vr/raw','vr-raw',200),

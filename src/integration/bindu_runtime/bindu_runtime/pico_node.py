@@ -94,7 +94,7 @@ class PicoNode(RuntimeNode):
         if not 0 < float(self.cfg['prepare_duration']) <= 60:
             raise ValueError('PICO_PREPARE_DURATION_INVALID')
         self.control=PicoControl(initial_load=initial_load,simulation_demo=self.simulation_demo,
-                                 max_age=float(self.tool_cfg['input_max_age']))
+                                 max_age=float(self.tool_cfg['input_max_age']),guided_loading=self.position_contract)
         validation_cfg=dict(self.tool_cfg,worker_timeout=30.)
         self.validator=BimanualWorker(validation_cfg,self.profile,preload_path_checks=True)
         self.validation_result=None
@@ -104,6 +104,9 @@ class PicoNode(RuntimeNode):
         self.waiters=set();self.stop_deadline=None;self.release_until=0.;self.recording=None;self.record_future=None
         self.last_status=0.;self.last_phase=None
         self.last_prepare_check=None
+        self.last_context_at=self.control.context_at
+        self.last_pair_at=None
+        self.last_tick_at=None
         self.position_ops = None
         if self.position_contract:
             from .pico_position import PositionOperations
@@ -179,6 +182,11 @@ class PicoNode(RuntimeNode):
         if set(self.frames)!= {'left','right'}:return
         a,b=self.frames['left'],self.frames['right']
         if a.source_id!=b.source_id or a.seq!=b.seq:return
+        now=self.now()
+        if self.last_pair_at is not None and now-self.last_pair_at>.1:
+            self.event('PICO_INPUT_DELIVERY_GAP',json.dumps(dict(
+                interval_s=now-self.last_pair_at,input_age_s=now-seconds(a.stamp),seq=a.seq)))
+        self.last_pair_at=now
         pair=tuple(VRFrame(m.source_id,m.seq,seconds(m.stamp),m.side,tuple(m.pose),m.grip,m.trigger,
                           m.init,m.stop,m.valid,m.clutch_seq,m.mapping,m.buttons,tuple(int(v) for v in m.button_edges),m.virtual_grip)
                    for m in (a,b))
@@ -441,6 +449,13 @@ class PicoNode(RuntimeNode):
             success=ok,reason=reason,simulated_actuator=self.simulation)))
 
     def tick(self):
+        tick_at=time.monotonic()
+        if self.last_tick_at is not None and tick_at-self.last_tick_at>.1:
+            self.event('PICO_COORDINATOR_TICK_GAP',json.dumps(dict(
+                interval_s=tick_at-self.last_tick_at,
+                input_age_s=self.now()-self.control.stamp if math.isfinite(self.control.stamp) else None,
+                phase=self.control.phase,seq=self.control.seq)))
+        self.last_tick_at=tick_at
         for f in tuple(self.waiters):
             if not f.done():f.set_result(None)
         try:
@@ -451,6 +466,9 @@ class PicoNode(RuntimeNode):
         if self.state and not self.state.lease_active and self.feedback().healthy:
             self.handoff_complete=True
         self.control.update_feedback(self.feedback(),self.now());self.control.tick(self.now())
+        if self.control.context_at!=self.last_context_at:
+            self.last_context_at=self.control.context_at
+            self.event('PICO_CONTEXT',json.dumps(self.control.snapshot(self.now())))
         if (self.tool_result and self.tool_result.done() and self.control.phase in ('engaging','following')):
             self.control.lock('PICO_TOOL_SESSION_ENDED:'+self.tool_result.result().result.code,self.now())
         for intent in self.control.drain():

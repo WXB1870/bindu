@@ -71,7 +71,9 @@ def hud_spec(view):
         notice('松开双侧握，再同时握住' if confirmed else '等待机器人停稳',
                 '重新接合后继续跟随' if confirmed else '保持双侧握松开；停稳后再重新接合')
     elif mode == 'standby':
-        if reason=='PREPARE_REQUIRES_EMPTY_AND_RELEASED_SQUEEZE':
+        if view.get('operator_guide'):
+            guide=view['operator_guide'];notice(guide['title'],guide['detail'])
+        elif reason=='PREPARE_REQUIRES_EMPTY_AND_RELEASED_SQUEEZE':
             check=view.get('last_prepare_check') or {}
             labels={'load_empty':'当前已装载' if check.get('load_state')=='held' else '空手状态未确认',
                     'feedback_fresh':'反馈无效或过期','motion_stopped':'尚未停稳',
@@ -83,15 +85,20 @@ def hud_spec(view):
         elif view.get('load_state')=='held':
             notice('工具待确认', '保持松握，等待检查；严格流程按 B 确认')
         elif view.get('capabilities',{}).get('prepare') is False:
-            notice('现场准备位尚未配置', '装夹并声明持物后，松握按 B 检查工具')
+            notice('现场准备位尚未配置', '点击左摇杆开始装夹，按屏幕步骤操作')
         else:
             spec['grip']='工具未放置'
             notice('长按 A 前往准备姿态', '保持双侧握松开，准备完成后放置工具' if view.get('simulation_demo') else '保持双侧握松开；准备后单独装夹并确认工具')
     elif mode in ('loading','load_check'):
-        spec['status']='装卸待命'
-        notice('装卸需要独立确认', '查看电脑端工具与支撑状态，按既有流程操作')
+        spec['status']='装夹中' if view.get('loading_goal')=='held' else '卸载中'
+        guide=view.get('operator_guide')
+        if guide:notice(guide['title'],guide['detail'])
+        else:notice('装卸需要独立确认', '查看电脑端工具与支撑状态，按既有流程操作')
     else:
         notice('控制状态待确认', '保持松握，查看电脑操作台')
+    if view.get('idle_input_lost') and mode in ('standby','tool_standby','load_check'):
+        spec['status']='等待手柄输入'
+        notice('手柄输入暂停，当前步骤已保留','保持松握，恢复输入后按当前步骤继续')
     return spec
 
 
