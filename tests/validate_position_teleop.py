@@ -174,8 +174,8 @@ def scenario(out, mode, websocket=False, ordinary=False):
         assert all(n in initial and abs(initial[n]-v)<1e-9
                    for n,v in (q if mode=='real' else fixture['device_initial_positions_rad']).items()),'startup feedback differs from configured fixture'
         assert states[-1].simulated==(mode=='simulation') and states[-1].runtime_mode==mode
-        assert views[-1]['capabilities']['axial_grasp'] is False
-        checks.append('same feedback contract, no startup commands, unavailable capability explicit')
+        assert views[-1]['capabilities']['axial_grasp'] is True
+        checks.append('same feedback contract, no startup commands, configured axial position capability explicit')
         observer_log=(out/(mode+'-observer.log')).open('w')
         observer=subprocess.Popen([sys.executable,str(ROOT/'tools/snowbot_live.py'),'--observe',
             '--namespace',ns,'--run-id',views[-1]['run_id'],
@@ -300,6 +300,31 @@ def scenario(out, mode, websocket=False, ordinary=False):
         checks.append('held-tool A validates coupling and tool CAD; already-reached pose submits no motion or gripper commands')
         before=len(accepted);source['grip']=1.;phase('following');source['delta']=.006
         wait(lambda:len(accepted)>before+5)
+        left_position=grippers['left'].measured_position
+        source['buttons'][0]=1
+        wait(lambda:views[-1]['phase']=='following' and views[-1]['grasp_applied']=='right_axial' and
+             views[-1]['tool_phase']=='follow:right_axial',20.)
+        expected_virtual=json.loads((CFG/'snowbot_grippers_sim.json').read_text())['grippers']['right']['virtual']
+        assert abs(grippers['right'].measured_position-expected_virtual)<.003
+        assert abs(grippers['left'].measured_position-left_position)<1e-9
+        assert all(g.grasp_state=='unknown' for g in grippers.values())
+        before_virtual=len(accepted);source['delta']+=.003
+        wait(lambda:len(accepted)>before_virtual+5)
+        source['buttons'][0]=0
+        wait(lambda:views[-1]['phase']=='following' and views[-1]['grasp_applied']=='rigid' and
+             views[-1]['tool_phase']=='follow:rigid',20.)
+        assert abs(grippers['right'].measured_position)<.003
+        assert abs(grippers['left'].measured_position-left_position)<1e-9
+        checks.append('X changes only right gripper position, waits for acknowledgement/hold, captures axial QP and returns to measured rigid grasp')
+        source['buttons'][0]=1
+        wait(lambda:views[-1]['phase']=='following' and views[-1]['tool_phase']=='follow:right_axial',20.)
+        source['grip']=0.;phase('tool_standby')
+        source['buttons'][0]=0;paused=len(accepted);pump(.3)
+        assert len(accepted)==paused and abs(grippers['right'].measured_position-expected_virtual)<.003
+        source['grip']=1.
+        wait(lambda:views[-1]['phase']=='following' and views[-1]['tool_phase']=='follow:rigid',20.)
+        assert abs(grippers['right'].measured_position)<.003
+        checks.append('paused X release retains virtual opening; a fresh two-hand clutch confirms rigid position before resuming')
         source['grip']=0.;phase('tool_standby')
         wait(lambda:states and not states[-1].lease_active and states[-1].state not in ('RUNNING','STOPPING'))
         assert not states[-1].stop_failures
@@ -373,6 +398,7 @@ def scenario(out, mode, websocket=False, ordinary=False):
 
 def main():
     p=argparse.ArgumentParser();p.add_argument('--output',type=Path,required=True);p.add_argument('--mode',choices=('simulation','real','both'),default='both')
+    p.add_argument('--teleop-mode',choices=('ordinary','tool','both'),default='both')
     p.add_argument('--websocket-input',action='store_true');args=p.parse_args()
     if os.environ.get('ROS_LOCALHOST_ONLY')!='1' or not os.environ.get('ROS_DOMAIN_ID'):
         raise RuntimeError('Isolated localhost ROS domain required')
@@ -381,7 +407,7 @@ def main():
     try:
         result=[]
         for m in (('simulation','real') if args.mode=='both' else (args.mode,)):
-            for ordinary in (True,False):
+            for ordinary in ((True,False) if args.teleop_mode=='both' else (args.teleop_mode=='ordinary',)):
                 out=args.output/(('ordinary-' if ordinary else 'tool-')+m);out.mkdir()
                 case=scenario(out,m,args.websocket_input,ordinary);result.append(case)
                 (out/'verification.json').write_text(json.dumps(case,indent=2))

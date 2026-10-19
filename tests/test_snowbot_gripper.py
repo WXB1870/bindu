@@ -5,7 +5,7 @@ from pathlib import Path
 import unittest
 from bindu_contracts.profile import Profile
 from bindu_contracts.teleoperation import VRFrame
-from bindu_hardware.snowbot_gripper import GripperController, JOINTS, GROUPS, SIDES
+from bindu_hardware.snowbot_gripper import GripperController, JOINTS, GROUPS, SIDES, validate_config
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG = ROOT/'src/integration/bindu_runtime/config/robots/snowbot'
@@ -72,6 +72,53 @@ class Rig:
 class GripperTests(unittest.TestCase):
     def setUp(self):
         self.r = Rig()
+
+    def test_virtual_position_is_optional_and_must_be_between_closed_and_open(self):
+        for value in (None, True, float('nan'), -.02, 0., .004, .4, .5):
+            cfg=copy.deepcopy(self.r.config);cfg['grippers']['right']['virtual']=value
+            with self.subTest(value=value),self.assertRaisesRegex(ValueError,'VIRTUAL_POSITION'):
+                validate_config(cfg,self.r.profile)
+        cfg=copy.deepcopy(self.r.config);del cfg['grippers']['right']['virtual']
+        self.assertIs(validate_config(cfg,self.r.profile),cfg)
+
+    def test_grasp_change_uses_only_right_axis_and_does_not_declare_contact(self):
+        r=self.r;r.acquire(groups=(GROUPS['right'],));r.command('authorize_grasp')
+        self.assertFalse(r.core.authorized);self.assertFalse(r.sent)
+        r.command('virtual','right')
+        self.assertEqual(r.sent[-1][:2],('right',.02))
+        self.assertFalse(r.core.snapshot('right')['position_reached'])
+        with self.assertRaises(RuntimeError):r.command('open','left')
+        with self.assertRaises(RuntimeError):r.command('position','right',position=.4)
+        r.step(20)
+        self.assertTrue(r.core.snapshot('right')['position_reached'])
+        self.assertEqual(r.core.snapshot('right')['grasp_state'],'unknown')
+        self.assertEqual(r.q[JOINTS['left']],0.)
+        self.assertTrue(all(packet[0]=='right' for packet in r.sent))
+        token,epoch=r.core.lease_id,r.core.epoch
+        r.core.lease('release',lease_id=token,epoch=epoch);r.step(12)
+        self.assertEqual(r.q[JOINTS['right']],.02)
+        r.acquire(groups=(GROUPS['right'],));r.command('authorize_grasp');r.command('rigid','right');r.step(20)
+        self.assertTrue(r.core.snapshot('right')['position_reached'])
+        self.assertEqual(r.q[JOINTS['right']],0.)
+
+    def test_grasp_change_rejects_wrong_lease_and_open_or_moving_left_fingers(self):
+        r=self.r;r.acquire()
+        with self.assertRaisesRegex(RuntimeError,'AXIAL_POSITION_UNAVAILABLE'):r.command('authorize_grasp')
+        r.core.lease('release',lease_id=r.core.lease_id,epoch=r.core.epoch);r.step(2)
+        r.acquire(groups=(GROUPS['right'],))
+        for q,v in ((-.1,0.),(0.,.1)):
+            r.q[JOINTS['left']],r.v[JOINTS['left']]=q,v
+            r.now+=.01;r.observe()
+            with self.assertRaisesRegex(RuntimeError,'LEFT_NOT_CLOSED'):r.command('authorize_grasp')
+        self.assertFalse(r.sent)
+
+    def test_left_finger_change_during_virtual_motion_holds_right_without_closing(self):
+        r=self.r;r.acquire(groups=(GROUPS['right'],));r.command('authorize_grasp');r.command('virtual','right')
+        r.q[JOINTS['right']]=.01;r.q[JOINTS['left']]=-.1
+        r.step(track=False)
+        self.assertFalse(r.core.lease_id)
+        self.assertEqual(r.sent[-1][:3],('right',.01,True))
+        self.assertFalse(r.core.snapshot('right')['position_reached'])
 
     def test_unknown_load_requires_explicit_support_without_becoming_empty(self):
         r=self.r;r.acquire()

@@ -461,12 +461,19 @@ class PicoNode(RuntimeNode):
                 await self.select_tool_mode(intent,intent.value)
             elif intent.operation=='switch_grasp':
                 if self.position_contract:
-                    raise RuntimeError('PICO_AXIAL_GRASP_UNAVAILABLE')
-                if self.control.load!='held' or self.feedback().modes[0]!='closed':raise RuntimeError('PICO_LEFT_SUPPORT_REQUIRED')
-                cfg=self.cfg['grippers']['right']
-                target={cfg['joint']:cfg['virtual' if intent.value else 'closed']}
-                await self.validate_prepare(intent,target)
-                await self.move(intent,target,self.cfg['gripper_duration'],fit_duration=True)
+                    if not self.position_ops.axial_available:
+                        raise RuntimeError('PICO_AXIAL_GRASP_UNAVAILABLE')
+                    target=self.position_ops.grasp_target(intent.value)
+                    await self.validate_prepare(intent,target)
+                    await self.position_ops.switch_grasp(intent)
+                    self.current(intent)
+                    await self.confirm_tool(intent)
+                else:
+                    if self.control.load!='held' or self.feedback().modes[0]!='closed':raise RuntimeError('PICO_LEFT_SUPPORT_REQUIRED')
+                    cfg=self.cfg['grippers']['right']
+                    target={cfg['joint']:cfg['virtual' if intent.value else 'closed']}
+                    await self.validate_prepare(intent,target)
+                    await self.move(intent,target,self.cfg['gripper_duration'],fit_duration=True)
             elif intent.operation=='follow':
                 if self.position_contract:
                     self.event('PICO_ENGAGE_CHECK',json.dumps(dict(token=intent.token,
@@ -507,7 +514,16 @@ class PicoNode(RuntimeNode):
             if self.control.pending and self.control.pending.operation=='prepare':self.control.lock(str(exc),self.now())
         if self.state and not self.state.lease_active and self.feedback().healthy:
             self.handoff_complete=True
-        self.control.update_feedback(self.feedback(),self.now());self.control.tick(self.now())
+        feedback=self.feedback()
+        if self.position_ops and self.control.teleop_mode=='bimanual_tool' and feedback.healthy:
+            if (not self.control.pending and feedback.stopped and
+                    self.control.phase in ('checking','standby','tool_standby') and
+                    feedback.modes[1] in ('closed','virtual')):
+                self.control.virtual=feedback.modes[1]=='virtual'
+            if (self.control.phase in ('engaging','following') and
+                    feedback.modes!=('closed','virtual' if self.control.virtual else 'closed')):
+                self.control.lock('PICO_GRASP_POSITION_CHANGED',self.now())
+        self.control.update_feedback(feedback,self.now());self.control.tick(self.now())
         if self.control.context_at!=self.last_context_at:
             self.last_context_at=self.control.context_at
             self.event('PICO_CONTEXT',json.dumps(self.control.snapshot(self.now())))
@@ -547,7 +563,7 @@ class PicoNode(RuntimeNode):
                 capabilities=dict(prepare=self.prepare_positions is not None,
                     independent_arms=self.position_contract,mode_switch=self.position_contract,
                     grippers=bool(self.position_ops.config['calibrated']) if self.position_ops else True,
-                    axial_grasp=not self.position_contract),
+                    axial_grasp=self.position_ops.axial_available if self.position_ops else True),
                 execution_state=self.state.state if self.state is not None else 'unavailable',
                 feedback_age_s=self.now()-seconds(self.state.feedback_stamp) if self.state is not None else None)
             raw=tuple(self.frames.values())

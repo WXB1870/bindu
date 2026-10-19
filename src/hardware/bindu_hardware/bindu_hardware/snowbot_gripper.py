@@ -35,6 +35,12 @@ def validate_config(config, profile):
             raise ValueError('GRIPPER_CONFIG_GAIN')
         if not .001 <= item['max_speed'] <= 1:
             raise ValueError('GRIPPER_CONFIG_SPEED')
+        if 'virtual' in item:
+            value = item['virtual']
+            if (side != 'right' or type(value) not in (float, int) or not math.isfinite(value) or
+                    not min(item['closed'], item['open']) < value < max(item['closed'], item['open']) or
+                    min(abs(value-item['closed']), abs(value-item['open'])) <= 2*config['position_tolerance']):
+                raise ValueError('GRIPPER_CONFIG_VIRTUAL_POSITION')
     return config
 
 
@@ -49,6 +55,7 @@ class GripperController:
         self.groups = ()
         self.expires = self.steady_expires = 0.
         self.authorized = self.supported = False
+        self.grasp_authorized = False
         self.load = 'unknown'
         self.feedback_stamp = self.received_at = self.received_steady = 0.
         self.q, self.v, self.current = {}, {}, {}
@@ -135,6 +142,7 @@ class GripperController:
             self.lease_id, self.owner = secrets.token_hex(16), owner
             self.epoch += 1
             self.sequence, self.authorized, self.vr = -1, False, {}
+            self.grasp_authorized = False
             self.command_stamp = float('-inf')
             for c in self.channels.values():
                 c['touched'] = False
@@ -160,9 +168,20 @@ class GripperController:
                     load_state=='unknown' and not external_support):
                 raise RuntimeError('GRIPPER_LOADING_CONTEXT')
             self.load, self.supported, self.authorized = load_state, external_support, True
+            self.grasp_authorized = False
             self.authorized_at = self.now()
             self.trigger_opened = dict.fromkeys(SIDES, False)
             self.vr = {}  # Every new authorization must see a physical trigger release.
+        elif operation == 'authorize_grasp':
+            if side or self.groups != (GROUPS['right'],) or 'virtual' not in self.cfg['grippers']['right']:
+                raise RuntimeError('GRIPPER_AXIAL_POSITION_UNAVAILABLE')
+            self.require_left_closed()
+            self.authorized, self.grasp_authorized, self.vr = False, True, {}
+        elif operation in ('virtual', 'rigid'):
+            if side != 'right' or not self.grasp_authorized:
+                raise RuntimeError('GRIPPER_GRASP_NOT_AUTHORIZED')
+            self.require_left_closed()
+            self.move(side, self.cfg['grippers']['right']['virtual' if operation == 'virtual' else 'closed'], grasp=True)
         elif operation == 'hold':
             self.stop('GRIPPER_HOLD_REQUESTED', revoke=False)
         elif operation in ('open', 'close', 'position'):
@@ -175,18 +194,29 @@ class GripperController:
         self.sequence = sequence
         self.command_stamp = stamp
 
-    def move(self, side, target):
+    def require_left_closed(self):
+        self.require_feedback()
+        if (abs(self.q[JOINTS['left']]-self.cfg['grippers']['left']['closed']) > self.cfg['position_tolerance'] or
+                abs(self.v[JOINTS['left']]) > self.cfg['velocity_tolerance']):
+            raise RuntimeError('GRIPPER_LEFT_NOT_CLOSED_STATIONARY')
+
+    def move(self, side, target, *, grasp=False):
         self.require_write()
-        if side not in SIDES or GROUPS[side] not in self.groups or not self.authorized:
+        if (side not in SIDES or GROUPS[side] not in self.groups or
+                not (self.grasp_authorized and side == 'right' if grasp else self.authorized)):
             raise RuntimeError('GRIPPER_LOADING_NOT_AUTHORIZED')
         if any(c['state'] == 'STOPPING' for c in self.channels.values()):
             raise RuntimeError('GRIPPER_STOPPING')
+        if grasp:
+            self.require_left_closed()
+            if target not in (self.cfg['grippers']['right']['virtual'], self.cfg['grippers']['right']['closed']):
+                raise RuntimeError('GRIPPER_GRASP_TARGET')
         joint = JOINTS[side]
         lo, hi = self.profile.limits[joint]
         if not math.isfinite(target) or not lo <= target <= hi:
             raise RuntimeError('GRIPPER_LIMIT')
         closed = self.cfg['grippers'][side]['closed']
-        if abs(target-closed) > abs(self.q[joint]-closed)+self.cfg['position_tolerance'] and self.load != 'empty' and not self.supported:
+        if not grasp and abs(target-closed) > abs(self.q[joint]-closed)+self.cfg['position_tolerance'] and self.load != 'empty' and not self.supported:
             raise RuntimeError('GRIPPER_OPEN_REQUIRES_SUPPORT')
         c = self.channels[side]
         health = self.require_feedback()
@@ -203,6 +233,7 @@ class GripperController:
     def fail(self, code):
         self.fault = 'GRIPPER_STOP_UNCONFIRMED:'+code
         self.lease_id, self.owner, self.authorized = '', '', False
+        self.grasp_authorized = False
         for c in self.channels.values():
             if c['touched']:
                 c.update(state='FAULT', code=self.fault)
@@ -222,6 +253,7 @@ class GripperController:
 
     def stop(self, code, *, revoke):
         self.authorized = False
+        self.grasp_authorized = False
         errors = []
         for side in SIDES:
             try:
@@ -246,6 +278,11 @@ class GripperController:
             self.stop('GRIPPER_LEASE_EXPIRED', revoke=True)
         if self.lease_id and not self.arms_idle():
             self.stop('GRIPPER_ARMS_ACTIVE', revoke=True)
+        if self.lease_id and self.grasp_authorized:
+            try:
+                self.require_left_closed()
+            except RuntimeError as exc:
+                self.stop(str(exc), revoke=True)
         if self.lease_id and self.vr and now-self.authorized_at > .25:
             if any(s not in self.vr or not 0 <= now-self.vr[s][3] <= .25 for s in SIDES if GROUPS[s] in self.groups):
                 self.stop('GRIPPER_VR_INPUT_TIMEOUT', revoke=True)

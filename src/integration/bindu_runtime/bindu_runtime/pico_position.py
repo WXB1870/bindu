@@ -6,7 +6,7 @@ import time
 from pathlib import Path
 from bindu_interfaces.msg import GripperState
 from bindu_interfaces.srv import GripperControl, Lease
-from bindu_hardware.snowbot_gripper import SIDES, GROUPS, validate_config
+from bindu_hardware.snowbot_gripper import SIDES, GROUPS, JOINTS, validate_config
 from .common import seconds, stamp
 
 
@@ -49,13 +49,23 @@ class PositionOperations:
         for side in SIDES:
             try:
                 msg = self.reading(side)
-                result.append(next((mode for mode in ('closed', 'open') if
+                result.append(next((mode for mode in ('closed', 'virtual', 'open') if
+                    mode in self.config['grippers'][side] and
                     abs(msg.measured_position-self.config['grippers'][side][mode]) <=
                     self.config['position_tolerance'] and
                     abs(msg.measured_velocity) <= self.config['velocity_tolerance']), 'unknown'))
             except RuntimeError:
                 result.append('unknown')
         return tuple(result)
+
+    @property
+    def axial_available(self):
+        return self.config['calibrated'] and 'virtual' in self.config['grippers']['right']
+
+    def grasp_target(self, virtual):
+        if not self.axial_available:
+            raise RuntimeError('PICO_AXIAL_GRASP_UNAVAILABLE')
+        return {JOINTS['right']:self.config['grippers']['right']['virtual' if virtual else 'closed']}
 
     def stopped(self):
         # A gripper fault is never hidden by the arm executor being idle.
@@ -122,6 +132,48 @@ class PositionOperations:
                 if all(s.position_reached and s.epoch == lease.epoch and s.control_sequence >= self.sequence and
                        seconds(s.feedback_stamp) > issued and
                        abs(s.measured_position-expected[s.side]) <= self.config['position_tolerance'] for s in states):
+                    return
+                if time.monotonic() >= renew_at:
+                    response = await n.wait(self.leases.call_async(Lease.Request(operation='renew',
+                        lease_id=lease.lease_id, epoch=lease.epoch)))
+                    if not response.ok:
+                        raise RuntimeError(response.code)
+                    renew_at = time.monotonic()+.2
+                await n.pause()
+            raise RuntimeError('PICO_GRIPPER_FEEDBACK_TIMEOUT')
+        finally:
+            await self.release()
+
+    async def switch_grasp(self, intent):
+        """Position-mode change only; no contact, force or slip confirmation."""
+        n = self.node
+        if not self.axial_available:
+            raise RuntimeError('PICO_AXIAL_GRASP_UNAVAILABLE')
+        if self.modes()[0] != 'closed':
+            raise RuntimeError('PICO_LEFT_GRIPPER_NOT_CLOSED')
+        target = self.config['grippers']['right']['virtual' if intent.value else 'closed']
+        lease = await n.wait(self.leases.call_async(Lease.Request(operation='acquire',
+            owner=n.instance_id, resources=[GROUPS['right']])))
+        if not lease.ok:
+            raise RuntimeError(lease.code)
+        self.lease, self.sequence = lease, 0
+        try:
+            n.current(intent)
+            await self.request('authorize_grasp')
+            n.current(intent)
+            await self.request('virtual' if intent.value else 'rigid', 'right')
+            issued = n.now()
+            end, renew_at = time.monotonic()+self.config['motion_timeout']+1., 0.
+            while time.monotonic() < end:
+                n.current(intent)
+                if self.modes()[0] != 'closed':
+                    raise RuntimeError('PICO_LEFT_GRIPPER_NOT_CLOSED')
+                state = self.reading('right')
+                if state.state in ('FAILED', 'FAULT'):
+                    raise RuntimeError('PICO_GRIPPER_OPERATION_FAILED')
+                if (state.position_reached and state.epoch == lease.epoch and
+                        state.control_sequence >= self.sequence and seconds(state.feedback_stamp) > issued and
+                        abs(state.measured_position-target) <= self.config['position_tolerance']):
                     return
                 if time.monotonic() >= renew_at:
                     response = await n.wait(self.leases.call_async(Lease.Request(operation='renew',

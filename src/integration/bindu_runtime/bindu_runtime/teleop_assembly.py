@@ -127,6 +127,7 @@ def assemble(context):
                       output='screen', parameters=[{**common, **model, **tool,'require_recording':recorder_enabled,
                           'simulation_demo':pico_demo,
                           'position_contract':position_contract,
+                          'gripper_config':value('gripper_config') if position_contract else '',
                           'tool_ground_policy':'report_only' if pico_demo else 'configured'}]))
     nodes.append(Node(package='bindu_runtime', executable='teleop_display', namespace=ns,
                       condition=IfCondition(LaunchConfiguration('tool_display_enabled')),

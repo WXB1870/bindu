@@ -354,7 +354,10 @@ class PicoControl:
                 if independent and self.load=='held':
                     self.squeeze_released=[False,False];self.reason='PICO_TOOL_HELD_REQUIRES_TOOL_MODE';return
                 if not independent and states[0]!=self.virtual:
-                    self.reason='CONFIRM_GRASP_CHANGE_BEFORE_REENGAGE';return
+                    if self.guided_loading and self.armed[0]:
+                        self.phase='switching';self.emit('switch_grasp',states[0])
+                    else:self.reason='CONFIRM_GRASP_CHANGE_BEFORE_REENGAGE'
+                    return
                 self.phase='engaging';self.emit('follow',self.virtual)
 
     def complete(self, token, success, reason='', now=0., *, rejected=False):
@@ -390,8 +393,12 @@ class PicoControl:
             self.phase,self.reason='tool_standby','GRASP_MODE_CONFIRMED'
             self.squeeze_released=[False,False]
             if (self.frames and 0<=now-self.stamp<=self.max_age and
-                    all(f.grip>.7 for f in self.frames) and bool(self.frames[0].buttons&1)==self.virtual):
-                self.phase='engaging';self.emit('follow',self.virtual)
+                    all(f.grip>.7 for f in self.frames)):
+                desired=bool(self.frames[0].buttons&1)
+                if desired!=self.virtual:
+                    self.phase='switching';self.emit('switch_grasp',desired)
+                else:
+                    self.phase='engaging';self.emit('follow',self.virtual)
         elif operation=='follow':
             self.phase,self.reason='following','FOLLOWING'
             self.supported=False

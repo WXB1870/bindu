@@ -14,6 +14,7 @@ from bindu_contracts.teleoperation import VRFrame, ToolPoseFrame
 from bindu_teleoperation.bimanual_session import BimanualSession, ToolPoseSession, AcceptedReference, ToolPause
 from bindu_teleoperation.independent_session import IndependentArmsSession
 from bindu_kinematics.bimanual_worker import BimanualWorker
+from bindu_hardware.snowbot_gripper import validate_config, JOINTS
 from bindu_interfaces.action import TeleopSession as TeleopAction
 from bindu_interfaces.msg import VRInput, ExecutionState, RecorderHealth, MotionCommand, TeleopModeState, ToolPoseInput
 from bindu_interfaces.srv import Lease, SubmitMotion, ControlExecution
@@ -31,6 +32,9 @@ class BimanualToolNode(RuntimeNode):
         self.cfg=json.loads(Path(self.get_parameter('tool_config').value).read_text())
         self.declare_parameter('position_contract',False)
         position_contract=self.get_parameter('position_contract').value
+        self.declare_parameter('gripper_config','',descriptor=ParameterDescriptor(read_only=True))
+        gripper_path=self.get_parameter('gripper_config').value
+        self.gripper_cfg=validate_config(json.loads(Path(gripper_path).read_text()),self.profile) if position_contract and gripper_path else None
         self.independent_enabled=position_contract
         self.cfg['independent_arms_enabled']=position_contract
         if (self.cfg.get('simulation_only') is not (self.simulation and not position_contract) or
@@ -77,6 +81,7 @@ class BimanualToolNode(RuntimeNode):
         self.preflight_at=0.
         self.preflight_error=''
         self.preflight_mode=''
+        self.preflight_grasp=''
         self.frames={}
         self.state=self.health=self.mode_state=None
         self.busy=False
@@ -126,16 +131,28 @@ class BimanualToolNode(RuntimeNode):
     def on_health(self,msg):
         if msg.run_id == self.run_id: self.store_mode_message('health',msg)
 
+    def axial_position_ready(self):
+        cfg=self.gripper_cfg
+        s=self.state
+        if (not cfg or not cfg['calibrated'] or 'virtual' not in cfg['grippers']['right'] or
+                s is None or s.profile_hash!=self.profile.digest or s.simulated!=self.simulation or
+                not 0<=self.now()-seconds(s.feedback_stamp)<=self.cfg['feedback_max_age']):
+            return False
+        q=dict(zip(s.joints.name,s.joints.position));v=dict(zip(s.joints.name,s.joints.velocity))
+        return all(n in q and n in v and math.isfinite(q[n]) and math.isfinite(v[n]) and
+            abs(q[n]-cfg['grippers'][side]['virtual' if side=='right' else 'closed'])<=cfg['position_tolerance'] and
+            abs(v[n])<=cfg['velocity_tolerance'] for side,n in JOINTS.items())
+
     def on_frame(self,msg):
         if self.matches_mode(msg) and msg.side in ('left','right'):
-            # Physical gripper operations need a device acknowledgement adapter.
-            # The initial real position chain accepts PICO pose/clutch/Y only.
+            # Gripper motion is coordinated separately. Accept the projected
+            # axial bit only after the configured opening has measured feedback.
             previous=self.frames.get(msg.side)
             edges=tuple(int(v) for v in msg.button_edges)
             edge_changed=bool(previous and previous.source_id==msg.source_id and
                 len(edges)==len(previous.button_edges)==8 and edges!=previous.button_edges)
             blocked=not self.simulation and (msg.mapping!='pico_snowbot_v1' or msg.init or
-                msg.trigger>=.3 or msg.virtual_grip or bool(msg.buttons) or len(edges) not in (0,8) or
+                msg.trigger>=.3 or msg.virtual_grip and not self.axial_position_ready() or bool(msg.buttons) or len(edges) not in (0,8) or
                 edge_changed or bool(self.busy and previous and previous.stop))
             self.frames[msg.side]=VRFrame(msg.source_id,msg.seq,seconds(msg.stamp),msg.side,
                 tuple(msg.pose),msg.grip,msg.trigger,msg.init,msg.stop or blocked,msg.valid,msg.clutch_seq,
@@ -179,10 +196,11 @@ class BimanualToolNode(RuntimeNode):
                 s.simulated != self.simulation or not 0<=self.now()-seconds(s.feedback_stamp)<=self.cfg['feedback_max_age']):
             reason='BIMANUAL_PREFLIGHT_FEEDBACK'
         if not reason:
-            if self.preflight_mode!=mode:
+            grasp='right_axial' if mode=='bimanual_tool' and self.axial_position_ready() else 'rigid'
+            if self.preflight_mode!=mode or self.preflight_grasp!=grasp:
                 if self.worker.busy:
                     reply.success,reply.message=False,'BIMANUAL_PREFLIGHT_PENDING';return reply
-                self.preflight_status='';self.preflight_mode=mode
+                self.preflight_status='';self.preflight_mode=mode;self.preflight_grasp=grasp
             if self.preflight_status=='ready' and self.now()-self.preflight_at<=self.cfg['feedback_max_age']:
                 pass
             elif self.preflight_status=='failed' and self.now()-self.preflight_at<=self.cfg['feedback_max_age']:
@@ -193,7 +211,7 @@ class BimanualToolNode(RuntimeNode):
                 measured=dict(zip(s.joints.name,s.joints.position))
                 self.preflight_token-=1
                 operation='independent_capture' if mode=='independent_arms' else 'capture'
-                if self.worker.submit(operation,self.preflight_token,measured):
+                if self.worker.submit(operation,self.preflight_token,measured,grasp_mode=grasp):
                     self.preflight_status='pending'
                     self.preflight_at=self.now()
                 reason='BIMANUAL_PREFLIGHT_PENDING'

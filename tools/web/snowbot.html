@@ -358,7 +358,7 @@ function graspState(p,fresh){
   if(p.teleop_mode==='independent_arms')return {current:'左右臂独立',axial:'普通模式不使用',tone:'muted',guide:'普通模式下，左右侧握各控制对应臂；按 B 切扫雪模式。'};
   const applied=p.grasp_applied,available=p.capabilities?.axial_grasp;
   const current=p.load_state==='empty'?'未装载':applied==='right_axial'?'右手虚握':applied==='rigid'?'双手刚握':'待确认';
-  if(available===false)return {current,axial:'当前不可用',tone:'muted',guide:'当前入口尚未接通虚握切换；装卸确认时，X 切换装夹／卸载意图。'};
+  if(available===false)return {current,axial:'当前不可用',tone:'muted',guide:'请核对夹爪标定与虚握开度配置；装卸确认时，X 切换装夹／卸载意图。'};
   if(available!==true)return {current,axial:'能力待确认',tone:'muted',guide:'等待虚握能力确认。'};
   const guide='跟随中按住请求右手虚握，释放请求恢复刚握；以握持反馈为准。';
   if(p.phase==='switching')return {current,axial:p.grasp_requested==='right_axial'?'正在切换虚握':'正在恢复刚握',tone:'warn',guide};
@@ -366,7 +366,9 @@ function graspState(p,fresh){
 }
 function explainReason(reason){
   if(reasons[reason])return reasons[reason];
-  if((reason||'').includes('PICO_AXIAL_GRASP_UNAVAILABLE'))return '当前设备未提供可确认的虚握能力。';
+  if((reason||'').includes('PICO_AXIAL_GRASP_UNAVAILABLE'))return '夹爪尚未标定或未配置虚握开度。';
+  if((reason||'').includes('PICO_GRASP_POSITION_CHANGED'))return '夹爪开度偏离当前握持方式，已停止跟随。';
+  if((reason||'').includes('LEFT_GRIPPER_NOT_CLOSED')||(reason||'').includes('LEFT_NOT_CLOSED_STATIONARY'))return '左夹爪尚未闭合停稳，无法换握。';
   if((reason||'').includes('PREPARE_TOOL_COUPLING'))return '回准备位的候选路径会改变双手握持关系，已拒绝执行。';
   if((reason||'').includes('BIMANUAL_GRASP_POSE'))return '当前双臂姿态不满足工具握点几何；保持待命，请核对当前姿态和工具配置。';
   if((reason||'').includes('PICO_GRIPPER_CONFIRMATION_REQUIRED'))return '接合需要夹爪实际闭合并停稳；当前反馈尚未满足。';

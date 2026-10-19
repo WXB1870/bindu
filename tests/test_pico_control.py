@@ -419,6 +419,35 @@ class MappingTests(unittest.TestCase):
         self.assertEqual(session.grasp_mode,'right_axial')
 
 
+class PicoGraspSwitchTests(unittest.TestCase):
+    def test_new_clutch_after_paused_x_release_restores_rigid_before_follow(self):
+        r=Rig('held',guided=True);r.core.phase='tool_standby';r.core.virtual=True
+        r.modes=('closed','virtual');r.step()
+        self.assertIsNone(r.core.pending)
+        r.grips=[1.,1.];r.step()
+        self.assertEqual((r.core.pending.operation,r.core.pending.value),('switch_grasp',False))
+        r.modes=('closed','closed');r.complete()
+        self.assertEqual(r.core.pending.operation,'follow')
+
+    def test_x_release_during_entry_is_not_lost(self):
+        r=Rig('held',guided=True);r.grips=[1.,1.];r.step();r.complete()
+        r.buttons[0]=1;r.step()
+        self.assertEqual((r.core.pending.operation,r.core.pending.value),('switch_grasp',True))
+        r.buttons[0]=0;r.step();r.modes=('closed','virtual');r.complete()
+        self.assertEqual((r.core.pending.operation,r.core.pending.value),('switch_grasp',False))
+        r.modes=('closed','closed');r.complete()
+        self.assertEqual((r.core.pending.operation,r.core.pending.value),('follow',False))
+
+    def test_released_deadman_during_entry_never_queues_a_close_or_follow(self):
+        r=Rig('held',guided=True);r.grips=[1.,1.];r.step();r.complete()
+        r.buttons[0]=1;r.step();token=r.core.pending.token
+        r.buttons[0]=0;r.grips=[0.,0.];r.step()
+        self.assertFalse(r.core.complete(token,True,now=r.now))
+        r.modes=('closed','virtual');r.complete()
+        self.assertEqual(r.core.phase,'tool_standby');self.assertIsNone(r.core.pending)
+        self.assertFalse(r.core.virtual)
+
+
 class PicoHUDTests(unittest.TestCase):
     def view(self,mode='following',**values):
         return dict(pico=True,mode=mode,reason='FOLLOWING',input_fresh=True,raw_input_valid=True,
