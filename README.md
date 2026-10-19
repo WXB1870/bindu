@@ -41,7 +41,7 @@ Bindu 是基于 ROS 2 的模块化机器人控制系统，面向遥操作与移�
 
 先看[运行装配与场景选择](src/integration/bindu_runtime/README.md#扫雪遥操作)，再按“[工具输入与握持](src/capabilities/bindu_teleoperation/README.md#扫雪输入与握持) → [腰臂联合求解与反馈](src/capabilities/bindu_kinematics/README.md#扫雪求解与反馈) → [位置执行](src/control/bindu_execution/README.md#扫雪位置执行) → [Snowbot 位置接入](src/hardware/bindu_hardware/README.md#snowbot-位置接入)”阅读。ROS 运动学遥操作与 Isaac Sim 6.2 物理受力实验各有独立入口，配置和验证范围见运行装配页。
 
-PICO扫雪：[按键与相对映射](src/capabilities/bindu_teleoperation/README.md#pico-按键方案) · [操作流程](运行与验证.md#pico-扫雪操作流程目标方案) · [工具操作与握持契约](动作执行契约.md#61-snowbot-工具操作与握持切换目标契约)。
+PICO扫雪：[仿真一键启动](运行与验证.md#真实-pico-的简化仿真与浏览器操作台) · [按键与相对映射](src/capabilities/bindu_teleoperation/README.md#pico-按键方案) · [操作流程](运行与验证.md#pico-扫雪操作流程目标方案) · [工具操作与握持契约](动作执行契约.md#61-snowbot-工具操作与握持切换目标契约)。
 
 真机部署：[Snowbot自动化入口](运行与验证.md#部署自动化)，提供现场配方生成、独立构建、部署检查、前台启动及只读状态查看，默认只读。
 

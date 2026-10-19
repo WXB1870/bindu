@@ -1,0 +1,5 @@
+# Optional loopback-only Snowbot viewer; use alongside the teleop environment.
+meshcat==0.3.2
+tornado==6.5.2
+u-msgpack-python==2.8.0
+pyngrok==8.1.2
