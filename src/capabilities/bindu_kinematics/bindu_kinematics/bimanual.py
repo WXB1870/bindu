@@ -391,6 +391,94 @@ class BimanualQP:
         if not ok:
             raise ValueError('BIMANUAL_SHARED_TARGET:'+self._error())
 
+    def independent_abi(self):
+        """Resolve the additive capability only for ordinary-arm deployments."""
+        p,i,d=c.c_void_p,c.c_int,c.c_double
+        array=c.POINTER(d)
+        try:
+            for name,args in (
+                ('bq_capture_independent',[p,array,i,c.POINTER(NativeConfig)]),
+                ('bq_flange_poses',[p,array,i,array,array]),
+                ('bq_solve_independent',[p,array,i,array,i,array,array,i,d,array,array])):
+                fn=getattr(self.lib,name);fn.argtypes,fn.restype=args,i
+        except AttributeError as exc:
+            raise ValueError('INDEPENDENT_ARMS_ABI_MISSING: rebuild bindu_bimanual_qp') from exc
+
+    def check_independent_path(self, feedback, *waypoints):
+        if not getattr(self,'empty_collision_check',None):
+            raise ValueError('INDEPENDENT_ARMS_COLLISION_CHECK_REQUIRED')
+        before=np.array([feedback[n] for n in self.names]);samples=[]
+        for end in waypoints:
+            end=np.asarray(end,dtype=float)
+            if end.shape!=before.shape or not np.isfinite(end).all():
+                raise ValueError('BIMANUAL_REFERENCE_LAYOUT')
+            count=max(1,int(np.ceil(np.max(np.abs(end-before))/self.collision_step)))
+            for fraction in np.linspace(0.,1.,count+1):
+                q=dict(feedback);q.update(zip(self.names,before+fraction*(end-before)))
+                samples.append(dict(t=float(len(samples)),q=q,tool=np.eye(4)))
+            before=end
+        self.empty_collision_check(samples)
+
+    def capture_independent(self, feedback):
+        self.captured=False;self.independent_abi()
+        q=self._q(feedback);poses=np.empty((2,4,4),dtype=np.float64)
+        if (not self.lib.bq_capture_independent(self.handle,self._ptr(q),self.nq,c.byref(self.native_config)) or
+                not self.lib.bq_flange_poses(self.handle,self._ptr(q),self.nq,
+                                             self._ptr(poses[0]),self._ptr(poses[1]))):
+            raise ValueError('INDEPENDENT_ARMS_CAPTURE:'+self._error())
+        self.check_independent_path(feedback,[feedback[n] for n in self.names])
+        self.grasp_mode='independent';self.captured=True
+        return poses
+
+    def solve_independent(self, feedback, targets, *, active_mask, reference, dt):
+        """Two flange tasks with independent clutches; waist/inactive arms hold."""
+        if not self.captured or self.grasp_mode!='independent':
+            raise ValueError('INDEPENDENT_ARMS_NOT_CAPTURED')
+        started=time.perf_counter();cpu_started=time.thread_time()
+        try:
+            if not math.isfinite(dt) or not 0<dt<=self.max_interval:
+                raise ValueError('BIMANUAL_INTEGRATION_INTERVAL')
+            if type(active_mask) is not int or not 1<=active_mask<=3:
+                raise ValueError('INDEPENDENT_ARMS_CLUTCH_MASK')
+            q=self._q(feedback)
+            reference=np.ascontiguousarray(reference,dtype=np.float64)
+            measured=np.array([feedback[n] for n in self.names])
+            if reference.shape!=measured.shape or not np.isfinite(reference).all():
+                raise ValueError('BIMANUAL_REFERENCE_LAYOUT')
+            if np.max(np.abs(reference-measured))>self.max_reference_error:
+                raise ValueError('BIMANUAL_REFERENCE_TRACKING_ERROR')
+            poses=np.asarray(targets,dtype=float)
+            if poses.shape!=(2,4,4):raise ValueError('INDEPENDENT_ARMS_TARGET_LAYOUT')
+            left,right=(self._transform(pose) for pose in poses)
+            out=np.empty(len(self.names));metrics=np.empty(3)
+            native_at=time.perf_counter()
+            if not self.lib.bq_solve_independent(self.handle,self._ptr(q),self.nq,
+                    self._ptr(reference),len(self.names),self._ptr(left),self._ptr(right),active_mask,
+                    dt,self._ptr(out),self._ptr(metrics)):
+                raise ValueError('INDEPENDENT_ARMS_QP:'+self._error())
+            native_us=(time.perf_counter()-native_at)*1e6
+            if not np.isfinite(out).all() or not np.isfinite(metrics).all():
+                raise ValueError('BIMANUAL_NONFINITE_RESULT')
+            delta=out-reference;lead=reference-measured;moving=np.abs(delta)>1e-12
+            reserve=.8*self.max_reference_error
+            scale=float(np.clip(np.min((np.where(delta[moving]>0.,reserve,-reserve)-lead[moving])/
+                                       delta[moving],initial=1.),0.,1.))
+            out=reference+scale*delta;metrics[2]=scale
+            for n,old,new in zip(self.names,reference,out):
+                lo,hi=self.limits[n]
+                if not lo<=new<=hi or abs(new-old)>self.speed[n]*dt+1e-6:
+                    raise ValueError('BIMANUAL_POSITION_LIMIT:'+n)
+            if np.max(np.abs(out-measured))>self.max_reference_error:
+                raise ValueError('BIMANUAL_REFERENCE_TRACKING_ERROR')
+            geometry_at=time.perf_counter()
+            self.check_independent_path(feedback,reference,out)
+            self._check_solve_budget('independent',started,cpu_started,native_us,metrics[0],
+                                     (time.perf_counter()-geometry_at)*1e6)
+            return tuple(float(v) for v in out),tuple(float(v) for v in metrics)
+        except (ValueError,TypeError):
+            self.captured=False
+            raise
+
     def solve(self, feedback, target, *, reference, dt, target_stamp=None, tool_feedback=None):
         """Propose a step; caller commits reference/time only after acceptance.
 

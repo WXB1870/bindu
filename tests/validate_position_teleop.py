@@ -43,9 +43,10 @@ def websocket_input(port, source, stop, errors):
                 if source['stream']:
                     value={}
                     for i,side in enumerate(('left','right')):
-                        value[side]=[1.,0.,0.,0.,0.,1.,0.,0.,0.,0.,1.,0.,.34*i+source['delta'],0.,0.,1.]
+                        value[side]=[1.,0.,0.,0.,0.,1.,0.,0.,0.,0.,1.,0.,
+                                     .34*i+source['delta']+source['deltas'][i],0.,0.,1.]
                         buttons=source['buttons'][i]
-                        value[side+'State']=dict(squeezeValue=source['grip'],triggerValue=source['trigger'][i],
+                        value[side+'State']=dict(squeezeValue=source['grips'][i] if source['grips'] is not None else source['grip'],triggerValue=source['trigger'][i],
                             aButton=bool(buttons&1),bButton=bool(buttons&2),thumbstick=bool(buttons&4))
                     peer.send(packb(dict(etype='CONTROLLER_MOVE',key='motionControllers',value=value),use_bin_type=True))
                 for _ in range(4):
@@ -56,7 +57,7 @@ def websocket_input(port, source, stop, errors):
         if not stop.is_set():errors.append(type(exc).__name__+':'+str(exc))
 
 
-def scenario(out, mode, websocket=False):
+def scenario(out, mode, websocket=False, ordinary=False):
     token=uuid.uuid4().hex[:8];ns='/position_'+token;vendor='/fixture_'+token
     node=rclpy.create_node('position_fixture_'+token)
     states=[];views=[];accepted=[];grippers={};packets=[]
@@ -64,22 +65,23 @@ def scenario(out, mode, websocket=False):
     node.create_subscription(String,ns+'/teleop/state',lambda m:views.append(json.loads(m.data)),10)
     node.create_subscription(MotionCommand,ns+'/execution/accepted',accepted.append,100)
     node.create_subscription(GripperState,ns+'/gripper/state',lambda m:grippers.update({m.side:m}),10)
-    source=dict(buttons=[0,0],trigger=[0.,0.],grip=0.,delta=0.,stream=True,seq=0)
+    source=dict(buttons=[0,0],trigger=[0.,0.],grip=0.,grips=None,delta=0.,deltas=[0.,0.],stream=True,seq=0)
     counters=[ButtonCounters(),ButtonCounters()]
     vr=node.create_publisher(VRInput,ns+'/teleop/vr/raw',10)
     fixture=json.loads((CFG/'pico_snowbot_position_sim.json').read_text())
     # Exercise an invalid startup posture even if the deployment example is
     # later calibrated to a valid grasp. Keep this override in the fixture only.
     fixture['device_initial_positions_rad']={n:0. for n in fixture['device_initial_positions_rad']}
+    fixture['initial_teleop_mode']='independent_arms' if ordinary else 'bimanual_tool'
     q=fixture['device_initial_positions_rad'].copy()
-    if mode=='real':
+    if mode=='real' and not ordinary:
         # Synthetic measured posture, deliberately independent of an A command.
         # The actual real deployment continues to use only vendor feedback.
         q.update(fixture['prepare_positions_rad'])
     session=0;sample=0;acks=[0,0];hold_mask=0;holds=[0.,0.]
     if mode=='real':
-        measured=node.create_publisher(RetInformation,vendor+'/dualArmCtl_fdback',1)
-        health=node.create_publisher(String,vendor+'/bindu/servo_health',1)
+        vendor_feedback=node.create_publisher(RetInformation,vendor+'/dualArmCtl_fdback',1)
+        vendor_health=node.create_publisher(String,vendor+'/bindu/servo_health',1)
         control_source=node.create_publisher(String,vendor+'/bindu/control_source',1)
         bridges=[node.create_publisher(cls,vendor+topic,1) for cls,topic in
                  ((CtlInformation,'/ctl_data_pub'),(MidNodeCtlMsgSend,'/upperMonitor_msg_send'))]
@@ -111,9 +113,9 @@ def scenario(out, mode, websocket=False):
             for prefix,groups in (('l',('left_arm','left_tool_axis')),('r',('right_arm','right_tool_axis')),('torso',('waist',)),('head',('head',))):
                 names=[n for g in groups for n in GROUPS[g]]
                 setattr(msg,prefix+'_position',[q[n] for n in names]);setattr(msg,prefix+'_speed',[0.]*len(names))
-            measured.publish(msg)
+            vendor_feedback.publish(msg)
             control_source.publish(String(data=json.dumps(dict(schema=1,stamp=now,source='topic'))))
-            health.publish(String(data=json.dumps(dict(schema=1,stamp=now,sample=sample,sample_age=.001,
+            vendor_health.publish(String(data=json.dumps(dict(schema=1,stamp=now,sample=sample,sample_age=.001,
                 operational=True,ready=True,guard_enabled=True,guard_armed=bool(session),guard_latched=False,
                 guard_session=session,wkc=40,expected_wkc=40,present_mask=0xfffff,fault_mask=0,
                 enable_requested_mask=0xfffff,operation_enabled_mask=0xfffff,gripper_control_enabled=True,
@@ -121,8 +123,9 @@ def scenario(out, mode, websocket=False):
         if source['stream'] and not websocket:
             source['seq']+=1
             for i,side in enumerate(('left','right')):
-                pose=(1.,0.,0.,.34*i+source['delta'],0.,1.,0.,0.,0.,0.,1.,0.,0.,0.,0.,1.)
-                f=counters[i].update(VRFrame(token,source['seq'],now,side,pose,source['grip'],source['trigger'][i],
+                pose=(1.,0.,0.,.34*i+source['delta']+source['deltas'][i],0.,1.,0.,0.,0.,0.,1.,0.,0.,0.,0.,1.)
+                f=counters[i].update(VRFrame(token,source['seq'],now,side,pose,
+                    source['grips'][i] if source['grips'] is not None else source['grip'],source['trigger'][i],
                     mapping='pico_snowbot_v1',buttons=source['buttons'][i]))
                 vr.publish(VRInput(stamp=stamp(now),runtime_mode=mode,source_id=f.source_id,seq=f.seq,side=side,
                     pose=list(f.pose),grip=f.grip,trigger=f.trigger,valid=True,mapping=f.mapping,
@@ -139,6 +142,7 @@ def scenario(out, mode, websocket=False):
         gc=json.loads((CFG/'snowbot_grippers_real.json').read_text());gc['calibrated']=True
         gp=out/'fixture-grippers.json';gp.write_text(json.dumps(gc))
         pc=json.loads((CFG/'pico_snowbot_position_real.json').read_text());pc['prepare_positions_rad']=fixture['prepare_positions_rad']
+        pc['initial_teleop_mode']=fixture['initial_teleop_mode']
         pp=out/'fixture-pico.json';pp.write_text(json.dumps(pc))
         recipe['arguments'].update(gripper_config=str(gp),pico_config=str(pp),vendor_namespace=vendor,
             **{k:'/'+node.get_name() for k in ('arm_receiver_node','servo_receiver_node','mid_receiver_node')})
@@ -190,6 +194,65 @@ def scenario(out, mode, websocket=False):
         rejected=call(node,submit,SubmitMotion.Request(command=MotionCommand(mode='joint_reference_segment',runtime_mode=mode)))
         assert not rejected.accepted and 'UNTIMED_JOINT_TARGET' in rejected.code,rejected.code
         checks.append('coupled arm ownership and unsupported timed trajectory rejected on both backends')
+        if ordinary:
+            assert views[-1]['teleop_mode']=='independent_arms'
+            baseline=dict(zip(states[-1].joints.name,states[-1].joints.position))
+            source['grips']=[1.,0.];phase('following')
+            assert views[-1]['load_state']==('empty' if mode=='simulation' else 'unknown')
+            source['deltas'][0]=.004
+            wait(lambda:len(accepted)>5 and max(abs(v-baseline[n]) for n,v in
+                zip(states[-1].joints.name,states[-1].joints.position) if n in GROUPS['left_arm'])>1e-5)
+            measured=dict(zip(states[-1].joints.name,states[-1].joints.position))
+            assert max(abs(measured[n]-baseline[n]) for n in GROUPS['right_arm']+GROUPS['waist'])<1e-8
+            checks.append('zero posture with unknown or empty load accepts left-only clutch; right arm and waist remain fixed')
+            source['grips']=[1.,1.]
+            wait(lambda:views[-1]['tool_phase']=='follow:independent:3')
+            source['deltas'][1]=-.003;pump(.4)
+            source['grips']=[0.,1.]
+            wait(lambda:views[-1]['tool_phase']=='follow:independent:2')
+            held=dict(zip(states[-1].joints.name,states[-1].joints.position))
+            source['deltas'][0]=.08;source['deltas'][1]=-.006;pump(.5)
+            measured=dict(zip(states[-1].joints.name,states[-1].joints.position))
+            assert max(abs(measured[n]-held[n]) for n in GROUPS['left_arm']+GROUPS['waist'])<.002
+            assert max(abs(measured[n]-held[n]) for n in GROUPS['right_arm'])>1e-5
+            checks.append('releasing one clutch holds that arm while the other follows, with no waist motion')
+            source['grips']=[1.,1.]
+            wait(lambda:views[-1]['tool_phase']=='follow:independent:3')
+            recaptured=dict(zip(states[-1].joints.name,states[-1].joints.position));pump(.2)
+            measured=dict(zip(states[-1].joints.name,states[-1].joints.position))
+            assert max(abs(measured[n]-recaptured[n]) for n in GROUPS['left_arm'])<.002
+            checks.append('paused-hand displacement is discarded when only that hand recaptures its baseline')
+            source['grips']=[0.,0.];phase('tool_standby');pump(.3)
+            count=len(accepted);click(1,1)
+            wait(lambda:views[-1]['phase']=='standby' and views[-1]['pending'] is None and
+                 'BIMANUAL_GRASP_POSE' in views[-1]['reason'])
+            assert views[-1]['teleop_mode']=='independent_arms' and len(accepted)==count
+            checks.append('B requests tool mode at rest; geometric refusal preserves normal mode and sends no motion')
+            source['grips']=[1.,0.];phase('following');source['buttons'][0]=2;phase('locked')
+            source.update(grips=[0.,0.],buttons=[0,0]);pump(.3);click(1,1);phase('standby')
+            count=len(accepted);pump(.3);assert len(accepted)==count
+            checks.append('Y stops both arms; B explicitly recovers standby without switching or resuming')
+            if mode=='simulation':
+                source['buttons'][1]=1
+                wait(lambda:views[-1]['reason']=='PREPARED' and views[-1]['pending'] is None,40.)
+                source['buttons'][1]=0;pump(.2)
+                assert views[-1]['teleop_mode']=='independent_arms'
+                count=len(accepted);click(1,1);phase('standby')
+                assert views[-1]['teleop_mode']=='bimanual_tool' and len(accepted)==count
+                click(1,1);phase('standby')
+                assert views[-1]['teleop_mode']=='independent_arms' and len(accepted)==count
+                checks.append('A explicitly prepares; B changes mode in either direction while retaining pose and standby')
+            source['grips']=[1.,0.];phase('following');source['stream']=False;phase('locked')
+            wait(lambda:not states[-1].lease_active and states[-1].state not in ('RUNNING','STOPPING'))
+            assert not states[-1].stop_failures
+            checks.append('ordinary-mode input loss cancels and confirms hold with released execution ownership')
+            terminate(observer,node);observer=None
+            health=json.loads((trace_dir/'diagnostics-health.json').read_text())
+            assert not health['active'] and health['dropped']==0 and not health['error']
+            events=[json.loads(line)['data'] for line in (trace_dir/'runtime-events.jsonl').read_text().splitlines()]
+            assert any(e['state']=='PICO_MODE_CHECK' for e in events)
+            assert any(e['state']=='BIMANUAL_CAPTURED' and 'independent:' in e['code'] for e in events)
+            return dict(mode=mode,teleop_mode='independent_arms',checks=checks,accepted=len(accepted),vendor_packets=len(packets))
         assert views[-1]['load_state']==('empty' if mode=='simulation' else 'unknown')
         source['grip']=1.
         if mode=='simulation':
@@ -316,7 +379,13 @@ def main():
     args.output=args.output.resolve();args.output.mkdir(parents=True,exist_ok=False)
     rclpy.init()
     try:
-        result=[scenario(args.output,m,args.websocket_input) for m in (('simulation','real') if args.mode=='both' else (args.mode,))]
+        result=[]
+        for m in (('simulation','real') if args.mode=='both' else (args.mode,)):
+            for ordinary in (True,False):
+                out=args.output/(('ordinary-' if ordinary else 'tool-')+m);out.mkdir()
+                case=scenario(out,m,args.websocket_input,ordinary);result.append(case)
+                (out/'verification.json').write_text(json.dumps(case,indent=2))
+                print(out.name+': '+str(len(case['checks']))+' checks passed',flush=True)
         (args.output/'verification.json').write_text(json.dumps(result,indent=2));print(json.dumps(result,indent=2))
     finally:rclpy.shutdown()
 

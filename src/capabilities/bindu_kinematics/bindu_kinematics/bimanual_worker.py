@@ -28,6 +28,9 @@ def _run(config, profile, requests, results, preload_path_checks=False):
             # query contexts before ready; each request still checks its fresh
             # measured start and complete proposed path, including grip meshes.
             path_check(False);path_check(True)
+        if config.get('independent_arms_enabled'):
+            solver.independent_abi()
+            solver.empty_collision_check=path_check(False)
         # This is the private spawned child, never the caller's interpreter.
         # Initialization has a separate startup budget. Leave GC enabled for
         # later garbage without rescanning this stable model/import graph.
@@ -39,7 +42,10 @@ def _run(config, profile, requests, results, preload_path_checks=False):
             if item is None: return
             operation,token,feedback,target,reference,dt,grasp_mode,target_stamp=item
             try:
-                if operation == 'capture': value=solver.capture(feedback,grasp_mode)
+                independent=isinstance(grasp_mode,str) and grasp_mode.startswith('independent:')
+                if operation=='independent_capture' or operation=='capture' and independent:
+                    value=solver.capture_independent(feedback)
+                elif operation == 'capture': value=solver.capture(feedback,grasp_mode)
                 elif operation == 'loaded_prepare_path':
                     value=solver.check_loaded_prepare(feedback,target)
                 elif operation in ('prepare_path','gripper_path'):
@@ -62,7 +68,9 @@ def _run(config, profile, requests, results, preload_path_checks=False):
                         samples.append(dict(t=float(f),q={n:q[n] for n in solver.model_names},tool=tool))
                     value=check(samples)
                 elif operation == 'solve':
-                    value=solver.solve(feedback,target,reference=reference,dt=dt,target_stamp=target_stamp)
+                    value=(solver.solve_independent(feedback,target,active_mask=int(grasp_mode.split(':')[1]),
+                             reference=reference,dt=dt) if independent else
+                           solver.solve(feedback,target,reference=reference,dt=dt,target_stamp=target_stamp))
                 else: raise ValueError('BIMANUAL_WORKER_OPERATION')
                 results.put(('result',token,value))
             except (ValueError,RuntimeError) as exc:

@@ -17,6 +17,8 @@ def hud_spec(view):
     spec = dict(state='paused', status='待命', grip=grip, tone='warning',
                 title='', detail='', action='Y 停止', context='双手工具')
     if view.get('tool_variant')=='short_rod':spec['context']='双手短棍'
+    independent=view.get('teleop_mode')=='independent_arms'
+    if independent:spec.update(context='普通双臂',grip='逐臂离合')
     def notice(title, detail):
         spec.update(title=title, detail=detail)
     input_fault = any(x in reason for x in ('INPUT_TIMEOUT','PAIR_INVALID','POSE_INVALID','TRACKING','CONNECTION_CHANGED','POSE_ORIGIN','TIME_REVERSED'))
@@ -49,6 +51,10 @@ def hud_spec(view):
     elif mode == 'preparing':
         spec.update(status='准备中',grip='工具')
         notice('正在前往准备姿态', '继续按住 A；松开 A 即暂停准备')
+    elif mode == 'selecting_mode':
+        target='普通双臂' if view.get('mode_target')=='independent_arms' else '扫雪工具'
+        spec['status']='切换模式中'
+        notice('正在检查'+target+'模式', '保持松握；切换完成后仍待命，不自动运动')
     elif mode in ('confirming_tool','engaging'):
         spec['status']='工具检查中' if mode=='confirming_tool' else '正在接合'
         notice('正在确认工具' if mode=='confirming_tool' else '正在建立相对跟随基准',
@@ -70,6 +76,7 @@ def hud_spec(view):
         spec['status']='已暂停' if confirmed else '正在暂停'
         notice('松开双侧握，再同时握住' if confirmed else '等待机器人停稳',
                 '重新接合后继续跟随' if confirmed else '保持双侧握松开；停稳后再重新接合')
+        if independent and confirmed:notice('握住对应侧，继续控制该臂','重新接合以该臂当前位置建立基准；B 切模式')
     elif mode == 'standby':
         if view.get('operator_guide'):
             guide=view['operator_guide'];notice(guide['title'],guide['detail'])

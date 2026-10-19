@@ -24,6 +24,8 @@ class TeleopModeNode(RuntimeNode):
         self.declare_parameter('single_arm_enabled',True,descriptor=ParameterDescriptor(read_only=True))
         self.require_recording=self.get_parameter('require_recording').value
         self.single_arm_enabled=self.get_parameter('single_arm_enabled').value
+        self.declare_parameter('independent_arms_enabled',False)
+        independent_enabled=self.get_parameter('independent_arms_enabled').value
         self.declare_parameter('initial_side', 'left')
         self.declare_parameter('supported_sides', ['left'])
         self.declare_parameter('require_single_worker', False)
@@ -43,7 +45,8 @@ class TeleopModeNode(RuntimeNode):
         self.selection = ModeSelection(self.profile, self.get_parameter('initial_side').value, self.now(),
                                        left_orientation=axial, tool_config=tool_cfg if input_source == 'tool_pose' else None,
                                        require_recording=self.require_recording,
-                                       enabled_modes=('single_arm','bimanual_tool') if self.single_arm_enabled else ('bimanual_tool',))
+                                       enabled_modes=(('single_arm',) if self.single_arm_enabled else ())+
+                                           (('independent_arms',) if independent_enabled else ())+('bimanual_tool',))
         if (self.single_arm_enabled and self.selection.side not in self.supported_sides) or set(self.supported_sides)-{'left','right'}:
             raise ValueError('INVALID_SUPPORTED_SIDES')
         self.state = self.health = None
@@ -53,6 +56,7 @@ class TeleopModeNode(RuntimeNode):
         self.waiters = set()
         group = ReentrantCallbackGroup()
         self.tool_client = self.create_client(Trigger, 'teleop/tool_ready', callback_group=group)
+        self.arms_client = self.create_client(Trigger, 'teleop/arms_ready', callback_group=group) if independent_enabled else None
         self.single_client = self.create_client(Trigger, 'teleop/worker_ready', callback_group=group) if self.single_arm_enabled else None
         self.create_subscription(ExecutionState,'execution/state',lambda m:self.store_mode_message('state',m),1)
         if self.require_recording:
@@ -100,7 +104,7 @@ class TeleopModeNode(RuntimeNode):
         if self.busy or request.expected_generation != self.selection.generation or (
                 request.mode not in self.selection.enabled_modes or
                 (request.mode == 'single_arm' and request.side not in self.supported_sides) or
-                (request.mode == 'bimanual_tool' and request.side) or
+                (request.mode != 'single_arm' and request.side) or
                 not math.isfinite(request.timeout) or not .2 <= request.timeout <= 15.):
             return GoalResponse.REJECT
         self.busy = True
@@ -138,12 +142,12 @@ class TeleopModeNode(RuntimeNode):
                         stop_failures=s.stop_failures,feedback_stamp=seconds(s.feedback_stamp),joints=s.joints)
                     health = None if self.health is None else SimpleNamespace(
                         ready=self.health.ready,stamp=seconds(self.health.stamp))
-                    frames = (self.paired_frames if goal.request.mode=='bimanual_tool' else self.frames)
+                    frames = (self.paired_frames if goal.request.mode!='single_arm' else self.frames)
                     reason = self.selection.ready(view,health,frames,self.now(),
                                                    tuple(self.profile.groups), tool_frame=self.tool_frame)
                     if not reason and not target_ready:
-                        client = (self.tool_client if goal.request.mode == 'bimanual_tool'
-                                  else self.single_client)
+                        client = (self.tool_client if goal.request.mode == 'bimanual_tool' else
+                                  self.arms_client if goal.request.mode=='independent_arms' else self.single_client)
                         if not client.service_is_ready():
                             reason = ('BIMANUAL_NOT_READY' if goal.request.mode == 'bimanual_tool'
                                       else 'SINGLE_ARM_NOT_READY')

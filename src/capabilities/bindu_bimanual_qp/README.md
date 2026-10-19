@@ -2,7 +2,9 @@
 
 [项目模块导航](../../../README.md#模块快速导航) · [职责与边界](#职责与边界) · [源码导航](#源码导航) · [扫雪接口与库版本](#扫雪接口与库版本) · [接入与验证](#接入与验证) · [关联模块](#关联模块)
 
-基于 Pinocchio、ProxSuite 和 Eigen 的 C++17 联合求解库，输出 `libbindu_bimanual_qp.so`。通过 C ABI 为上层提供双臂与腰部持工具控制。
+基于 Pinocchio、ProxSuite 和 Eigen 的 C++17 联合求解库，输出 `libbindu_bimanual_qp.so`。通过 C ABI 提供双臂与腰部持工具控制，以及普通双臂的独立末端目标。
+
+普通模式使用两个末端任务，不施加刚性工具闭合约束；共享腰部和未接合臂的速度固定为0，仍使用同一组关节位置／速度边界。新增`bq_capture_independent`、`bq_flange_poses`、`bq_solve_independent`为ABI v1的增量能力，旧工具接口与布局不变。调用者负责控制权、反馈时效、组合路径碰撞和离合交接，本库不发送设备命令。
 
 ## 职责与边界
 

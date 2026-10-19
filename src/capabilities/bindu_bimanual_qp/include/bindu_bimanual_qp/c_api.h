@@ -85,6 +85,13 @@ int bq_solve_tracking(void *handle, const double *q, int nq, const double *refer
                         double *out, double *metrics);
 int bq_tool_pose(void *handle, const double *q, int nq, double *out);
 int bq_relative_pose(void *handle, const double *q, int nq, double *out);
+/* Additive ABI v1 ordinary-arms capability. No rigid-tool closure equality;
+ * shared joints and inactive arms are held. active_mask: left=1, right=2. */
+int bq_capture_independent(void *handle, const double *q, int nq, const bq_config *config);
+int bq_flange_poses(void *handle, const double *q, int nq, double *left, double *right);
+int bq_solve_independent(void *handle, const double *q, int nq, const double *reference, int n,
+                         const double *left, const double *right, int active_mask,
+                         double dt, double *out, double *metrics);
 
 #ifdef __cplusplus
 }

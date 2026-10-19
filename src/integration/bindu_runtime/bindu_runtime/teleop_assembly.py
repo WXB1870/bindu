@@ -117,6 +117,7 @@ def assemble(context):
                       output='screen', parameters=[{**common, **tool, 'initial_side': side,
                           'supported_sides': [side],
                           'single_arm_enabled':single_enabled,'require_single_worker':single_enabled,
+                          'independent_arms_enabled':position_contract,
                           'require_recording':recorder_enabled}]))
     if single_enabled:
         nodes.append(Node(package='bindu_runtime', executable='teleop', namespace=ns,

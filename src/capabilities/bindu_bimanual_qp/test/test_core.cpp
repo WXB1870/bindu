@@ -81,6 +81,37 @@ TEST_F(CoreTest, LeftAndRightFrameJacobiansMatchFiniteDifferences) {
   checkJacobian(robot_->rightJacobian(), [this]() { return robot_->rightPose(); });
 }
 
+TEST_F(CoreTest, IndependentTargetsHoldWaistAndInactiveArmWithoutClosure) {
+  datq::RobotModel robot(TEST_URDF_PATH,"left_ee","right_ee","tool_frame",
+                         left_names_,right_names_,{"waist_joint"});
+  datq::RigidToolKinematics kin(robot);
+  kin.capture(pinocchio::SE3::Identity());
+  datq::QpController controller(robot,kin,{},robot.activePositions(),1);
+  controller.independentArms();
+  auto left=robot.leftPose(),right=robot.rightPose();
+  left.translation()[2]+=.02;right.translation()[1]-=.02;
+  const auto result=controller.solve(left,.01,robot.activePositions(),
+      Eigen::Matrix<double,6,1>::Zero(),nullptr,&right,1);
+  ASSERT_TRUE(result.ok) << result.reason;
+  EXPECT_DOUBLE_EQ(result.velocity[0],0.);
+  EXPECT_LT(result.velocity.tail(6).norm(),1e-12);
+  EXPECT_GT(result.velocity.segment(1,6).norm(),1e-5);
+  EXPECT_GT((kin.relativeErrorJacobian()*result.velocity).norm(),1e-5);
+}
+
+TEST_F(CoreTest, IndependentCapabilityCannotUseToolSolveOrInvalidMask) {
+  datq::QpController controller(*robot_,*kin_,{},robot_->activePositions());
+  controller.independentArms();
+  auto right=robot_->rightPose();
+  EXPECT_FALSE(controller.solve(robot_->leftPose(),.01,robot_->activePositions()).ok);
+  for (int mask : {0,4,-1}) {
+    const auto result=controller.solve(robot_->leftPose(),.01,robot_->activePositions(),
+        Eigen::Matrix<double,6,1>::Zero(),nullptr,&right,mask);
+    EXPECT_FALSE(result.ok);
+    EXPECT_DOUBLE_EQ(result.velocity.norm(),0.);
+  }
+}
+
 TEST_F(CoreTest, ToolJacobianMatchesFiniteDifferences) {
   checkJacobian(kin_->toolJacobian(), [this]() { return kin_->toolPose(); });
   const auto captured = robot_->leftPose() * kin_->leftToTool();

@@ -12,7 +12,7 @@ class ModeSelection:
         self.profile = profile
         self.left_orientation = left_orientation
         self.tool_config = tool_config
-        if type(require_recording) is not bool or not enabled_modes or set(enabled_modes)-{'single_arm','bimanual_tool'}:
+        if type(require_recording) is not bool or not enabled_modes or set(enabled_modes)-{'single_arm','bimanual_tool','independent_arms'}:
             raise ValueError('INVALID_TELEOP_REQUIREMENTS')
         self.require_recording = require_recording
         self.enabled_modes = tuple(enabled_modes)
@@ -29,7 +29,7 @@ class ModeSelection:
             raise ValueError('MODE_SWITCH_BUSY')
         if generation != self.generation:
             raise ValueError('STALE_MODE_GENERATION')
-        if mode not in self.enabled_modes or (mode == 'single_arm' and side not in ('left','right')) or (mode == 'bimanual_tool' and side):
+        if mode not in self.enabled_modes or (mode == 'single_arm' and side not in ('left','right')) or (mode != 'single_arm' and side):
             raise ValueError('INVALID_MODE_SELECTION')
         if self.phase == 'READY' and (mode,side) == (self.mode,self.side):
             return False
@@ -60,7 +60,7 @@ class ModeSelection:
             except (ValueError, TypeError) as exc:
                 return str(exc) if isinstance(exc, ValueError) else 'TOOL_INPUT_INVALID'
             return ''
-        sides = ('left','right') if mode == 'bimanual_tool' else (side,)
+        sides = ('left','right') if mode != 'single_arm' else (side,)
         selected = []
         for key in sides:
             frame = frames.get(key)
@@ -79,7 +79,9 @@ class ModeSelection:
                     abs(selected[0].stamp-selected[1].stamp) > .02):
                 return 'VR_PAIR_MISMATCH'
             try:
-                BimanualSession.paired_pose(*selected,left_orientation=self.left_orientation)
+                if mode=='independent_arms':
+                    for frame in selected:pose_matrix(frame.pose)
+                else:BimanualSession.paired_pose(*selected,left_orientation=self.left_orientation)
             except ValueError as exc:
                 if str(exc) in ('VR_GRASP_GEOMETRY', 'VR_ORIENTATION_DEGENERATE'):
                     return str(exc)

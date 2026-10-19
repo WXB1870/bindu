@@ -12,6 +12,7 @@ from std_srvs.srv import Trigger, SetBool
 from rcl_interfaces.msg import ParameterDescriptor
 from bindu_contracts.teleoperation import VRFrame, ToolPoseFrame
 from bindu_teleoperation.bimanual_session import BimanualSession, ToolPoseSession, AcceptedReference, ToolPause
+from bindu_teleoperation.independent_session import IndependentArmsSession
 from bindu_kinematics.bimanual_worker import BimanualWorker
 from bindu_interfaces.action import TeleopSession as TeleopAction
 from bindu_interfaces.msg import VRInput, ExecutionState, RecorderHealth, MotionCommand, TeleopModeState, ToolPoseInput
@@ -30,6 +31,8 @@ class BimanualToolNode(RuntimeNode):
         self.cfg=json.loads(Path(self.get_parameter('tool_config').value).read_text())
         self.declare_parameter('position_contract',False)
         position_contract=self.get_parameter('position_contract').value
+        self.independent_enabled=position_contract
+        self.cfg['independent_arms_enabled']=position_contract
         if (self.cfg.get('simulation_only') is not (self.simulation and not position_contract) or
                 self.cfg.get('collision_scope') not in ('empty_scene_only','configured_tool_geometry')):
             raise ValueError('BIMANUAL_CONFIG_RUNTIME_MODE_MISMATCH')
@@ -73,6 +76,7 @@ class BimanualToolNode(RuntimeNode):
         self.preflight_status=''
         self.preflight_at=0.
         self.preflight_error=''
+        self.preflight_mode=''
         self.frames={}
         self.state=self.health=self.mode_state=None
         self.busy=False
@@ -97,6 +101,7 @@ class BimanualToolNode(RuntimeNode):
         self.waiters=set()
         self.create_timer(.005,self.poll_worker)
         self.create_service(Trigger,'teleop/tool_ready',self.ready)
+        if self.independent_enabled:self.create_service(Trigger,'teleop/arms_ready',self.arms_ready)
         self.create_service(SetBool,'teleop/tool_pause',self.request_pause)
         self.server=ActionServer(self,TeleopAction,'teleop/tool_session',
             execute_callback=self.execute,goal_callback=self.goal,
@@ -162,12 +167,22 @@ class BimanualToolNode(RuntimeNode):
             self.event('BIMANUAL_WORKER_FAILED',self.worker_error)
 
     def ready(self,request,reply):
+        return self.preflight(reply,'bimanual_tool')
+
+    def arms_ready(self,request,reply):
+        return self.preflight(reply,'independent_arms')
+
+    def preflight(self,reply,mode):
         reason=self.worker_error or ('' if self.worker.ready else 'BIMANUAL_WORKER_NOT_READY')
         s=self.state
         if not reason and (self.busy or s is None or s.profile_hash!=self.profile.digest or
                 s.simulated != self.simulation or not 0<=self.now()-seconds(s.feedback_stamp)<=self.cfg['feedback_max_age']):
             reason='BIMANUAL_PREFLIGHT_FEEDBACK'
         if not reason:
+            if self.preflight_mode!=mode:
+                if self.worker.busy:
+                    reply.success,reply.message=False,'BIMANUAL_PREFLIGHT_PENDING';return reply
+                self.preflight_status='';self.preflight_mode=mode
             if self.preflight_status=='ready' and self.now()-self.preflight_at<=self.cfg['feedback_max_age']:
                 pass
             elif self.preflight_status=='failed' and self.now()-self.preflight_at<=self.cfg['feedback_max_age']:
@@ -177,7 +192,8 @@ class BimanualToolNode(RuntimeNode):
             else:
                 measured=dict(zip(s.joints.name,s.joints.position))
                 self.preflight_token-=1
-                if self.worker.submit('capture',self.preflight_token,measured):
+                operation='independent_capture' if mode=='independent_arms' else 'capture'
+                if self.worker.submit(operation,self.preflight_token,measured):
                     self.preflight_status='pending'
                     self.preflight_at=self.now()
                 reason='BIMANUAL_PREFLIGHT_PENDING'
@@ -188,7 +204,7 @@ class BimanualToolNode(RuntimeNode):
         now=self.now()
         m=self.mode_state
         if (m is None or m.profile_hash != self.profile.digest or
-                m.phase != 'READY' or m.mode != 'bimanual_tool' or
+                m.phase != 'READY' or m.mode not in (('bimanual_tool','independent_arms') if self.independent_enabled else ('bimanual_tool',)) or
                 not 0 <= now-seconds(m.stamp) < MODE_STATE_MAX_AGE):
             raise RuntimeError('BIMANUAL_MODE_NOT_SELECTED')
         if self.worker_error or not self.worker.ready:
@@ -220,7 +236,7 @@ class BimanualToolNode(RuntimeNode):
         except RuntimeError as exc:
             self.event('BIMANUAL_GOAL_REJECTED',str(exc),request.task_id)
             return GoalResponse.REJECT
-        if (self.busy or not request.task_id or request.resource_group != 'bimanual_tool' or
+        if (self.busy or not request.task_id or request.resource_group != self.mode_state.mode or
                 not math.isfinite(request.duration) or not 0 < request.duration <= 3600 or
                 not all(c.service_is_ready() for c in
                         (self.lease_client,self.submit_client,self.control_client))):
@@ -278,7 +294,8 @@ class BimanualToolNode(RuntimeNode):
 
     async def execute(self,goal):
         mode=self.mode_state
-        session_type=ToolPoseSession if self.input_source=='tool_pose' else BimanualSession
+        session_type=(IndependentArmsSession if mode.mode=='independent_arms' else
+                      ToolPoseSession if self.input_source=='tool_pose' else BimanualSession)
         continuation=self.grasp_continuation
         self.grasp_continuation=None
         session=session_type(self.cfg,mode.generation,seconds(mode.changed_at),
@@ -320,9 +337,11 @@ class BimanualToolNode(RuntimeNode):
                     if time.monotonic()>=startup_deadline: raise
                     await self.pause()
             self.event('BIMANUAL_STARTED',json.dumps({'session_id':session.identity,
+                'teleop_mode':mode.mode,
                 'mode_generation':session.generation,'resource_groups':self.groups,
-                'collision_scope':self.cfg['collision_scope'],'tool_frame':self.cfg['left_frame'],
-                'tool_transform':self.cfg['left_to_tool'],
+                'collision_scope':'robot_body_only' if isinstance(session,IndependentArmsSession) else self.cfg['collision_scope'],
+                'tool_frame':self.cfg['left_frame'],
+                'tool_transform':None if isinstance(session,IndependentArmsSession) else self.cfg['left_to_tool'],
                 'position_scale':self.cfg['position_scale'],'rotation_scale':1.,
                 'mapping_frame':'robot_base','geometry_kind':self.cfg.get('demo',{}).get('geometry_kind','shovel'),
                 'max_integration_interval':reference.max_interval,'max_sample_gap':reference.max_sample_gap,
@@ -474,7 +493,8 @@ class BimanualToolNode(RuntimeNode):
                                 pending_reference=(positions,work_sampled_at)
                                 pending_at=now
                                 self.event('BIMANUAL_QP_RESULT',json.dumps({'solve_us':metrics[0],
-                                    'relative_error':metrics[1],'recovery_scale':metrics[2],
+                                    'relative_error':None if isinstance(session,IndependentArmsSession) else metrics[1],
+                                    'teleop_mode':mode.mode,'recovery_scale':metrics[2],
                                     'input_stamp':work_stamp,'input_seq':work_seq,'integration_dt':work_dt,
                                     'sample_gap_s':work_gap,
                                     'target':work_target}),
@@ -505,7 +525,7 @@ class BimanualToolNode(RuntimeNode):
                         work_target=None if session.target is None else session.target.ravel().tolist()
                 goal.publish_feedback(TeleopAction.Feedback(session_id=session.identity,
                     mode=(('capturing' if session.mode=='follow' and session.anchor_tool is None else session.mode)
-                          +(':'+session.grasp_mode if session.axial else '')),
+                          +(':'+session.grasp_mode if session.axial or isinstance(session,IndependentArmsSession) else '')),
                     accepted_commands=accepted))
                 await self.pause()
             result.code='CANCELED' if canceled else 'TELEOP_SESSION_COMPLETE'

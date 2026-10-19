@@ -94,7 +94,9 @@ class PicoNode(RuntimeNode):
         if not 0 < float(self.cfg['prepare_duration']) <= 60:
             raise ValueError('PICO_PREPARE_DURATION_INVALID')
         self.control=PicoControl(initial_load=initial_load,simulation_demo=self.simulation_demo,
-                                 max_age=float(self.tool_cfg['input_max_age']),guided_loading=self.position_contract)
+                                 max_age=float(self.tool_cfg['input_max_age']),guided_loading=self.position_contract,
+                                 dual_modes=self.position_contract,
+                                 initial_mode=self.cfg.get('initial_teleop_mode','independent_arms'))
         validation_cfg=dict(self.tool_cfg,worker_timeout=30.)
         self.validator=BimanualWorker(validation_cfg,self.profile,preload_path_checks=True)
         self.validation_result=None
@@ -115,6 +117,7 @@ class PicoNode(RuntimeNode):
         self.submit=self.create_client(SubmitMotion,'execution/submit')
         self.stop_client=self.create_client(ControlExecution,'execution/control')
         self.ready_client=self.create_client(Trigger,'teleop/tool_ready')
+        self.arms_ready_client=self.create_client(Trigger,'teleop/arms_ready') if self.position_contract else None
         self.record_client=self.create_client(SetBool,'recorder/capture') if self.recording_enabled else None
         self.modes=ActionClient(self,SelectTeleopMode,'teleop/select_mode')
         self.tools=ActionClient(self,TeleopSession,'teleop/tool_session')
@@ -204,9 +207,10 @@ class PicoNode(RuntimeNode):
                      edges=f.button_edges,clutch_seq=f.clutch_seq) for f in pair])))
         if self.control.source!=a.source_id or self.control.seq!=a.seq or previous==(a.source_id,a.seq):return
         allowed=self.control.phase in ('engaging','following') and self.now()>=self.release_until
-        for m in (a,b):
+        for i,m in enumerate((a,b)):
+            hand_allowed=allowed and (self.control.teleop_mode!='independent_arms' or self.control.squeeze_released[i])
             self.projected.publish(VRInput(stamp=m.stamp,source_id=m.source_id+':'+self.instance_id,runtime_mode=m.runtime_mode,
-                seq=m.seq,side=m.side,pose=m.pose,grip=m.grip if allowed else 0.,trigger=0. if self.position_contract else m.trigger,
+                seq=m.seq,side=m.side,pose=m.pose,grip=m.grip if hand_allowed else 0.,trigger=0. if self.position_contract else m.trigger,
                 init=False,stop=self.control.phase=='locked' or not self.handoff_complete,valid=m.valid,clutch_seq=m.clutch_seq,
                 mapping=PICO_MAPPING,buttons=0 if self.position_contract else m.buttons,
                 button_edges=[0]*8 if self.position_contract else m.button_edges,
@@ -358,27 +362,29 @@ class PicoNode(RuntimeNode):
         if any(abs(current[n]-q[n])>.0001 for n in (self.names if gripper_move or loaded_prepare else names)):raise RuntimeError('PREPARE_STATE_CHANGED')
         return target
 
-    async def confirm_tool(self,intent):
+    async def confirm_tool(self,intent,mode='bimanual_tool'):
         f=self.feedback()
         if not f.healthy:raise RuntimeError('PICO_FEEDBACK_UNAVAILABLE')
-        if not f.stopped or f.modes[0]!='closed' or f.modes[1] not in ('closed','virtual'):
+        if not f.stopped or mode=='bimanual_tool' and (f.modes[0]!='closed' or f.modes[1] not in ('closed','virtual')):
             raise RuntimeError('PICO_GRIPPER_CONFIRMATION_REQUIRED')
+        client=self.arms_ready_client if mode=='independent_arms' else self.ready_client
         end=time.monotonic()+self.tool_cfg.get('worker_startup_timeout',30.)
         while time.monotonic()<end:
             self.current(intent)
-            if self.ready_client.service_is_ready():
-                reply=await self.wait(self.ready_client.call_async(Trigger.Request()))
+            if client.service_is_ready():
+                reply=await self.wait(client.call_async(Trigger.Request()))
                 if reply.success:return
                 if reply.message not in ('BIMANUAL_WORKER_NOT_READY','BIMANUAL_PREFLIGHT_PENDING'):
                     raise RuntimeError(reply.message)
             await self.pause()
         raise RuntimeError('PICO_TOOL_CONFIRM_TIMEOUT')
 
-    async def select_tool_mode(self,intent):
+    async def select_tool_mode(self,intent,mode=None):
         self.current(intent)
+        mode=mode or self.control.teleop_mode
         if self.mode is None:raise RuntimeError('PICO_MODE_AUTHORITY_UNAVAILABLE')
         self.release_until=float('inf')  # Mode selection requires released projected hands.
-        goal=SelectTeleopMode.Goal(mode='bimanual_tool',side='',expected_generation=self.mode.generation,timeout=5.)
+        goal=SelectTeleopMode.Goal(mode=mode,side='',expected_generation=self.mode.generation,timeout=5.)
         handle=await self.wait(self.modes.send_goal_async(goal))
         if not handle.accepted:raise RuntimeError('PICO_MODE_REJECTED')
         self.current(intent)
@@ -388,7 +394,7 @@ class PicoNode(RuntimeNode):
         # Deliver real fresh input events with a released projected clutch before
         # the new session observes held hands. Never fabricate/refresh an input stamp.
         end=time.monotonic()+1.
-        while not (self.mode and self.mode.phase=='READY' and self.mode.mode=='bimanual_tool' and
+        while not (self.mode and self.mode.phase=='READY' and self.mode.mode==mode and
                    self.mode.generation==selected.generation and self.now()-seconds(self.mode.changed_at)>.06):
             self.current(intent)
             if time.monotonic()>end:raise RuntimeError('PICO_MODE_FEEDBACK_TIMEOUT')
@@ -398,7 +404,7 @@ class PicoNode(RuntimeNode):
         self.current(intent)
         self.release_until=self.now()+.1
         future=self.tools.send_goal_async(TeleopSession.Goal(task_id='pico_'+self.instance_id,
-            resource_group='bimanual_tool',duration=3600.),feedback_callback=self.tool_feedback)
+            resource_group=self.control.teleop_mode,duration=3600.),feedback_callback=self.tool_feedback)
         def fence(f):
             handle=f.result()
             if handle.accepted and (not self.control.pending or self.control.pending.token!=intent.token):
@@ -412,7 +418,7 @@ class PicoNode(RuntimeNode):
         while time.monotonic()<end:
             self.current(intent)
             if self.tool_result.done():raise RuntimeError(self.tool_result.result().result.code)
-            if self.tool_phase.startswith('follow:'):return
+            if self.tool_phase=='follow' or self.tool_phase.startswith('follow:'):return
             await self.pause()
         raise RuntimeError('PICO_FOLLOW_CAPTURE_TIMEOUT')
 
@@ -424,7 +430,7 @@ class PicoNode(RuntimeNode):
         try:
             await self.cancel_tool()
             self.current(intent)
-            read_only=intent.operation in ('prepare','confirm_tool','follow')
+            read_only=intent.operation in ('prepare','confirm_tool','follow','select_mode')
             if intent.operation=='prepare':
                 # Position-contract preparation always validates the measured
                 # path first. Held/unknown uses loaded_prepare_path, including
@@ -447,6 +453,12 @@ class PicoNode(RuntimeNode):
                             for side,mode in zip(('left','right'),intent.value)}
                     await self.move(intent,target,self.cfg['gripper_duration'])
             elif intent.operation=='confirm_tool':await self.confirm_tool(intent)
+            elif intent.operation=='select_mode':
+                self.event('PICO_MODE_CHECK',json.dumps(dict(token=intent.token,
+                    current_mode=self.control.teleop_mode,target_mode=intent.value,
+                    source_id=self.control.source,seq=self.control.seq)))
+                await self.confirm_tool(intent,intent.value)
+                await self.select_tool_mode(intent,intent.value)
             elif intent.operation=='switch_grasp':
                 if self.position_contract:
                     raise RuntimeError('PICO_AXIAL_GRASP_UNAVAILABLE')
@@ -459,8 +471,9 @@ class PicoNode(RuntimeNode):
                 if self.position_contract:
                     self.event('PICO_ENGAGE_CHECK',json.dumps(dict(token=intent.token,
                         source_id=self.control.source,seq=self.control.seq,load_state=self.control.load,
-                        feedback_stamp=self.feedback().stamp,mode=self.mode.mode if self.mode else None)))
-                    await self.confirm_tool(intent)
+                        feedback_stamp=self.feedback().stamp,requested_mode=self.control.teleop_mode,
+                        mode=self.mode.mode if self.mode else None)))
+                    await self.confirm_tool(intent,self.control.teleop_mode)
                     self.current(intent)
                 await self.select_tool_mode(intent)
                 read_only=False
@@ -532,6 +545,7 @@ class PicoNode(RuntimeNode):
                 handoff_complete=self.handoff_complete,gripper_modes=list(self.feedback().modes),tool_phase=self.tool_phase,recording=self.recording,recording_enabled=self.recording_enabled,
                 physical_gripper_confirmed=None,actuator_feedback='joint_position',
                 capabilities=dict(prepare=self.prepare_positions is not None,
+                    independent_arms=self.position_contract,mode_switch=self.position_contract,
                     grippers=bool(self.position_ops.config['calibrated']) if self.position_ops else True,
                     axial_grasp=not self.position_contract),
                 execution_state=self.state.state if self.state is not None else 'unavailable',
@@ -542,12 +556,14 @@ class PicoNode(RuntimeNode):
                 tool_ground_policy=self.tool_cfg['demo']['acceptance'].get('ground_policy','required'),
                 tool_variant='short_rod' if self.simulation_demo else 'shovel',
                 position_scale=self.tool_cfg['position_scale'],rotation_scale=1.,
-                mapping_frame='robot_base',control_point='grip_midpoint' if self.simulation_demo else 'tool_origin',
+                mapping_frame='robot_base',control_point='individual_flange' if self.control.teleop_mode=='independent_arms' else
+                    'grip_midpoint' if self.simulation_demo else 'tool_origin',
                 model_joints=dict(zip(self.state.joints.name,self.state.joints.position)) if feedback.healthy else None,
                 input_max_age_s=self.control.max_age,
                 stop_confirmed=(self.control.rest(self.now()) and self.control.pending is None and
                                 self.running is None and self.handoff_complete),
-                grasp_applied='right_axial' if self.control.virtual else 'rigid',
+                grasp_applied=None if self.control.teleop_mode=='independent_arms' else
+                    'right_axial' if self.control.virtual else 'rigid',
                 tracking_valid={f.side:bool(f.valid and 0<=self.now()-seconds(f.stamp)<=self.control.max_age) for f in raw})
             view['raw_input_age_s']=max((self.now()-seconds(f.stamp) for f in raw),default=None)
             view['raw_input_valid']=(len(raw)==2 and all(f.valid for f in raw) and

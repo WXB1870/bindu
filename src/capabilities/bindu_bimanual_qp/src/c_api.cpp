@@ -265,4 +265,35 @@ int bq_relative_pose(void *ptr, const double *q, int n, double *out) {
     update(h,q,n); matrix(h.robot->leftPose().actInv(h.robot->rightPose()),out);
   });
 }
+int bq_flange_poses(void *ptr, const double *q, int n, double *left, double *right) {
+  return checked(ptr,[&](Handle &h) {
+    update(h,q,n); matrix(h.robot->leftPose(),left); matrix(h.robot->rightPose(),right);
+  });
+}
+int bq_capture_independent(void *ptr, const double *q, int n, const bq_config *config) {
+  const double identity[16]={1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1};
+  if (!bq_capture(ptr,q,n,identity,config)) return 0;
+  return checked(ptr,[](Handle &h) { h.qp->independentArms(); });
+}
+int bq_solve_independent(void *ptr, const double *q, int nq, const double *reference, int n,
+                         const double *left, const double *right, int active_mask,
+                         double dt, double *out, double *metrics) {
+  return checked(ptr,[&](Handle &h) {
+    if (!h.qp || !reference || !out || !metrics || n!=h.robot->variables())
+      throw std::invalid_argument("independent solver not captured or invalid layout");
+    update(h,q,nq);
+    const Eigen::Map<const Eigen::VectorXd> ref(reference,n);
+    const auto right_target=pose(right);
+    const auto solved=h.qp->solve(pose(left),dt,ref,Eigen::Matrix<double,6,1>::Zero(),
+                                  nullptr,&right_target,active_mask);
+    if (!solved.ok) throw std::runtime_error(solved.reason);
+    const Eigen::VectorXd positions=ref.cwiseMax(h.robot->lowerLimits()).cwiseMin(
+        h.robot->upperLimits())+dt*solved.velocity;
+    if (!positions.allFinite() || (positions.array()<h.robot->lowerLimits().array()).any() ||
+        (positions.array()>h.robot->upperLimits().array()).any())
+      throw std::runtime_error("integrated position exceeds joint limit");
+    std::copy(positions.data(),positions.data()+n,out);
+    metrics[0]=solved.solve_time_us; metrics[1]=0.; metrics[2]=1.;
+  });
+}
 }  // extern "C"

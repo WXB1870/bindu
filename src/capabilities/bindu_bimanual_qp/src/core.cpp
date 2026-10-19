@@ -73,6 +73,7 @@ RobotModel::RobotModel(const std::string &urdf_path, const std::string &left_fra
   add(shared_joints);
   add(left_joints);
   add(right_joints);
+  left_count_ = static_cast<int>(left_joints.size());
   const int n = variables();
   lower_.resize(n);
   upper_.resize(n);
@@ -302,7 +303,7 @@ void QpController::setPostureReferenceMargin(double margin) {
 
 void QpController::reset() {
   qp_ = std::make_unique<proxsuite::proxqp::dense::QP<double>>(
-      robot_.variables(), kin_.constraintRows(), 0, true);
+      robot_.variables(), independent_ ? 0 : kin_.constraintRows(), 0, true);
   qp_->settings.verbose = false;
   qp_->settings.compute_timings = true;
   qp_->settings.eps_abs = 1e-7;
@@ -316,10 +317,14 @@ void QpController::reset() {
 SolveResult QpController::solve(const pinocchio::SE3 &desired_tool, double dt,
                                 const Eigen::VectorXd &reference,
                                 const Eigen::Matrix<double, 6, 1> &world_velocity,
-                                const pinocchio::SE3 *measured_tool) {
+                                const pinocchio::SE3 *measured_tool,
+                                const pinocchio::SE3 *desired_right, int active_mask) {
   SolveResult out;
   out.velocity = Eigen::VectorXd::Zero(robot_.variables());
   if (!kin_.captured()) { out.reason = "grasp not captured"; return out; }
+  if (independent_ != (desired_right != nullptr) || active_mask < 1 || active_mask > 3) {
+    out.reason = "task mode or active arm mask mismatch"; return out;
+  }
   if (!std::isfinite(dt) || dt <= 0. || dt > .1 ||
       reference.size() != robot_.variables() || !reference.allFinite()) {
     out.reason = "invalid reference or timestep"; return out;
@@ -327,7 +332,7 @@ SolveResult QpController::solve(const pinocchio::SE3 &desired_tool, double dt,
   if (!desired_tool.translation().allFinite() || !desired_tool.rotation().allFinite() || !world_velocity.allFinite()) {
     out.reason = "invalid tool target"; return out;
   }
-  const auto e_rel = kin_.relativeError();
+  const Eigen::VectorXd e_rel = independent_ ? Eigen::VectorXd(0) : kin_.relativeError();
   out.relative_error = e_rel.norm();
   if (!e_rel.allFinite() || out.relative_error > config_.max_relative_error) {
     out.reason = "relative pose safety threshold"; return out;
@@ -349,14 +354,27 @@ SolveResult QpController::solve(const pinocchio::SE3 &desired_tool, double dt,
   clampTwist(target_twist, config_.max_linear_speed, config_.max_angular_speed);
 
   const int n = robot_.variables();
-  const Eigen::MatrixXd jt = kin_.toolJacobian();
-  const Eigen::MatrixXd a = kin_.relativeErrorJacobian();
+  Eigen::MatrixXd jt = kin_.toolJacobian();
+  Eigen::VectorXd task_twist = target_twist;
+  Eigen::MatrixXd a = independent_ ? Eigen::MatrixXd(0,n) : kin_.relativeErrorJacobian();
+  if (independent_) {
+    jt.resize(12,n); task_twist.resize(12);
+    for (int side=0; side<2; ++side) {
+      const auto &actual_hand = side==0 ? robot_.leftPose() : robot_.rightPose();
+      const auto &desired = side==0 ? desired_tool : *desired_right;
+      Eigen::Matrix<double,6,1> twist = config_.tool_gain * pinocchio::log6(actual_hand.actInv(desired)).toVector();
+      if (!twist.allFinite()) { out.reason="invalid independent arm target"; return out; }
+      clampTwist(twist,config_.max_linear_speed,config_.max_angular_speed);
+      jt.middleRows(6*side,6) = side==0 ? robot_.leftJacobian() : robot_.rightJacobian();
+      task_twist.segment(6*side,6) = twist;
+    }
+  }
   Eigen::VectorXd b = -config_.relative_gain * e_rel;
   const Eigen::VectorXd q = robot_.activePositions();
   const Eigen::VectorXd nominal_velocity = config_.posture_gain * (nominal_ - q);
   Eigen::MatrixXd h = jt.transpose() * jt +
       (config_.posture_weight + config_.regularization) * Eigen::MatrixXd::Identity(n, n);
-  Eigen::VectorXd g = -jt.transpose() * target_twist -
+  Eigen::VectorXd g = -jt.transpose() * task_twist -
       config_.posture_weight * nominal_velocity;
   if (have_shared_targets_) {
     for (int i = 0; i < shared_count_; ++i) {
@@ -406,6 +424,13 @@ SolveResult QpController::solve(const pinocchio::SE3 &desired_tool, double dt,
       upper[i] = std::min({upper[i], std::max(0.,config_.damper_gain*(iu-q[i])),
                                    std::max(0.,config_.damper_gain*(iu-ref))});
     }
+    if (independent_ && (i<shared_count_ ||
+        (i<shared_count_+robot_.leftVariables() ? !(active_mask&1) : !(active_mask&2)))) {
+      // Ordinary arms do not command the waist. A released arm retains the
+      // accepted hold reference; it is never pulled by the other arm's task.
+      if (lower[i]>0. || upper[i]<0.) { out.reason="inactive joint cannot hold"; return out; }
+      lower[i]=upper[i]=0.;
+    }
     if (lower[i] > upper[i]) { out.reason = "joint bounds infeasible"; return out; }
   }
   if (!h.allFinite() || !g.allFinite() || !a.allFinite() || !b.allFinite() ||
@@ -445,7 +470,7 @@ SolveResult QpController::solve(const pinocchio::SE3 &desired_tool, double dt,
     // Remove solver roundoff at box boundaries, then recheck the closure
     // equality. Never independently clip the final position after validation.
     const Eigen::VectorXd candidate = qp_->results.x.cwiseMax(lower).cwiseMin(upper);
-    if ((a * candidate - b).lpNorm<Eigen::Infinity>() > config_.equality_tolerance ||
+    if ((a.rows() && (a * candidate - b).lpNorm<Eigen::Infinity>() > config_.equality_tolerance) ||
         (candidate.array() < lower.array() - config_.equality_tolerance).any() ||
         (candidate.array() > upper.array() + config_.equality_tolerance).any()) {
       reset();

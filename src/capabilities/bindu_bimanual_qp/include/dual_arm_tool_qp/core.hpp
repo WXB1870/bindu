@@ -79,6 +79,7 @@ public:
   const std::vector<std::string> &modelJointNames() const { return all_names_; }
   int qIndex(const std::string &name) const;
   int variables() const { return static_cast<int>(active_names_.size()); }
+  int leftVariables() const { return left_count_; }
   const pinocchio::Model &model() const { return model_; }
 
 private:
@@ -89,6 +90,7 @@ private:
   std::vector<std::string> active_names_, all_names_;
   std::vector<int> active_q_indices_, active_v_indices_;
   std::unordered_map<std::string, int> q_indices_;
+  int left_count_{0};
 };
 
 class RigidToolKinematics {
@@ -128,6 +130,7 @@ public:
   QpController(RobotModel &robot, RigidToolKinematics &kin, Config config,
                const Eigen::VectorXd &nominal, int shared_count = 0);
   void reset();
+  void independentArms() { independent_ = true; reset(); }
   void setSharedTargets(const Eigen::VectorXd &targets);
   void clearSharedTargets();
   void setPosturePolicy(const Eigen::VectorXd &reference,
@@ -136,7 +139,8 @@ public:
   SolveResult solve(const pinocchio::SE3 &desired_tool, double dt,
                     const Eigen::VectorXd &reference,
                     const Eigen::Matrix<double, 6, 1> &world_velocity = Eigen::Matrix<double, 6, 1>::Zero(),
-                    const pinocchio::SE3 *measured_tool = nullptr);
+                    const pinocchio::SE3 *measured_tool = nullptr,
+                    const pinocchio::SE3 *desired_right = nullptr, int active_mask = 3);
   const Config &config() const { return config_; }
 
 private:
@@ -153,6 +157,7 @@ private:
   std::unique_ptr<proxsuite::proxqp::dense::QP<double>> qp_;
   bool initialized_{false};
   bool fresh_start_{true};
+  bool independent_{false};
 };
 
 }  // namespace dual_arm_tool_qp

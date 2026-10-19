@@ -85,6 +85,15 @@ class ModeTests(unittest.TestCase):
             m.begin('single_arm','left',m.generation,11.)
         self.assertTrue(m.begin('bimanual_tool','',m.generation,11.))
 
+    def test_independent_mode_checks_each_pose_without_tool_hand_spacing(self):
+        m=ModeSelection(self.profile,'left',10.,require_recording=False,
+                        enabled_modes=('independent_arms','bimanual_tool'))
+        m.begin('independent_arms','',m.generation,11.)
+        frames={side:replace(f,pose=tuple(np.eye(4).ravel())) for side,f in self.frames.items()}
+        self.assertEqual(m.ready(self.state,None,frames,11.15,tuple(self.profile.groups)),'')
+        frames['left']=replace(frames['left'],grip=1.)
+        self.assertEqual(m.ready(self.state,None,frames,11.15,tuple(self.profile.groups)),'VR_RELEASE_REQUIRED')
+
     def test_switch_requires_quiescence_and_fresh_paired_release(self):
         self.assertEqual(self.ready(),'')
         self.state.lease_active=True

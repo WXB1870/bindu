@@ -11,8 +11,8 @@ from bindu_teleoperation.bimanual_session import BimanualSession
 
 
 class Rig:
-    def __init__(self,load='empty',guided=False):
-        self.core=PicoControl(initial_load=load,guided_loading=guided)
+    def __init__(self,load='empty',guided=False,dual=False):
+        self.core=PicoControl(initial_load=load,guided_loading=guided,dual_modes=dual)
         self.now=1.;self.seq=0;self.source='headset-1'
         self.buttons=[0,0];self.triggers=[0.,0.];self.grips=[0.,0.]
         self.counters=[ButtonCounters(),ButtonCounters()]
@@ -58,6 +58,47 @@ class Rig:
         self.context('held')
         self.click(1,1);self.complete();self.step()
         assert self.core.phase=='tool_standby'
+
+
+class DualModeTests(unittest.TestCase):
+    def test_default_normal_accepts_one_hand_and_releases_independently(self):
+        r=Rig('unknown',guided=True,dual=True)
+        self.assertEqual(r.core.teleop_mode,'independent_arms')
+        r.grips=[1.,0.];r.step();self.assertEqual(r.core.pending.operation,'follow')
+        r.complete();r.stopped=False;r.grips=[1.,1.];r.step()
+        r.click(0,0);self.assertIsNone(r.core.pending)
+        r.grips=[0.,1.];self.assertEqual(r.step(),[])
+        self.assertEqual(r.core.phase,'following')
+        r.grips=[0.,0.];r.step();self.assertEqual(r.core.pending.operation,'stop')
+
+    def test_b_switches_only_at_released_rest_and_does_not_follow(self):
+        r=Rig(guided=True,dual=True);r.click(1,1)
+        self.assertEqual((r.core.pending.operation,r.core.pending.value),('select_mode','bimanual_tool'))
+        self.assertEqual(r.core.teleop_mode,'independent_arms')
+        r.complete();self.assertEqual(r.core.teleop_mode,'bimanual_tool')
+        self.assertEqual(r.core.phase,'standby');self.assertIsNone(r.core.pending)
+        r.step();r.click(1,1);r.complete()
+        self.assertEqual(r.core.teleop_mode,'independent_arms')
+
+    def test_rejected_tool_mode_keeps_normal_mode_and_specific_reason(self):
+        r=Rig(guided=True,dual=True);r.click(1,1)
+        r.core.complete(r.core.pending.token,False,'RuntimeError:BIMANUAL_GRASP_POSE',r.now,rejected=True)
+        self.assertEqual(r.core.teleop_mode,'independent_arms')
+        self.assertEqual(r.core.phase,'standby');self.assertIsNone(r.core.pending)
+
+    def test_known_coupled_load_cannot_enter_independent_arms(self):
+        r=Rig('held',guided=True,dual=True);r.grips=[1.,0.];r.step()
+        self.assertIsNone(r.core.pending)
+        self.assertEqual(r.core.reason,'PICO_TOOL_HELD_REQUIRES_TOOL_MODE')
+        r.core.teleop_mode='bimanual_tool';r.grips=[0.,0.];r.step();r.click(1,1)
+        self.assertIsNone(r.core.pending);self.assertEqual(r.core.teleop_mode,'bimanual_tool')
+
+    def test_mode_key_while_following_only_stops_then_requires_new_press(self):
+        r=Rig(guided=True,dual=True);r.grips=[1.,0.];r.step();r.complete()
+        r.click(1,1);self.assertEqual(r.core.pending.operation,'stop');r.complete()
+        self.assertEqual(r.core.teleop_mode,'independent_arms')
+        r.grips=[0.,0.];r.step();self.assertIsNone(r.core.pending)
+        r.click(1,1);self.assertEqual(r.core.pending.operation,'select_mode')
 
 
 class GuidedLoadingTests(unittest.TestCase):

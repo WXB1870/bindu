@@ -28,7 +28,7 @@ class PicoFeedback:
 
 class PicoControl:
     def __init__(self, *, initial_load='unknown', max_age=.25, prepare_hold=1., simulation_demo=False,
-                 guided_loading=False):
+                 guided_loading=False, dual_modes=False, initial_mode='independent_arms'):
         if initial_load not in ('empty','held','unknown'):
             raise ValueError('PICO_LOAD_STATE')
         self.load, self.supported = initial_load, False
@@ -56,6 +56,9 @@ class PicoControl:
         self.simulation_demo = simulation_demo
         self.fixture_load = None
         self.guided_loading = guided_loading
+        if initial_mode not in ('independent_arms','bimanual_tool'):raise ValueError('PICO_TELEOP_MODE')
+        self.dual_modes=dual_modes
+        self.teleop_mode=initial_mode if dual_modes else 'bimanual_tool'
         self.loading_goal = None
         self.loading_opened = [False, False]
         self.idle_input_lost = False
@@ -179,9 +182,10 @@ class PicoControl:
             self.lock('PICO_TIME_REVERSED',now);return
         if self.frames and self.phase in ('engaging','following','switching'):
             before=tuple(pose_matrix(f.pose) for f in self.frames)
-            if any(np.linalg.norm(a[:3,3]-b[:3,3])>.2 or
+            if any((not self.dual_modes or self.teleop_mode!='independent_arms' or
+                    old.grip>.7 and new.grip>.7) and (np.linalg.norm(a[:3,3]-b[:3,3])>.2 or
                    math.acos(float(np.clip((np.trace(a[:3,:3] @ b[:3,:3].T)-1)/2,-1.,1.)))>.6
-                   for a,b in zip(poses,before)):
+                   ) for a,b,old,new in zip(poses,before,self.frames,pair)):
                 self.lock('PICO_POSE_ORIGIN_JUMP',now);return
         clutch=tuple(f.clutch_seq for f in pair)
         if self.clutch_counts is not None and any(a<b for a,b in zip(clutch,self.clutch_counts)):
@@ -219,9 +223,14 @@ class PicoControl:
             self.lock('PICO_Y_STOP',now);return
         squeeze=all(f.grip>.7 for f in pair)
         release=any(f.grip<.3 for f in pair)
-        if self.phase in ('following','engaging','switching') and (release or any(clutch_changed)):
+        independent=self.dual_modes and self.teleop_mode=='independent_arms'
+        follow_release=(all(f.grip<.3 for f in pair) if independent else release or any(clutch_changed))
+        if self.phase in ('following','engaging','switching') and follow_release:
             self.phase,self.reason='tool_standby','SQUEEZE_RELEASED'
             self.squeeze_released=[f.grip<.3 or changed for f,changed in zip(pair,clutch_changed)]
+            self.emit('stop');return
+        if self.dual_modes and self.phase in ('following','engaging','switching') and presses[5]:
+            self.phase,self.reason='tool_standby','MODE_SWITCH_REQUIRES_STOP'
             self.emit('stop');return
         if self.phase=='preparing' and (not states[4] or not all(f.grip<.3 for f in pair) or any(clutch_changed)):
             self.phase,self.reason='standby','PREPARE_RELEASED'
@@ -300,12 +309,22 @@ class PicoControl:
             self.phase,self.reason='standby','OPEN_REQUIRES_LOADING_AND_SUPPORT'
             self.emit('stop');return
         if presses[6]:self.effects.append(PicoIntent(self.generation,'record'));return
-        if self.phase=='following' and ((presses[0] and states[0]) or releases[0]):
+        if self.phase=='following' and not independent and ((presses[0] and states[0]) or releases[0]):
             desired=states[0]
             if desired!=self.virtual:
                 self.phase='switching';self.emit('switch_grasp',desired)
             return
         if self.phase in ('standby','tool_standby'):
+            if self.dual_modes:
+                if presses[5]:
+                    if not self.rest(now) or not all(f.grip<.3 for f in pair):
+                        self.reason='MODE_SWITCH_REQUIRES_STOP'
+                    else:
+                        target='bimanual_tool' if independent else 'independent_arms'
+                        if target=='independent_arms' and self.load=='held':
+                            self.reason='PICO_TOOL_HELD_REQUIRES_TOOL_MODE';return
+                        self.phase='selecting_mode';self.emit('select_mode',target)
+                    return
             if not states[4]:self.a_since=None;self.prepare_blocked=False
             elif self.armed[4] and not self.prepare_blocked:
                 if self.a_since is None:self.a_since=now
@@ -321,15 +340,20 @@ class PicoControl:
                     else:self.reason=('PREPARE_REQUIRES_STOP_AND_RELEASED_SQUEEZE' if self.guided_loading else
                                       'PREPARE_REQUIRES_EMPTY_AND_RELEASED_SQUEEZE')
                     return
-            if presses[5] and (self.load=='held' or self.guided_loading and self.load=='unknown') and self.rest(now):
+            if not self.dual_modes and presses[5] and (self.load=='held' or self.guided_loading and self.load=='unknown') and self.rest(now):
                 if self.phase=='tool_standby' and states[0]!=self.virtual:
                     self.phase='switching';self.emit('switch_grasp',states[0])
                 else:
                     self.phase='confirming_tool';self.emit('confirm_tool')
                 return
-            if (self.guided_loading or self.phase=='tool_standby') and squeeze and all(self.squeeze_released) and self.rest(now):
-                self.squeeze_released=[False,False]
-                if states[0]!=self.virtual:
+            engage=(any(f.grip>.7 and armed for f,armed in zip(pair,self.squeeze_released)) if independent
+                    else squeeze and all(self.squeeze_released))
+            if self.dual_modes and (states[4] or states[5]):return
+            if (self.guided_loading or self.phase=='tool_standby') and engage and self.rest(now):
+                if not independent:self.squeeze_released=[False,False]
+                if independent and self.load=='held':
+                    self.squeeze_released=[False,False];self.reason='PICO_TOOL_HELD_REQUIRES_TOOL_MODE';return
+                if not independent and states[0]!=self.virtual:
                     self.reason='CONFIRM_GRASP_CHANGE_BEFORE_REENGAGE';return
                 self.phase='engaging';self.emit('follow',self.virtual)
 
@@ -352,6 +376,10 @@ class PicoControl:
             pass  # Stop does not acknowledge a latched reason or start another action.
         elif operation=='prepare':
             self.phase,self.reason='standby','PREPARED'
+        elif operation=='select_mode':
+            self.teleop_mode=value
+            self.phase,self.reason='standby','TELEOP_MODE_SELECTED'
+            self.squeeze_released=[False,False]
         elif operation=='confirm_tool':
             self.phase,self.reason='tool_standby','TOOL_GRASP_VERIFIED'
             self.virtual=bool(self.feedback and self.feedback.modes[1]=='virtual')
@@ -387,6 +415,8 @@ class PicoControl:
 
     def snapshot(self, now=None):
         view = dict(phase=self.phase,reason=self.reason,generation=self.generation,
+                    teleop_mode=self.teleop_mode,dual_modes=self.dual_modes,
+                    mode_target=self.pending.value if self.pending and self.pending.operation=='select_mode' else None,
                     source_id=self.source,load_state=self.load,load_source=self.load_source,external_support=self.supported,
                     last_prepare_check=self.last_prepare_check,
                     guided_loading=self.guided_loading,loading_goal=self.loading_goal,
@@ -415,6 +445,8 @@ def loading_guide(view, modes):
     operation = '装夹' if goal=='held' else '卸载'
     if phase=='standby':
         reason=view.get('reason','')
+        if reason=='PICO_TOOL_HELD_REQUIRES_TOOL_MODE':
+            return dict(title='当前已装夹工具',detail='松开双侧握，按 B 切换扫雪模式后接合',key='B',step='mode')
         if reason.startswith(('RuntimeError:','ValueError:')) or reason.startswith('PREPARE_REQUIRES_'):
             detail=next((label for code,label in (
                 ('BIMANUAL_GRASP_POSE','双臂姿态不满足工具握点几何，请核对姿态与工具配置'),
@@ -424,6 +456,12 @@ def loading_guide(view, modes):
                 ('PICO_PREPARE_PRESET_REQUIRED','尚未配置现场准备位，可继续检查当前位置接合条件'))
                 if code in reason),'查看电脑端具体原因；排除后松握，再重新操作')
             return dict(title='检查未通过，保持待命',detail=detail,key='握',step='retry')
+        if view.get('teleop_mode')=='independent_arms':
+            return dict(title='握住哪侧，就控制哪侧手臂',
+                        detail='侧握先松再握；A 回准备位，松握按 B 切扫雪模式',key='握',step='engage')
+        if view.get('dual_modes'):
+            return dict(title='双侧先松握，再同时握住控制工具',
+                        detail='松任一侧暂停；A 回准备位，松握按 B 切普通模式',key='握',step='engage')
         return dict(title='松开双侧握，再同时握住接合',
                     detail='从当前位置建立跟随基准；A 可选回准备位，左摇杆单独装卸',key='握',step='engage')
     if phase=='load_check':
