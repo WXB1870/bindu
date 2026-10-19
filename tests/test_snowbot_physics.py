@@ -43,6 +43,19 @@ class PhysicsRealtimeTests(unittest.TestCase):
         self.assertTrue(self.monitor.ready)
         self.assertAlmostEqual(self.monitor.maximum_lag,.336)
 
+    def test_native_velocity_limits_use_profile_intersection_and_verify_readback(self):
+        import numpy as np
+        limits=np.array([[4.19,.5]])
+        def get():return limits.copy()
+        def set_limits(values):limits[:]=values
+        body=S(dof_names=['arm','waist'],_articulation_view=S(
+            get_joint_max_velocities=get,set_max_joint_velocities=set_limits))
+        result=self.module.apply_velocity_limits(body,S(speed=lambda n:{'arm':1.5,'waist':1.2}[n]))
+        self.assertEqual(result,{'arm':1.5,'waist':.5})
+        limits[:]=float('nan')
+        with self.assertRaisesRegex(ValueError,'PHYSICS_NATIVE_VELOCITY_LIMITS'):
+            self.module.apply_velocity_limits(body,S())
+
 
 class PositionPhysicsTests(unittest.TestCase):
     def setUp(self):
@@ -66,6 +79,41 @@ class PositionPhysicsTests(unittest.TestCase):
         self.assertEqual(self.core.applied_sequences,{})
         self.core.stepped()
         self.assertEqual(self.core.applied_sequences,{'right_tool_axis':1})
+
+    def test_reference_uses_shared_progress_and_matching_velocity_without_faking_measurement(self):
+        self.core.targets.update(arm_l_joint_1=.3,arm_r_joint_1=.15,body_joint_1=.1)
+        positions,velocity=self.core.reference_step(.01)
+        self.assertAlmostEqual(positions['arm_l_joint_1'],.015)
+        self.assertAlmostEqual(positions['arm_r_joint_1'],.0075)
+        self.assertAlmostEqual(positions['body_joint_1'],.005)
+        for n in positions:
+            self.assertAlmostEqual(velocity[n],positions[n]/.01)
+            self.assertLessEqual(abs(velocity[n]),self.profile.speed(n)+1e-12)
+        self.assertEqual(self.q['arm_l_joint_1'],0.)
+        self.assertEqual(self.core.applied_sequences,{})
+        for bad in (0.,-.01,.101,float('nan')):
+            with self.assertRaisesRegex(ValueError,'PHYSICS_REFERENCE_TIMESTEP'):
+                self.core.reference_step(bad)
+
+    def test_hold_discards_pending_reference_lead_and_zeroes_its_velocity(self):
+        self.core.targets['arm_r_joint_1']=.3;self.core.reference_step(.01)
+        self.q['arm_r_joint_1']=.003
+        self.core.accept(self.command(operation='hold',group='right_arm'),10.01,self.q)
+        self.q['arm_r_joint_1']=.004
+        self.core.expire(10.3,self.q)
+        positions,velocity=self.core.reference_step(.004)
+        self.assertEqual(positions['arm_r_joint_1'],.003)
+        self.assertEqual(velocity['arm_r_joint_1'],0.)
+
+    def test_grippers_and_head_do_not_throttle_the_coupled_arm_progress(self):
+        self.core.targets.update(arm_l_joint_1=.3,arm_r_joint_1=.15,body_joint_1=.1,
+                                 arm_l_joint_8=.8,head_joint_1=.5)
+        positions,velocity=self.core.reference_step(.01)
+        self.assertAlmostEqual(positions['arm_l_joint_1'],.015)
+        self.assertAlmostEqual(positions['arm_r_joint_1'],.0075)
+        for n in ('arm_l_joint_8','head_joint_1'):
+            self.assertAlmostEqual(velocity[n],self.profile.speed(n))
+        self.assertEqual(self.q['arm_l_joint_8'],0.)
 
     def test_hold_captures_measured_position_once_and_never_closes(self):
         self.core.accept(self.command(),10.01,self.q)
@@ -115,6 +163,105 @@ class PositionPhysicsTests(unittest.TestCase):
         for key,value in [('physics_dt_s',float('nan')),('max_wall_lag_s',1.),('command_timeout_s',.1),('headless','true')]:
             changed=copy.deepcopy(c);changed['live'][key]=value
             with self.assertRaises(ValueError):module.validate_live_config(changed)
+
+
+class PhysicsPositionStopTests(unittest.TestCase):
+    def setUp(self):
+        from bindu_runtime.simulation_devices import PhysicsPositionIO
+        from bindu_execution.delegated_position import DelegatedPositionExecutor
+        self.now=10.;self.sequence=0;self.sent=[]
+        self.profile=Profile.load(ROOT/'src/integration/bindu_runtime/config/robots/snowbot/snowbot_real_position.json')
+        self.q=dict.fromkeys(self.profile.limits,0.);self.v=dict.fromkeys(self.q,0.)
+        self.wire=S(health={},simulator_id='boot',failed=False,send=self.send)
+        self.io=PhysicsPositionIO(self.profile,lambda g,q:None,lambda:self.now,
+                                 command_enabled=True,simulated=True,physics=self.wire)
+        self.observe()
+        self.engine=DelegatedPositionExecutor(self.profile,self.io,steady=lambda:self.now)
+        groups=('waist','left_arm','right_arm');self.engine.acquire('test',groups,2.,self.now)
+        self.io.write_joints({n:min(self.profile.limits[n][1],max(self.profile.limits[n][0],.01))
+                              for g in groups for n in self.profile.groups[g]})
+
+    def send(self,group,operation):
+        self.sequence+=1;self.sent.append((group,operation,self.sequence))
+        return self.sequence
+
+    def observe(self):
+        self.io.observe(self.q,self.v,self.now,self.now)
+
+    def tick(self,dt=.02):
+        self.now+=dt;self.observe();self.engine.tick(self.now)
+
+    def acknowledge(self,**changes):
+        h=dict(stamp=self.now,ready=True,simulator_id='boot',
+               applied_sequences=dict(self.io.hold_sequences),
+               hold_positions={n:self.q[n] for n in self.io.stop_targets})
+        h.update(changes);self.wire.health=h
+
+    def test_hold_uses_device_position_after_all_post_step_acks(self):
+        self.engine.halt(self.now)
+        self.assertEqual({operation for _,operation,_ in self.sent},{'hold'})
+        self.assertEqual(len(self.sent),3)
+        # Reproduce the observed 7.7mrad difference, beyond the unchanged 2mrad
+        # stop tolerance. A newer physical hold point must be acknowledged.
+        self.q['arm_r_joint_1']=.0077;self.tick()
+        self.assertIsNotNone(self.engine.stopping)
+        self.acknowledge();self.v['arm_r_joint_1']=.2;self.tick()
+        self.assertIsNotNone(self.engine.stopping)
+        self.v['arm_r_joint_1']=0.;self.tick()
+        self.assertIsNone(self.engine.stopping)
+        self.assertFalse(self.engine.stop_fault)
+        self.assertEqual(self.profile.feedback_tolerances['joint_position'],.002)
+
+    def test_hold_ack_waits_for_feedback_at_or_after_ack_sample(self):
+        self.engine.halt(self.now);self.now+=.02
+        self.q['arm_r_joint_1']=.0077;self.acknowledge()
+        self.assertIsNone(self.io.confirmed_stop_targets())
+        self.observe()
+        self.assertEqual(self.io.confirmed_stop_targets()['arm_r_joint_1'],.0077)
+
+    def test_missing_wrong_or_stale_ack_cannot_confirm_even_stationary_joints(self):
+        self.engine.halt(self.now);self.tick()
+        for changes in ({'stamp':10.}, {'stamp':9.}, {'stamp':self.now+.1},
+                        {'ready':False}, {'simulator_id':'old'},
+                        {'applied_sequences':{}}, {'hold_positions':{}},
+                        {'hold_positions':dict.fromkeys(self.io.stop_targets,float('nan'))}):
+            with self.subTest(changes=changes):
+                self.acknowledge(**changes)
+                self.assertIsNone(self.io.confirmed_stop_targets())
+        self.acknowledge();self.wire.failed=True
+        self.assertIsNone(self.io.confirmed_stop_targets())
+
+    def test_ack_position_never_chases_measured_drift(self):
+        self.engine.halt(self.now);self.q['arm_r_joint_1']=.0077;self.tick();self.acknowledge()
+        self.assertEqual(self.io.confirmed_stop_targets()['arm_r_joint_1'],.0077)
+        self.q['arm_r_joint_1']=.02;self.tick()
+        self.assertIsNotNone(self.engine.stopping)
+        self.acknowledge()  # A changed device hold cannot rewrite the first ACK.
+        self.assertIsNone(self.io.confirmed_stop_targets())
+
+    def test_no_ack_or_late_ack_preserves_timeout_and_repeated_stop_footprint(self):
+        self.engine.halt(self.now);deadline=self.engine.stop_deadline
+        self.tick();self.engine.halt(self.now,emergency=True)
+        self.assertEqual(self.engine.stop_deadline,deadline)
+        self.assertEqual(len(self.sent),3)
+        self.now=deadline+.01;self.observe();self.acknowledge();self.engine.tick(self.now)
+        self.assertTrue(self.engine.stop_fault)
+        self.assertIn('STOP_UNCONFIRMED',self.engine.stop_fault)
+
+    def test_one_failed_hold_still_attempts_other_groups_and_fails_closed(self):
+        send=self.wire.send
+        def partial(group,operation):
+            if group=='left_arm':raise RuntimeError('delivery failed')
+            return send(group,operation)
+        self.wire.send=partial
+        self.engine.halt(self.now)
+        self.assertEqual({g for g,_,_ in self.sent},{'right_arm','waist'})
+        self.assertEqual(self.io.stop_failures,('left_arm',))
+        self.assertTrue(self.engine.stop_fault)
+
+    def test_idle_stop_never_sends_a_device_command(self):
+        self.io.targets.clear();self.engine.halt(self.now)
+        self.assertFalse(self.sent)
 
 
 class PhysicsGripperAcknowledgmentTests(unittest.TestCase):

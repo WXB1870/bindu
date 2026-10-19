@@ -60,6 +60,21 @@ def scene_request(view, tool_present):
     return None
 
 
+def apply_velocity_limits(body, profile):
+    """Bind native drive speed limits to the same profile as accepted targets."""
+    import numpy as np
+    view=body._articulation_view  # Isaac 6.2 SingleArticulation wraps this view.
+    native=np.asarray(view.get_joint_max_velocities())
+    if native.shape!=(1,len(body.dof_names)) or not np.isfinite(native).all() or np.any(native<=0):
+        raise ValueError('PHYSICS_NATIVE_VELOCITY_LIMITS')
+    limits=np.array([[min(float(native[0,i]),profile.speed(n)) for i,n in enumerate(body.dof_names)]])
+    view.set_max_joint_velocities(limits)
+    readback=np.asarray(view.get_joint_max_velocities())
+    if readback.shape!=limits.shape or not np.allclose(readback,limits,rtol=1e-6,atol=1e-6):
+        raise ValueError('PHYSICS_VELOCITY_LIMIT_READBACK')
+    return dict(zip(body.dof_names,map(float,readback[0])))
+
+
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--session',type=Path,required=True)
@@ -108,6 +123,7 @@ def main():
         world,body,view,contacts,source=build_scene(motion,cfg,args.output)
         names=body.dof_names
         if set(names)!=set(profile.limits):raise ValueError('PHYSICS_JOINT_LAYOUT')
+        source['profile_velocity_limits_rad_s']=apply_velocity_limits(body,profile)
         initial=pico['device_initial_positions_rad']
         if set(initial)!=set(names):raise ValueError('PHYSICS_INITIAL_LAYOUT')
         q0=np.array([initial[n] for n in names])
@@ -196,7 +212,9 @@ def main():
                     fault=realtime.fault
                     for group in profile.groups:core.hold(group,measured)
                 stage=time.monotonic()
-                body.apply_action(ArticulationAction(joint_positions=np.array([core.targets[n] for n in names])))
+                drive,drive_velocity=core.reference_step(dt)
+                body.apply_action(ArticulationAction(joint_positions=np.array([drive[n] for n in names]),
+                    joint_velocities=np.array([drive_velocity[n] for n in names])))
                 timings['apply_action_s']=time.monotonic()-stage
                 before=SimulationManager.get_num_physics_steps()
                 stage=time.monotonic()
@@ -232,6 +250,7 @@ def main():
                         code=msg.code,rtf=sim_t/max(1e-6,time.monotonic()-start),wall_lag_s=realtime.lag,
                         max_wall_lag_s=realtime.maximum_lag,rejection_codes=dict(rejection_codes),
                         applied_sequences=dict(core.applied_sequences),hold_positions=dict(core.hold_positions),
+                        reference_progress=core.progress,
                         tool_present=tool_present,grasp_model='contact',diagnostics=trace.status(),
                         timings=dict(timings),timing_max_s=dict(timing_max),publication=publisher.status(),**stats)
                     xyz,quat=view.get_world_poses()
@@ -242,7 +261,8 @@ def main():
                     health['timings']=timings
                     for key,value in timings.items():timing_max[key]=max(timing_max.get(key,0.),value)
                     health['timing_max_s']=dict(timing_max)
-                    trace.record('physics-feedback',dict(health,joints=measured,velocities=velocity))
+                    trace.record('physics-feedback',dict(health,joints=measured,velocities=velocity,
+                        drive_reference=drive,drive_velocity=drive_velocity))
                     if not ready_written and realtime.ready and publisher.ready.is_set():
                         (args.output/'ready.json').write_text(json.dumps(dict(simulator_id=simulator_id,profile_hash=profile.digest)))
                         print('SNOWBOT_ISAAC_READY '+simulator_id,flush=True)

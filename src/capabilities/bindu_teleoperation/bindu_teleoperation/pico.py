@@ -24,6 +24,7 @@ class PicoFeedback:
     stopped: bool
     modes: tuple = ('unknown', 'unknown')
     healthy: bool = True
+    fault: str = ''
 
 
 class PicoControl:
@@ -133,7 +134,7 @@ class PicoControl:
             for i, mode in enumerate(feedback.modes):
                 if mode == 'open': self.loading_opened[i] = True
         if not feedback.healthy or not 0 <= now-feedback.stamp <= self.max_age:
-            if self.source and self.phase!='checking': self.lock('PICO_FEEDBACK_UNAVAILABLE',now)
+            if self.source and self.phase!='checking': self.lock(feedback.fault or 'PICO_FEEDBACK_UNAVAILABLE',now)
         elif (self.phase=='checking' and feedback.stopped and self.frames and
               0 <= now-self.stamp <= self.max_age):
             self.phase,self.reason='standby','READY_FOR_OPERATOR'

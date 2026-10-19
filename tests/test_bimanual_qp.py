@@ -291,16 +291,17 @@ class CandidateGeometryBacktracking(unittest.TestCase):
                     self.step(qp,case)
         finally:qp.close()
 
-    def test_actual_grip_point_acceptance_remains_five_mm(self):
-        for displacement,passes in ((.0049,True),(.0051,False)):
-            qp=self.solver(self.cases[0]);qp.grasp_position_tolerance=.005
+    def test_actual_grip_point_acceptance_uses_deployed_one_cm(self):
+        for displacement,passes in ((.0099,True),(.0101,False)):
+            qp=self.solver(self.cases[0])
             try:
+                self.assertEqual(qp.grasp_position_tolerance,.01)
                 relative=qp.expected_relative.copy();relative[0,3]+=displacement
                 def measured(handle,q,nq,out):
                     np.ctypeslib.as_array(out,shape=(16,))[:]=relative.ravel();return 1
                 with patch.object(qp.lib,'bq_relative_pose',side_effect=measured):
                     if passes:
-                        self.assertLess(qp._grip_error(relative)[0],.005)
+                        self.assertLess(qp._grip_error(relative)[0],.01)
                         self.step(qp,self.cases[0])
                     else:
                         with self.assertRaisesRegex(ValueError,'BIMANUAL_MEASURED_GRASP_ERROR'):

@@ -91,6 +91,19 @@ class DelegatedPositionExecutor(Executor):
             self.io.stop_failures = tuple(sorted(set(self.io.stop_failures) | {'vendor_hold'}))
             self.fail_stop(now, 'STOP_UNCONFIRMED:'+','.join(self.io.stop_failures))
             return
+        # Some position devices acknowledge the actual braking/hold point.
+        # Its ACK changes the expected position, never the stop budget or the
+        # required measured position/velocity tolerances.
+        confirm = getattr(self.io, 'confirmed_stop_targets', None)
+        if confirm is not None:
+            targets = confirm()
+            if targets is None:
+                return
+            if (set(targets) != set(self.reference_names) or
+                    any(not math.isfinite(q) for q in targets.values())):
+                self.fail_stop(now, 'STOP_REFERENCE_INVALID')
+                return
+            self.reference = State.rest(targets[n] for n in self.reference_names)
         # A sent hold is only a request. Require feedback newer than that request.
         if (self.feedback.stamp > self.io.stop_requested_at and
                 0 <= now-self.feedback.stamp <= .2 and self.references_arrived()):

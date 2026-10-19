@@ -475,6 +475,11 @@ class PicoHUDTests(unittest.TestCase):
         limit=dict(scale=0.,first_rejection='SELF_COLLISION: arm / head',search_limited_by_budget=False)
         spec=hud_spec(self.view(motion_limit=limit))
         self.assertEqual(spec['status'],'跟随受限')
+        # Exercise PNG rendering as well as the textual spec: the previous
+        # 'warn' tone was absent from hud_image's palette and killed the HUD.
+        from bindu_teleoperation.vr.display import render
+        scene=render(self.view(motion_limit=limit)).serialize()
+        self.assertTrue(scene['children'][0]['src'].startswith('data:image/png;base64,'))
         self.assertIn('本体',spec['title']);self.assertIn('反方向',spec['detail'])
         limit['search_limited_by_budget']=True
         self.assertEqual(hud_spec(self.view(motion_limit=limit))['title'],'控制更新暂时延迟')
@@ -637,6 +642,13 @@ class GraspContinuationTests(unittest.TestCase):
 
 
 class StateTests(unittest.TestCase):
+    def test_stop_fault_keeps_its_cause_instead_of_claiming_feedback_loss(self):
+        rig=Rig();core=rig.core
+        code='PICO_STOP_UNCONFIRMED:STOP_UNCONFIRMED:vendor_hold'
+        core.update_feedback(PicoFeedback(rig.now,False,healthy=False,fault=code),rig.now)
+        self.assertEqual((core.phase,core.reason),('locked',code))
+        self.assertFalse(core.rest(rig.now))
+
     def test_startup_input_before_feedback_does_not_latch_timeout_or_use_stale_pair(self):
         core=PicoControl(initial_load='unknown')
         rig=Rig()

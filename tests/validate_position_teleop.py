@@ -33,7 +33,7 @@ def websocket_input(port, source, stop, errors):
     """Real Vuer wire input for this isolated fixture, including downlink drain."""
     from websockets.sync.client import connect
     from msgpack import packb
-    end=time.monotonic()+35.;peer=None
+    end=time.monotonic()+35.;peer=None;last_raw=None
     try:
         while peer is None and not stop.is_set() and time.monotonic()<end:
             try:peer=connect(f'ws://127.0.0.1:{port}/',open_timeout=1.)
@@ -41,9 +41,18 @@ def websocket_input(port, source, stop, errors):
         if peer is None:raise RuntimeError('VUER_CONNECT_TIMEOUT')
         with peer:
             while not stop.is_set():
-                if source['stream']:
+                if source['stream'] and (not source.get('raw_replay') or source['raw_index']!=last_raw):
                     value={}
                     for i,side in enumerate(('left','right')):
+                        if source.get('raw_pair') is not None:
+                            import numpy as np
+                            d=source['raw_pair'][i]
+                            value[side]=np.array(d['pose']).reshape(4,4).ravel(order='F').tolist() if d['valid'] else None
+                            buttons=d['buttons'] if source['raw_held'] else 0
+                            value[side+'State']=dict(squeezeValue=d['grip'] if source['raw_held'] else 0.,
+                                triggerValue=d['trigger'] if source['raw_held'] else 0.,
+                                aButton=bool(buttons&1),bButton=bool(buttons&2),thumbstick=bool(buttons&4))
+                            continue
                         angle=source.get('rotation',0.);c,s=math.cos(angle),math.sin(angle)
                         line=source.get('line_rotation',0.);dx=.34*i-.17
                         value[side]=[c,s,0.,0.,-s,c,0.,0.,0.,0.,1.,0.,
@@ -57,6 +66,7 @@ def websocket_input(port, source, stop, errors):
                         xr_max_ms=0,long_task_max_ms=0,long_task_count=0,page_visibility='synthetic')
                     peer.send(packb(dict(etype='CONTROLLER_MOVE',key='motionControllers',value=value,
                         bindu_timing=timing),use_bin_type=True))
+                    last_raw=source.get('raw_index')
                 for _ in range(4):
                     try:peer.recv(timeout=.001)
                     except TimeoutError:break
@@ -65,7 +75,7 @@ def websocket_input(port, source, stop, errors):
         if not stop.is_set():errors.append(type(exc).__name__+':'+str(exc))
 
 
-def scenario(out, mode, websocket=False, ordinary=False, physics=False):
+def scenario(out, mode, websocket=False, ordinary=False, physics=False, replay=None):
     token=uuid.uuid4().hex[:8];ns='/position_'+token;vendor='/fixture_'+token
     node=rclpy.create_node('position_fixture_'+token)
     states=[];views=[];accepted=[];grippers={};packets=[]
@@ -80,6 +90,9 @@ def scenario(out, mode, websocket=False, ordinary=False, physics=False):
     # Exercise an invalid startup posture even if the deployment example is
     # later calibrated to a valid grasp. Keep this override in the fixture only.
     fixture['device_initial_positions_rad']={n:0. for n in fixture['device_initial_positions_rad']}
+    if replay:
+        fixture['device_initial_positions_rad']=dict(replay['segment']['capture']['feedback'])
+        source.update(raw_pair=replay['segment']['pairs'][0],raw_held=False,raw_replay=False,raw_index=0)
     fixture['initial_teleop_mode']='independent_arms' if ordinary else 'bimanual_tool'
     q=fixture['device_initial_positions_rad'].copy()
     if mode=='real' and not ordinary:
@@ -197,15 +210,35 @@ def scenario(out, mode, websocket=False, ordinary=False, physics=False):
         wait(ready,5.)
         value=json.loads((out/(mode+'-observer.json')).read_text())['end_effector_errors']
         assert value['runtime_mode']==mode and value['source']=='关节反馈 FK'
-        assert value['position_limit_mm']==5. and value['coupled'][0]<5.,value
+        tool_cfg=json.loads((CFG/'bimanual_snowbot_real.json').read_text())
+        limit_mm=tool_cfg['grasp_position_tolerance_m']*1000
+        assert value['position_limit_mm']==limit_mm and value['coupled'][0]<limit_mm,value
         checks.append(grasp+' measured FK tracking/coupling errors are available to the display observer')
     def click(side,bit):
         source['buttons'][side]|=1<<bit;pump(.12);source['buttons'][side]&=~(1<<bit);pump(.12)
+    def start_observer():
+        nonlocal observer,observer_log
+        observer_log=(out/(mode+'-observer.log')).open('w')
+        from ament_index_python.packages import get_package_share_directory
+        selected_robot=recipe['arguments']['robot_config']
+        observer_robot=(json.loads((out/'unified-session/session.json').read_text())['configs']['robot_config']['path']
+                        if physics else str(Path(get_package_share_directory('bindu_runtime'))/selected_robot[9:])
+                        if selected_robot.startswith('@runtime/') else selected_robot)
+        observer=subprocess.Popen([sys.executable,str(ROOT/'tools/snowbot_live.py'),'--observe',
+            '--namespace',ns,'--run-id',json.loads((out/'unified-session/session.json').read_text())['run_id'] if physics else views[-1]['run_id'],
+            '--robot-config',observer_robot,
+            '--runtime-mode',mode,'--device-backend','external_simulation' if physics else 'kinematic' if mode=='simulation' else 'snowbot_vendor',
+            '--state-file',str(out/(mode+'-observer.json')),
+            '--trace-file',str(trace_dir/'diagnostics.jsonl')],
+            stdout=observer_log,stderr=subprocess.STDOUT,start_new_session=True)
+        wait(lambda:(trace_dir/'teleop-state.jsonl').exists() and
+                    (trace_dir/'teleop-state.jsonl').stat().st_size>0,30.)
     try:
         if physics:
             wait(lambda:states and time.time()-seconds(states[-1].feedback_stamp)<.2 and
                  len(grippers)==2 and all(g.feedback_valid for g in grippers.values()),60.)
-            pump(2.)  # Finish initial DDS/display discovery before connecting the test hands.
+            start_observer()
+            pump(2.)  # Discover every reader before connecting the recorded hands.
             source['stream']=True
         wait(lambda:states and states[-1].feedback_stamp.sec>0 and views and
              views[-1]['phase']=='standby' and len(grippers)==2,60. if physics else 40.)
@@ -216,22 +249,53 @@ def scenario(out, mode, websocket=False, ordinary=False, physics=False):
         assert states[-1].simulated==(mode=='simulation') and states[-1].runtime_mode==mode
         assert views[-1]['capabilities']['axial_grasp'] is True
         checks.append('same feedback contract, no startup commands, configured axial position capability explicit')
-        observer_log=(out/(mode+'-observer.log')).open('w')
-        from ament_index_python.packages import get_package_share_directory
-        selected_robot=recipe['arguments']['robot_config']
-        observer_robot=(json.loads((out/'unified-session/session.json').read_text())['configs']['robot_config']['path']
-                        if physics else str(Path(get_package_share_directory('bindu_runtime'))/selected_robot[9:])
-                        if selected_robot.startswith('@runtime/') else selected_robot)
-        observer=subprocess.Popen([sys.executable,str(ROOT/'tools/snowbot_live.py'),'--observe',
-            '--namespace',ns,'--run-id',views[-1]['run_id'],
-            '--robot-config',observer_robot,
-            '--runtime-mode',mode,'--device-backend','external_simulation' if physics else 'kinematic' if mode=='simulation' else 'snowbot_vendor',
-            '--state-file',str(out/(mode+'-observer.json')),
-            '--trace-file',str(trace_dir/'diagnostics.jsonl')],
-            stdout=observer_log,stderr=subprocess.STDOUT,start_new_session=True)
-        wait(lambda:(trace_dir/'teleop-state.jsonl').exists() and
-                    (trace_dir/'teleop-state.jsonl').stat().st_size>0,30.)
+        if observer is None:start_observer()
         pump(.3)
+        if replay:
+            # The only synthetic inputs are a stationary released/pressed
+            # clutch setup. Motion packets retain the recorded raw poses,
+            # validity/buttons and selected clock, without pose smoothing.
+            source['raw_held']=True;phase('following')
+            initial_count=len(accepted);motion_start=len(states)
+            segment=replay['segment'];clocks=replay['clocks'];first=segment['pairs'][0][0]
+            def packet_time(pair):
+                d=pair[0]
+                return clocks[(d['source_id'],d['seq'])] if replay['clock']=='client' else seconds(d['stamp'])
+            origin=packet_time(segment['pairs'][0]);start=time.monotonic();source['raw_replay']=True
+            for index,pair in enumerate(segment['pairs'][1:],1):
+                delay=packet_time(pair)-origin-(time.monotonic()-start)
+                if delay>0:pump(delay)
+                assert views[-1]['phase']=='following',views[-1]
+                source.update(raw_pair=pair,raw_index=index)
+            pump(.04)
+            assert views[-1]['phase']=='following',views[-1]
+            assert len(accepted)>initial_count+5
+            motion=list(states[motion_start:]);source.update(raw_held=False,raw_replay=False)
+            phase('tool_standby')
+            wait(lambda:not states[-1].lease_active and states[-1].state not in ('RUNNING','STOPPING'))
+            assert not states[-1].stop_failures
+            sys.path.insert(0,str(ROOT/'tools'))
+            from snowbot_errors import pinocchio_fk
+            from bindu_kinematics.tool_geometry import coupling_metrics
+            tool_cfg=json.loads((CFG/'bimanual_snowbot_real.json').read_text())
+            robot_meta=json.loads((out/'unified-session/session.json').read_text())
+            from bindu_runtime.robot_setup import RobotSetup
+            robot=RobotSetup.load(robot_meta['configs']['robot_config']['path']);fk=pinocchio_fk(robot.urdf,tool_cfg)
+            samples=[]
+            for state in motion:
+                q=dict(zip(state.joints.name,state.joints.position));left,right=fk(q)
+                samples.append(dict(t=seconds(state.feedback_stamp),flanges={tool_cfg['left_frame']:left,tool_cfg['right_frame']:right}))
+            coupled=coupling_metrics(samples,tool_cfg,[dict(t=samples[0]['t'],mode='rigid')])
+            assert coupled['passed'],coupled
+            checks.extend(['recorded raw hand packets follow through Vuer, ROS, native QP and measured PhysX feedback',
+                           'recorded-motion release confirms explicit hold with no stop fault',
+                           'measured coupling stays inside configured position and rotation limits'])
+            terminate(observer,node);observer=None
+            health=json.loads((trace_dir/'diagnostics-health.json').read_text())
+            assert not health['active'] and not health['dropped'] and not health['error']
+            return dict(mode=mode,teleop_mode='bimanual_tool',checks=checks,accepted=len(accepted),vendor_packets=0,
+                        source_log=str(replay['log']),input_seq=first['seq'],clock=replay['clock'],
+                        source_packets=len(segment['pairs']),dataset_sha256=replay['sha256'],coupling=coupled)
         leases=node.create_client(Lease,ns+'/execution/lease')
         rejected=call(node,leases,Lease.Request(operation='acquire',owner='contract_test',resources=['left_arm']))
         assert not rejected.ok and 'COUPLED' in rejected.code,rejected.code
@@ -363,6 +427,11 @@ def scenario(out, mode, websocket=False, ordinary=False, physics=False):
         wait(lambda:len(accepted)>before+5)
         error_sample('rigid')
         left_position=grippers['left'].measured_position
+        if physics:
+            # X must brake a moving pair, not only confirm an already-resting
+            # pose. This exposed the old set-target/expiry hold mismatch.
+            for _ in range(8):
+                source['delta']+=.002;pump(.02)
         source['buttons'][0]=1
         wait(lambda:views[-1]['phase']=='following' and views[-1]['grasp_applied']=='right_axial' and
              views[-1]['tool_phase']=='follow:right_axial',20.)
@@ -480,20 +549,39 @@ def main():
     p=argparse.ArgumentParser();p.add_argument('--output',type=Path,required=True);p.add_argument('--mode',choices=('simulation','real','both'),default='both')
     p.add_argument('--physics',action='store_true',help='Use the actual Isaac backend and unified launcher; requires simulation and WebSocket input')
     p.add_argument('--teleop-mode',choices=('ordinary','tool','both'),default='both')
-    p.add_argument('--websocket-input',action='store_true');args=p.parse_args()
+    p.add_argument('--websocket-input',action='store_true')
+    p.add_argument('--replay-log',type=Path,help='Replay one captured raw VR segment through the isolated physics stack')
+    p.add_argument('--replay-seq',type=int)
+    p.add_argument('--until',type=float,help='Freeze recorded inputs/events at this UNIX timestamp')
+    p.add_argument('--clock',choices=('client','received'),default='client')
+    p.add_argument('--runs',type=int,default=1)
+    args=p.parse_args()
     if args.physics and (args.mode!='simulation' or not args.websocket_input):p.error('--physics requires --mode simulation --websocket-input')
+    if not 1<=args.runs<=10:p.error('--runs must be 1..10')
+    replay=None
+    if args.replay_log:
+        if not args.physics or args.teleop_mode!='tool' or args.replay_seq is None:
+            p.error('--replay-log requires --physics --teleop-mode tool --replay-seq')
+        from replay_vr import dataset
+        segments,clocks=dataset(args.replay_log,args.until if args.until is not None else time.time())
+        segment=next(s for s in segments if s['capture']['input_seq']==args.replay_seq)
+        if segment['capture']['grasp_mode']!='rigid':p.error('recorded physics replay requires a rigid capture')
+        import hashlib
+        replay=dict(log=args.replay_log,segment=segment,clocks=clocks,clock=args.clock,
+                    sha256=hashlib.sha256(json.dumps(segment['pairs'],sort_keys=True).encode()).hexdigest())
     if os.environ.get('ROS_LOCALHOST_ONLY')!='1' or not os.environ.get('ROS_DOMAIN_ID'):
         raise RuntimeError('Isolated localhost ROS domain required')
     args.output=args.output.resolve();args.output.mkdir(parents=True,exist_ok=False)
     rclpy.init()
     try:
         result=[]
-        for m in (('simulation','real') if args.mode=='both' else (args.mode,)):
-            for ordinary in ((True,False) if args.teleop_mode=='both' else (args.teleop_mode=='ordinary',)):
-                out=args.output/(('ordinary-' if ordinary else 'tool-')+m);out.mkdir()
-                case=scenario(out,m,args.websocket_input,ordinary,physics=args.physics);result.append(case)
-                (out/'verification.json').write_text(json.dumps(case,indent=2))
-                print(out.name+': '+str(len(case['checks']))+' checks passed',flush=True)
+        for run in range(args.runs):
+            for m in (('simulation','real') if args.mode=='both' else (args.mode,)):
+                for ordinary in ((True,False) if args.teleop_mode=='both' else (args.teleop_mode=='ordinary',)):
+                    out=args.output/(('ordinary-' if ordinary else 'tool-')+m+('' if args.runs==1 else f'-{run:02}'));out.mkdir()
+                    case=scenario(out,m,args.websocket_input,ordinary,physics=args.physics,replay=replay);result.append(case)
+                    (out/'verification.json').write_text(json.dumps(case,indent=2))
+                    print(out.name+': '+str(len(case['checks']))+' checks passed',flush=True)
         (args.output/'verification.json').write_text(json.dumps(result,indent=2));print(json.dumps(result,indent=2))
     finally:rclpy.shutdown()
 

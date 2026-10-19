@@ -63,6 +63,11 @@ class PhysicsPositionState:
         self.gate=PhysicsCommandGate(profile,simulator_id,timeout)
         self.profile=profile
         self.targets=dict(initial)
+        self.reference=dict(initial)
+        self.speeds={n:profile.speed(n) for n in initial}
+        self.coupled_names={n for g in ('waist','left_arm','right_arm')
+                            for n in profile.groups.get(g,[])}
+        self.progress=1.
         self.holding=set()
         self.hold_positions={}
         self.pending={}
@@ -71,7 +76,7 @@ class PhysicsPositionState:
     def hold(self, group, measured):
         if group not in self.holding:
             for n in self.profile.groups[group]:
-                self.targets[n]=self.hold_positions[n]=measured[n]
+                self.reference[n]=self.targets[n]=self.hold_positions[n]=measured[n]
             self.holding.add(group)
 
     def accept(self, command, now, measured):
@@ -93,3 +98,18 @@ class PhysicsPositionState:
     def stepped(self):
         self.applied_sequences.update(self.pending)
         self.pending.clear()
+
+    def reference_step(self, dt):
+        """Device-owned coupled position/velocity reference, never feedback."""
+        from .simulated_joints import synchronized_position_step
+        if not math.isfinite(dt) or not 0<dt<=.1:
+            raise ValueError('PHYSICS_REFERENCE_TIMESTEP')
+        reference,velocity,self.progress=synchronized_position_step(
+            self.reference,{n:self.targets[n] for n in self.coupled_names},self.speeds,dt)
+        # Head and grippers have independent device control. Their speed must
+        # neither throttle the coupled waist/arms nor depend on arm motion.
+        for n in self.targets.keys()-self.coupled_names:
+            q,v,_=synchronized_position_step(reference,{n:self.targets[n]},self.speeds,dt)
+            reference[n],velocity[n]=q[n],v[n]
+        self.reference=reference
+        return dict(self.reference),velocity

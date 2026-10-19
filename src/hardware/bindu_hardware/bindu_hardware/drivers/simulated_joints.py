@@ -2,6 +2,18 @@ import math
 from bindu_contracts.devices import JointReading
 
 
+def synchronized_position_step(positions, targets, speeds, dt):
+    """A single speed-bounded scalar step; positions are a reference or fixture."""
+    deltas={n:q-positions[n] for n,q in targets.items()}
+    progress=min((min(1.,speeds[n]*dt/abs(delta)) for n,delta in deltas.items() if delta),default=1.)
+    result=dict(positions)
+    velocities=dict.fromkeys(positions,0.)
+    for n,delta in deltas.items():
+        change=progress*delta;result[n]+=change
+        if dt>0:velocities[n]=change/dt
+    return result,velocities,progress
+
+
 class SynchronizedJointProgress:
     """One bounded vector step across groups, without per-axis time warping.
 
@@ -21,12 +33,13 @@ class SynchronizedJointProgress:
     def advance(self, now, dt):
         if self.last_time==now:return
         self.last_time=now;dt=max(0.,min(dt,.05))
-        steps=[(driver,n,target-driver.positions[n]) for driver in self.drivers
-               for n,target in driver.target.items()]
-        self.progress=min((min(1.,self.speeds[n]*dt/abs(delta)) for _,n,delta in steps if delta),default=1.)
-        for driver,n,delta in steps:
-            change=self.progress*delta;driver.positions[n]+=change
-            if dt>0:driver.velocities[n]=change/dt
+        positions={n:q for d in self.drivers for n,q in d.positions.items()}
+        targets={n:q for d in self.drivers for n,q in d.target.items()}
+        positions,velocities,self.progress=synchronized_position_step(positions,targets,self.speeds,dt)
+        for driver in self.drivers:
+            for n in driver.target:
+                driver.positions[n]=positions[n]
+                if dt>0:driver.velocities[n]=velocities[n]
 
 
 class SimJointDriver:

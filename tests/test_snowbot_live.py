@@ -58,6 +58,17 @@ class LiveFeedbackTests(unittest.TestCase):
 
 
 class WebFeedbackTests(unittest.TestCase):
+    def test_fresh_measured_pose_keeps_execution_fault_visible(self):
+        p=dict(self.data['pico'],phase='locked',reason='PICO_STOP_UNCONFIRMED:vendor_hold',
+               motion_stopped=False,stop_confirmed=False)
+        data=dict(self.data,execution='FAILED',code='STOP_UNCONFIRMED:vendor_hold',pico=p)
+        view=self.project(data)
+        self.assertTrue(view['valid'])
+        self.assertEqual(view['code'],'STOP_UNCONFIRMED:vendor_hold')
+        self.assertEqual(view['pico']['reason'],p['reason'])
+        self.assertFalse(view['pico']['stop_confirmed'])
+        self.assertFalse(self.project(data,10.7)['valid'])
+
     def test_error_samples_require_fresh_matching_feedback_and_pico_identity(self):
         metric=dict(valid=True,stamp=10.,coupled=[2.,.1])
         data=dict(self.data,end_effector_errors=metric)

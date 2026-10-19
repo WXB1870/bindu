@@ -26,8 +26,13 @@ def position_devices(node, profile):
         node.position_progress_synchronized=True
     node.declare_parameter('command_enabled', False, descriptor=ParameterDescriptor(read_only=True))
     node.commands_enabled = node.get_parameter('command_enabled').value
-    io = SnowbotIO(profile, lambda groups, q: transport.write_joints(q), node.now,
-                   command_enabled=node.commands_enabled, simulated=True)
+    io_type = SnowbotIO
+    options = {}
+    if node.physics_transport is not None:
+        from .simulation_devices import PhysicsPositionIO
+        io_type, options = PhysicsPositionIO, dict(physics=node.physics_transport)
+    io = io_type(profile, lambda groups, q: transport.write_joints(q), node.now,
+                 command_enabled=node.commands_enabled, simulated=True, **options)
     def read(now, dt):
         feedback=transport.read_feedback(now, dt)
         if feedback.stamp > io.last_source_stamp:

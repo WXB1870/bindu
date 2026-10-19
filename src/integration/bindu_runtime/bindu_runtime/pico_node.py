@@ -150,10 +150,12 @@ class PicoNode(RuntimeNode):
 
     def reading(self):
         s=self.state
+        if s is not None and s.stop_failures:
+            raise RuntimeError('PICO_STOP_UNCONFIRMED:'+s.code)
         if (s is None or s.device_backend!=self.backend or s.simulated != self.simulation or
                 not 0<=self.now()-seconds(s.feedback_stamp)<=self.tool_cfg['feedback_max_age'] or
                 len(s.joints.name)!=len(s.joints.position) or len(set(s.joints.name))!=len(s.joints.name) or
-                not all(math.isfinite(q) for q in s.joints.position) or s.stop_failures):
+                not all(math.isfinite(q) for q in s.joints.position)):
             raise RuntimeError('PICO_FEEDBACK_UNAVAILABLE')
         measured=dict(zip(s.joints.name,s.joints.position))
         if not set(self.profile.limits)<=set(measured):raise RuntimeError('PICO_FEEDBACK_LAYOUT')
@@ -169,8 +171,8 @@ class PicoNode(RuntimeNode):
             stopped=((self.handoff_complete or not s.lease_active) and s.state not in ('RUNNING','STOPPING') and not s.reference.name and
                      joints_at_rest(s.joints,self.names,.005) and (not self.position_ops or self.position_ops.stopped()))
             return PicoFeedback(seconds(s.feedback_stamp),stopped,tuple(modes))
-        except RuntimeError:
-            return PicoFeedback(0.,False,healthy=False)
+        except RuntimeError as exc:
+            return PicoFeedback(0.,False,healthy=False,fault=str(exc))
 
     def on_context(self,req,reply):
         self.control.update_feedback(self.feedback(),self.now())

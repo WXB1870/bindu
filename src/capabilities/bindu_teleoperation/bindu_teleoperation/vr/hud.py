@@ -79,7 +79,7 @@ def hud_spec(view):
                 cause=('控制更新暂时延迟' if budget else
                        '手臂接近本体' if reason.startswith('SELF_COLLISION:') else
                        '工具接近头部或本体' if '_CLEARANCE:' in reason else '握持处接近几何边界')
-                spec.update(status='跟随受限',tone='warn')
+                spec.update(status='跟随受限',tone='warning')
                 notice(cause,'保持握住，稍向反方向移动；松握可暂停')
     elif mode == 'tool_standby':
         spec['status']='已暂停' if confirmed else '正在暂停'
