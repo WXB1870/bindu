@@ -1,8 +1,142 @@
 # bindu_navigation：导航适配与输入检查
 
-[项目模块导航](../../../README.md#模块快速导航) · [编译与运行](#编译与运行) · [职责与边界](#职责与边界) · [源码导航](#源码导航) · [接入与验证](#接入与验证) · [关联模块](#关联模块)
+[项目模块导航](../../../README.md#模块快速导航) · [Orin导航部署](#orin-导航专用部署与新手操作) · [编译与运行](#编译与运行) · [职责与边界](#职责与边界) · [源码导航](#源码导航) · [接入与验证](#接入与验证) · [关联模块](#关联模块)
 
 维护导航配置、站点与每次目标的输入检查，并提供 Nav2 速度身份检查和 Airy 扫描转换。Nav2 会话的 ROS 装配位于 `bindu_runtime`。
+
+## Orin 导航专用部署与新手操作
+
+目标是 Ubuntu 22.04／ARM64／ROS 2 Humble。底盘已确认为松灵 Tracer 2.0；用户要求本轮底盘接口先占位。**当前可交付环境准备、专用构建、只读预检、传感器条件满足后的建图／保存／重载定位；人工速度控制、导航到点与停车闭环仍待底盘适配，不能宣称真机导航已完成。** Orin 型号／内存／JetPack、雷达／IMU、驱动和真实里程计尚未确认。本节不采用历史 Airy 或 G1 参数。
+
+### 简短启动入口
+
+所有终端先执行 `cd /home/wxb/bindu`。统一脚本会加载本机专用环境，不需要复制长串 launch 参数。先按后文安装依赖并填写配置，再依次运行：
+
+```bash
+tools/run_navigation.sh environment                     # 只读检查目标机
+tools/run_navigation.sh dependencies --route 2d          # 只打印所选路线的安装命令；LIO换成lio
+tools/run_navigation.sh prepare --route 2d               # 本机生成现场配置；LIO换成lio
+tools/run_navigation.sh build                           # 专用构建，默认7包；LIO再加1包
+tools/run_navigation.sh check --stage config             # 配置检查，缺项逐项报出
+tools/run_navigation.sh check --stage sensors            # 只读采样，启动算法前检查
+tools/run_navigation.sh start --phase mapping            # 终端A：只启动建图，不启动底盘
+tools/run_navigation.sh rviz                             # 终端B：观察地图/扫描/TF
+tools/run_navigation.sh check --stage mapping             # 终端C：建图与保存服务检查
+tools/run_navigation.sh save-map                         # 终端C：保存本批地图
+# Ctrl+C退出终端A的建图；填写site.json中map.yaml（LIO还需map.pcd）后：
+tools/run_navigation.sh start --phase localization       # 终端A：重载定位；RViz给近似初始位姿
+tools/run_navigation.sh check --stage localization       # 终端C：确认定位及地图有效
+```
+
+默认工作目录 `artifacts/orin-navigation/`。如需另一批部署，每条命令加同一 `--workspace /绝对路径/新目录`。`prepare` 不覆盖非空目录，地图也拒绝覆盖。`environment` 和 `check` 为只读操作；`prepare/build` 只写本机构建目录；脚本不安装驱动、配置 CAN／网络、使能电机或重刷 JetPack。
+
+### 1. 环境与依赖准备（目标 Orin 的终端）
+
+运行 `tools/run_navigation.sh environment`，预期显示 Ubuntu 22.04、`aarch64`、Python 3.10，以及可读到的设备型号、内存、L4T／JetPack。`nvidia-jetpack` 元包未安装时版本可能为空，应现场补充，不能据此认定 JetPack 未安装。x86 或 Python ABI 不符会退出2；不能通过改机器类型继续部署。新克隆需要先安装 Git 并取得本仓库源码；不要搬运开发机的 `install/`、venv、`.so` 或实验 `env.sh`。
+
+尚未安装 ROS 时，按 [Humble 官方安装步骤](https://docs.ros.org/en/humble/Installation/Ubuntu-Install-Debs.html)完成 UTF-8 locale、Universe、ROS 软件源及系统包兼容性检查，再执行：
+
+```bash
+sudo apt update
+sudo apt install ros-humble-ros-base
+source /opt/ros/humble/setup.bash
+ros2 --help
+```
+
+成功判据：`ros2 --help` 正常显示帮助；`/opt/ros/humble/setup.bash` 存在。找不到软件包时先核对 Ubuntu 版本、软件源和 ARM64 架构，不安装 x86 包。官方安装页的[源码版本](https://github.com/ros2/ros2_documentation/blob/humble/source/Installation/Ubuntu-Install-Debs.rst)可在文档站不可访问时查阅。
+
+选路线后，运行 `dependencies --route 2d` 或 `--route lio`，**阅读并执行它打印的完整 `sudo apt install ...` 命令**。该输出包含编译工具、ROS 导航与 RViz；二维路线加 SLAM Toolbox／AMCL，LIO 路线加 PCL／Eigen／SciPy／Open3D。再安装实际型号的 ARM64 传感器驱动。两条路线均不要求 VR、Pinocchio、CasADi、ProxSuite、VLA 或 Isaac。
+
+| 路线 | 必须具备的输入 | 建图／定位与保存 |
+|---|---|---|
+| `2d` | 有效 LaserScan、真实 odom、连续 odom→base、已标定 base→scan；点云转扫描须先按实际传感器适配 | SLAM Toolbox → YAML＋图像＋位姿图；重启后 AMCL 加近似初值 |
+| `lio` | 已标定且同步的点云＋IMU；点云 x/y/z/intensity/**time 均为 float32**，time 是相对帧头的秒偏移，非接收时间 | FAST-LIO → PCD＋观测扫描栅格；重启后 FAST-LIO＋需近似初值的 ICP＋栅格 map_server |
+
+当前 Orin LIO 入口要求适配后的 `timed_cloud`，`scan` frame 与 `lidar` 一致，雷达 z 轴平行底盘 z 轴；倾斜安装须先适配水平扫描。既有 Livox 转换单独保留，不能把不含逐点时间或无 IMU 的雷达直接选为 LIO。LIO初始化时须静止，IMU使用m/s²和rad/s；核心会拒绝不满足静止初始化／输入时序的消息。栅格仅由有效观测射线生成，NaN 未观测区保持未知；点云体素端点保守扩张，不能从 PCD 的空白区域推断可通行。以上路线均需现场确认扫描高度对低矮障碍的覆盖。
+
+版本依据：ROS 官方列出 [Humble Jammy 的 ARM64 包](https://github.com/ros2/ros2_documentation/blob/humble/source/Installation/Ubuntu-Install-Debs.rst)；[NVIDIA JetPack 6.0 说明](https://developer.nvidia.com/embedded/jetpack-sdk-60)记载 Ubuntu 22.04，但不据此猜现场 JetPack 版本；[Ubuntu Jammy Open3D 0.14.1 包](https://packages.ubuntu.com/jammy/python3-open3d)提供 ARM64/Python 3.10 构建。本轮尚未在 Orin 验证其运行与性能。
+
+### 2. 配置与构建（目标 Orin，同一仓库）
+
+执行简短入口中的 `prepare --route ...` 后，编辑唯一现场配置：
+
+```bash
+nano artifacts/orin-navigation/site.json
+```
+
+配置模板是 [`navigation_orin.json`](../../integration/bindu_runtime/config/navigation/navigation_orin.json)。不用改历史 Airy 配方。JSON 不允许注释；保留 `null` 就会明确报缺项，不应填示例零值通过检查。
+
+- `hardware`：填写实际设备和驱动包；`device/sensor_ip/host_ip` 仅记录连接事实，不自动修改设备或网络。源码没有通用传感器启动命令，按厂家驱动文档在独立终端启动，只开传感器。
+- `driver_setup`：驱动为本机独立工作区时，填写其绝对 `install/local_setup.bash`；系统安装包则保留 `null`。脚本在清除旧覆盖层后加载该路径，不使用其他机器的库。
+- `scan_topic/odom_topic/points_topic/imu_topic`：填写真实的绝对话题名；二维只要求前两项。`namespace` 控制本套算法输出，默认地图话题 `/bindu_navigation/navigation/map`。`tf_topic/tf_static_topic` 必须和设备使用同一 TF 图及 ROS 域。
+- `frames`、`base_from_scan`：frame 名不带开头 `/`；外参按 **xyz 米＋xyzw 单位四元数**填写实测值。外部模型／驱动负责发布传感器 TF；集中配置校验其与实测 TF 一致，不自动发布猜测外参。LIO 另填 `imu_from_lidar/imu_from_base`，保证同一运动链；高度切片当前按**雷达坐标系**，必须实测填写。
+- `tf_authorities.odom_to_base/base_to_scan`：二维填写实际发布节点全名，例如从 `ros2 node list` 读取的名称；LIO 的 odom 项固定写 `bindu_lio`，并关闭外部 odom→base 发布者。不是让用户填写示例节点名。
+- `map.prefix`：本机新批次绝对路径且不带扩展名；`map.yaml/map.pcd` 在保存成功后再填写。`checks/grid` 是软件诊断／栅格参数候选值，不代表实测设备频率、精度或障碍间距。
+- `footprint/limits/base`：机器人轮廓、线／角速度与加速度、接口与看门狗保持待标定。即使填写这些字段，当前 `unimplemented` 底盘阶段也不会解锁；不猜轮径、轮距、协议或额定速度。
+
+执行 `tools/run_navigation.sh build`。成功判据：二维 `Summary: 7 packages finished`，LIO 为8包；文件在专用 `build/install/log`，不污染根目录现有构建。部署工具设置 `BINDU_NAVIGATION_ONLY=1`，按 [REP-149 条件依赖](https://docs.ros.org/en/independent/api/rep/html/rep-0149.html)排除可选能力；不设置时原完整依赖保留。不要在本流程运行全仓 `rosdep install --from-paths src` 或完整构建，也不要用导航专用环境启动遥操作／取物示例。需要 rosdep 时仅对已选七／八包路径操作。
+
+成功后运行 `check --stage config`。失败时按输出修正对应字段；它不会因没接底盘而阻塞传感器阶段，但导航阶段始终报告底盘缺项。源码变化需重新 `build`；换路线需新的工作目录。LIO 构建吃内存，默认单编译任务；型号／内存未知时不自动创建 swap 或调电源模式。
+
+### 3. 只读查看传感器（终端B）
+
+先在终端A按实际驱动文档启动传感器及既有只读里程计发布，不启动会自动使能／回零的控制器。在终端B：
+
+```bash
+cd /home/wxb/bindu
+source artifacts/orin-navigation/env.sh
+ros2 topic list -t
+ros2 node list
+tools/run_navigation.sh check --stage sensors
+```
+
+成功判据：输出 `PASS: sensors`，扫描及 odom 的源时间持续增加；LIO 启动前检查原始点云和 IMU，启动后再检查它生成的 scan／odom。预检检查依赖、内容／frame、源时间与时效、采集时刻 TF、重复 TF 与来源；不申请租约、发布命令或调用运动服务。它不启动缺失驱动、不做时间／网络调整，也不能证明雷达已覆盖所有障碍。
+
+TF 唯一责任：二维建图由 SLAM Toolbox 发布 map→odom，定位时只由 AMCL 发布；二维 odom→base 由真实底盘／融合里程计发布。LIO 建图由 FAST-LIO 发布 map→odom 和 odom→base；LIO 定位改由 ICP 发布 map→odom，FAST-LIO 保留 odom→base。base→传感器始终由已标定的模型／设备发布。本入口不额外发布同一静态 TF。不得同时运行两套建图／定位或外部恒等 map→odom。启动前若已有 map→odom，先确认并退出旧算法。
+
+常见错误：`NO_ADVANCING_DATA/STREAM_STALE` 查驱动、话题、ROS_DOMAIN_ID、QoS及源时钟；`SOURCE_TIME_INVALID/REGRESSION` 查驱动时基和跨机同步；`TF_*` 查 frame、发布者全名、重复父节点及时间链；`DEPENDENCY_MISSING` 安装所选路线或配置正确的驱动覆盖层。不要用更大的超时、接收时间戳或伪里程计掩盖问题。
+
+### 4. 人工低速建图与保存（终端A/B/C）
+
+`start --phase mapping` 只启动算法。终端B运行 `rviz`，配置由现场话题生成到 `artifacts/orin-navigation/navigation.rviz`；默认 fixed frame 为 map。算法未启动前看传感器可在 RViz 把 Fixed Frame 临时切到 base；建图时恢复 map。成功判据：扫描与墙面对应、TF 连贯、地图随有效观测增长，无坐标跳跃。
+
+首次移动按人工低速建图准备，**不做自主探索**。底盘适配前只允许静止传感器／地图观察；后续经单独现场授权，使用已验收的人工低速控制与实体急停，缓慢走通路线并回环。Bindu 人工速度入口 `tools/run_navigation.sh manual` 目前明确返回 `BASE_ADAPTER_REQUIRED`，不发送 `/cmd_vel`。不要拿脚本成功启动代替人工控制可用或停车验证。
+
+另开终端C执行 `check --stage mapping`，通过后在机器人已由人工确认静止时执行 `save-map`。二维保存 `.yaml/.pgm`（或实际图像格式）和 `.posegraph/.data`；LIO保存 `.pcd` 和同坐标 `.yaml/.pgm`。保存服务超时或文件部分缺失时保留现场日志与部分产物，不自动重试覆盖。成功判据：命令返回0，YAML引用的图像存在且非空；LIO还须有PCD。位姿图用于继续建图，AMCL重载使用栅格地图。
+
+### 5. 重启、重载定位与到点／取消／停止
+
+确认人工已停稳，再 Ctrl+C 退出建图。把 `site.json` 的 `map.yaml` 指向刚保存的绝对 YAML 路径；LIO 再填写同批 `map.pcd`。机器或节点重启后重新启动实际传感器与里程计、执行 `check --stage sensors`，然后 `start --phase localization`。**不自动恢复旧目标、租约、初值或运动。** 终端B运行 `rviz`，用 `2D Pose Estimate` 在已知位置给近似初始方向；其实际话题为配置 namespace 下的 `initialpose`。不要加载另一个软件使用的全局 `/initialpose`。LIO的ICP不能从任意未知位置全局重定位。
+
+终端C执行 `check --stage localization`。成功判据：保存地图正确加载，scan与墙面重合，map→odom来自本阶段算法且持续有效，真实／LIO odom继续更新。缺图像报 `MAP_IMAGE_REQUIRED`；无近似初值／配准失败会缺有效 map→odom；先解决原因再进入运动阶段。
+
+本轮运动接口占位，以下是**明确阻塞入口**，不是可用的真机命令：
+
+```bash
+tools/run_navigation.sh check --stage navigation
+tools/run_navigation.sh start --phase navigation
+tools/run_navigation.sh navigate
+tools/run_navigation.sh cancel
+tools/run_navigation.sh stop
+```
+
+均报告缺底盘适配；`cancel/stop` 不会假装车辆已停。现有真实机器人由其已验收的人工停车／实体急停处理，Ctrl+C退出算法不等于硬件停车。RViz配置不提供绕过执行层的Nav2 Goal工具。
+
+现有通用执行装配仍拒绝real，Profile加载还要求非空关节组；后续须补底盘专用profile与执行装配，不能填虚拟关节伪造反馈。待适配后必须接通的链路为：传感器 → scan／odom → TF → 建图／定位 → 每目标独立 Nav2 会话与发布者身份校验 → `NavigationVelocity` → `MotionCommand`（租约／epoch／revision／源时间／有效期）→ 公共 `Executor/RobotIO` → Tracer适配器 → 实测位姿／速度／故障与停止反馈。不得改 `navigation_physics.launch.py` 开关借用 `external_simulation`。原 Nav2 会话已补 Humble 单个progress_checker、结果字段与 Twist 来源时间兼容；原生入口对固定GID、单次UUID绑定、源时间和旧会话隔离的保护保留，RMW不提供源时间时拒绝。该兼容检查不等于完整Humble Nav2或Tracer闭环验收。
+
+现场后续须实现并逐项验收：底盘协议与单位／frame、命令超时看门狗、控制权、实测停车判据、取消先关闭速度入口再请求停止与后端取消；雷达／定位／反馈断流、命令过期均停止且未确认停稳时失败锁定。底盘反馈不能用命令回显或LIO定位代替。重启后须重新预检、定位并显式提交新目标。验收顺序为**建图 → 保存 → 重启 → 重载定位 → 到点 → 取消 → 各类断流停车 → 显式恢复**；还需记录真机时间、位移和反馈，不能引用x86／Isaac历史结果作为通过证据。
+
+### 验证入口
+
+```bash
+# 无设备的单元与源时间／执行保护回归（先加载专用env.sh）
+python3 -m tests unit test_orin_navigation
+python3 -m tests unit test_navigation
+# 有Docker的开发机，独立Ubuntu22.04/Humble容器；不会启动真机或改宿主软件
+bash tools/deployment/validate_humble_navigation.sh
+```
+
+ROS替身预检另外覆盖正常输入、扫描／odom断流、旧／冻结时间戳、错误frame和重复TF。实际测试范围和本轮结果见[当前验证说明](../../../运行与验证.md#orin-导航专用验证)；Orin构建、传感器标定和Tracer现场闭环仍待验收。
 
 ## 编译与运行
 

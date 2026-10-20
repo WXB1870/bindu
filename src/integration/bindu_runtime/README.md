@@ -10,7 +10,9 @@
 
 ### 依赖准备
 
-运行包依赖运动学及原生 QP，即使只启动任务示例，首次构建也要准备 C++17、Python 开发头文件、Eigen3、SIMDe，以及匹配的 Pinocchio／ProxSuite。已有可用数值环境可直接加载；若使用仓库固定版本的 wheel，先在新的终端准备隔离目录：
+**Orin仅导航**使用[导航专用入口](../../capabilities/bindu_navigation/README.md#orin-导航专用部署与新手操作)，设置`BINDU_NAVIGATION_ONLY=1`收敛为七包（LIO另加一包）；不使用本节完整能力环境。该配置只供导航launch，不启动取物、VR或IK。
+
+默认完整装配依赖运动学及原生 QP，即使只启动任务示例，首次构建也要准备 C++17、Python 开发头文件、Eigen3、SIMDe，以及匹配的 Pinocchio／ProxSuite。已有可用数值环境可直接加载；若使用仓库固定版本的 wheel，先在新的终端准备隔离目录：
 
 ```bash
 source /opt/ros/jazzy/setup.bash

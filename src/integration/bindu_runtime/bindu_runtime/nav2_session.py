@@ -31,8 +31,9 @@ from bindu_navigation.navigation import NavigationConfig, SessionVelocityFence
 from .common import seconds, stamp, spin
 
 
-def parameters(robot, ns, session, bt_file):
+def parameters(robot, ns, session, bt_file, distro=None):
     """Nav2 algorithm baseline, with all embodiment values supplied by config."""
+    humble = (distro or os.environ.get('ROS_DISTRO')) == 'humble'
     frames=robot['frames']
     def costmap(global_map):
         cfg={'global_frame':frames['map'] if global_map else frames['odom'],
@@ -56,7 +57,7 @@ def parameters(robot, ns, session, bt_file):
         return {'ros__parameters':cfg}
     v,w=robot['linear_velocity'],robot['angular_velocity']
     aw=robot['angular_acceleration']
-    return {
+    config = {
         session+'/planner_server':{'ros__parameters':{'expected_planner_frequency':1.,'planner_plugins':['GridBased'],
             'GridBased':{'plugin':'nav2_navfn_planner::NavfnPlanner','tolerance':.1,'use_astar':False,'allow_unknown':False}}},
         session+'/global_costmap/global_costmap':costmap(True),
@@ -89,6 +90,25 @@ def parameters(robot, ns, session, bt_file):
         session+'/lifecycle_manager':{'ros__parameters':{'autostart':True,'bond_timeout':2.,
             'node_names':['controller_server','planner_server','bt_navigator']}}}
 
+    if humble:
+        controller = config[session+'/controller_server']['ros__parameters']
+        controller.pop('enable_stamped_cmd_vel')
+        controller.pop('progress_checker_plugins')
+        controller['progress_checker_plugin'] = 'progress_checker'
+        config[session+'/planner_server']['ros__parameters']['GridBased']['plugin'] = 'nav2_navfn_planner/NavfnPlanner'
+        navigator = config[session+'/bt_navigator']['ros__parameters']
+        navigator.pop('navigators'); navigator.pop('navigate_to_pose')
+        navigator['plugin_lib_names'] = ['nav2_compute_path_to_pose_action_bt_node',
+            'nav2_follow_path_action_bt_node','nav2_is_path_valid_condition_bt_node',
+            'nav2_rate_controller_bt_node','nav2_pipeline_sequence_bt_node']
+    return config
+
+
+def set_result_error(result, code, message):
+    # Humble NavigateToPose.Result contains only std_msgs/Empty.
+    if hasattr(result, 'error_code'): result.error_code = code
+    if hasattr(result, 'error_msg'): result.error_msg = message
+
 
 BT='''<root BTCPP_format="4" main_tree_to_execute="MainTree">
 <BehaviorTree ID="MainTree"><PipelineSequence name="NavigateWithReplanning">
@@ -111,7 +131,7 @@ class PreparedSession:
         self.paths=(self.folder/'plans.jsonl').open('w')
         from nav_msgs.msg import Path as NavPath
         self.path_sub=node.create_subscription(NavPath,self.ns+'/plan',self.record_path,1,callback_group=node.group)
-        bt=self.folder/'navigate.xml';bt.write_text(BT)
+        bt=self.folder/'navigate.xml';bt.write_text(BT.replace(' error_code_id="{compute_path_error_code}"','').replace(' error_code_id="{follow_path_error_code}"','') if os.environ.get('ROS_DISTRO')=='humble' else BT)
         config=self.folder/'params.yaml'
         config.write_text(yaml.safe_dump(parameters(node.robot,node.get_namespace(),self.ns,bt)))
         from std_msgs.msg import String
@@ -155,7 +175,9 @@ class PreparedSession:
         if not self.native_started and self.activated_at and len(pubs)==1 and pubs[0].node_name=='controller_server' and pubs[0].node_namespace==self.ns:
             self.gid=bytes(pubs[0].endpoint_gid)
             self.start('velocity_identity',[str(n.identity_bridge),'',self.ns,self.gid.hex(),str(n.now()),
-                '--ros-args','-r','__ns:='+self.ns])
+                '--ros-args','-r','__ns:='+self.ns,
+                '-p','stamped_input:='+str(os.environ.get('ROS_DISTRO')!='humble').lower(),
+                '-p','base_frame:='+n.config.base_frame])
             self.native_started=True
         inputs_ready=(self.native_started and self.client.server_is_ready() and n.transport_ready() and n.pose_fresh()
             and n.count_publishers(self.ns+'/identified_velocity')==1 and self.binder.service_is_ready())
@@ -316,7 +338,7 @@ class Nav2SessionNode(Node):
                     future=child.get_result_async()
                 if future is not None and future.done():
                     response=future.result();result=response.result;fence.close()
-                    if response.status==4 and not result.error_code:goal.succeed()
+                    if response.status==4 and not getattr(result,'error_code',0):goal.succeed()
                     else:goal.abort()
                     return result
                 if session.first_command is None:
@@ -327,7 +349,7 @@ class Nav2SessionNode(Node):
                 elif self.now()-fence.last_stamp>self.config.input_timeout:raise RuntimeError('NAV2_COMMAND_TIMEOUT')
                 await self.pause()
         except Exception as exc:
-            session.fault=str(exc);result.error_code=900;result.error_msg=str(exc);fence.close()
+            session.fault=str(exc);set_result_error(result,900,str(exc));fence.close()
             if child:child.cancel_goal_async()
             goal.abort();return result
         finally:

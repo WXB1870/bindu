@@ -38,25 +38,48 @@ public:
     });
     output_ = create_publisher<bindu_interfaces::msg::NavigationVelocity>("identified_velocity", 10);
     fault_ = create_publisher<std_msgs::msg::String>("identity_fault", rclcpp::QoS(1).transient_local());
-    input_ = create_subscription<geometry_msgs::msg::TwistStamped>("cmd_vel", 10,
-      [this](geometry_msgs::msg::TwistStamped::ConstSharedPtr msg, const rclcpp::MessageInfo &info) {
-        if (failed_ || goal_.empty()) return;
-        const auto &gid = info.get_rmw_message_info().publisher_gid;
-        if (!std::equal(expected_.begin(), expected_.end(), gid.data)) {
-          fail("NAV2_PUBLISHER_CHANGED"); return;
-        }
-        double stamp = rclcpp::Time(msg->header.stamp).seconds();
-        if (!std::isfinite(stamp) || stamp < start_ || stamp <= last_) {
-          fail("NAV2_COMMAND_STALE"); return;
-        }
-        last_ = stamp;
-        bindu_interfaces::msg::NavigationVelocity out;
-        out.goal_id = goal_; out.source_id = source_; out.sequence = ++sequence_;
-        out.command = *msg;
-        output_->publish(out);
-      });
+    rcl_interfaces::msg::ParameterDescriptor descriptor;
+    descriptor.read_only = true;
+    const bool stamped = declare_parameter<bool>("stamped_input", true, descriptor);
+    const auto base = declare_parameter<std::string>("base_frame", "", descriptor);
+    if (stamped) {
+      input_ = create_subscription<geometry_msgs::msg::TwistStamped>("cmd_vel", 10,
+        [this](geometry_msgs::msg::TwistStamped::ConstSharedPtr msg, const rclcpp::MessageInfo &info) {
+          receive(*msg, info);
+        });
+    } else {
+      if (base.empty()) throw std::runtime_error("BASE_FRAME_REQUIRED");
+      // Humble's controller publishes Twist. RMW source_timestamp is assigned
+      // at publication by the pinned, single-use controller process. Receipt
+      // time is never substituted; unsupported RMW metadata fails closed.
+      plain_input_ = create_subscription<geometry_msgs::msg::Twist>("cmd_vel", 10,
+        [this, base](geometry_msgs::msg::Twist::ConstSharedPtr msg, const rclcpp::MessageInfo &info) {
+          if (failed_ || goal_.empty()) return;
+          const auto source_stamp = info.get_rmw_message_info().source_timestamp;
+          if (source_stamp <= 0) { fail("NAV2_SOURCE_TIMESTAMP_UNAVAILABLE"); return; }
+          geometry_msgs::msg::TwistStamped stamped;
+          stamped.header.stamp = rclcpp::Time(source_stamp);
+          stamped.header.frame_id = base; stamped.twist = *msg;
+          receive(stamped, info);
+        });
+    }
   }
 private:
+  void receive(const geometry_msgs::msg::TwistStamped &msg, const rclcpp::MessageInfo &info) {
+    if (failed_ || goal_.empty()) return;
+    const auto &gid = info.get_rmw_message_info().publisher_gid;
+    if (!std::equal(expected_.begin(), expected_.end(), gid.data)) {
+      fail("NAV2_PUBLISHER_CHANGED"); return;
+    }
+    const double stamp = rclcpp::Time(msg.header.stamp).seconds();
+    if (!std::isfinite(stamp) || stamp < start_ || stamp <= last_) {
+      fail("NAV2_COMMAND_STALE"); return;
+    }
+    last_ = stamp;
+    bindu_interfaces::msg::NavigationVelocity out;
+    out.goal_id = goal_; out.source_id = source_; out.sequence = ++sequence_;
+    out.command = msg; output_->publish(out);
+  }
   void fail(const std::string &code) {
     failed_ = true;
     std_msgs::msg::String message; message.data = code; fault_->publish(message);
@@ -69,6 +92,7 @@ private:
   rclcpp::Publisher<bindu_interfaces::msg::NavigationVelocity>::SharedPtr output_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr fault_;
   rclcpp::Subscription<geometry_msgs::msg::TwistStamped>::SharedPtr input_;
+  rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr plain_input_;
 };
 int main(int argc, char **argv) {
   if (argc < 5) return 2;

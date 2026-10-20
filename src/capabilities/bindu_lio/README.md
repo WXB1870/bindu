@@ -6,6 +6,8 @@
 
 ## 编译与运行
 
+Orin／Humble导航专用部署见[导航新手流程](../bindu_navigation/README.md#orin-导航专用部署与新手操作)，可单独选择LIO、使用Ubuntu的ARM64 Open3D包并保存PCD与同坐标观测栅格；不要套用下文x86历史依赖目录或仿真外参。
+
 在仓库根目录执行；需要 ROS 2、colcon、C++17、PCL、Eigen3、OpenMP 及 `package.xml` 中的 ROS 依赖，见 [环境准备](../../../运行与验证.md#环境准备与构建)。Humble 环境将 `jazzy` 换为 `humble`。
 
 ```bash

@@ -1,0 +1,3 @@
+#!/usr/bin/env python3
+from bindu_navigation.scan_grid import main
+main()

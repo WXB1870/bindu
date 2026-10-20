@@ -25,8 +25,11 @@ def assemble(context):
     transforms = {name: sensor[name] for name in ('imu_from_lidar', 'imu_from_base')}
     frame_parameters = {name + '_frame': frames[name] for name in ('odom', 'base', 'lidar', 'imu')}
     use_sim_time = value('use_sim_time').lower() == 'true'
-    remaps = [('/tf', 'tf'), ('/tf_static', 'tf_static'), ('lio/imu', sensor['imu_topic']),
-              ('lio/odom', 'navigation/odom')]
+    tf_remaps = [('/tf', value('tf_topic')), ('/tf_static', value('tf_static_topic'))]
+    odom_topic = value('odom_topic')
+    scan_remaps = [('navigation/scan', value('scan_topic'))]
+    remaps = [*tf_remaps, ('lio/imu', sensor['imu_topic']),
+              ('lio/odom', odom_topic)]
     if sensor['input_type'] == 'timed_cloud':
         remaps.append(('lio/points', sensor['points_topic']))
     nodes = [Node(
@@ -47,7 +50,7 @@ def assemble(context):
             parameters=[{**sensor['scan_projection'], **transforms,
                          **{name + '_frame': frames[name] for name in ('odom', 'base', 'lidar')},
                          'use_sim_time': use_sim_time}],
-            remappings=[('/tf', 'tf'), ('/tf_static', 'tf_static'), ('lio/odom', 'navigation/odom')]))
+            remappings=[*tf_remaps, *scan_remaps, ('lio/odom', odom_topic)]))
     if mode == 'localization':
         path = Path(value('pcd_map')).resolve()
         if not path.is_file():
@@ -57,7 +60,7 @@ def assemble(context):
             parameters=[{**parameters['registration'], 'map_path': str(path),
                          'map_frame': frames['map'], 'odom_frame': frames['odom'],
                          'base_frame': frames['base'], 'use_sim_time': use_sim_time}],
-            remappings=[('/tf', 'tf'), ('/tf_static', 'tf_static'), ('lio/odom', 'navigation/odom')]))
+            remappings=[*tf_remaps, *scan_remaps, ('lio/odom', odom_topic)]))
     if value('grid_map'):
         if mode != 'localization':
             raise ValueError('GRID_MAP_ONLY_WITH_LOCALIZATION')
@@ -86,5 +89,9 @@ def generate_launch_description():
         DeclareLaunchArgument('grid_map', default_value=''),
         DeclareLaunchArgument('save_map', default_value=''),
         DeclareLaunchArgument('use_sim_time', default_value='false'),
+        DeclareLaunchArgument('tf_topic', default_value='tf'),
+        DeclareLaunchArgument('tf_static_topic', default_value='tf_static'),
+        DeclareLaunchArgument('odom_topic', default_value='navigation/odom'),
+        DeclareLaunchArgument('scan_topic', default_value='navigation/scan'),
         OpaqueFunction(function=assemble),
     ])

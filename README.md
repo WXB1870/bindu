@@ -73,6 +73,8 @@ bindu/
 
 PICO扫雪：[统一部署与启动](运行与验证.md#vr-统一部署与启动) · [按键与相对映射](src/capabilities/bindu_teleoperation/README.md#pico-按键方案) · [操作流程](运行与验证.md#pico-扫雪操作流程) · [工具操作与握持契约](动作执行契约.md#61-snowbot-工具操作与握持切换)。
 
+导航部署：[Orin专用脚本与新手流程](src/capabilities/bindu_navigation/README.md#orin-导航专用部署与新手操作)（Tracer 2.0底盘接口按要求占位，建图与定位按实际传感器选型）。
+
 真机部署：[x86独立环境与构建](src/integration/bindu_runtime/README.md#x86-真机部署已有适配底层) · [现场部署顺序](src/integration/bindu_runtime/README.md#现场部署顺序) · [Snowbot自动化入口](src/integration/bindu_runtime/README.md#部署自动化)，提供现场配方生成、独立构建、部署检查、前台启动及只读状态查看，默认只读。
 
 ## 当前状态与验证入口

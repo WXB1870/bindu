@@ -1,0 +1,83 @@
+{
+  "schema": 1,
+  "runtime_mode": "real",
+  "route": null,
+  "namespace": "/bindu_navigation",
+  "hardware": {
+    "orin_model": null,
+    "memory_gb": null,
+    "jetpack": null,
+    "lidar_model": null,
+    "imu_model": null,
+    "driver_packages": [],
+    "device": null,
+    "sensor_ip": null,
+    "host_ip": null
+  },
+  "frames": {
+    "map": "map",
+    "odom": "odom",
+    "base": "base_link",
+    "scan": null,
+    "lidar": null,
+    "imu": null
+  },
+  "scan_topic": null,
+  "odom_topic": null,
+  "points_topic": null,
+  "imu_topic": null,
+  "tf_topic": "/tf",
+  "tf_static_topic": "/tf_static",
+  "base_from_scan": null,
+  "imu_from_lidar": null,
+  "imu_from_base": null,
+  "input_type": null,
+  "scan_lines": null,
+  "laser": {
+    "min_range": null,
+    "max_range": null
+  },
+  "scan_projection": {
+    "min_height": null,
+    "max_height": null,
+    "min_range": null,
+    "max_range": null,
+    "bins": 720,
+    "publish_sensor_tf": false
+  },
+  "tf_authorities": {
+    "odom_to_base": null,
+    "base_to_scan": null
+  },
+  "base": {
+    "model": "agilex_tracer_2_0",
+    "adapter": "unimplemented",
+    "velocity_interface": null,
+    "feedback_topic": null,
+    "feedback_type": null,
+    "watchdog_seconds": null
+  },
+  "footprint": null,
+  "limits": {
+    "linear_velocity": null,
+    "angular_velocity": null,
+    "linear_acceleration": null,
+    "angular_acceleration": null
+  },
+  "map": {
+    "prefix": null,
+    "yaml": null,
+    "pcd": null
+  },
+  "checks": {
+    "max_age": 0.5,
+    "future_tolerance": 0.05,
+    "sample_seconds": 5.0
+  },
+  "grid": {
+    "resolution": 0.05,
+    "hit_padding": 0.15,
+    "max_side": 2048
+  },
+  "driver_setup": null
+}

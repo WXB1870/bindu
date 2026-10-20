@@ -14,14 +14,14 @@ def assemble(context):
     ns=value('namespace');mode=value('mode')
     robot=json.loads(Path(value('navigation_robot')).read_text())
     cfg=yaml.safe_load(Path(value('parameters')).read_text());f=robot['frames'];laser=robot['laser']
-    remaps=[('/tf','tf'),('/tf_static','tf_static'),('map','navigation/map'),
+    remaps=[('/tf',value('tf_topic')),('/tf_static',value('tf_static_topic')),('map','navigation/map'),
             ('map_metadata','navigation/map_metadata'),('pose','localization/pose'),('amcl_pose','localization/pose')]
     def node(package,exe,name,params):
         return Node(package=package,executable=exe,name=name,namespace=ns,
                     parameters=[{'use_sim_time':False,**params}],remappings=remaps,output='screen')
     if mode=='mapping':
         params={**cfg['slam'],'odom_frame':f['odom'],'map_frame':f['map'],'base_frame':f['base'],
-                'scan_topic':ns.rstrip('/')+'/navigation/scan','map_name':ns.rstrip('/')+'/navigation/map','min_laser_range':laser['min_range'],'max_laser_range':laser['max_range']}
+                'scan_topic':value('scan_topic') or ns.rstrip('/')+'/navigation/scan','map_name':ns.rstrip('/')+'/navigation/map','min_laser_range':laser['min_range'],'max_laser_range':laser['max_range']}
         if value('pose_graph'):
             graph=Path(value('pose_graph')).resolve()
             if not Path(str(graph)+'.posegraph').is_file() or not Path(str(graph)+'.data').is_file():
@@ -33,7 +33,7 @@ def assemble(context):
         map_path=Path(value('map')).resolve()
         if not map_path.is_file():raise ValueError('SAVED_MAP_REQUIRED')
         params={**cfg['amcl'],'odom_frame_id':f['odom'],'global_frame_id':f['map'],'base_frame_id':f['base'],
-                'scan_topic':'navigation/scan','map_topic':'navigation/map',
+                'scan_topic':value('scan_topic') or 'navigation/scan','map_topic':'navigation/map',
                 'laser_min_range':laser['min_range'],'laser_max_range':laser['max_range']}
         nodes=[node('nav2_map_server','map_server','map_server',{'yaml_filename':str(map_path),'topic_name':'navigation/map','frame_id':f['map']}),
                node('nav2_amcl','amcl','amcl',params)]
@@ -49,4 +49,7 @@ def generate_launch_description():
     return LaunchDescription([DeclareLaunchArgument('namespace'),DeclareLaunchArgument('navigation_robot'),
         DeclareLaunchArgument('mode',default_value='mapping'),DeclareLaunchArgument('map',default_value=''),
         DeclareLaunchArgument('pose_graph',default_value=''),
+        DeclareLaunchArgument('scan_topic',default_value=''),
+        DeclareLaunchArgument('tf_topic',default_value='tf'),
+        DeclareLaunchArgument('tf_static_topic',default_value='tf_static'),
         DeclareLaunchArgument('parameters',default_value=str(default)),OpaqueFunction(function=assemble)])
