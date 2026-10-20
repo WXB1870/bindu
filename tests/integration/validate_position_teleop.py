@@ -75,7 +75,7 @@ def websocket_input(port, source, stop, errors):
         if not stop.is_set():errors.append(type(exc).__name__+':'+str(exc))
 
 
-def scenario(out, mode, websocket=False, ordinary=False, physics=False, replay=None):
+def scenario(out, mode, websocket=False, ordinary=False, physics=False, replay=None, collision_recovery=False):
     token=uuid.uuid4().hex[:8];ns='/position_'+token;vendor='/fixture_'+token
     node=rclpy.create_node('position_fixture_'+token)
     states=[];views=[];accepted=[];grippers={};packets=[]
@@ -93,6 +93,8 @@ def scenario(out, mode, websocket=False, ordinary=False, physics=False, replay=N
     if replay:
         fixture['device_initial_positions_rad']=dict(replay['segment']['capture']['feedback'])
         source.update(raw_pair=replay['segment']['pairs'][0],raw_held=False,raw_replay=False,raw_index=0)
+    if collision_recovery:
+        fixture['device_initial_positions_rad']=json.loads((ROOT/'tests/config/teleoperation/snowbot_prepare_collision.json').read_text())['feedback']
     fixture['initial_teleop_mode']='independent_arms' if ordinary else 'bimanual_tool'
     q=fixture['device_initial_positions_rad'].copy()
     if mode=='real' and not ordinary:
@@ -249,6 +251,48 @@ def scenario(out, mode, websocket=False, ordinary=False, physics=False, replay=N
         assert views[-1]['capabilities']['axial_grasp'] is True
         checks.append('same feedback contract, no startup commands, configured axial position capability explicit')
         pump(.3)
+        if collision_recovery:
+            source['grip']=1.
+            wait(lambda:views[-1]['pending'] is None and 'SELF_COLLISION' in views[-1]['reason'])
+            assert not accepted and views[-1]['teleop_mode']=='bimanual_tool'
+            source['grip']=0.;pump(.3)
+            click(1,1)
+            wait(lambda:views[-1]['pending'] is None)
+            assert views[-1]['teleop_mode']=='bimanual_tool' and not accepted
+            checks.append('recorded initial self-collision still rejects follow and mode selection without actuation')
+            source['buttons'][1]=1
+            wait(lambda:len(accepted)>0,35.)
+            pump(.12);source['buttons'][1]=0
+            wait(lambda:views[-1]['pending'] is None and not states[-1].lease_active and
+                 states[-1].state not in ('RUNNING','STOPPING'))
+            assert not states[-1].stop_failures
+            stopped_at=len(accepted);pump(.3);assert len(accepted)==stopped_at
+            checks.append('releasing A cancels the bounded escape and confirms measured stop without continuing preparation')
+            source['buttons'][1]=1
+            wait(lambda:views[-1]['pending'] is None and views[-1]['reason']=='PREPARED',45.)
+            source['buttons'][1]=0;pump(.3)
+            measured=dict(zip(states[-1].joints.name,states[-1].joints.position))
+            names=[n for g in ('waist','left_arm','right_arm') for n in GROUPS[g]]
+            assert max(abs(measured[n]-fixture['prepare_positions_rad'][n]) for n in names)<.002
+            assert views[-1]['stop_confirmed'] and not states[-1].stop_failures
+            checks.append('holding A retreats from the original overlap then validates and reaches the preparation pose')
+            source['grip']=1.;phase('following')
+            set_delta(.002);pump(.3);assert views[-1]['phase']=='following'
+            source['grip']=0.;phase('tool_standby')
+            wait(lambda:not states[-1].lease_active and states[-1].state not in ('RUNNING','STOPPING'))
+            assert not states[-1].stop_failures
+            checks.append('fresh two-hand clutch follows after recovery; release confirms stop')
+            terminate(observer,node);observer=None
+            events=[json.loads(line)['data'] for line in (trace_dir/'runtime-events.jsonl').read_text().splitlines()]
+            recoveries=[json.loads(e['code']) for e in events if e['state']=='PICO_PREPARE_RECOVERY']
+            assert recoveries and all(max(r['initial_contacts'].values())<=.0005 and
+                r['cleared_at_joint_travel_rad']<=.02 for r in recoveries)
+            assert all(m.mode=='joint_target' and m.runtime_mode=='simulation' for m in accepted)
+            health=json.loads((trace_dir/'diagnostics-health.json').read_text())
+            assert not health['active'] and not health['error'] and not health['dropped'] and not peer_errors
+            checks.append('recovery depth/travel evidence and commands persisted with no diagnostic loss')
+            return dict(mode=mode,teleop_mode='bimanual_tool',checks=checks,accepted=len(accepted),
+                        recoveries=recoveries,vendor_packets=0)
         if replay:
             # The only synthetic inputs are a stationary released/pressed
             # clutch setup. Motion packets retain the recorded raw poses,
@@ -550,11 +594,14 @@ def main():
     p.add_argument('--websocket-input',action='store_true')
     p.add_argument('--replay-log',type=Path,help='Replay one captured raw VR segment through the isolated physics stack')
     p.add_argument('--replay-seq',type=int)
+    p.add_argument('--collision-recovery',action='store_true',help='Recorded shallow self-collision: reject follow, release A, then hold A to recover')
     p.add_argument('--until',type=float,help='Freeze recorded inputs/events at this UNIX timestamp')
     p.add_argument('--clock',choices=('client','received'),default='client')
     p.add_argument('--runs',type=int,default=1)
     args=p.parse_args()
     if args.physics and (args.mode!='simulation' or not args.websocket_input):p.error('--physics requires --mode simulation --websocket-input')
+    if args.collision_recovery and (args.mode!='simulation' or args.teleop_mode!='tool' or not args.websocket_input or args.replay_log):
+        p.error('--collision-recovery requires simulation, tool, WebSocket and no raw replay')
     if not 1<=args.runs<=10:p.error('--runs must be 1..10')
     replay=None
     if args.replay_log:
@@ -577,7 +624,8 @@ def main():
             for m in (('simulation','real') if args.mode=='both' else (args.mode,)):
                 for ordinary in ((True,False) if args.teleop_mode=='both' else (args.teleop_mode=='ordinary',)):
                     out=args.output/(('ordinary-' if ordinary else 'tool-')+m+('' if args.runs==1 else f'-{run:02}'));out.mkdir()
-                    case=scenario(out,m,args.websocket_input,ordinary,physics=args.physics,replay=replay);result.append(case)
+                    case=scenario(out,m,args.websocket_input,ordinary,physics=args.physics,replay=replay,
+                                  collision_recovery=args.collision_recovery);result.append(case)
                     (out/'verification.json').write_text(json.dumps(case,indent=2))
                     print(out.name+': '+str(len(case['checks']))+' checks passed',flush=True)
         (args.output/'verification.json').write_text(json.dumps(result,indent=2));print(json.dumps(result,indent=2))

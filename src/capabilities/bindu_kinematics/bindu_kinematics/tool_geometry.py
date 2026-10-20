@@ -10,6 +10,49 @@ class GeometryBudgetExceeded(TimeoutError):
     """A candidate search ran out of time; not proof of safe geometry."""
 
 
+class InitialSelfCollisionRecovery:
+    """Bound a shallow initial overlap; every existing contact must retreat."""
+    def __init__(self, config):
+        bounds={'max_penetration_m':(0.,.001),'joint_sample_step_rad':(0.,.002),
+                'max_exit_joint_travel_rad':(0.,.03),'max_joint_speed_rad_s':(0.,.1)}
+        if not isinstance(config,dict) or set(config)!=set(bounds):
+            raise ValueError('PREPARE_RECOVERY_CONFIG')
+        for key,(low,high) in bounds.items():
+            value=config[key]
+            if type(value) not in (float,int) or not np.isfinite(value) or not low<value<=high:
+                raise ValueError('PREPARE_RECOVERY_CONFIG:'+key)
+        if config['joint_sample_step_rad']>config['max_exit_joint_travel_rad']:
+            raise ValueError('PREPARE_RECOVERY_CONFIG:joint_sample_step_rad')
+        self.config=dict(config)
+        self.initial=None;self.previous=None;self.initial_contacts={};self.contacts={}
+        self.cleared_at=None
+
+    def observe(self, joints, contacts):
+        if any(not np.isfinite(v) or v<0 for v in contacts.values()):
+            raise ValueError('PREPARE_RECOVERY_NONFINITE_CONTACT')
+        if self.initial is None:
+            if any(v>self.config['max_penetration_m'] for v in contacts.values()):
+                raise ValueError('PREPARE_RECOVERY_PENETRATION_LIMIT')
+            self.initial=dict(joints);self.initial_contacts=dict(contacts)
+        else:
+            if max(abs(joints[n]-self.previous[n]) for n in joints)>self.config['joint_sample_step_rad']+1e-10:
+                raise ValueError('PREPARE_RECOVERY_SAMPLE_STEP')
+            if not set(contacts)<=set(self.contacts):
+                raise ValueError('PREPARE_RECOVERY_NEW_CONTACT')
+            if any(v>self.contacts[pair]+1e-9 for pair,v in contacts.items()):
+                raise ValueError('PREPARE_RECOVERY_DEEPENING')
+        travel=max(abs(joints[n]-self.initial[n]) for n in joints)
+        if contacts and travel>self.config['max_exit_joint_travel_rad']+1e-10:
+            raise ValueError('PREPARE_RECOVERY_EXIT_NOT_CLEAR')
+        if not contacts and self.cleared_at is None:self.cleared_at=travel
+        self.previous=dict(joints);self.contacts=dict(contacts)
+
+    def report(self):
+        if self.contacts:raise ValueError('PREPARE_RECOVERY_EXIT_NOT_CLEAR')
+        return dict(self.config,initial_contacts={str(k):v for k,v in self.initial_contacts.items()},
+                    cleared_at_joint_travel_rad=self.cleared_at) if self.initial_contacts else None
+
+
 def tracking_acceptance(recipe, position_m, rotation_rad):
     """Keep task tracking quality separate from relative-grasp safety."""
     gate=recipe['acceptance'];policy=gate.get('tool_tracking_policy','required')
@@ -341,8 +384,12 @@ def make_collision_checker(urdf, recipe, conservative_convex=False, *, tool_pres
     from collections import OrderedDict
     validated=OrderedDict()
 
-    def check(samples, collect_failures=False, *, deadline=None):
-        fast=validation_only and not collect_failures
+    def check(samples, collect_failures=False, *, deadline=None, initial_self_collision_recovery=None):
+        recovery=(InitialSelfCollisionRecovery(initial_self_collision_recovery)
+                  if initial_self_collision_recovery is not None else None)
+        if recovery is not None and tool_present:
+            raise ValueError('PREPARE_RECOVERY_REQUIRES_UNLOADED_PATH')
+        fast=validation_only and not collect_failures and recovery is None
         if not samples:
             raise ValueError('EMPTY_COLLISION_SAMPLES')
         bin_minimum, bin_worst = float('inf'), None
@@ -359,6 +406,9 @@ def make_collision_checker(urdf, recipe, conservative_convex=False, *, tool_pres
         # positive separation; full closest-point refinement on every CAD
         # triangle is unnecessary. The inner cylinder/tolerance is unchanged.
         intersection_request.distance_upper_bound = 0.
+        if recovery is not None:
+            recovery_request=fcl.CollisionRequest()
+            recovery_request.enable_contact=True;recovery_request.num_max_contacts=100
         for sample_index, sample in enumerate(samples):
             if set(sample['q']) != set(index):
                 raise ValueError('COLLISION_JOINT_LAYOUT')
@@ -380,10 +430,23 @@ def make_collision_checker(urdf, recipe, conservative_convex=False, *, tool_pres
                     raise GeometryBudgetExceeded('GEOMETRY_VALIDATION_BUDGET')
             pin.computeCollisions(model, data, geometry, geometry_data, q, False)
             failure = None
+            initial_contacts={}
             for pair, result in zip(geometry.collisionPairs, geometry_data.collisionResults):
                 if result.isCollision():
-                    failure = f'SELF_COLLISION: {names[pair.first]} / {names[pair.second]}'
-                    break
+                    if recovery is None:
+                        failure = f'SELF_COLLISION: {names[pair.first]} / {names[pair.second]}'
+                        break
+                    first,second=pair.first,pair.second
+                    detail=fcl.CollisionResult()
+                    fcl.collide(geometry.geometryObjects[first].geometry,
+                        fcl.Transform3s(geometry_data.oMg[first].rotation,geometry_data.oMg[first].translation),
+                        geometry.geometryObjects[second].geometry,
+                        fcl.Transform3s(geometry_data.oMg[second].rotation,geometry_data.oMg[second].translation),
+                        recovery_request,detail)
+                    if not 0<detail.numContacts()<100:
+                        raise ValueError('PREPARE_RECOVERY_CONTACT_UNRESOLVED')
+                    initial_contacts[(names[first],names[second])]=max(abs(c.penetration_depth) for c in detail.getContacts())
+            if recovery is not None:recovery.observe(sample['q'],initial_contacts)
             if fast and failure:
                 raise ValueError(f"{failure} t={sample['t']}")
             if sample_index == 0:
@@ -490,9 +553,11 @@ def make_collision_checker(urdf, recipe, conservative_convex=False, *, tool_pres
             elif fast:
                 validated[key]=True
                 if len(validated)>256:validated.popitem(last=False)
+        recovery_report=recovery.report() if recovery is not None else None
         if fast:
             return {'samples':len(samples),'validation_only':True}
         return {'samples': len(samples), 'geometry_kind':geometry_kind,
+                'self_collision_recovery':recovery_report,
                 'tool_body_representation':'convex_outer' if conservative_convex else 'cad_mesh',
                 'mesh_pairs': len(geometry.collisionPairs),
                 'excluded_tree_distance': 2, 'shaft_contacts': contacts,

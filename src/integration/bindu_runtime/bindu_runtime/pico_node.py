@@ -6,6 +6,7 @@ actuator handoffs wait for fresh stop feedback; stale completions cannot rearm.
 import json
 import math
 import time
+import uuid
 from pathlib import Path
 from ament_index_python.packages import get_package_share_directory
 from rclpy.action import ActionClient
@@ -101,8 +102,15 @@ class PicoNode(RuntimeNode):
                                  pose_jump_translation_m=self.cfg.get('pose_jump_translation_m',.35),
                                  pose_jump_rotation_rad=self.cfg.get('pose_jump_rotation_rad',1.2))
         validation_cfg=dict(self.tool_cfg,worker_timeout=30.)
+        recovery=self.cfg.get('prepare_collision_recovery')
+        if recovery is not None:
+            if not self.simulation or not self.position_contract:
+                raise ValueError('PICO_PREPARE_RECOVERY_REQUIRES_SIMULATION_POSITION')
+            from bindu_kinematics.tool_geometry import InitialSelfCollisionRecovery
+            validation_cfg['prepare_collision_recovery']=InitialSelfCollisionRecovery(recovery).config
         self.validator=BimanualWorker(validation_cfg,self.profile,preload_path_checks=True)
         self.validation_result=None
+        self.prepare_recovery=None
         self.frames={};self.state=self.mode=None;self.handoff_complete=False
         self.tool_goal=None;self.tool_result=None;self.tool_phase='inactive'
         self.lease=None;self.pending_intent=None;self.running=None
@@ -325,7 +333,7 @@ class PicoNode(RuntimeNode):
                     duration*=.75;curve=candidate
             self.event('PICO_ACTUATOR_STARTED',json.dumps(dict(operation=intent.operation,
                 duration_s=duration,fit_duration=fit_duration,simulated_actuator=self.simulation)))
-            started=self.now();command_id=self.instance_id+'_'+str(intent.token)
+            started=self.now();command_id=self.instance_id+'_'+str(intent.token)+'_'+uuid.uuid4().hex[:8]
             deadline=time.monotonic()+duration+6.;renew_at=0.;next_submit=0.
             while time.monotonic()<deadline:
                 self.current(intent)
@@ -358,8 +366,9 @@ class PicoNode(RuntimeNode):
         finally:
             await self.release_lease()
 
-    async def validate_prepare(self,intent,targets=None):
+    async def validate_prepare(self,intent,targets=None,*,allow_recovery=True):
         self.current(intent);s,q=self.reading()
+        self.prepare_recovery=None
         if targets is None and self.prepare_positions is None:
             raise RuntimeError('PICO_PREPARE_PRESET_REQUIRED')
         if not joints_at_rest(s.joints,self.names,.005 if self.position_contract else 1e-6):raise RuntimeError('PREPARE_REQUIRES_STATIONARY_START')
@@ -375,6 +384,8 @@ class PicoNode(RuntimeNode):
         names=[n for g in self.tool_cfg['resource_groups'] for n in self.profile.groups[g]]
         self.validation_result=None
         operation='loaded_prepare_path' if loaded_prepare else 'gripper_path' if gripper_move else 'prepare_path'
+        if allow_recovery and operation=='prepare_path' and self.cfg.get('prepare_collision_recovery'):
+            operation='prepare_recovery_path'
         self.event('PICO_PREPARE_VALIDATION',json.dumps(dict(operation=operation,load_state=self.control.load,
             tool_present=loaded_prepare or gripper_move,coupling_checked=loaded_prepare)))
         if not self.validator.submit(operation,intent.token,q,
@@ -389,6 +400,9 @@ class PicoNode(RuntimeNode):
         if token!=intent.token or kind!='result':raise RuntimeError(str(value))
         _,current=self.reading()
         if any(abs(current[n]-q[n])>.0001 for n in (self.names if gripper_move or loaded_prepare else names)):raise RuntimeError('PREPARE_STATE_CHANGED')
+        self.prepare_recovery=value.get('self_collision_recovery') if isinstance(value,dict) else None
+        if self.prepare_recovery:
+            self.event('PICO_PREPARE_RECOVERY',json.dumps(self.prepare_recovery))
         return target
 
     async def confirm_tool(self,intent,mode='bimanual_tool'):
@@ -468,10 +482,19 @@ class PicoNode(RuntimeNode):
                 target=await self.validate_prepare(intent)
                 _,measured=self.reading()
                 error=max(abs(measured[n]-q) for n,q in target.items())
-                if self.position_contract and error<.002:
+                if self.position_contract and error<.002 and not self.prepare_recovery:
                     self.event('PICO_PREPARE_ALREADY_REACHED',json.dumps(dict(max_joint_error_rad=error)))
                 else:
                     read_only=False
+                    recovery=self.prepare_recovery
+                    if recovery:
+                        escape=recovery['exit_waypoint']
+                        distance=max(abs(measured[n]-v) for n,v in escape.items())
+                        # Rest-to-rest quintic peak speed is 1.875 * travel / time.
+                        duration=max(1.,2.5*distance/recovery['max_joint_speed_rad_s'])
+                        await self.move(intent,escape,duration)
+                        self.current(intent)
+                        target=await self.validate_prepare(intent,allow_recovery=False)
                     await self.move(intent,target,self.cfg['prepare_duration'],fit_duration=self.simulation_demo)
             elif intent.operation=='grippers':
                 if not self.control.supported or self.control.phase!='loading':raise RuntimeError('PICO_LOADING_REQUIRED')

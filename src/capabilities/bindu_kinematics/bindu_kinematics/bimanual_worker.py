@@ -48,7 +48,7 @@ def _run(config, profile, requests, results, preload_path_checks=False):
                 elif operation == 'capture': value=solver.capture(feedback,grasp_mode)
                 elif operation == 'loaded_prepare_path':
                     value=solver.check_loaded_prepare(feedback,target)
-                elif operation in ('prepare_path','gripper_path'):
+                elif operation in ('prepare_path','prepare_recovery_path','gripper_path'):
                     import numpy as np
                     loaded=operation=='gripper_path'
                     check=path_check(loaded)
@@ -66,7 +66,24 @@ def _run(config, profile, requests, results, preload_path_checks=False):
                     for f in np.linspace(0,1,count+1):
                         q=dict(feedback);q.update(zip(names,before+f*(after-before)))
                         samples.append(dict(t=float(f),q={n:q[n] for n in solver.model_names},tool=tool))
-                    value=check(samples)
+                    try:
+                        value=check(samples)
+                    except ValueError as exc:
+                        recovery=config.get('prepare_collision_recovery')
+                        if (operation!='prepare_recovery_path' or not recovery or
+                                not str(exc).startswith('SELF_COLLISION:') or not str(exc).endswith(' t=0.0')):
+                            raise
+                        from .tool_geometry import InitialSelfCollisionRecovery
+                        policy=InitialSelfCollisionRecovery(recovery).config
+                        distance=float(np.max(np.abs(after-before)))
+                        count=max(1,int(np.ceil(distance/policy['joint_sample_step_rad'])))
+                        samples=[]
+                        for f in np.linspace(0,1,count+1):
+                            q=dict(feedback);q.update(zip(names,before+f*(after-before)))
+                            samples.append(dict(t=float(f),q={n:q[n] for n in solver.model_names},tool=tool))
+                        value=check(samples,initial_self_collision_recovery=policy)
+                        fraction=min(1.,policy['max_exit_joint_travel_rad']/distance)
+                        value['self_collision_recovery']['exit_waypoint']=dict(zip(names,before+fraction*(after-before)))
                 elif operation == 'solve':
                     value=(solver.solve_independent(feedback,target,active_mask=int(grasp_mode.split(':')[1]),
                              reference=reference,dt=dt) if independent else

@@ -17,6 +17,66 @@ import time
 from types import SimpleNamespace as S
 from bindu_kinematics.bimanual_worker import BimanualWorker
 
+
+class InitialCollisionRecoveryTests(unittest.TestCase):
+    def policy(self):
+        from bindu_kinematics.tool_geometry import InitialSelfCollisionRecovery
+        return InitialSelfCollisionRecovery(dict(max_penetration_m=.0005,joint_sample_step_rad=.001,
+            max_exit_joint_travel_rad=.02,max_joint_speed_rad_s=.05))
+
+    def test_only_existing_shallow_contacts_may_shrink_until_they_clear(self):
+        guard=self.policy();pair=('base','arm')
+        guard.observe({'q':0.},{pair:.00015});guard.observe({'q':.001},{pair:.0001})
+        guard.observe({'q':.002},{})
+        self.assertEqual(guard.report()['cleared_at_joint_travel_rad'],.002)
+        with self.assertRaisesRegex(ValueError,'NEW_CONTACT'):
+            guard.observe({'q':.003},{pair:.00001})
+
+    def test_deepening_new_contacts_and_large_steps_are_rejected(self):
+        for joints,contacts,reason in (({'q':.001},{('base','arm'):.00016},'DEEPENING'),
+                ({'q':.001},{('other','arm'):.00001},'NEW_CONTACT'),({'q':.002},{},'SAMPLE_STEP')):
+            with self.subTest(reason=reason):
+                guard=self.policy();guard.observe({'q':0.},{('base','arm'):.00015})
+                with self.assertRaisesRegex(ValueError,reason):guard.observe(joints,contacts)
+        with self.assertRaisesRegex(ValueError,'PENETRATION_LIMIT'):
+            self.policy().observe({'q':0.},{('base','arm'):.00051})
+
+    def test_uncleared_and_nonfinite_paths_cannot_be_accepted(self):
+        guard=self.policy();guard.observe({'q':0.},{('base','arm'):.0001})
+        with self.assertRaisesRegex(ValueError,'EXIT_NOT_CLEAR'):guard.report()
+        for i in range(1,21):guard.observe({'q':i*.001},{('base','arm'):.0001})
+        with self.assertRaisesRegex(ValueError,'EXIT_NOT_CLEAR'):
+            guard.observe({'q':.021},{('base','arm'):.0001})
+        with self.assertRaisesRegex(ValueError,'NONFINITE'):
+            self.policy().observe({'q':0.},{('base','arm'):float('nan')})
+
+    def test_recorded_collision_has_a_bounded_exit_and_strict_remaining_path(self):
+        from bindu_kinematics.tool_geometry import make_collision_checker
+        base=ROOT/'src/integration/bindu_runtime/config/robots/snowbot'
+        config=json.loads((base/'bimanual_snowbot_real.json').read_text())
+        pico=json.loads((base/'pico_snowbot_position_sim.json').read_text())
+        feedback=json.loads((ROOT/'tests/config/teleoperation/snowbot_prepare_collision.json').read_text())['feedback']
+        description=Path(get_package_prefix('bindu_description'))/'share/bindu_description/urdf'
+        recipe=dict(config['demo']);recipe['left_grip_in_tool_m']=(np.linalg.inv(np.array(config['left_to_tool']).reshape(4,4)) @ np.r_[recipe['grip_offset_m'],1.])[:3].tolist()
+        check=make_collision_checker(description/recipe['display_urdf'],recipe,conservative_convex=True,
+                                     tool_present=False,validation_only=True)
+        names=list(feedback);start=np.array([feedback[n] for n in names])
+        end=np.array([pico['prepare_positions_rad'][n] if n not in ('head_joint_1','head_joint_2','arm_l_joint_8','arm_r_joint_8') else feedback[n] for n in names])
+        count=int(np.ceil(np.max(abs(end-start))/.001))
+        samples=[dict(t=float(f),q=dict(zip(names,start+f*(end-start))),tool=np.eye(4)) for f in np.linspace(0,1,count+1)]
+        with self.assertRaisesRegex(ValueError,'SELF_COLLISION'):
+            check(samples)
+        result=check(samples,initial_self_collision_recovery=pico['prepare_collision_recovery'])
+        recovery=result['self_collision_recovery']
+        self.assertLess(max(recovery['initial_contacts'].values()),.0005)
+        self.assertLessEqual(recovery['cleared_at_joint_travel_rad'],.02)
+        safe=[x for x in samples if max(abs(x['q'][n]-feedback[n]) for n in names)>=.02]
+        check(safe)  # No recovery allowance once the initial contact is cleared.
+        loaded=make_collision_checker(description/recipe['display_urdf'],recipe,tool_present=True)
+        with self.assertRaisesRegex(ValueError,'REQUIRES_UNLOADED'):
+            loaded(samples,initial_self_collision_recovery=pico['prepare_collision_recovery'])
+
+
 class LoadedPreparePathTests(unittest.TestCase):
     def fixture(self, relative_shift=lambda q:0.):
         solver=BimanualQP.__new__(BimanualQP)
