@@ -251,7 +251,9 @@ def operate_gripper(args, robot, options):
         while not publisher_matches() and time.monotonic()<discovery_deadline:
             rclpy.spin_once(node, timeout_sec=.02)
         if not publisher_matches():
-            raise RuntimeError('夹爪状态发布者不匹配')
+            writers=node.get_publishers_info_by_topic(ns+'/gripper/state')
+            observed=[info.node_namespace.rstrip('/')+'/'+info.node_name for info in writers]
+            raise RuntimeError('夹爪状态发布者不匹配：expected='+ns+'/execution; observed='+repr(observed))
         owner = options.vr_source_id or node.get_name()
         lease = call(clients[0], Lease.Request(operation='acquire',owner=owner,resources=[s+'_tool_axis' for s in sides]))
         if lease.profile_hash != robot.profile.digest:
