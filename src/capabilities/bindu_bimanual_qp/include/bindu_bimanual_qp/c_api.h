@@ -59,6 +59,10 @@ int bq_capture_axial(void *handle, const double *q, int nq, const double *left_t
                      const bq_config *config);
 /* NULL,0 clears the optional shared-joint posture objective. */
 int bq_shared_targets(void *handle, const double *targets, int n);
+/* Additive ABI v1: nonnegative extra squared-velocity cost for the shared
+ * group. Default zero, no pose target or hard lock. Set after each capture;
+ * invalid configuration clears capture. The bq_config layout is unchanged. */
+int bq_shared_motion_weight(void *handle, double weight);
 /* Optional additive ABI v1 policy. All arrays follow active-name order and
  * model joint units. Bounds only tighten model/profile limits. Reference is a
  * soft posture preference, independent of tool/grasp capture. Failure clears

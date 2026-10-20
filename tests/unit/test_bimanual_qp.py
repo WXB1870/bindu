@@ -113,6 +113,17 @@ class AbiLoadingTests(unittest.TestCase):
             check_abi(lib)
         lib.bq_create.assert_not_called()
 
+    def test_shared_motion_weight_rejects_bad_values_and_missing_capability(self):
+        for value in (-1.,float('nan'),float('inf'),True,'0.1'):
+            with self.subTest(value=value),self.assertRaisesRegex(ValueError,'SHARED_MOTION_WEIGHT'):
+                BimanualQP({'shared_motion_weight':value},None)
+        cfg=json.loads((ROOT/'src/integration/bindu_runtime/config/robots/g1/bimanual_g1_sim.json').read_text())
+        profile=Profile.load(ROOT/'src/integration/bindu_runtime/config/robots/g1/g1_provisional_sim.json')
+        old=S(bq_abi_version=Mock(return_value=1))
+        with patch('bindu_kinematics.bimanual.c.CDLL',return_value=old), \
+                self.assertRaisesRegex(ValueError,'SHARED_MOTION_ABI_MISSING'):
+            BimanualQP(dict(cfg,shared_motion_weight=.1,library='old.so'),profile)
+
     def test_path_contexts_preload_once_but_recheck_each_measured_path(self):
         from bindu_kinematics.bimanual_worker import _run
         cfg={'urdf':'/tmp/model.urdf','demo':{'display_urdf':'display.urdf','grip_offset_m':[0.,0.,0.]}}
@@ -603,6 +614,21 @@ class NativeBimanual(unittest.TestCase):
                 if name not in ('max_linear_speed', 'max_angular_speed', 'max_relative_error'):
                     self.assertFalse(solver.captured)
         self.qp.capture(self.feedback)
+
+    def test_shared_motion_weight_reaches_native_and_survives_recapture(self):
+        solver=BimanualQP(dict(self.config,shared_motion_weight=.1),self.profile)
+        self.addCleanup(solver.close)
+        native=solver.lib.bq_shared_motion_weight
+        with patch.object(solver.lib,'bq_shared_motion_weight',wraps=native) as configure:
+            for _ in range(2):
+                target=solver.capture(self.feedback)
+                out,_=propose(solver,self.feedback,target)
+                self.assertLess(np.max(np.abs(np.asarray(out)-[self.feedback[n] for n in solver.names])),1e-6)
+            self.assertEqual(configure.call_count,2)
+            self.assertEqual(configure.call_args.args[1],.1)
+        self.assertEqual(native(solver.handle,-1.),0)
+        with self.assertRaisesRegex(ValueError,'not captured|not initialized'):
+            propose(solver,self.feedback,target)
 
     def test_shared_targets_are_reachable_from_json_and_can_be_cleared(self):
         name = self.qp.shared_names[0]

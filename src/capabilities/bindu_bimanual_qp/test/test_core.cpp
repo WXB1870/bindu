@@ -31,6 +31,7 @@ TEST(CAbi, NullHandlesAndConfigLayoutFailWithoutCrashing) {
   EXPECT_EQ(bq_set_limits(nullptr, nullptr, nullptr, nullptr, 0), 0);
   EXPECT_EQ(bq_capture(nullptr, nullptr, 0, nullptr, &config), 0);
   EXPECT_EQ(bq_shared_targets(nullptr, nullptr, 0), 0);
+  EXPECT_EQ(bq_shared_motion_weight(nullptr, 0.1), 0);
   EXPECT_EQ(bq_tracking_point(nullptr, nullptr), 0);
   EXPECT_EQ(bq_solve(nullptr, nullptr, 0, nullptr, 0, nullptr, .01, nullptr, nullptr), 0);
   EXPECT_EQ(bq_tool_pose(nullptr, nullptr, 0, nullptr), 0);
@@ -315,6 +316,49 @@ TEST_F(CoreTest, SharedWaistMovesToolWithoutChangingRelativeGrasp) {
   ASSERT_TRUE(result.ok) << result.reason;
   EXPECT_GT(std::abs(result.velocity[0]), 1e-4);
   EXPECT_LT((kin.relativeErrorJacobian() * result.velocity).norm(), 5e-4);
+}
+
+TEST_F(CoreTest, SharedMotionCostPrefersArmsWithoutLockingWaist) {
+  datq::RobotModel robot(TEST_URDF_PATH, "left_ee", "right_ee", "tool_frame",
+                         left_names_, right_names_, {"waist_joint"});
+  auto q = robot.positions();
+  q[robot.qIndex("waist_joint")] = 0.25;
+  for (const auto &side : {"left", "right"}) {
+    q[robot.qIndex(std::string(side)+"_joint_2")] = 0.6;
+    q[robot.qIndex(std::string(side)+"_joint_4")] = -0.8;
+  }
+  robot.update(q);
+  datq::RigidToolKinematics kin(robot);
+  kin.capture();
+  Eigen::Matrix<double,6,1> offset=Eigen::Matrix<double,6,1>::Zero();
+  offset[0]=0.02; offset[4]=0.02;
+  const auto target=kin.toolPose()*pinocchio::exp6(offset);
+  datq::QpController ordinary(robot,kin,{},robot.activePositions(),1);
+  datq::QpController weighted(robot,kin,{},robot.activePositions(),1);
+  weighted.setSharedMotionWeight(0.1);
+  const auto before=ordinary.solve(target,.01,robot.activePositions());
+  const auto after=weighted.solve(target,.01,robot.activePositions());
+  ASSERT_TRUE(before.ok) << before.reason;
+  ASSERT_TRUE(after.ok) << after.reason;
+  ASSERT_GT(std::abs(before.velocity[0]),1e-4);
+  EXPECT_LT(std::abs(after.velocity[0]),.9*std::abs(before.velocity[0]));
+  EXPECT_LT((kin.relativeErrorJacobian()*after.velocity).norm(),5e-4);
+  const auto original_twist=(kin.toolJacobian()*before.velocity).eval();
+  const auto weighted_twist=(kin.toolJacobian()*after.velocity).eval();
+  EXPECT_GT(weighted_twist.dot(original_twist),.9*original_twist.squaredNorm());
+
+  // When the arms cannot contribute, the soft cost still permits waist use.
+  auto limits=robot.velocityLimits();
+  limits.tail(12).setConstant(1e-6);
+  robot.setVelocityLimits(limits);
+  datq::QpController needed(robot,kin,{},robot.activePositions(),1);
+  needed.setSharedMotionWeight(0.1);
+  const auto assisted=needed.solve(target,.01,robot.activePositions());
+  ASSERT_TRUE(assisted.ok) << assisted.reason;
+  EXPECT_GT(std::abs(assisted.velocity[0]),1e-3);
+  for (double invalid : {-1.,std::numeric_limits<double>::infinity(),
+                         std::numeric_limits<double>::quiet_NaN()})
+    EXPECT_THROW(needed.setSharedMotionWeight(invalid),std::invalid_argument);
 }
 
 TEST_F(CoreTest, SharedWaistTargetMovesWaistWhileHoldingToolAndGrasp) {

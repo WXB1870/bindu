@@ -82,7 +82,7 @@ def replay(segment,clocks,cfg,profile,clock):
     qp=BimanualQP(cfg,profile)
     result=dict(input_seq=c['input_seq'],mode=c['grasp_mode'],recorded_end=segment.get('recorded_end'),
                 frames=0,limited=0,held=0,max_solve_ms=0.,failure=None,limits=Counter())
-    errors=[];free_errors=[]
+    errors=[];free_errors=[];samples=[]
     try:
         if not segment['pairs']:raise ValueError('NO_CAPTURE_INPUT')
         if ind:
@@ -90,6 +90,11 @@ def replay(segment,clocks,cfg,profile,clock):
             qp.empty_collision_check=make_collision_checker(Path(cfg['urdf']).parent/recipe['display_urdf'],
                 recipe,conservative_convex=True,tool_present=False,validation_only=True)
         actual=dict(c['feedback']);reference=[actual[n] for n in qp.names]
+        capture_joints={n:actual[n] for n in qp.names}
+        previous_joints=dict(capture_joints)
+        motion=result['joint_motion']=dict(
+            units='model joint position units',
+            travel={n:0. for n in qp.names},max_from_capture={n:0. for n in qp.names})
         session=(IndependentArmsSession if ind else BimanualSession)(cfg,1,-10.)
         first=segment['pairs'][0];t0=seconds(first[0]['stamp'])
         client0=clocks.get((first[0]['source_id'],first[0]['seq']))
@@ -155,6 +160,10 @@ def replay(segment,clocks,cfg,profile,clock):
             while remaining>1e-9:
                 dt=min(.02,remaining);tick+=dt
                 for driver in drivers:actual.update(driver.read(tick,dt).positions)
+                for n in qp.names:
+                    motion['travel'][n]+=abs(actual[n]-previous_joints[n])
+                    motion['max_from_capture'][n]=max(motion['max_from_capture'][n],abs(actual[n]-capture_joints[n]))
+                    previous_joints[n]=actual[n]
                 remaining-=dt
             result['frames']+=1;previous=now;samples.append(sample(now-2.1))
             flanges=samples[-1]['flanges']
@@ -171,10 +180,12 @@ def replay(segment,clocks,cfg,profile,clock):
         if (clock=='received' and 'ended_by' not in result and
                 segment['end']-seconds(pair[0]['stamp'])>cfg['input_max_age']):
             raise ValueError('RECORDED_INPUT_TIMEOUT')
-        if not ind:
-            result['coupling']=coupling_metrics(samples,cfg,[dict(t=0.,mode=c['grasp_mode'])])
     except (ValueError,RuntimeError) as exc:result['failure']=str(exc)
     finally:qp.close()
+    # Retain accepted-motion evidence even when the recorded input ends in a
+    # timeout. The original failure remains visible alongside these metrics.
+    if not ind and samples:
+        result['coupling']=coupling_metrics(samples,cfg,[dict(t=0.,mode=c['grasp_mode'])])
     for key,values in (('tracking',errors),('unlimited_tracking',free_errors)):
         if values:
             a=np.asarray(values)

@@ -63,6 +63,7 @@ colcon test-result --test-result-base build/bindu_bimanual_qp --verbose
 | `bq_solve_tracking` | 跟踪误差反馈与工具速度前馈 |
 | `bq_posture_policy` | 自动腰臂协调的姿态偏好与边界 |
 | `bq_posture_reference_margin` | 为参考速度约束预留姿态边界余量 |
+| `bq_shared_motion_weight` | 为腰等共享组增加运动代价，优先使用手臂 |
 
 当前基础 ABI 版本为 1；这些能力以新增函数扩展，保留原结构布局和旧调用。只检查版本号不足以确认具备新功能，Python 还检查所需函数是否存在；当前雪铲配置启用了上述能力，应构建同一版本源码中的原生库与 Python 封装。
 
@@ -92,12 +93,15 @@ Python 调用入口为 [bindu_kinematics/bimanual.py](../bindu_kinematics/bindu_
 | `posture_gain` / `posture_weight` | 0.3 / 0.001 | 捕获姿态回归增益／权重 |
 | `shared_target_gain` / `shared_target_weight` | 3 / 0 | 独立共享关节姿态目标增益／权重 |
 | `regularization` | 0.0001 | 速度正则项 |
+| `shared_motion_weight` | 0 | 共享组额外的速度平方代价；越大越少使用共享关节，不设置固定腰角 |
 | `max_linear_speed` / `max_angular_speed` | 0.15 / 0.5 | 工具目标线／角速度上限，m/s、rad/s |
 | `max_relative_error` | 0.15 | 6D相对位姿误差范数门槛，平移与转角的混合范数 |
 | `limit_margin` / `damper_gain` | 0.05 / 2 | 软限位余量／速度阻尼增益，余量采用关节自身单位 |
 | `equality_tolerance` | 0.0005 | 速度闭合等式复核容差 |
 
 所有字段必须有限；权重、姿态增益与margin可为零，其余必须为正；两侧margin之和必须小于对应有效关节范围。已有配置对速度和闭合误差设有更严格值，以上不是硬件标定值。可选`shared_targets`为共享组全部关节名到目标位置的映射，须配合正的`shared_target_weight`；未配置时腰部仍参与工具跟踪。Python `set_shared_targets(None)`清除该独立姿态目标。
+
+当前位置契约的Snowbot配置将`shared_motion_weight`设为0.1，两轴腰部的速度正则二次项因此从0.0011增至0.1011；双臂不变。它是运动分配偏好，腰部仍可参与跟踪，普通双臂模式继续将腰部速度固定为0。配置不改变关节速度上限或握持约束。该字段通过新增的`bq_shared_motion_weight`函数在每次捕获后设置，C结构布局仍为ABI v1；旧库缺此能力时明确要求重建。
 
 积分与保护字段：`max_integration_interval`缺省0.1 s且不可超过0.1 s；`max_reference_error`缺省0.15，按各关节位置单位检查参考与实测偏差，超过后要求停止并重新捕获；`sample_period`是离线采样步长，运行节点传入实际候选采样间隔。`solve_timeout_us`按墙钟约束单次候选求解，从输入校验、实测握姿准备到原生调用、限位／几何复核、结果打包和前馈样本准备；现有配置保留30 ms。返回的`solve_us`指标仍仅为QP内部累计计时，不能当作完整调用或指令往返延迟。worker往返另由`worker_timeout`约束，缺省为`solve_timeout_us/1e6 + 0.2`秒，初始化由`worker_startup_timeout`约束（缺省30秒）。这些门限不等于已验证真机延迟。
 

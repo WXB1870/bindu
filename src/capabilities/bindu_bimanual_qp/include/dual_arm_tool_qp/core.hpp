@@ -25,6 +25,7 @@ struct Config {
   double posture_weight{0.001};
   double shared_target_weight{0.0};
   double shared_target_gain{3.0};
+  double shared_motion_weight{0.0};
   double regularization{0.0001};
   double max_linear_speed{0.15};
   double max_angular_speed{0.5};
@@ -133,6 +134,7 @@ public:
   void independentArms() { independent_ = true; reset(); }
   void setSharedTargets(const Eigen::VectorXd &targets);
   void clearSharedTargets();
+  void setSharedMotionWeight(double weight);
   void setPosturePolicy(const Eigen::VectorXd &reference,
                         const Eigen::VectorXd &lower, const Eigen::VectorXd &upper);
   void setPostureReferenceMargin(double margin);

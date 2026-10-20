@@ -251,7 +251,8 @@ QpController::QpController(RobotModel &robot, RigidToolKinematics &kin, Config c
   requirePositive(config_.shared_target_gain, "shared_target_gain");
   requirePositive(config_.regularization, "regularization");
   for (double value : {config_.posture_gain, config_.posture_weight,
-                       config_.shared_target_weight, config_.limit_margin}) {
+                       config_.shared_target_weight, config_.shared_motion_weight,
+                       config_.limit_margin}) {
     if (!std::isfinite(value) || value < 0.)
       throw std::invalid_argument("invalid QP weights or limit margin");
   }
@@ -274,6 +275,12 @@ void QpController::setSharedTargets(const Eigen::VectorXd &targets) {
 }
 
 void QpController::clearSharedTargets() { have_shared_targets_ = false; }
+
+void QpController::setSharedMotionWeight(double weight) {
+  if (!std::isfinite(weight) || weight < 0.)
+    throw std::invalid_argument("invalid shared motion weight");
+  config_.shared_motion_weight = weight;
+}
 
 void QpController::setPosturePolicy(const Eigen::VectorXd &reference,
                                     const Eigen::VectorXd &lower,
@@ -385,6 +392,10 @@ SolveResult QpController::solve(const pinocchio::SE3 &desired_tool, double dt,
       (config_.posture_weight + config_.regularization) * Eigen::MatrixXd::Identity(n, n);
   Eigen::VectorXd g = -jt.transpose() * task_twist -
       config_.posture_weight * nominal_velocity;
+  // Penalize motion of the model-selected shared group, without a fixed pose
+  // target or a speed reduction. Tool/grasp tasks may still use these joints.
+  for (int i = 0; i < shared_count_; ++i)
+    h(i, i) += config_.shared_motion_weight;
   if (have_shared_targets_) {
     for (int i = 0; i < shared_count_; ++i) {
       const double desired_velocity = std::clamp(

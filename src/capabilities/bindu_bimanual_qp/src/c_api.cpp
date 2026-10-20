@@ -207,6 +207,14 @@ int bq_shared_targets(void *ptr, const double *targets, int n) {
     h.qp->setSharedTargets(Eigen::Map<const Eigen::VectorXd>(targets,n));
   });
 }
+int bq_shared_motion_weight(void *ptr, double weight) {
+  return checked(ptr, [&](Handle &h) {
+    try {
+      if (!h.qp) throw std::invalid_argument("solver not captured");
+      h.qp->setSharedMotionWeight(weight);
+    } catch (...) { h.qp.reset(); h.kin->reset(); throw; }
+  });
+}
 int bq_posture_policy(void *ptr, const double *reference, const double *lower,
                       const double *upper, int n) {
   return checked(ptr, [&](Handle &h) {

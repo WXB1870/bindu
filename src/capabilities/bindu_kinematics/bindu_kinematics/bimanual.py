@@ -49,6 +49,11 @@ class BimanualQP:
             raise ValueError('BIMANUAL_GEOMETRY_BACKTRACKING_CONFIG')
         self.grasp_reference = None
         self.handle = None
+        motion_weight = config.get('shared_motion_weight', 0.)
+        if (isinstance(motion_weight, bool) or not isinstance(motion_weight, (int, float)) or
+                not math.isfinite(motion_weight) or motion_weight < 0):
+            raise ValueError('BIMANUAL_SHARED_MOTION_WEIGHT')
+        self.shared_motion_weight = float(motion_weight)
         self.groups = tuple(config['resource_groups'])
         if (len(self.groups) not in (2,3) or len(set(self.groups)) != len(self.groups) or
                 any(group not in profile.groups for group in self.groups)):
@@ -67,6 +72,11 @@ class BimanualQP:
         self.lib = lib = c.CDLL(str(path))
         # Check before resolving or calling any ABI-dependent function.
         check_abi(lib)
+        if self.shared_motion_weight > 0:
+            try:fn=lib.bq_shared_motion_weight
+            except AttributeError as exc:
+                raise ValueError('BIMANUAL_SHARED_MOTION_ABI_MISSING: rebuild bindu_bimanual_qp') from exc
+            fn.argtypes,fn.restype=[c.c_void_p,c.c_double],c.c_int
         p, i, d = c.c_void_p, c.c_int, c.c_double
         string = c.c_char_p
         array = c.POINTER(d)
@@ -304,6 +314,7 @@ class BimanualQP:
                                      c.byref(self.native_config))
         if not ok:
             raise ValueError('BIMANUAL_CAPTURE:'+self._error())
+        self._apply_shared_motion_weight()
         if np.any(self.tracking_point):
             try:fn=self.lib.bq_tracking_point
             except AttributeError as exc:
@@ -500,6 +511,10 @@ class BimanualQP:
             before=end
         self._validate_geometry(self.empty_collision_check,samples)
 
+    def _apply_shared_motion_weight(self):
+        if self.shared_motion_weight > 0 and not self.lib.bq_shared_motion_weight(self.handle,self.shared_motion_weight):
+            raise ValueError('BIMANUAL_SHARED_MOTION_WEIGHT:'+self._error())
+
     def capture_independent(self, feedback):
         self.captured=False;self.independent_abi()
         q=self._q(feedback);poses=np.empty((2,4,4),dtype=np.float64)
@@ -507,6 +522,7 @@ class BimanualQP:
                 not self.lib.bq_flange_poses(self.handle,self._ptr(q),self.nq,
                                              self._ptr(poses[0]),self._ptr(poses[1]))):
             raise ValueError('INDEPENDENT_ARMS_CAPTURE:'+self._error())
+        self._apply_shared_motion_weight()
         self.check_independent_path(feedback,[feedback[n] for n in self.names])
         self.grasp_mode='independent';self.captured=True
         return poses
