@@ -6,13 +6,13 @@ from pathlib import Path
 import unittest
 from bindu_contracts.profile import Profile
 from bindu_contracts.teleoperation import VRFrame
-from bindu_hardware.snowbot_gripper import GripperController, JOINTS, GROUPS, SIDES, validate_config
+from bindu_hardware.snowbot_gripper import GripperController, JOINTS, GROUPS, SIDES, validate_config, native_command
 
 CONFIG = ROOT/'src/integration/bindu_runtime/config/robots/snowbot'
 
 
 class Rig:
-    def __init__(self, **changes):
+    def __init__(self, *, require_driver_ack=True, **changes):
         self.profile = Profile.load(CONFIG/'snowbot_real_position.json')
         self.config = json.loads((CONFIG/'snowbot_grippers_real.json').read_text())
         self.config.update(calibrated=True, **changes)
@@ -24,7 +24,8 @@ class Rig:
             gripper_latched_mask=0, operation_enabled_mask=0xfffff, gripper_hold_mask=0, gripper_hold_position=[0.,0.])
         self.sent, self.goals = [], {}
         self.core = GripperController(self.profile, self.config, self.send, lambda:self.health,
-            lambda:self.now, lambda:self.idle, enabled=True, steady=lambda:self.steady)
+            lambda:self.now, lambda:self.idle, enabled=True, steady=lambda:self.steady,
+            require_driver_ack=require_driver_ack)
         self.observe()
         self.client_sequence = 0
 
@@ -319,6 +320,44 @@ class GripperTests(unittest.TestCase):
         for i in range(20):
             r.core.input(r.frame('left',i));r.step()
         self.assertFalse(r.core.lease_id)
+
+
+class NativeGripperTests(unittest.TestCase):
+    def rig(self):
+        rig = Rig(require_driver_ack=False)
+        rig.health = dict(sample=1, operation_enabled_mask=0xfffff)
+        rig.acquire(); rig.authorize()
+        return rig
+
+    def test_native_packet_uses_zero_velocity_reference_and_explicit_pd(self):
+        rig = self.rig()
+        self.assertEqual(native_command(-.2, rig.config['grippers']['left']), [-.2, 0., 0., 100., 30.])
+        with self.assertRaises(ValueError):
+            native_command(float('nan'), rig.config['grippers']['left'])
+
+    def test_native_completion_does_not_require_invented_driver_ack(self):
+        rig = self.rig()
+        # The native send has no sequence ACK/hold-mask response at all.
+        rig.core.send = lambda side, q, hold, sequence: rig.goals.update({side: q})
+        rig.command('open', 'left'); rig.step(20)
+        self.assertTrue(rig.core.snapshot('left')['position_reached'])
+        self.assertEqual(rig.core.snapshot('left')['grasp_state'], 'unknown')
+        self.assertNotIn('gripper_sequence', rig.health)
+
+    def test_native_hold_compares_requested_hold_against_new_measured_position(self):
+        rig = self.rig()
+        rig.core.send = lambda *args: None
+        rig.command('close', 'left')
+        for _ in range(5): rig.core.tick()
+        self.assertEqual(rig.core.channels['left']['state'], 'MOVING')
+        rig.step(8)
+        self.assertEqual(rig.core.channels['left']['state'], 'STOPPING')
+        rig.v[JOINTS['left']] = .1
+        rig.step(8)
+        self.assertEqual(rig.core.channels['left']['state'], 'STOPPING')
+        rig.v[JOINTS['left']] = 0.
+        rig.step(8)
+        self.assertEqual(rig.core.channels['left']['state'], 'SUCCEEDED')
 
 
 if __name__ == '__main__':

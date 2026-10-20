@@ -115,8 +115,12 @@ class X86DeploymentTests(unittest.TestCase):
                 self.assertEqual(x86_real.main(['check', '--workspace', tmp, '--domain-id', '193']), 0)
                 command = execute.call_args.args[1]
                 self.assertIn('--check', command)
-                self.assertIn(workspace/'site.json', command)
+                self.assertIn((workspace/'site.json').resolve(), command)
                 self.assertEqual(json.loads((workspace/'site.json').read_text())['arguments']['command_enabled'], False)
+                execute.reset_mock()
+                self.assertEqual(x86_real.main(['check-robot', '--workspace', tmp]), 0)
+                self.assertIn('--check', execute.call_args.args[1])
+                self.assertIn('--check-robot', execute.call_args.args[1])
                 execute.reset_mock()
                 self.assertEqual(x86_real.main(['start', '--workspace', tmp, '--physics']), 2)
                 execute.assert_not_called()
@@ -184,6 +188,11 @@ class RuntimeCheckTests(unittest.TestCase):
         package = NS(**{name: object() for name in (
             'ExecutionState', 'VRInput', 'TeleopModeState', 'GripperState', 'SelectTeleopMode',
             'TeleopSession', 'GripperControl', 'JointPositionCommand', 'RetInformation')})
+        package.JointPositionCommand = NS(get_fields_and_field_types=lambda:
+            dict(l_arm_position='double[7]', r_arm_position='double[7]'))
+        package.RetInformation = NS(get_fields_and_field_types=lambda:
+            {'header': 'std_msgs/Header', **{p+'_'+k: 'double[8]'
+             for p in ('l', 'r') for k in ('position', 'speed', 'iq')}})
         solver = Mock()
         support = Mock()
         modules = {'ament_index_python.packages': NS(get_package_share_directory=lambda _: str(root)),
@@ -196,7 +205,10 @@ class RuntimeCheckTests(unittest.TestCase):
             robot, package, solver, support, modules = self.native_fixture(Path(tmp))
             with patch.dict('sys.modules', modules), patch.object(runtime_check, 'check_installed_configs'), \
                     patch.object(runtime_check.importlib, 'import_module', return_value=package) as load:
-                runtime_check.check_runtime(dict(runtime_mode='real', robot_config='robot.json'), robot)
+                report = runtime_check.check_runtime(dict(runtime_mode='real', robot_config='robot.json'), robot)
+            self.assertEqual(report['software_dependencies'], 'passed')
+            self.assertEqual(report['robot_interface'], 'not_checked')
+            self.assertFalse(report['vendor_messages']['full_body_feedback'])
             self.assertIn(('bindu_execution.interpolation',), [call.args for call in load.call_args_list])
             self.assertIn(('snowbot_ctl_msgs.msg',), [call.args for call in load.call_args_list])
             self.assertEqual(support.call_count, 9)
@@ -215,6 +227,92 @@ class RuntimeCheckTests(unittest.TestCase):
                         patch.object(runtime_check.importlib, 'import_module', side_effect=load):
                     with self.assertRaises((ImportError, ValueError)):
                         runtime_check.check_runtime(dict(runtime_mode='real', robot_config='robot.json'), robot)
+
+
+class VendorInterfaceTests(unittest.TestCase):
+    def setUp(self):
+        self.args = dict(namespace='bindu', vendor_namespace='/')
+        self.node = Mock()
+        self.writers, self.readers = {}, {}
+        for expected in runtime_check.vendor_endpoints(self.args):
+            space, name = expected['node'].rsplit('/', 1)
+            info = NS(node_namespace=space or '/', node_name=name, topic_type=expected['type'])
+            target = self.writers if expected['role']=='publisher' else self.readers
+            target.setdefault(expected['topic'], []).append(info)
+        self.node.get_publishers_info_by_topic.side_effect = lambda topic: self.writers.get(topic, [])
+        self.node.get_subscriptions_info_by_topic.side_effect = lambda topic: self.readers.get(topic, [])
+        self.health = Mock(messages={})
+        self.feedback = NS(header=NS(stamp=NS(sec=10, nanosec=0)),
+            l_position=[.1]*8, r_position=[-.1]*8, l_speed=[0.]*8, r_speed=[0.]*8)
+
+    def test_16_axis_messages_are_compatible_but_not_full_body(self):
+        command = NS(get_fields_and_field_types=lambda: dict(l_arm_position='double[7]', r_arm_position='double[7]'))
+        fields = {'header':'std_msgs/Header', **{p+'_'+k:'double[8]'
+            for p in ('l','r') for k in ('position','speed','iq')}}
+        feedback = NS(get_fields_and_field_types=lambda:fields)
+        report = runtime_check.inspect_vendor_messages(command, feedback)
+        self.assertEqual(report['missing_groups'], ['waist', 'head'])
+        self.assertTrue(report['compatible']); self.assertFalse(report['full_body_feedback'])
+        for name in ('l_speed', 'r_iq'):
+            broken = dict(fields); broken[name]='double[7]'
+            with self.assertRaisesRegex(ValueError, 'MESSAGE_SCHEMA_MISMATCH'):
+                runtime_check.inspect_vendor_messages(command, NS(get_fields_and_field_types=lambda:broken))
+
+    def test_observer_or_wrong_topic_type_cannot_replace_motor_receiver(self):
+        self.assertEqual(runtime_check.inspect_vendor_endpoints(self.args, self.node), [])
+        self.readers['/joint_position_cmd'] = [NS(node_namespace='/', node_name='observer',
+            topic_type='snowbot_ctl_msgs/msg/JointPositionCommand')]
+        self.assertTrue(any('ENDPOINT_IDENTITY:/joint_position_cmd' in e
+            for e in runtime_check.inspect_vendor_endpoints(self.args, self.node)))
+        self.readers['/joint_position_cmd'][0].node_name='robot_upperMonitor'
+        self.readers['/joint_position_cmd'][0].topic_type='std_msgs/msg/Float64MultiArray'
+        self.assertTrue(any('ENDPOINT_TYPE:/joint_position_cmd' in e
+            for e in runtime_check.inspect_vendor_endpoints(self.args, self.node)))
+
+    def test_native_grippers_use_command_subscribers_and_no_new_feedback_topic(self):
+        endpoints = runtime_check.vendor_endpoints(dict(self.args, gripper_config='site.json'))
+        grips = [e for e in endpoints if '/gripper/' in e['topic']]
+        self.assertEqual({e['topic'] for e in grips}, {'/gripper/left_cmd', '/gripper/right_cmd'})
+        self.assertTrue(all(e['role']=='subscription' and e['node']=='/servo_node' for e in grips))
+        self.assertFalse(any('cmd_sensor' in e['topic'] or 'bindu/gripper_command' in e['topic'] for e in endpoints))
+
+    def test_partial_or_stale_feedback_and_missing_safety_fail_robot_check(self):
+        report = runtime_check.assess_robot_interface(self.args, self.node, {'feedback':self.feedback}, 10., self.health)
+        self.assertTrue(report['feedback_usable'])
+        self.assertEqual(report['missing_feedback_groups'], ['waist', 'head'])
+        self.assertEqual(report['robot_interface'], 'unavailable')
+        self.feedback.torso_position=[.2,.3];self.feedback.torso_speed=[0.,0.]
+        self.feedback.head_position=[.4,.5];self.feedback.head_speed=[0.,0.]
+        good=runtime_check.assess_robot_interface(self.args, self.node, {'feedback':self.feedback}, 10., self.health)
+        self.assertEqual(good['robot_interface'], 'available')
+        self.health.require.side_effect=RuntimeError('SNOWBOT_HEALTH_UNAVAILABLE:servo')
+        bad=runtime_check.assess_robot_interface(self.args, self.node, {'feedback':self.feedback}, 10.3, self.health)
+        self.assertFalse(bad['feedback_usable'])
+        self.assertIn('SNOWBOT_HEALTH_UNAVAILABLE:servo', bad['errors'])
+        self.node.create_publisher.assert_not_called()
+        self.node.create_client.assert_not_called()
+
+    def test_robot_probe_creates_only_subscriptions_and_always_cleans_up(self):
+        rclpy = Mock()
+        rclpy.create_node.return_value = self.node
+        self.node.get_clock.return_value.now.return_value.nanoseconds = 10000000000
+        modules = {'rclpy': rclpy, 'rclpy.qos': NS(qos_profile_sensor_data=object()),
+            'snowbot_ctl_msgs.msg': NS(RetInformation=object()), 'std_msgs.msg': NS(String=object())}
+        for failure in (None, RuntimeError('probe failed')):
+            self.node.reset_mock();rclpy.reset_mock()
+            with patch.dict('sys.modules', modules), \
+                    patch.object(runtime_check.time, 'monotonic', side_effect=[0., 2.]), \
+                    patch.object(runtime_check, 'assess_robot_interface', return_value={}, side_effect=failure):
+                if failure:
+                    with self.assertRaisesRegex(RuntimeError, 'probe failed'):
+                        runtime_check.check_robot_interface(self.args, 1.)
+                else:
+                    self.assertEqual(runtime_check.check_robot_interface(self.args, 1.), {})
+            self.assertEqual(self.node.create_subscription.call_count, 3)
+            self.node.create_publisher.assert_not_called()
+            self.node.create_client.assert_not_called()
+            self.node.destroy_node.assert_called_once()
+            rclpy.shutdown.assert_called_once()
 
 
 if __name__ == '__main__':

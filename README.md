@@ -67,6 +67,8 @@ bindu/
 
 公共说明：[软件架构](软件架构设计.md) · [动作执行契约](动作执行契约.md) · [运行与验证](运行与验证.md) · [配置分类](src/integration/bindu_runtime/README.md#配置目录)。
 
+现场接入差异及待修复项集中维护在[底层驱动问题记录](底层驱动问题记录.md)。
+
 ### 扫雪遥操作阅读路径
 
 先看[运行装配与场景选择](src/integration/bindu_runtime/README.md#扫雪遥操作)，再按“[工具输入与握持](src/capabilities/bindu_teleoperation/README.md#扫雪输入与握持) → [腰臂联合求解与反馈](src/capabilities/bindu_kinematics/README.md#扫雪求解与反馈) → [位置执行](src/control/bindu_execution/README.md#扫雪位置执行) → [Snowbot 位置接入](src/hardware/bindu_hardware/README.md#snowbot-位置接入)”阅读。ROS 运动学遥操作与 Isaac Sim 6.2 物理受力实验各有独立入口，配置和验证范围见运行装配页。

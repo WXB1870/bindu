@@ -9,6 +9,14 @@ JOINTS = {'left': 'arm_l_joint_8', 'right': 'arm_r_joint_8'}
 MASKS = {'left': 1 << 7, 'right': 1 << 15}
 
 
+def native_command(position, config):
+    """118 protocol: velocity is a reference, not the configured speed limit."""
+    values = [float(position), 0., 0., float(config['kp']), float(config['kd'])]
+    if not all(math.isfinite(value) for value in values):
+        raise ValueError('GRIPPER_COMMAND_NONFINITE')
+    return values
+
+
 def validate_config(config, profile):
     if type(config.get('schema_version')) is not int or config['schema_version'] != 1 or type(config.get('calibrated')) is not bool:
         raise ValueError('GRIPPER_CONFIG_SCHEMA')
@@ -45,10 +53,12 @@ def validate_config(config, profile):
 
 
 class GripperController:
-    def __init__(self, profile, config, send, health, now, arms_idle, *, enabled=False, steady=time.monotonic):
+    def __init__(self, profile, config, send, health, now, arms_idle, *, enabled=False, steady=time.monotonic,
+                 require_driver_ack=True):
         self.profile, self.cfg = profile, validate_config(config, profile)
         self.send, self.health, self.now, self.steady, self.arms_idle = send, health, now, steady, arms_idle
         self.enabled = enabled
+        self.require_driver_ack = require_driver_ack
         self.lease_id = self.owner = ''
         self.epoch, self.sequence, self.wire_sequence = 0, -1, 0
         self.command_stamp = float('-inf')
@@ -93,20 +103,23 @@ class GripperController:
                 or not 0 <= self.steady()-self.received_steady <= age):
             raise RuntimeError(self.invalid or 'GRIPPER_FEEDBACK_STALE')
         health = self.health()
-        if health.get('gripper_control_enabled') is not True:
-            raise RuntimeError('GRIPPER_DRIVER_PATCH_REQUIRED')
-        sequences, holds = health.get('gripper_sequence'), health.get('gripper_hold_position')
-        if (not isinstance(sequences, list) or len(sequences) != 2 or
-                any(type(x) is not int or x < 0 for x in sequences) or
-                not isinstance(holds, list) or len(holds) != 2 or
-                any(type(x) not in (float, int) or not math.isfinite(x) for x in holds) or
-                type(health.get('gripper_hold_mask')) is not int or not 0 <= health['gripper_hold_mask'] <= 3 or
-                type(health.get('gripper_latched_mask')) is not int or not 0 <= health['gripper_latched_mask'] <= 3):
+        if (type(health.get('sample')) is not int or health['sample'] < 1 or
+                type(health.get('operation_enabled_mask')) is not int or health['operation_enabled_mask'] < 0):
             raise RuntimeError('GRIPPER_DRIVER_HEALTH_INVALID')
-        selected = [s for s in SIDES if GROUPS[s] in self.groups]
-        for side in selected:
-            if health.get('gripper_latched_mask', 0) & (1 << SIDES.index(side)):
-                raise RuntimeError('GRIPPER_DRIVER_LATCHED:'+side)
+        if self.require_driver_ack:
+            if health.get('gripper_control_enabled') is not True:
+                raise RuntimeError('GRIPPER_DRIVER_PATCH_REQUIRED')
+            sequences, holds = health.get('gripper_sequence'), health.get('gripper_hold_position')
+            if (not isinstance(sequences, list) or len(sequences) != 2 or
+                    any(type(x) is not int or x < 0 for x in sequences) or
+                    not isinstance(holds, list) or len(holds) != 2 or
+                    any(type(x) not in (float, int) or not math.isfinite(x) for x in holds) or
+                    type(health.get('gripper_hold_mask')) is not int or not 0 <= health['gripper_hold_mask'] <= 3 or
+                    type(health.get('gripper_latched_mask')) is not int or not 0 <= health['gripper_latched_mask'] <= 3):
+                raise RuntimeError('GRIPPER_DRIVER_HEALTH_INVALID')
+            for side in SIDES:
+                if GROUPS[side] in self.groups and health['gripper_latched_mask'] & (1 << SIDES.index(side)):
+                    raise RuntimeError('GRIPPER_DRIVER_LATCHED:'+side)
         return health
 
     def require_write(self):
@@ -309,16 +322,21 @@ class GripperController:
                         raise RuntimeError('HOLD_TIMEOUT')
                     self._hold(side, 'FAILED', 'POSITION_TIMEOUT')
                     continue
-                ack = health.get('gripper_sequence', [])
-                i = SIDES.index(side)
-                target = health['gripper_hold_position'][i] if c['state'] == 'STOPPING' else c['target']
-                arrived = (len(ack) == 2 and ack[i] >= c['ack'] and health['sample'] > c['sample']
+                # Native commands have no sequence ACK or hold ACK. Confirm only
+                # the requested position against advancing measured samples.
+                target = c['hold'] if c['state'] == 'STOPPING' else c['target']
+                if self.require_driver_ack and c['state'] == 'STOPPING':
+                    target = health['gripper_hold_position'][SIDES.index(side)]
+                arrived = (health['sample'] > c['sample']
                     and health.get('operation_enabled_mask', 0) & MASKS[side]
                     and self.feedback_stamp > c['sent_at']
                     and abs(self.q[JOINTS[side]]-target) <= self.cfg['position_tolerance']
                     and abs(self.v[JOINTS[side]]) <= self.cfg['velocity_tolerance'])
-                if c['state'] == 'STOPPING':
-                    arrived = arrived and bool(health['gripper_hold_mask'] & (1 << i))
+                if self.require_driver_ack:
+                    i = SIDES.index(side)
+                    arrived = arrived and health['gripper_sequence'][i] >= c['ack']
+                    if c['state'] == 'STOPPING':
+                        arrived = arrived and bool(health['gripper_hold_mask'] & (1 << i))
                 if c['state'] == 'MOVING':
                     self._send(side, target, False)
                 # Only advancing measured samples can establish a stable interval.

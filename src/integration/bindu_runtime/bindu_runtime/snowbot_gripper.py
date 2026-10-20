@@ -1,10 +1,10 @@
-"""ROS binding for the Snowbot position gripper loop, sharing its arm watchdog instance."""
+"""Native Snowbot gripper commands; measured state comes from RetInformation."""
 import json
 import hashlib
 from pathlib import Path
 from rcl_interfaces.msg import ParameterDescriptor
 from rclpy.qos import qos_profile_sensor_data
-from bindu_hardware.snowbot_gripper import GripperController, SIDES, GROUPS
+from bindu_hardware.snowbot_gripper import GripperController, SIDES, GROUPS, native_command
 from bindu_contracts.teleoperation import VRFrame
 from bindu_interfaces.msg import GripperState, VRInput
 from bindu_interfaces.srv import GripperControl, Lease
@@ -24,11 +24,13 @@ class SnowbotGrippers:
         cfg = json.loads(Path(path).read_text())
         if cfg.get('simulation_only', False) is not False:
             raise ValueError('REAL_GRIPPER_CONFIG_REQUIRED')
-        self.topic = node.get_parameter('vendor_namespace').value.rstrip('/')+'/bindu/gripper_command'
-        self.publisher = (node.create_publisher(devices.array_type, self.topic, 1)
-            if node.robot_io.command_enabled and cfg.get('calibrated') else None)
+        prefix = node.get_parameter('vendor_namespace').value.rstrip('/')
+        self.topics = {side: prefix+'/gripper/'+side+'_cmd' for side in SIDES}
+        self.publishers = ({side: node.create_publisher(devices.array_type, topic, 1)
+                            for side, topic in self.topics.items()}
+                           if node.robot_io.command_enabled and cfg.get('calibrated') else {})
         self.core = GripperController(node.profile, cfg, self.send, self.health, node.now, self.arms_idle,
-                                      enabled=node.robot_io.command_enabled)
+                                      enabled=node.robot_io.command_enabled, require_driver_ack=False)
         self.bind_services()
 
     def bind_services(self):
@@ -45,21 +47,23 @@ class SnowbotGrippers:
     def health(self):
         self.devices.io.require_feedback()
         self.devices.check_health(set(self.core.groups))
-        if self.publisher is None or self.node.count_publishers(self.topic) != 1:
-            raise RuntimeError('GRIPPER_COMMAND_PUBLISHER_CONFLICT')
-        readers = self.node.get_subscriptions_info_by_topic(self.topic)
-        if not any(info.node_namespace.rstrip('/')+'/'+info.node_name == self.devices.receivers['head'] for info in readers):
-            raise RuntimeError('GRIPPER_RECEIVER_UNAVAILABLE')
+        for side in SIDES:
+            topic = self.topics[side]
+            if side not in self.publishers or self.node.count_publishers(topic) != 1:
+                raise RuntimeError('GRIPPER_COMMAND_PUBLISHER_CONFLICT:'+side)
+            readers = self.node.get_subscriptions_info_by_topic(topic)
+            if not any(info.node_namespace.rstrip('/')+'/'+info.node_name == self.devices.receivers['head']
+                       and info.topic_type == 'std_msgs/msg/Float64MultiArray' for info in readers):
+                raise RuntimeError('GRIPPER_RECEIVER_UNAVAILABLE:'+side)
+        if 'gripper_control_enabled' in self.devices.health.messages['servo']:
+            # The historical custom-wire guard explicitly rejects native topics.
+            raise RuntimeError('GRIPPER_NATIVE_PROTOCOL_GUARD_MISMATCH')
         return self.devices.health.messages['servo']
 
     def send(self, side, position, hold, sequence):
         self.health()
         cfg = self.core.cfg['grippers'][side]
-        session = self.devices.session
-        packet = [self.node.now(), float(sequence), float(session >> 32), float(session & 0xffffffff),
-                  float(SIDES.index(side)), 0. if hold else 1., float(position), float(cfg['kp']), float(cfg['kd']),
-                  self.core.cfg['command_ttl'], float(cfg['max_speed'])]
-        self.publisher.publish(self.devices.array_type(data=packet))
+        self.publishers[side].publish(self.devices.array_type(data=native_command(position, cfg)))
 
     def observe(self, msg, q, v, when):
         if self.core is None:

@@ -104,7 +104,7 @@ def scenario(out, mode, websocket=False, ordinary=False, physics=False, replay=N
         # Synthetic measured posture, deliberately independent of an A command.
         # The actual real deployment continues to use only vendor feedback.
         q.update(fixture['prepare_positions_rad'])
-    session=0;sample=0;acks=[0,0];hold_mask=0;holds=[0.,0.]
+    session=0;sample=0
     if mode=='real':
         vendor_feedback=node.create_publisher(RetInformation,vendor+'/dualArmCtl_fdback',1)
         vendor_health=node.create_publisher(String,vendor+'/bindu/servo_health',1)
@@ -123,14 +123,12 @@ def scenario(out, mode, websocket=False, ordinary=False, physics=False, replay=N
         node.create_subscription(JointPositionCommand,vendor+'/joint_position_cmd',arms,10)
         node.create_subscription(Float64MultiArray,vendor+'/body/motor_cmd',lambda m:q.update(zip(GROUPS['waist'],m.data)),10)
         node.create_subscription(Float64MultiArray,vendor+'/head/motor_cmd',lambda _:None,1)
-        def grip_target(msg):
-            nonlocal hold_mask
-            d=msg.data;i=int(d[4]);assert len(d)==11 and (int(d[2])<<32|int(d[3]))==session
-            assert int(d[1])>acks[i];acks[i]=int(d[1]);packets.append('gripper')
-            name=GROUPS[('left','right')[i]+'_tool_axis'][0]
-            if d[5]==0:hold_mask|=1<<i;holds[i]=q[name]
-            else:hold_mask&=~(1<<i);q[name]=d[6]
-        node.create_subscription(Float64MultiArray,vendor+'/bindu/gripper_command',grip_target,10)
+        def grip_target(side,msg):
+            assert len(msg.data)==5 and list(msg.data[1:3])==[0.,0.]
+            q[GROUPS[side+'_tool_axis'][0]]=msg.data[0];packets.append('gripper')
+        for side in ('left','right'):
+            node.create_subscription(Float64MultiArray,vendor+'/gripper/'+side+'_cmd',
+                                     lambda msg,s=side:grip_target(s,msg),10)
     def publish():
         nonlocal sample
         now=node.get_clock().now().nanoseconds*1e-9
@@ -144,8 +142,7 @@ def scenario(out, mode, websocket=False, ordinary=False, physics=False, replay=N
             vendor_health.publish(String(data=json.dumps(dict(schema=1,stamp=now,sample=sample,sample_age=.001,
                 operational=True,ready=True,guard_enabled=True,guard_armed=bool(session),guard_latched=False,
                 guard_session=session,wkc=40,expected_wkc=40,present_mask=0xfffff,fault_mask=0,
-                enable_requested_mask=0xfffff,operation_enabled_mask=0xfffff,gripper_control_enabled=True,
-                gripper_latched_mask=0,gripper_sequence=acks,gripper_hold_mask=hold_mask,gripper_hold_position=holds))))
+                enable_requested_mask=0xfffff,operation_enabled_mask=0xfffff))))
         if source['stream'] and not websocket:
             source['seq']+=1
             for i,side in enumerate(('left','right')):

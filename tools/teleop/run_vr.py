@@ -74,7 +74,7 @@ def check(args):
             grippers.get('simulation_only',False) is not simulation):
         raise ValueError('部署、工具、PICO 和夹爪配置范围不匹配')
     from tools.deployment.runtime_check import check_runtime
-    check_runtime(args.deployment, robot)
+    report = check_runtime(args.deployment, robot)
     from tools.deployment.snowbot_teleop import ensure_stopped
     ensure_stopped(args.deployment)
     for host, port in ((args.host, args.vr_port), ('127.0.0.1', args.port)):
@@ -84,6 +84,20 @@ def check(args):
                 probe.bind((host, port))
             except OSError as exc:
                 raise RuntimeError(f'端口 {host}:{port} 不可用；请先关闭原实例。') from exc
+    print('VR_SOFTWARE_CHECK_OK：依赖、配置、消息字段、TLS 与端口检查通过；不表示机器人接口可用。')
+    if args.deployment['runtime_mode'] == 'real':
+        requested = getattr(args, 'check_robot', False)
+        writing = not args.check and args.deployment.get('command_enabled') == 'true'
+        if requested or writing:
+            from tools.deployment.runtime_check import check_robot_interface
+            online = check_robot_interface(args.deployment, args.robot_check_timeout)
+            report['online'] = online
+            print(json.dumps(online, ensure_ascii=False))
+            if online['errors']:
+                raise RuntimeError('ROBOT_INTERFACE_UNAVAILABLE:'+','.join(online['errors']))
+        else:
+            print('ROBOT_INTERFACE_NOT_CHECKED：未校验在线端点和实测样本。')
+    return report
 
 
 def stop_group(process, grace=12.):
@@ -130,9 +144,10 @@ def run(args):
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as exc:
             raise RuntimeError('该 ROS 域和命名空间已有启动器运行。') from exc
-        check(args)
+        report = check(args)
         if args.check:
-            print('VR_CHECK_OK：配置、环境、TLS 与端口检查通过；未启动控制节点。')
+            print(json.dumps(report, ensure_ascii=False))
+            print('只读检查结束；未启动控制节点。')
             return 0
         args.output.mkdir(parents=True, exist_ok=False)
         env = dict(os.environ, ROS_DOMAIN_ID=str(args.domain_id),
@@ -229,6 +244,8 @@ def parse_args(argv=None):
     parser.add_argument('--diagnostics', action=argparse.BooleanOptionalAction, default=True,
                         help='当前调试阶段默认记录完整输入、反馈和事件；--no-diagnostics 关闭')
     parser.add_argument('--check', action='store_true', help='仅检查环境、证书和端口')
+    parser.add_argument('--check-robot', action='store_true', help='配合 --check，只读核对机器人端点、实测反馈和保护状态')
+    parser.add_argument('--robot-check-timeout', type=float, default=2., help='只读机器人检查时长，秒，最多30秒')
     parser.add_argument('--physics', action='store_true', help='启用Isaac物理反馈，保留浏览器显示；仅允许仿真配置')
     parser.add_argument('--domain-id', type=int, default=int(os.environ.get('ROS_DOMAIN_ID','0')))
     parser.add_argument('--namespace')
@@ -244,6 +261,10 @@ def parse_args(argv=None):
     parser.add_argument('--startup-timeout', type=float, default=30.)
     parser.add_argument('--duration', type=float, default=0., help='验收用运行秒数，0 表示持续运行')
     args = parser.parse_args(argv)
+    if args.check_robot and not args.check:
+        parser.error('--check-robot 需要 --check')
+    if not math.isfinite(args.robot_check_timeout) or not 0 < args.robot_check_timeout <= 30:
+        parser.error('robot-check-timeout 必须在 (0,30] 秒内')
     if args.check and args.declare_load:
         parser.error('--check 不能与状态声明同时使用')
     if args.external_support and not args.declare_load:
@@ -254,6 +275,8 @@ def parse_args(argv=None):
     from bindu_runtime.teleop_deployment import load_deployment
     args.launch,args.deployment=load_deployment(args.config,get_package_share_directory('bindu_runtime'))
     d=args.deployment
+    if args.check_robot and d.get('runtime_mode') != 'real':
+        parser.error('--check-robot 仅用于真实接口配方')
     if args.physics:
         if d.get('runtime_mode')!='simulation':parser.error('--physics 仅允许仿真配置')
         d['device_backend']='external_simulation'

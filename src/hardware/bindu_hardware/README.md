@@ -42,7 +42,9 @@ ros2 launch bindu_runtime snowbot_adapter.launch.py \
 
 ## Snowbot 位置接入
 
-[snowbot.py](bindu_hardware/snowbot.py) 适配双臂各七轴及腰／头位置接口，保留二十轴反馈；臂位置链中的第八轴仍只读，底盘未接入。独立[snowbot_gripper.py](bindu_hardware/snowbot_gripper.py)提供夹爪位置闭环、装卸授权、到位与保持确认，默认标定门槛禁止夹爪写入。通过健康、路由和控制权检查后才允许写位置，停止依赖保持请求与新鲜反馈确认。
+[snowbot.py](bindu_hardware/snowbot.py) 接收现场双臂及夹爪的16轴实测反馈，也兼容扩展头腰反馈；缺失轴不补零、不引用目标值或保留旧测量冒充新帧。`execution/state.missing_feedback_groups`明确列出缺失组，`joints`与反馈源时间仅含实际收到的数据。20轴profile继续保留，完整本体状态与腰臂协调不因16轴接收成功而视为已验收。底盘未接入。
+
+独立[snowbot_gripper.py](bindu_hardware/snowbot_gripper.py)提供夹爪位置闭环、装卸授权、到位与保持确认，默认标定门槛禁止夹爪写入。通过健康、路由和控制权检查后才允许写位置；现有底层缺口与当前适配边界集中见[底层驱动问题记录](../../../底层驱动问题记录.md)。
 
 该位置入口默认只读，已供[真机最小遥操作](../../integration/bindu_runtime/README.md#snowbot-真机最小遥操作)复用；独立夹爪开合见[真实夹爪位置闭环](#snowbot真实夹爪位置闭环)，实体夹持及虚握确认仍待接入。底层已有柔顺；六维力传感器的坐标、去皮和接口仍需接入与标定。Isaac 空铲实验的载荷通路由仓库级工具单独实现，不能把本包外部仿真驱动视为现成的 Snowbot 六维传感器接口。接入状态和运行步骤见[Snowbot 位置控制适配层](#snowbot-位置控制适配层)。
 
@@ -162,9 +164,13 @@ ros2 launch bindu_runtime g1_sim.launch.py recording_mode:=normal namespace:=/bi
 
 **位置虚握。** 按用户确认，先以右爪轻微张开的可调开度接通X换握。修改现场夹爪配置的`grippers.right.virtual`，单位rad，示例暂设`0.02`（约1.15°），闭合位为`grippers.right.closed`；虚握值须位于闭合与完全张开之间，并与两端各相隔超过两倍位置容差。示例仍默认`calibrated=false`，现场调整开合／虚握值并核实后再按原步骤启用写入。普通模式不使用X换握；扫雪跟随中按住X先停稳并释放臂租约，确认左爪闭合停稳，检查右爪完整路径，再仅租用右爪执行虚握位，等底层接纳、实测到位和最终保持后按轴向释放模型捕获当前基准。释放X按同流程回闭合位，再以当前实际转角恢复刚握。切换期间不推进工具目标，双侧握和输入仍有效才恢复跟随；松握、Y或断流保持当前开度，不自动夹紧。这里只确认位置模式，`grasp_state=unknown`与`physical_gripper_confirmed=null`保持，实体承托、可转动及防滑效果由现场验证。
 
-**现场启用前提。** 更新底层工作副本并编译配套补丁，伺服节点须以`bindu_guard:=true bindu_gripper_control:=true`运行，上层仍须`control_source:=topic`。保护模式拒绝旧的绝对`/gripper/*_cmd`和`*_cmd_sensor`通道，包括旧夹爪力控节点的启动零位输出；本位置接口不启用旧夹爪力控算法。新的位置包发送到`<vendor>/bindu/gripper_command`，绑定同一执行适配器的看门狗实例和递增序号，含单独的目标TTL。重复目标包只续期、不重启已有插补；位置变化采用原有底层插补器，按配置速度设置插补时长。
+**118原生协议。** 当前发送到`<vendor>/gripper/left_cmd`和`right_cmd`，格式为`[position, velocity, torque, kp, kd]`；位置操作的速度参考和前馈力矩为0。配置中的`max_speed`不等于该协议的速度参考，现场底层能否限制运动速度仍待核实。实测位置、速度、电流复用`RetInformation`左右第8项；`*_cmd_sensor`是命令入口，不作为状态源。原生消息没有命令序号或保持回执，到位及停止均要求发送后推进的实测和稳定区间，不能用本地递增序号冒充底层ACK。
 
-夹爪超时由EtherCAT线程独立锁存保持，手臂心跳不能续命旧夹爪目标；显式保持则冻结最近成功PDO位置，不自动启用未操作的夹爪。停止／释放／断流先发保持，随后要求底层接纳确认、推进的PDO、新鲜实测位置与速度以及稳定时间，超时锁存`GRIPPER_STOP_UNCONFIRMED`并拒绝重新接管。目标受阻而未到达只会报告`POSITION_TIMEOUT`并保持，不会伪装为夹持成功。软件保持不替代现场机械保持或急停；旧底层启动回位／清零仍未被此功能取消。
+**现场启用前提。** 原生映射不解除标定、控制权、实际使能及PDO健康／看门狗门槛。118尚缺少这些保护契约的验证，写入仍保持关闭。历史`bindu_guard.patch`的自定义夹爪协议会屏蔽原生通道，不适用于当前映射；遇到该保护协议时预检／写入检查明确拒绝，不自动替换底层补丁。仿真后端原有应用序号确认继续保留。夹持与带载保持还需现场验收。
+
+**分层预检。** 在完成本机改码、验证、版本同步与目标环境重建后，`python3 -m tools.deployment.x86_real check`只证明软件依赖、消息字段、配置、TLS和端口检查通过；16轴兼容时会列出缺失头腰，输出`ROBOT_INTERFACE_NOT_CHECKED`，不声称机器人在线。底层由现场按既有流程运行后，可执行只读`python3 -m tools.deployment.x86_real check-robot`，核对话题类型、发布者／接收节点、桥接端点、新鲜实测和保护健康；返回非零时保留具体阻断项。统一入口也支持`tools/run_vr.sh --check --check-robot --robot-check-timeout 3`。检查只创建观察节点和订阅，不启动底层、不调用运动服务或发布命令；允许写入的真实启动还会强制执行该在线门控。
+
+历史自定义夹爪补丁提供EtherCAT线程的独立TTL与保持回执；当前原生通道尚未取得同等底层保护证据，不能沿用该验收结论。上层停止／释放／断流先请求保持实测位置，再要求推进的PDO、新鲜实测位置与速度及稳定时间；超时锁存`GRIPPER_STOP_UNCONFIRMED`并拒绝重新接管。目标受阻未到达则报告`POSITION_TIMEOUT`，不伪装成夹持成功。软件保持不替代现场机械保持或急停；旧底层启动回位／清零仍未被此功能取消。
 
 复制夹爪配置到现场目录，依据实物标定每侧`open`／`closed`（rad）、`kp`／`kd`和`max_speed`（rad/s），核对位置／速度容差和超时后才把`calibrated`设为true。示例左开度−0.4、右+0.4及零位闭合仅取驱动方向的参考，默认`calibrated=false`，不是实机标定值，不能照搬模拟夹爪开度。电流是底层反馈数值，不能当作已标定指面夹紧力。将现场文件传给部署工具`configure --gripper-config /绝对路径/grippers-site.json`；其他TLS、话题和写权限参数沿用现场配方。
 

@@ -91,7 +91,7 @@ def preflight(path):
     if tool.get('demo', {}).get('initial_positions_rad'):
         raise ValueError('真机工具配置包含演示初始关节')
     from tools.deployment.runtime_check import check_runtime
-    check_runtime(args, robot)
+    report = check_runtime(args, robot)
     if args.get('gripper_config'):
         from bindu_hardware.snowbot_gripper import validate_config
         grippers = validate_config(json.loads(Path(args['gripper_config']).read_text()), robot.profile)
@@ -110,7 +110,8 @@ def preflight(path):
                           ros_domain_id=os.environ.get('ROS_DOMAIN_ID', '0'),
                           ros_localhost_only=os.environ.get('ROS_LOCALHOST_ONLY', '0')),
                      ensure_ascii=False, indent=2))
-    print('离线部署检查通过；底层健康、头显连接、机械保持和真机性能仍需现场核实。')
+    print(json.dumps(report, ensure_ascii=False))
+    print('软件依赖与消息兼容性检查通过；机器人在线端点未检查，不能据此确认接口可用。')
     return args, robot
 
 
@@ -344,6 +345,12 @@ def main(argv=None):
         if options.command == 'status':
             return observe(args, robot, options.seconds)
         if options.command == 'start':
+            if args.get('command_enabled') == 'true':
+                from tools.deployment.runtime_check import check_robot_interface
+                report = check_robot_interface(args)
+                print(json.dumps(report, ensure_ascii=False))
+                if report['errors']:
+                    raise RuntimeError('ROBOT_INTERFACE_UNAVAILABLE:'+','.join(report['errors']))
             ensure_stopped(args)
             print('前台启动四节点；Ctrl+C 收尾。仍需显式选择模式和开启会话。', flush=True)
             os.execvp('ros2', ['ros2', 'launch', 'bindu_runtime', 'teleop_only.launch.py', 'config:='+str(options.config)])

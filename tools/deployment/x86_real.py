@@ -197,7 +197,7 @@ out=Path(sys.argv[1])
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command', choices=('prepare', 'build', 'check', 'start'))
+    parser.add_argument('command', choices=('prepare', 'build', 'check', 'check-robot', 'start'))
     parser.add_argument('--workspace', type=Path, default=ROOT/'artifacts/x86-real')
     parser.add_argument('--vendor-setup', type=Path)
     parser.add_argument('--ros-distro', choices=('humble', 'jazzy'))
@@ -229,8 +229,10 @@ def main(argv=None):
                     raise ValueError('请直接编辑现场 site.json；此入口不接受 --config/--physics')
                 # Explicit config prevents a machine-local simulation default leaking in.
                 command = ['bash', ROOT/'tools/run_vr.sh', *extra, '--config', options.workspace/'site.json']
-                if options.command == 'check':
+                if options.command in ('check', 'check-robot'):
                     command.append('--check')
+                if options.command == 'check-robot':
+                    command.append('--check-robot')
                 in_environment(options.workspace, command, replace=options.command == 'start')
         return 0
     except (OSError, ValueError, KeyError, TypeError, subprocess.CalledProcessError) as exc:

@@ -17,6 +17,8 @@ string runtime_mode
 string device_backend
 string[] feedback_sources
 builtin_interfaces/Time[] source_stamps
+# Groups absent from measured joint position/velocity; no zero-filled substitutes.
+string[] missing_feedback_groups
 string[] stop_failures
 uint64 revision
 bool lease_active

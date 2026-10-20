@@ -22,6 +22,29 @@ GROUPS = {
 WRITABLE = frozenset(('waist', 'head', 'left_arm', 'right_arm'))
 SLOT_MASKS = {'left_arm': 0x7f, 'right_arm': 0x7f00, 'head': 0x30000, 'waist': 0xc0000}
 SLOT_MASKS.update(left_tool_axis=0x80, right_tool_axis=0x8000)
+FEEDBACK_LAYOUT = (('l', ('left_arm', 'left_tool_axis')),
+                   ('r', ('right_arm', 'right_tool_axis')),
+                   ('torso', ('waist',)), ('head', ('head',)))
+
+
+def feedback_schema(fields):
+    """Inspect installed ROS fields; optional head/waist are never synthesized."""
+    errors, available = [], []
+    if fields.get('header') != 'std_msgs/Header':
+        errors.append('header:std_msgs/Header')
+    for prefix, groups in FEEDBACK_LAYOUT:
+        size = sum(len(GROUPS[g]) for g in groups)
+        required = ('position', 'speed', 'iq') if prefix in ('l', 'r') else ('position', 'speed')
+        if prefix not in ('l', 'r') and not any(prefix+'_'+k in fields for k in required):
+            continue
+        for kind in required:
+            name = prefix+'_'+kind
+            if fields.get(name) not in (f'double[{size}]', f'float64[{size}]'):
+                errors.append(name+f':float64[{size}]')
+        if not any(prefix+'_'+kind+':' in e for e in errors for kind in required):
+            available.extend(groups)
+    return dict(compatible=not errors, errors=errors, available_groups=available,
+                missing_groups=[g for g in GROUPS if g not in available])
 
 
 class VendorHealth:
@@ -96,14 +119,14 @@ class VendorHealth:
 
 
 def decode_feedback(msg):
-    """Decode RetInformation, preserving measured velocity and source stamp."""
+    """Accept native 16-axis and extended feedback, preserving missing axes."""
     positions, velocities = {}, {}
-    for prefix, groups in (('l', ('left_arm', 'left_tool_axis')),
-                           ('r', ('right_arm', 'right_tool_axis')),
-                           ('torso', ('waist',)), ('head', ('head',))):
+    for prefix, groups in FEEDBACK_LAYOUT:
         names = [n for g in groups for n in GROUPS[g]]
-        q, v = getattr(msg, prefix+'_position'), getattr(msg, prefix+'_speed')
-        if len(q) != len(names) or len(v) != len(names):
+        q, v = getattr(msg, prefix+'_position', None), getattr(msg, prefix+'_speed', None)
+        if prefix in ('torso', 'head') and q is None and v is None:
+            continue
+        if q is None or v is None or len(q) != len(names) or len(v) != len(names):
             raise ValueError('SNOWBOT_FEEDBACK_LAYOUT')
         positions.update(zip(names, q))
         velocities.update(zip(names, v))
@@ -127,8 +150,7 @@ class SnowbotIO:
         self.owned_groups = set()
         self.writable_groups = WRITABLE
         self.coupled_group_sets = (frozenset(('left_arm', 'right_arm')),)
-        self.last_feedback = Feedback(0., dict.fromkeys(profile.limits, 0.),
-                                      0., 0., (0., 0.), simulated)
+        self.last_feedback = Feedback(0., {}, 0., 0., (0., 0.), simulated)
         self.received_at = 0.
         self.invalid = ''
         self.last_source_stamp = 0.
@@ -139,7 +161,12 @@ class SnowbotIO:
         self.stop_requested_at = 0.
         # ExecutionState expects independently dated sources. Base is absent.
         self.feedback = self
-        self.source_stamps = dict.fromkeys(profile.groups, 0.)
+        self.source_stamps = {}
+
+    @property
+    def missing_feedback_groups(self):
+        return [g for g, names in self.profile.groups.items()
+                if not set(names) <= self.last_feedback.positions.keys()]
 
     @property
     def reference_positions(self):
@@ -147,7 +174,10 @@ class SnowbotIO:
 
     def observe(self, positions, velocities, stamp, now):
         names = set(self.profile.limits)
-        if (set(positions) != names or set(velocities) != names or
+        required = {n for prefix, groups in FEEDBACK_LAYOUT[:2] for g in groups for n in GROUPS[g]}
+        if (not required <= set(positions) <= names or set(velocities) != set(positions) or
+                any(set(group) & positions.keys() and not set(group) <= positions.keys()
+                    for group in self.profile.groups.values()) or
                 not all(math.isfinite(v) for v in (*positions.values(), *velocities.values(), stamp, now))):
             self.invalid = 'SNOWBOT_FEEDBACK_INVALID'
             raise ValueError(self.invalid)
@@ -157,14 +187,17 @@ class SnowbotIO:
         self.last_source_stamp, self.received_at, self.invalid = stamp, now, ''
         self.last_feedback = Feedback(stamp, dict(positions), 0., 0., (0., 0.),
                                       self.simulated, joint_velocities=dict(velocities))
-        self.source_stamps = dict.fromkeys(self.profile.groups, stamp)
+        self.source_stamps = {g: stamp for g in self.profile.groups if g not in self.missing_feedback_groups}
 
-    def require_feedback(self):
+    def require_feedback(self, groups=()):
         now = self.now()
         if (self.invalid or not self.last_source_stamp or
                 not 0 <= now-self.last_source_stamp <= self.feedback_max_age or
                 not 0 <= now-self.received_at <= self.feedback_max_age):
             raise RuntimeError(self.invalid or 'SNOWBOT_FEEDBACK_UNAVAILABLE')
+        missing = set(groups) & set(self.missing_feedback_groups)
+        if missing:
+            raise RuntimeError('SNOWBOT_FEEDBACK_INCOMPLETE:'+','.join(sorted(missing)))
         if self.check_health is not None and (self.targets or self.stop_targets):
             self.check_health(self.owned_groups or self._groups(self.targets or self.stop_targets))
 
@@ -173,7 +206,7 @@ class SnowbotIO:
             raise RuntimeError('SNOWBOT_COMMANDS_DISABLED')
         if self.stop_failures:
             raise RuntimeError('SNOWBOT_STOP_UNCONFIRMED_RESTART_REQUIRED')
-        self.require_feedback()
+        self.require_feedback(groups)
         if self.check_ready is not None:
             self.check_ready(groups)
         self.owned_groups = set(groups)
@@ -205,7 +238,7 @@ class SnowbotIO:
     def write_joints(self, target):
         if not self.command_enabled:
             raise RuntimeError('SNOWBOT_COMMANDS_DISABLED')
-        self.require_feedback()
+        self.require_feedback(self.owned_groups or self._groups(target))
         self._groups(target)
         if any(not math.isfinite(q) or not self.profile.limits[n][0] <= q <= self.profile.limits[n][1]
                for n, q in target.items()):
@@ -230,7 +263,7 @@ class SnowbotIO:
                 # A hold already sent still needs fresh feedback. A subsequent
                 # fault must not erase that outstanding physical stop request.
                 try:
-                    self.require_feedback()
+                    self.require_feedback(self._groups(self.stop_targets))
                 except RuntimeError:
                     self.stop_failures = ('vendor_hold',)
             return  # Read-only/idle shutdown never publishes a motor command.
@@ -250,8 +283,9 @@ class SnowbotIO:
             groups = set(coupled) & involved
             if not groups:
                 continue
-            hold = {n: self.last_feedback.positions[n] for g in coupled if g in groups for n in GROUPS[g]}
             try:
+                self.require_feedback(groups)
+                hold = {n: self.last_feedback.positions[n] for g in coupled if g in groups for n in GROUPS[g]}
                 self._send(hold)
             except RuntimeError:
                 failures.update(groups)

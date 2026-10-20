@@ -142,11 +142,12 @@ class ExecutionNode(RuntimeNode):
                 not active and not self.engine.stopping and not self.engine.stop_fault and
                 not self.robot_io.stop_failures and fb.stamp>e.stamp and
                 0<=now-fb.stamp<=.2 and
-                all(self.engine.joint_at_rest(n) for n in self.profile.limits) and
+                bool(fb.positions) and all(self.engine.joint_at_rest(n) for n in fb.positions) and
                 all(abs(v)<=self.profile.feedback_tolerances.get('base_'+axis+'_velocity',0.)
                     for axis,v in zip(('linear','angular'),fb.base_velocity))):
             self.last_event = None
-            self.event('DEVICE_FEEDBACK_RECOVERED','STARTUP_READY')
+            complete = set(fb.positions) == set(self.profile.limits)
+            self.event('DEVICE_FEEDBACK_RECOVERED','STARTUP_READY' if complete else 'PARTIAL_FEEDBACK')
         msg = ExecutionState(stamp=stamp(now), feedback_stamp=stamp(fb.stamp),
                              instance_id=self.instance_id, profile_hash=self.profile.digest,
                              simulated=fb.simulated, runtime_mode=self.runtime_mode, device_backend=self.device_backend,
@@ -157,6 +158,8 @@ class ExecutionNode(RuntimeNode):
         msg.stop_failures = list(self.robot_io.stop_failures)
         msg.joints.name = list(fb.positions)
         msg.joints.position = list(fb.positions.values())
+        msg.missing_feedback_groups = [g for g, names in self.profile.groups.items()
+            if any(n not in fb.positions or n not in fb.joint_velocities for n in names)]
         msg.reference.header.stamp = stamp(now)
         reference = self.robot_io.reference_positions
         msg.reference.name = list(reference)
@@ -191,6 +194,8 @@ class ExecutionNode(RuntimeNode):
             msg.command_id, msg.task_id, msg.state, msg.code = e.command_id, e.task_id, e.state, e.code
         else:
             msg.state, msg.code = 'IDLE', 'OK'
+        if msg.missing_feedback_groups and msg.state == 'IDLE':
+            msg.code = 'FEEDBACK_INCOMPLETE:'+','.join(msg.missing_feedback_groups)
         self.state_pub.publish(msg)
 
     def destroy_node(self):

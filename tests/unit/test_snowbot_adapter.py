@@ -12,7 +12,7 @@ from bindu_contracts.contracts import Motion
 from bindu_contracts.profile import Profile
 from bindu_execution.delegated_position import DelegatedPositionExecutor
 from bindu_execution.executor import Rejected
-from bindu_hardware.snowbot import GROUPS, VendorHealth, SnowbotIO, decode_feedback
+from bindu_hardware.snowbot import GROUPS, VendorHealth, SnowbotIO, decode_feedback, feedback_schema
 
 CONFIG = ROOT/'src/integration/bindu_runtime/config'
 
@@ -417,6 +417,57 @@ class SnowbotAdapterTests(unittest.TestCase):
         bad = copy.deepcopy(msg); bad.r_position = [0.]*7
         with self.assertRaises(ValueError): decode_feedback(bad)
 
+    def test_native_16_axis_feedback_is_kept_without_zero_filling_head_or_waist(self):
+        msg = S(header=S(stamp=S(sec=10, nanosec=20000000)),
+                l_position=[.1]*7+[.3], r_position=[-.1]*7+[-.3],
+                l_speed=[.01]*8, r_speed=[-.01]*8)
+        q, v, when = decode_feedback(msg)
+        self.io.observe(q, v, when, when)
+        self.assertEqual(len(self.io.last_feedback.positions), 16)
+        self.assertEqual(self.io.missing_feedback_groups, ['waist', 'head'])
+        self.assertNotIn('body_joint_1', self.io.last_feedback.positions)
+        self.assertNotIn('head_joint_1', self.io.last_feedback.joint_velocities)
+        self.assertNotIn('waist', self.io.source_stamps)
+        self.assertEqual(self.io.last_feedback.positions['arm_l_joint_8'], .3)
+        self.assertEqual(self.io.last_feedback.joint_velocities['arm_r_joint_8'], -.01)
+        self.now = when
+        self.io.require_feedback()
+        with self.assertRaisesRegex(RuntimeError, 'FEEDBACK_INCOMPLETE:waist'):
+            self.io.require_feedback(('waist',))
+        with self.assertRaises(Rejected):
+            self.engine.acquire('tool', ('left_arm', 'right_arm', 'waist'), 1., when)
+        self.assertFalse(self.sent)
+        # Missing axes in the next sample must not retain old measured values.
+        self.assertEqual(set(self.io.read_feedback(when, 0.).positions), set(q))
+        broken = copy.deepcopy(msg); broken.head_position = [0., 0.]
+        with self.assertRaisesRegex(ValueError, 'LAYOUT'):
+            decode_feedback(broken)
+
+    def test_no_initial_measurements_and_schema_reports_missing_axes(self):
+        io = SnowbotIO(self.profile, None, lambda: self.now)
+        self.assertEqual(io.last_feedback.positions, {})
+        self.assertEqual(io.source_stamps, {})
+        fields = {'header': 'std_msgs/Header', **{prefix+'_'+kind: 'double[8]'
+            for prefix in ('l', 'r') for kind in ('position', 'speed', 'iq')}}
+        report = feedback_schema(fields)
+        self.assertTrue(report['compatible'])
+        self.assertEqual(report['missing_groups'], ['waist', 'head'])
+        fields['l_position'] = 'double[7]'
+        self.assertFalse(feedback_schema(fields)['compatible'])
+
+    def test_missing_waist_feedback_during_stop_does_not_suppress_measured_arm_hold(self):
+        self.acquire(('left_arm', 'right_arm', 'waist'))
+        target = {n: self.q[n] for g in ('left_arm', 'right_arm', 'waist') for n in GROUPS[g]}
+        self.io.write_joints(target)
+        self.now += .02
+        q = {n:q for n,q in self.q.items() if n.startswith('arm_')}
+        self.io.observe(q, {n:0. for n in q}, self.now, self.now)
+        self.sent.clear()
+        self.io.stop()
+        self.assertEqual([groups for groups, _ in self.sent], [{'left_arm', 'right_arm'}])
+        self.assertEqual(self.io.stop_failures, ('waist',))
+        self.assertNotIn('body_joint_1', self.io.stop_targets)
+
     def test_feedback_from_an_observer_cannot_confirm_a_physical_hold(self):
         from bindu_runtime.snowbot_adapter import SnowbotDevices
         transport = SnowbotDevices.__new__(SnowbotDevices)
@@ -427,6 +478,63 @@ class SnowbotAdapterTests(unittest.TestCase):
         transport.receive(S())
         transport.io.observe.assert_not_called()
         self.assertEqual(transport.io.invalid, 'SNOWBOT_FEEDBACK_PUBLISHER_IDENTITY')
+
+
+class SnowbotRosBindingTests(unittest.TestCase):
+    """Use installed message classes with mocked publishers; never create a node."""
+    def test_native_gripper_send_has_five_fields_and_only_selected_hand(self):
+        from bindu_runtime.snowbot_gripper import SnowbotGrippers
+        binding = SnowbotGrippers.__new__(SnowbotGrippers)
+        binding.health = Mock()
+        binding.devices = S(array_type=lambda data:S(data=data))
+        binding.core = S(cfg=json.loads((CONFIG/'robots/snowbot/snowbot_grippers_real.json').read_text()))
+        binding.publishers = {side:Mock() for side in ('left', 'right')}
+        binding.send('right', .02, False, 999)
+        self.assertEqual(binding.publishers['right'].publish.call_args.args[0].data, [.02, 0., 0., 100., 30.])
+        binding.publishers['left'].publish.assert_not_called()
+        binding.send('right', .01, True, 1000)
+        self.assertEqual(binding.publishers['right'].publish.call_args.args[0].data, [.01, 0., 0., 100., 30.])
+
+    def measured_devices(self):
+        from bindu_runtime.snowbot_adapter import SnowbotDevices
+        from bindu_runtime.snowbot_gripper import SnowbotGrippers
+        from bindu_hardware.snowbot_gripper import GripperController
+        profile = Profile.load(CONFIG/'robots/snowbot/snowbot_real_position.json')
+        devices = SnowbotDevices.__new__(SnowbotDevices)
+        devices.node=Mock();devices.node.now.return_value=10.
+        devices.feedback_topic='/dualArmCtl_fdback';devices.health_receivers={'servo':'/servo_node'}
+        devices.node.get_publishers_info_by_topic.return_value=[S(node_namespace='/',node_name='servo_node')]
+        devices.io=SnowbotIO(profile, Mock(), lambda:10.)
+        devices.grippers=SnowbotGrippers.__new__(SnowbotGrippers)
+        cfg=json.loads((CONFIG/'robots/snowbot/snowbot_grippers_real.json').read_text())
+        devices.grippers.core=GripperController(profile,cfg,Mock(),Mock(),lambda:10.,lambda:True,
+                                               require_driver_ack=False)
+        native=S(header=S(stamp=S(sec=10,nanosec=0)),
+            l_position=[0.]*8,r_position=[0.]*8,l_speed=[0.]*8,r_speed=[0.]*8,
+            l_iq=[0.]*7+[.11],r_iq=[0.]*7+[.22])
+        devices.receive(native)
+        return devices,profile
+
+    def test_native_feedback_populates_gripper_measurements_without_head_or_waist(self):
+        devices,_=self.measured_devices()
+        core=devices.grippers.core
+        self.assertEqual(core.current, {'left':.11,'right':.22})
+        self.assertTrue(core.snapshot('left')['feedback_valid'])
+        self.assertEqual(len(devices.io.last_feedback.positions),16)
+        self.assertEqual(devices.io.missing_feedback_groups,['waist','head'])
+
+    def test_execution_state_explicitly_reports_sparse_measured_feedback(self):
+        from bindu_runtime.execution_node import ExecutionNode
+        devices,profile=self.measured_devices()
+        node=S(now=lambda:10.,engine=DelegatedPositionExecutor(profile,devices.io),
+               robot_io=devices.io,profile=profile,last_event=None,event=Mock(),state_pub=Mock(),
+               instance_id='fixture',runtime_mode='real',device_backend='snowbot_vendor')
+        ExecutionNode.tick(node)
+        state=node.state_pub.publish.call_args.args[0]
+        self.assertEqual(len(state.joints.name),16)
+        self.assertEqual(state.missing_feedback_groups,['waist','head'])
+        self.assertEqual(state.code,'FEEDBACK_INCOMPLETE:waist,head')
+        self.assertNotIn('body_joint_1',state.joints.name)
 
 
 if __name__ == '__main__': unittest.main()

@@ -31,7 +31,6 @@ def scenario(output, name, enabled, calibrated, *, freeze=False, shutdown=False)
     q={n:0. for names in GROUPS.values() for n in names}
     q['arm_l_joint_2'],q['arm_r_joint_2']=.2,-.2
     control=dict(frozen=False,valid=True,triggers=[0.,0.],edges=[[0,0],[0,0]],vr=False)
-    accepted=[0,0];hold_mask=0;hold_position=[0.,0.]
     def heartbeat(msg):
         nonlocal session
         if len(msg.data)==3:session=msg.data[2]
@@ -39,18 +38,13 @@ def scenario(output, name, enabled, calibrated, *, freeze=False, shutdown=False)
     node.create_subscription(JointPositionCommand,vendor+'/joint_position_cmd',lambda _:None,1)
     node.create_subscription(Float64MultiArray,vendor+'/body/motor_cmd',lambda _:None,1)
     node.create_subscription(Float64MultiArray,vendor+'/head/motor_cmd',lambda _:None,1)
-    def target(msg):
-        nonlocal hold_mask
-        assert len(msg.data)==11
-        d=msg.data;i=int(d[4]);side=('left','right')[i];joint=GROUPS[side+'_tool_axis'][0]
-        assert (int(d[2])<<32 | int(d[3]))==session
-        assert d[1]>accepted[i]
-        accepted[i]=int(d[1]);packets.append(list(d))
-        if d[5]==0:
-            hold_mask|=1<<i;hold_position[i]=q[joint]
-        else:
-            hold_mask&=~(1<<i);q[joint]=d[6]
-    node.create_subscription(Float64MultiArray,vendor+'/bindu/gripper_command',target,1)
+    def target(side, msg):
+        assert len(msg.data)==5 and list(msg.data[1:3])==[0.,0.]
+        packets.append(dict(side=side, data=list(msg.data)))
+        q[GROUPS[side+'_tool_axis'][0]]=msg.data[0]
+    for side in ('left','right'):
+        node.create_subscription(Float64MultiArray,vendor+'/gripper/'+side+'_cmd',
+                                 lambda msg,s=side:target(s,msg),1)
     node.create_subscription(GripperState,ns+'/gripper/state',lambda m:state.update({m.side:m}),10)
     def publish():
         nonlocal sample,vr_seq
@@ -58,6 +52,7 @@ def scenario(output, name, enabled, calibrated, *, freeze=False, shutdown=False)
         if not control['frozen']:sample+=1
         feedback=RetInformation();feedback.header.stamp=stamp(now)
         for prefix,groups in (('l',('left_arm','left_tool_axis')),('r',('right_arm','right_tool_axis')),('torso',('waist',)),('head',('head',))):
+            if not hasattr(feedback,prefix+'_position'):continue
             names=[n for g in groups for n in GROUPS[g]]
             setattr(feedback,prefix+'_position',[q[n] for n in names]);setattr(feedback,prefix+'_speed',[0.]*len(names))
         feedback_pub.publish(feedback)
@@ -65,8 +60,7 @@ def scenario(output, name, enabled, calibrated, *, freeze=False, shutdown=False)
         health_pub.publish(String(data=json.dumps(dict(schema=1,stamp=now,sample=sample,sample_age=.001,
             operational=True,ready=True,guard_enabled=True,guard_armed=bool(session),guard_latched=False,
             guard_session=session,wkc=40,expected_wkc=40,present_mask=0xfffff,fault_mask=0,
-            enable_requested_mask=0xfffff,operation_enabled_mask=0xfffff,gripper_control_enabled=True,
-            gripper_latched_mask=0,gripper_sequence=accepted,gripper_hold_mask=hold_mask,gripper_hold_position=hold_position))))
+            enable_requested_mask=0xfffff,operation_enabled_mask=0xfffff))))
         if control['vr']:
             vr_seq+=1
             for i,side in enumerate(('left','right')):
@@ -121,15 +115,17 @@ def scenario(output, name, enabled, calibrated, *, freeze=False, shutdown=False)
             checks.append('frozen PDO with advancing ROS headers faults and blocks reacquisition')
             return checks
         if shutdown:
+            before=len(packets)
             os.killpg(process.pid,signal.SIGINT)
             until(node,lambda:process.poll() is not None,8.)
             assert process.returncode==0,process.returncode
-            assert any(p[5]==0 for p in packets)
+            assert len(packets)>before
+            assert packets[-1]['data'][0]==q['arm_l_joint_8']
             checks.append('SIGINT sends hold and waits for measured confirmation')
             return checks
         until(node,lambda:state['left'].state=='SUCCEEDED',5.)
         assert state['left'].position_reached and state['left'].grasp_state=='unknown'
-        assert all(int(p[4])==0 for p in packets)
+        assert all(p['side']=='left' for p in packets)
         checks.append('position completion is measured, independent, and never physical grasp confirmation')
         body=node.create_client(Lease,ns+'/execution/lease')
         blocked=call(node,body,Lease.Request(operation='acquire',owner='body',resources=['left_arm','right_arm']))
@@ -147,7 +143,7 @@ def scenario(output, name, enabled, calibrated, *, freeze=False, shutdown=False)
         before=len(packets);held_q=q['arm_r_joint_8']
         control['valid']=False
         until(node,lambda:not state['right'].lease_active and state['right'].state=='CANCELED',4.)
-        assert all(p[5]==0 for p in packets[before:] if p[4]==1.)
+        assert all(p['data'][0]==held_q for p in packets[before:] if p['side']=='right')
         assert q['arm_r_joint_8']==held_q
         checks.append('explicitly leased Trigger control works; invalid input holds without synthetic close')
         recipe=json.loads((ROOT/'src/integration/bindu_runtime/config/deployments/snowbot_real_teleop.json').read_text())
