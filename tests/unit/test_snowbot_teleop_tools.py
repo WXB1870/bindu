@@ -8,7 +8,7 @@ import subprocess
 import tempfile
 from types import SimpleNamespace as NS
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 spec = importlib.util.spec_from_file_location('snowbot_teleop_tools', ROOT/'tools/deployment/snowbot_teleop.py')
 helper = importlib.util.module_from_spec(spec)
@@ -18,6 +18,20 @@ spec.loader.exec_module(helper)
 class TeleopToolsTests(unittest.TestCase):
     def setUp(self):
         self.recipe = json.loads(helper.RECIPE.read_text())
+
+    def test_unknown_wrong_or_duplicate_gripper_writer_cannot_establish_identity(self):
+        node=Mock();topic='/fixture/gripper/state';expected='/fixture/execution'
+        writer=NS(node_namespace='_NODE_NAMESPACE_UNKNOWN_',node_name='_NODE_NAME_UNKNOWN_',
+                  topic_type='bindu_interfaces/msg/GripperState')
+        node.get_publishers_info_by_topic.return_value=[writer]
+        self.assertFalse(helper.gripper_publisher_matches(node,topic,expected))
+        writer.node_namespace='/fixture';writer.node_name='execution'
+        self.assertTrue(helper.gripper_publisher_matches(node,topic,expected))
+        writer.topic_type='std_msgs/msg/String'
+        self.assertFalse(helper.gripper_publisher_matches(node,topic,expected))
+        writer.topic_type='bindu_interfaces/msg/GripperState'
+        node.get_publishers_info_by_topic.return_value=[writer,writer]
+        self.assertFalse(helper.gripper_publisher_matches(node,topic,expected))
 
     def test_configure_is_readonly_and_does_not_replace_existing_file(self):
         with tempfile.TemporaryDirectory() as tmp:

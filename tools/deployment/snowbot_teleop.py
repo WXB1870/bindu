@@ -191,6 +191,13 @@ def observe(args, robot, duration):
         rclpy.shutdown()
 
 
+def gripper_publisher_matches(node, topic, expected):
+    writers = node.get_publishers_info_by_topic(topic)
+    return (len(writers)==1 and
+            writers[0].node_namespace.rstrip('/')+'/'+writers[0].node_name==expected and
+            writers[0].topic_type=='bindu_interfaces/msg/GripperState')
+
+
 def operate_gripper(args, robot, options):
     import rclpy
     from rclpy.signals import SignalHandlerOptions
@@ -245,9 +252,10 @@ def operate_gripper(args, robot, options):
     try:
         sides = ('left','right') if options.side=='both' else (options.side,)
         def publisher_matches():
-            writers = node.get_publishers_info_by_topic(ns+'/gripper/state')
-            return len(writers)==1 and writers[0].node_namespace.rstrip('/')+'/'+writers[0].node_name==ns+'/execution'
-        discovery_deadline = time.monotonic()+2.
+            return gripper_publisher_matches(node, ns+'/gripper/state', ns+'/execution')
+        # DDS may discover a writer before its owning ROS node information.
+        # This is a startup budget, not a relaxation of feedback/command ages.
+        discovery_deadline = time.monotonic()+5.
         while not publisher_matches() and time.monotonic()<discovery_deadline:
             rclpy.spin_once(node, timeout_sec=.02)
         if not publisher_matches():
