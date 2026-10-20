@@ -2,7 +2,7 @@
 
 Bindu 是基于 ROS 2 的模块化机器人控制系统，面向遥操作与移动操作。通过公共接口连接目标输入、运动求解、任务能力和设备控制，使算法与机器人硬件能够独立替换。
 
-当前重点是机器人遥操作：在仿真中完善单臂控制、双臂持工具与腰臂协调，为现场 VR 和真实设备接入建立基础。
+当前核心目标是将 Bindu 遥操作模块部署到真实 Snowbot，使用 VR 双手柄控制双臂持雪铲扫雪，贯通输入、腰臂求解、位置驱动、夹爪与实测反馈。仿真用于部署前验证；完整真机扫雪尚未验收。
 
 ## 项目结构
 
@@ -75,7 +75,7 @@ PICO扫雪：[统一部署与启动](运行与验证.md#vr-统一部署与启动
 
 导航部署：[Orin专用脚本与新手流程](src/capabilities/bindu_navigation/README.md#orin-导航专用部署与新手操作)（Tracer 2.0底盘接口按要求占位，建图与定位按实际传感器选型）。
 
-真机部署：[x86独立环境与构建](src/integration/bindu_runtime/README.md#x86-真机部署已有适配底层) · [现场部署顺序](src/integration/bindu_runtime/README.md#现场部署顺序) · [Snowbot自动化入口](src/integration/bindu_runtime/README.md#部署自动化)，提供现场配方生成、独立构建、部署检查、前台启动及只读状态查看，默认只读。
+真机部署：先看[现场驱动完整测试流程与扫雪接入](运行与验证.md#snowbot-真机驱动与双臂扫雪部署)，再按[x86独立环境与构建](src/integration/bindu_runtime/README.md#x86-真机部署已有适配底层)接入统一 PICO 遥操作；[旧最小位置接口检查](src/integration/bindu_runtime/README.md#现场部署顺序)与[Snowbot自动化入口](src/integration/bindu_runtime/README.md#部署自动化)用于专项验证，默认只读。
 
 ## 当前状态与验证入口
 

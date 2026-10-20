@@ -62,6 +62,8 @@ ros2 topic echo /bindu_sim/execution/state --once
 
 ## x86 真机部署（已有适配底层）
 
+本期目标为在真实 Snowbot 部署 Bindu 遥操作并完成双臂扫雪。用户于2026-10-20提供的电机检查、网口／PD配置、底层五终端启动、监测、单关节与轨迹测试，以及它们与 Bindu 的接口差异，统一维护在[真机驱动与双臂扫雪部署](../../../运行与验证.md#snowbot-真机驱动与双臂扫雪部署)。收到操作流程不代表这些步骤已经在目标机验证。**代理绝不执行可能导致真实硬件运动的命令**；本节及后续真机流程仅供人工查阅，脚本／launch／远端调用同受[项目硬约束](../../../AGENTS.md#3-机器人软件工程约束)限制。
+
 目标机使用与本机相同的已适配厂商 `src`，支持 Ubuntu 22.04／ROS 2 Humble／Python 3.10，或 Ubuntu 24.04／Jazzy／Python 3.12。真机保留浏览器运动学显示，不需要 Isaac。新机重新编译，不复制本机 `install/`、`.so`、venv 或串联历史实验目录的 `artifacts/vr/env.sh`。
 
 **0．确认 Git 版本与需要单独准备的材料。** 新机普通双臂／持工具遥操均使用本节的 `tools.deployment.x86_real` 与统一 PICO 入口；后文 `snowbot_teleop.sh` 的旧四节点流程用于专项接口检查，按键和会话操作不混用。
