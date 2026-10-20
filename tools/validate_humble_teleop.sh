@@ -43,9 +43,9 @@ python3 /usr/bin/colcon --log-base /validation/log build --base-paths src \
   --cmake-args -DCMAKE_BUILD_TYPE=Release \
   "-DPython3_EXECUTABLE=$(command -v python3)" "-DPYTHON_EXECUTABLE=$(command -v python3)"
 source /validation/install/local_setup.bash
-PYTHONPATH="/workspace/tests:$PYTHONPATH" python3 -m unittest -v \
-  test_teleop_modes test_teleoperation test_teleop_deployment test_one_euro \
-  test_bimanual_qp > /validation/unit-tests.log 2>&1
+PYTHONPATH="/workspace:$PYTHONPATH" python3 -m unittest -v \
+  tests.unit.test_teleop_modes tests.unit.test_teleoperation tests.unit.test_teleop_deployment tests.unit.test_one_euro \
+  tests.unit.test_bimanual_qp > /validation/unit-tests.log 2>&1
 python3 - <<'PYTEST'
 import importlib.metadata, json, platform, re, sys
 from pathlib import Path
@@ -66,7 +66,7 @@ Path('/validation/environment.json').write_text(json.dumps({
 print('Humble unit tests:', count, 'passed; skipped:', skipped)
 PYTEST
 ctest --test-dir /validation/build/bindu_bimanual_qp --output-on-failure
-ROS_DOMAIN_ID=181 ROS_LOCALHOST_ONLY=1 python3 tests/validate_bimanual.py \
+ROS_DOMAIN_ID=181 ROS_LOCALHOST_ONLY=1 python3 -m tests.integration.validate_bimanual \
   --snowbot --axial-grasp --tool-pose-input --pause-resume --drop-tool-input \
   --tool-display --output /validation/ros-resume-drop
 CONTAINER

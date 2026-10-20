@@ -12,7 +12,7 @@ if [ "${1:-}" = --vr ]; then
   shift
 fi
 if [ "${1:-}" = --kinematic ]; then
-  bindu_script="$bindu_root/tests/validate_shovel_isaac.py"
+  bindu_script="$bindu_root/tests/physics/validate_shovel_isaac.py"
   shift
 elif [ "${1:-}" = --live ]; then
   bindu_script="$bindu_root/tools/snowbot_live.py"

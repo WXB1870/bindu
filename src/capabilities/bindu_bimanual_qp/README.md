@@ -70,10 +70,39 @@ colcon test-result --test-result-base build/bindu_bimanual_qp --verbose
 
 Python 调用入口为 [bindu_kinematics/bimanual.py](../bindu_kinematics/bindu_kinematics/bimanual.py)，对外函数声明见上表对应的 C 头文件。
 
-- 构建、库加载与参数：[双臂 QP 参数与 ABI](../../../运行与验证.md#双臂qp参数与abi)。
+- 构建、库加载与参数：[双臂 QP 参数与 ABI](#双臂qp参数与abi)。
 - 原生测试：[test/test_core.cpp](test/test_core.cpp)，CMake 目标 `test_bimanual_core`。
-- Python／ABI 检查：[test_bimanual_qp.py](../../../tests/test_bimanual_qp.py)。
+- Python／ABI 检查：[test_bimanual_qp.py](../../../tests/unit/test_bimanual_qp.py)。
 
 ## 关联模块
 
 [运动学封装](../bindu_kinematics/README.md) · [遥操作会话](../bindu_teleoperation/README.md) · [共享执行](../../control/bindu_execution/README.md)
+
+## 运行与专项验证
+
+以下命令和项目路径均相对于仓库根目录。带日期内容仅代表当时的专项实验，现行控制规则以动作执行契约和统一部署为准。
+
+### 双臂QP参数与ABI
+
+以下QP字段位于`bimanual_*.json`顶层，缺省值由原生`Config`提供，Python不另维护默认值：
+
+| 参数 | 默认值 | 含义 |
+| --- | ---: | --- |
+| `tool_gain` / `relative_gain` | 2 / 2 | 工具跟踪／闭合误差恢复增益 |
+| `posture_gain` / `posture_weight` | 0.3 / 0.001 | 捕获姿态回归增益／权重 |
+| `shared_target_gain` / `shared_target_weight` | 3 / 0 | 独立共享关节姿态目标增益／权重 |
+| `regularization` | 0.0001 | 速度正则项 |
+| `max_linear_speed` / `max_angular_speed` | 0.15 / 0.5 | 工具目标线／角速度上限，m/s、rad/s |
+| `max_relative_error` | 0.15 | 6D相对位姿误差范数门槛，平移与转角的混合范数 |
+| `limit_margin` / `damper_gain` | 0.05 / 2 | 软限位余量／速度阻尼增益，余量采用关节自身单位 |
+| `equality_tolerance` | 0.0005 | 速度闭合等式复核容差 |
+
+所有字段必须有限；权重、姿态增益与margin可为零，其余必须为正；两侧margin之和必须小于对应有效关节范围。已有配置对速度和闭合误差设有更严格值，以上不是硬件标定值。可选`shared_targets`为共享组全部关节名到目标位置的映射，须配合正的`shared_target_weight`；未配置时腰部仍参与工具跟踪。Python `set_shared_targets(None)`清除该独立姿态目标。
+
+积分与保护字段：`max_integration_interval`缺省0.1 s且不可超过0.1 s；`max_reference_error`缺省0.15，按各关节位置单位检查参考与实测偏差，超过后要求停止并重新捕获；`sample_period`是离线采样步长，运行节点传入实际候选采样间隔。`solve_timeout_us`按墙钟约束单次候选求解，从输入校验、实测握姿准备到原生调用、限位／几何复核、结果打包和前馈样本准备；现有配置保留30 ms。返回的`solve_us`指标仍仅为QP内部累计计时，不能当作完整调用或指令往返延迟。worker往返另由`worker_timeout`约束，缺省为`solve_timeout_us/1e6 + 0.2`秒，初始化由`worker_startup_timeout`约束（缺省30秒）。这些门限不等于已验证真机延迟。
+
+超时诊断为`BIMANUAL_QP_TIMEOUT:native|validation:wall_us=…:cpu_us=…:native_us=…:qp_us=…:geometry_us=…`：`native`检查覆盖输入准备至原生返回，`validation`检查覆盖后续复核、输出与前馈样本准备。`last_timing`保留同一阶段的墙钟、当前线程CPU及分段时间；墙钟明显高于线程CPU提示等待／调度，同线程GC则也消耗CPU，仍须结合GC或线程探针确认。超时使捕获失效，迟到候选不会返回成功或推进前馈样本；检查是调用返回后的拒绝门槛，不能抢占正在执行的原生函数，父进程另以worker期限处理卡住的子进程。
+
+2026-10-14专项在保留原生函数与几何方法的对照中复现一次64.5 ms调用，其中同线程二代GC占62.1 ms；另一分段对照确认停顿发生在几何复核，QP内部仅12.3 µs。NumPy `ctypes.data_as()`转换留下的循环引用会促发扫描；现改为直接地址转换并显式保持数组生命周期。独立spawn的QP worker在初始化期限内先收集再冻结常驻模型／导入图，后续GC保持开启，父进程GC不变，正常退出显式释放原生句柄。完整测试中的旧超时没有分段探针，不能据此证明该次历史异常的唯一原因。对照、回归与失败日志见`artifacts/qp-timeout-2026-10-14/verification.json`；普通系统负载、GIL竞争与Orin长期延时仍需实测，这些改动不构成硬实时保证。
+
+原生包安装C头文件`bindu_bimanual_qp/c_api.h`，当前ABI版本1。升级时须同时重建原生包和Python适配；旧库缺少`bq_abi_version()`会明确报告`BIMANUAL_ABI_MISSING`。原生头文件定义参数顺序、数组长度、返回码和所有权；空句柄返回失败，不支持重复销毁或任意悬空指针。Python求解须显式传入`reference`和`dt`，调用者只在接纳后推进参考；完整时序见[执行契约](../../../动作执行契约.md#2-输入模式必须显式选择)。

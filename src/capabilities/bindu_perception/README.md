@@ -52,8 +52,8 @@ ros2 service call /bindu_sim/perception/locate bindu_interfaces/srv/LocateObject
 
 替换定位算法时保留目标标识、坐标系与观测时间，避免把旧观测作为当前结果；由 [运行装配](../../integration/bindu_runtime/README.md) 连接具体实现。
 
-- 模拟能力检查：[test_capabilities.py](../../../tests/test_capabilities.py)。
-- 示例任务的 ROS 集成检查：[validate_ros.py](../../../tests/validate_ros.py)。
+- 模拟能力检查：[test_capabilities.py](../../../tests/unit/test_capabilities.py)。
+- 示例任务的 ROS 集成检查：[validate_ros.py](../../../tests/integration/validate_ros.py)。
 - 环境准备和检查方式：[运行与验证](../../../运行与验证.md)。这些检查不构成真实感知精度验收。
 
 ## 关联模块

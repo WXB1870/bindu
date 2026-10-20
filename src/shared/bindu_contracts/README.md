@@ -44,7 +44,7 @@ PY
 新增算法或设备时先满足端口和本体配置，再由运行装配选择实现。ROS 消息转换位于 [runtime/common.py](../../integration/bindu_runtime/bindu_runtime/common.py)，消息定义由 `bindu_interfaces` 维护。
 
 - 契约与停止语义：[动作执行契约](../../../动作执行契约.md)。
-- 行为检查：[系统契约](../../../tests/test_system_contracts.py)、[本体配置](../../../tests/test_robot_configuration.py)、[运行模式](../../../tests/test_runtime_mode.py)。
+- 行为检查：[系统契约](../../../tests/unit/test_system_contracts.py)、[本体配置](../../../tests/unit/test_robot_configuration.py)、[运行模式](../../../tests/unit/test_runtime_mode.py)。
 - 构建与测试方式：[运行与验证](../../../运行与验证.md)。
 
 ## 关联模块

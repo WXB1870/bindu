@@ -30,14 +30,14 @@ ros2 interface show bindu_interfaces/action/TeleopSession
 
 | 入口 | 内容 |
 |---|---|
-| [msg/](msg/) | 全部消息定义 |
+| [msg/](msg) | 全部消息定义 |
 | [MotionCommand.msg](msg/MotionCommand.msg) | 运动指令、资源组、时间语义与租约身份 |
 | [ExecutionState.msg](msg/ExecutionState.msg) | 执行参考、实际反馈、来源、运行模式和停止失败 |
 | [VRInput.msg](msg/VRInput.msg) | VR位姿、映射标识、物理键状态和累计边沿；保留旧`grip`字段 |
 | [PicoContext.srv](srv/PicoContext.srv) | 绑定来源与状态代次的人工持物／外部支撑声明 |
 | [RecorderHealth.msg](msg/RecorderHealth.msg) | 写入健康及独立的采集开关状态 |
-| [srv/](srv/) | 控制权、运动提交、执行控制、目标定位与故障注入服务 |
-| [action/](action/) | 任务、导航、Pi、遥操作会话和模式选择动作 |
+| [srv/](srv) | 控制权、运动提交、执行控制、目标定位与故障注入服务 |
+| [action/](action) | 任务、导航、Pi、遥操作会话和模式选择动作 |
 | [CMakeLists.txt](CMakeLists.txt) | 接口生成与依赖声明 |
 
 ## 接入与验证
@@ -45,7 +45,7 @@ ros2 interface show bindu_interfaces/action/TeleopSession
 修改字段或语义时，同时检查 [公共契约](../bindu_contracts/README.md) 与 [ROS 转换](../../integration/bindu_runtime/bindu_runtime/common.py)，重新构建接口及受影响的发布／订阅节点。
 
 - 字段约束与执行语义：[动作执行契约](../../../动作执行契约.md)。
-- ROS 集成检查：[validate_ros.py](../../../tests/validate_ros.py)、[模式一致性](../../../tests/validate_runtime_mode.py)。这些脚本需要已构建、已启动的对应测试环境。
+- ROS 集成检查：[validate_ros.py](../../../tests/integration/validate_ros.py)、[模式一致性](../../../tests/integration/validate_runtime_mode.py)。这些脚本需要已构建、已启动的对应测试环境。
 - 构建、环境加载与验证命令：[运行与验证](../../../运行与验证.md)。
 
 ## 关联模块

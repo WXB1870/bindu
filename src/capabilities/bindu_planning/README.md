@@ -42,8 +42,8 @@ PY
 
 替换策略时保持关节命名、顺序、资源组和时间语义，由 [plugins.py](../../integration/bindu_runtime/bindu_runtime/plugins.py) 等装配入口选择实现。计划生成成功不代表设备已执行或抓取成功。
 
-- 行为检查：[模拟能力](../../../tests/test_capabilities.py)、[系统契约](../../../tests/test_system_contracts.py)。
-- 示例任务 ROS 检查：[validate_ros.py](../../../tests/validate_ros.py)。
+- 行为检查：[模拟能力](../../../tests/unit/test_capabilities.py)、[系统契约](../../../tests/unit/test_system_contracts.py)。
+- 示例任务 ROS 检查：[validate_ros.py](../../../tests/integration/validate_ros.py)。
 - 执行规则：[动作执行契约](../../../动作执行契约.md)；环境与验证命令：[运行与验证](../../../运行与验证.md)。
 
 ## 关联模块

@@ -54,8 +54,8 @@ ros2 action send_goal /bindu_sim/tasks/fetch_drink bindu_interfaces/action/Fetch
 
 更换能力时通过公共端口与运行装配接入，并保持观测时间／坐标系、控制权、取消和持物语义一致。新增真实抓取流程需要独立的抓取确认依据。
 
-- 行为检查：[模拟能力](../../../tests/test_capabilities.py)、[系统契约](../../../tests/test_system_contracts.py)。
-- 示例任务 ROS 检查：[validate_ros.py](../../../tests/validate_ros.py)。
+- 行为检查：[模拟能力](../../../tests/unit/test_capabilities.py)、[系统契约](../../../tests/unit/test_system_contracts.py)。
+- 示例任务 ROS 检查：[validate_ros.py](../../../tests/integration/validate_ros.py)。
 - 执行约束：[动作执行契约](../../../动作执行契约.md)；运行环境：[运行与验证](../../../运行与验证.md)。
 
 ## 关联模块
