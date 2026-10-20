@@ -135,9 +135,9 @@ python3 -m tools.analysis.compare_interpolators --legacy-root 历史代码/legs_
 
 | 环节 | 当前位置契约的实际路径 |
 |---|---|
-| 手柄位姿滤波 | 普通双臂与扫雪分别使用`IndependentArmsSession`和`BimanualSession`，未实例化`OneEuroPose`；One Euro实现供配置启用的独立单臂`TeleopSession`使用 |
+| 手柄位姿滤波 | 共用Snowbot配方已启用One Euro；普通双臂分别滤波手柄，扫雪滤波合成中点／姿态。按键与时效使用原始输入，参数及重置规则见[遥操作模块](../../capabilities/bindu_teleoperation/README.md#vr-位姿-one-euro-滤波) |
 | 共享位置执行 | `DelegatedPositionExecutor.prepare_path`保留直接位置目标，不调用通用执行器的原生自适应／S曲线生成；profile中的`joint_target_interpolation=adaptive`不能据此证明此路径使用了自适应插值 |
 | 当前PhysX设备 | 腰与双臂共用一个限速向量进度，生成一致的位置／速度参考；实际关节由物理驱动跟随，头部与夹爪独立 |
 | 真实设备 | 上层同样委托位置设备负责插值／保持；底层实际使用的曲线、动态限制和同步性能需按现场源码、配置与实测核对 |
 
-原生插值代码仍由通用`Executor`使用。本轮仅整理入口与说明，未改变任何运行滤波、限速或插值配置。
+原生插值代码仍由通用`Executor`使用。输入滤波已独立接入；实机底层跟随器及同步插值的替换继续作为备选，暂不实施。

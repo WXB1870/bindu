@@ -4,7 +4,7 @@ import uuid
 from dataclasses import dataclass
 import numpy as np
 from .vr.mapping import robot_pose, relative_target, pose_matrix
-from .vr.one_euro import rotation_log, rotation_exp
+from .vr.one_euro import rotation_log, rotation_exp, configured_pose_filter
 
 
 class AcceptedReference:
@@ -99,7 +99,8 @@ class BimanualSession:
         self.released = False
         self.pressed_since = None
         self.anchor_input = self.anchor_tool = None
-        self.current_input = None
+        self.current_input = self.raw_input = None
+        self.pose_filter = configured_pose_filter(config.get('pose_filter'))
         self.current_hands = self.rod_anchor_hands = self.rod_anchor_basis = None
         self.rod_roll = (0.,0.)
         self.stamp = 0.
@@ -198,6 +199,13 @@ class BimanualSession:
         return target
 
     def ingest(self, left, right, now):
+        try:
+            return self._ingest(left,right,now)
+        except ValueError:
+            if self.pose_filter:self.pose_filter.reset()
+            raise
+
+    def _ingest(self, left, right, now):
         frames=(left,right)
         if (not math.isfinite(now) or
                 any(f is None or not f.valid or f.stop or f.init or not f.source_id or
@@ -216,6 +224,10 @@ class BimanualSession:
         if self.input_stamps is not None and any(
                 f.stamp < previous for f, previous in zip(frames, self.input_stamps)):
             raise ValueError('VR_INPUT_UNORDERED')
+        previous_mode=self.mode
+        if (self.pose_filter and self.mode=='follow' and self.anchor_tool is not None and
+                max(left.stamp,right.stamp)-self.stamp>self.cfg['input_max_age']):
+            raise ValueError('VR_INPUT_TIMEOUT')
         clutch_seq = (left.clutch_seq, right.clutch_seq)
         if (any(type(value) is not int or value < 0 for value in clutch_seq) or
                 self.clutch_seq is not None and
@@ -263,7 +275,7 @@ class BimanualSession:
             self.grasp_mode = desired
             self.grasp_generation += 1
             self.reanchor()
-        self.current_input=pose
+        self.raw_input=self.current_input=pose
         self.source,self.seq,self.stamp=left.source_id,left.seq,max(left.stamp,right.stamp)
         self.input_stamps = (left.stamp, right.stamp)
         if min(left.grip,right.grip) < .3:
@@ -287,6 +299,10 @@ class BimanualSession:
                 self.anchor_tool=self.target=None
         if self.mode == 'follow' and self.anchor_input is None:
             self.anchor_input = pose
+        if self.pose_filter:
+            if self.mode!='follow' or previous_mode!=self.mode or self.anchor_tool is None:
+                self.pose_filter.reset()
+            self.current_input=self.pose_filter.update(pose,self.stamp)
         if self.mode == 'follow' and self.anchor_tool is not None:
             self.target=self.mapped_target()
         return True
@@ -296,6 +312,7 @@ class BimanualSession:
         self.anchor_input = self.anchor_tool = self.target = None
         self.rod_anchor_hands = self.rod_anchor_basis = None
         self.rod_roll = (0.,0.)
+        if self.pose_filter:self.pose_filter.reset()
 
     def capture(self, tool_pose):
         if self.mode != 'follow' or self.anchor_input is None:
@@ -303,6 +320,9 @@ class BimanualSession:
         # Capture is asynchronous. Re-latch the controller on completion too,
         # so motion while the worker captures cannot turn into a first target
         # jump. The robot is held until this capture has completed.
+        if self.pose_filter:
+            self.pose_filter.reset()
+            self.current_input=self.pose_filter.update(self.raw_input,self.stamp)
         self.anchor_input=self.current_input.copy()
         if self.cfg.get('two_hand_rod'):
             self.rod_anchor_hands=tuple(hand.copy() for hand in self.current_hands)

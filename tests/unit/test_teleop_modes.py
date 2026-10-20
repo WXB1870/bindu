@@ -429,6 +429,9 @@ class DeployedToolMappingTests(unittest.TestCase):
     def setUp(self):
         import json
         self.config=json.loads((ROOT/'src/integration/bindu_runtime/config/robots/snowbot/bimanual_snowbot_real.json').read_text())
+        # Verify the exact spatial mapping independently of filter transients.
+        # Enabled filtering and midpoint invariance are covered in test_one_euro.
+        self.config['pose_filter']=dict(self.config['pose_filter'],enabled=False)
         self.config['engage_seconds']=.05
         self.config['pico_grasp_resume_seconds']=.04
         self.session=BimanualSession(self.config,1,0.)

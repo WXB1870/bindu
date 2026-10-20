@@ -111,10 +111,28 @@ def replay(segment,clocks,cfg,profile,clock):
         # Preserve it instead of silently choosing a different hand origin.
         anchor=np.asarray(c['controller_pose']).reshape((2,4,4) if ind else (4,4))
         session.anchor_input=anchor.copy()
+        saved_filter=c.get('pose_filter_state') if c.get('pose_filter')==cfg.get('pose_filter') else None
         if ind:
             session.anchors=[anchor[i].copy() if session.active_mask&(1<<i) else None for i in range(2)]
+            if c.get('controller_anchors') is not None:
+                session.anchors=[np.asarray(pose) if pose is not None else None for pose in c['controller_anchors']]
+                session.robot_anchors=[np.asarray(pose) if pose is not None else None for pose in c['robot_anchors']]
+            for i,hand in enumerate(session.hands):
+                if hand.pose_filter:
+                    hand.pose_filter.reset()
+                    hand.filtered_pose=hand.pose_filter.update(anchor[i],session.stamp)
+                    if saved_filter is not None and saved_filter[i] is not None:
+                        hand.pose_filter.restore(saved_filter[i],stamp=session.stamp)
+                        hand.filtered_pose=hand.pose_filter.filtered.copy()
+                    session.current_input[i]=hand.filtered_pose
         else:
             session.rod_anchor_basis=anchor[:3,:3].copy()
+            if session.pose_filter:
+                session.pose_filter.reset()
+                session.current_input=session.pose_filter.update(anchor,session.stamp)
+                if saved_filter is not None:
+                    session.pose_filter.restore(saved_filter,stamp=session.stamp)
+                    session.current_input=session.pose_filter.filtered.copy()
         session.seq=-1;session.input_stamps=None
         drivers=[SimJointDriver(profile.groups[g],1.,{n:actual[n] for n in profile.groups[g]}) for g in cfg['resource_groups']]
         SynchronizedJointProgress(drivers,{n:profile.speed(n) for d in drivers for n in d.positions})

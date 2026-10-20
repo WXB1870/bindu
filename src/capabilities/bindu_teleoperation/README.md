@@ -347,9 +347,11 @@ ros2 action send_goal /bindu_sim/teleop/session bindu_interfaces/action/TeleopSe
 
 ### VR 位姿 One Euro 滤波
 
-左右G1及v3.4随附配置默认启用`pose_filter`：原始VR输入／按键校验 → OpenXR坐标变换 → One Euro位姿滤波 → 相对目标映射 → IK（G1配置启用简化碰撞约束） → 执行层在线自适应插值。实现位于[`one_euro.py`](bindu_teleoperation/vr/one_euro.py)，使用[One Euro的速度自适应截止频率原理](https://gery.casiez.net/1euro/)；位置采用三维速度范数，旋转采用SO(3)最短弧扩展，不逐元素平滑旋转矩阵／欧拉角。
+统一Snowbot位置配方在`bimanual_snowbot_real.json`启用`pose_filter`，真机与仿真共用：普通双臂在OpenXR转换后分别滤波每只手，再计算相对目标；扫雪先由原始双手合成握点中点、连线方向与共同绕杆转动，再对完整合成位姿滤波后映射工具目标。合成位姿的位置在手柄中点，不对工具远端原点滤波，旋转仍绕工具握点中点。G1／v3.4独立单臂保留已有滤波入口。实现复用[`one_euro.py`](bindu_teleoperation/vr/one_euro.py)；位置采用三维速度范数，旋转采用SO(3)最短弧扩展，不逐元素平滑旋转矩阵／欧拉角。
 
-参数分别位于`pose_filter.position`和`pose_filter.rotation`：`min_cutoff_hz=4`、`derivative_cutoff_hz=1`；`beta`分别为8与2，输入单位分别为米和弧度。这是仿真初值，未按真实头显标定。`pose_filter.enabled=false`关闭；旧配置完全缺少该字段时保留无滤波行为。滤波仅按新接收帧的源时间更新，重复序号不更新，时间回退拒绝；按钮不滤波、原始VR消息及命令有效期不重写。松握、重握建基准、clutch序号变化及输入异常／超时清空滤波状态，旧会话不能自动恢复。
+参数分别位于`pose_filter.position`和`pose_filter.rotation`：`min_cutoff_hz=4`、`derivative_cutoff_hz=1`；`beta`分别为8与2，输入单位分别为米和弧度。沿用已有参数初值，操控延迟和去抖效果仍需现场调整；`pose_filter.enabled=false`关闭，缺少该字段保留无滤波行为。原始位姿、按键、来源与时效先校验，按键不滤波，不改写源时间、原始消息或命令有效期。同一源时间戳的按键帧保持上次滤波位姿，仍处理离合／换握事件；时间回退拒绝。松握、离合计数变化、换握和输入异常会重置相应滤波历史；异步FK捕获完成时用最新原始位姿重新起步，丢弃捕获期间的运动和滤波拖尾。普通模式只重置重新接合的一侧，另一侧继续保留滤波状态与映射基准。
+
+`BIMANUAL_STARTED`记录滤波参数与`pose_filter_space`；`BIMANUAL_CAPTURED`记录原始／映射基准位姿、双侧独立锚点和滤波内部状态，回放可恢复原状态并重新映射时钟。滤波不修复无线／接收长空档，原有断流、追踪、限位、碰撞和实测停止检查继续生效；关节插值／底层替换未在此启用。
 
 2026-09-24：2包重建、9滤波＋23遥操作＋6 G1模块检查通过；左右ROS及Vuer合成输入共9项分批通过。90Hz合成静止输入的每轴位置RMS从3.02mm降至1.10mm，旋转RMS从0.52°降至0.18°；单次滤波计算中位0.059ms／P95 0.098ms。0.5m/s和0.5rad/s匀速测试的等效滞后分别19.9ms、31.8ms（稳态偏差÷速度），不是实际网络／执行延迟。首轮WebSocket验证器未收到执行状态即读取基准，补首帧等待后两个WebSocket入口通过。Isaac两轮都在VR运动前的准备动作失败，分别为动态限幅拒绝及停稳超时，该早期批次未完成物理滤波链路验收；后续同日已修正并通过[联合物理验证](../../hardware/bindu_hardware/README.md#isaac-sim-图形物理仿真)，早期失败未覆盖或删除。数据、配置、成功与失败均见`artifacts/one-euro-2026-09-24/verification.json`，真实头显仍未联调。
 

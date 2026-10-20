@@ -16,9 +16,17 @@ class IndependentArmsSession:
         self.axial=None;self.grasp_mode='independent:0';self.grasp_generation=0
         self.active_mask=0;self.anchor_input=self.anchor_tool=self.target=None
         self.anchors=[None,None];self.robot_anchors=[None,None]
-        self.current_input=None
+        self.current_input=self.raw_input=None
 
     def ingest(self, left, right, now):
+        try:
+            return self._ingest(left,right,now)
+        except ValueError:
+            for hand in self.hands:
+                if hand.pose_filter:hand.pose_filter.reset()
+            raise
+
+    def _ingest(self, left, right, now):
         frames=(left,right)
         if (not math.isfinite(now) or any(
                 f is None or not f.valid or f.stop or f.init or not f.source_id or f.side!=side or
@@ -41,19 +49,31 @@ class IndependentArmsSession:
                 changed=True;self.anchors[i]=self.robot_anchors[i]=None
         self.source,self.seq,self.stamp=left.source_id,left.seq,max(left.stamp,right.stamp)
         self.current_input=np.array([hand.filtered_pose for hand in self.hands])
+        self.raw_input=np.array([hand.raw_pose for hand in self.hands])
         if changed or mask!=previous:
             self.grasp_generation+=1
             self.grasp_mode='independent:'+str(mask)
-            self.reanchor()
+            self.reanchor(preserve_active=True)
         self.active_mask=mask;self.mode='follow' if mask else 'idle'
         self.anchor_input=self.current_input.copy() if mask else None
         if self.mode=='follow' and self.anchor_tool is not None:self.target=self.mapped_target()
         return True
 
-    def reanchor(self):
+    def reanchor(self, *, preserve_active=False):
         # The runtime confirms hold and fences every old worker/submission
-        # before capturing FK again. Unchanged active-side anchors survive.
+        # before capturing FK again. Clutch changes preserve the active partner;
+        # an explicit pause requires both mapping baselines to be recaptured.
         self.anchor_tool=self.target=None
+        if not preserve_active:
+            # An explicit confirmed pause suspends both hands. Resume captures
+            # fresh baselines rather than replaying motion made while paused.
+            self.anchors=[None,None]
+            self.robot_anchors=[None,None]
+            for hand in self.hands:
+                hand.mode='idle'
+                hand.anchor_input=hand.anchor_robot=None
+                hand.anchor_pending=False
+                if hand.pose_filter:hand.pose_filter.reset()
 
     def capture(self, poses):
         if self.mode!='follow':raise ValueError('INDEPENDENT_ARMS_NOT_ENGAGED')
@@ -64,6 +84,14 @@ class IndependentArmsSession:
             if not self.active_mask&(1<<i):
                 self.anchors[i]=None;self.robot_anchors[i]=pose.copy()
             elif self.anchors[i] is None:
+                # FK capture can finish after several moving input samples.
+                # Re-seed only the recaptured side; the other hand's baseline
+                # and filter trajectory must survive its partner's release.
+                hand=self.hands[i]
+                if hand.pose_filter:
+                    hand.pose_filter.reset()
+                    hand.filtered_pose=hand.pose_filter.update(hand.raw_pose,hand.frame.stamp)
+                    self.current_input[i]=hand.filtered_pose
                 self.anchors[i]=self.current_input[i].copy()
                 self.robot_anchors[i]=pose.copy()
         self.anchor_input=self.current_input.copy()

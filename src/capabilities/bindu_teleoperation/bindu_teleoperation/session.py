@@ -4,7 +4,7 @@ import uuid
 import numpy as np
 from bindu_contracts.teleoperation import IKRequest
 from .vr.mapping import robot_pose, relative_target
-from .vr.one_euro import OneEuroPose
+from .vr.one_euro import configured_pose_filter
 
 
 class TeleopSession:
@@ -23,8 +23,8 @@ class TeleopSession:
         self.last_result = -float('inf')
         self.frame = None
         self.clutch_seq = 0
-        self.pose_filter = OneEuroPose(config['pose_filter']) if config.get('pose_filter', {}).get('enabled') else None
-        self.filtered_pose = None
+        self.pose_filter = configured_pose_filter(config.get('pose_filter'))
+        self.raw_pose = self.filtered_pose = None
 
     def ingest(self, frame, now):
         try:
@@ -56,7 +56,7 @@ class TeleopSession:
             # No verified initial posture exists yet. Never silently move to zero.
             raise ValueError('VR_INIT_NOT_CONFIGURED')
         if self.pose_filter and self.frame is not None:
-            if frame.stamp <= self.frame.stamp:
+            if frame.stamp < self.frame.stamp:
                 raise ValueError('VR_FILTER_TIME_ORDER')
             if self.mode == 'follow' and frame.stamp-self.frame.stamp > self.cfg['input_max_age']:
                 raise ValueError('VR_INPUT_TIMEOUT')
@@ -93,6 +93,7 @@ class TeleopSession:
             self.filtered_pose = self.pose_filter.update(pose, frame.stamp)
         else:
             self.filtered_pose = pose
+        self.raw_pose = pose
         return True
 
     def check(self, now):

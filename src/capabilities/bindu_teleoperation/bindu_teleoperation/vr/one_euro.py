@@ -58,10 +58,37 @@ class OneEuroPose:
         self.velocity = np.zeros(3)
         self.angular_velocity = np.zeros(3)
 
+    def snapshot(self):
+        if self.stamp is None:return None
+        return dict(stamp=self.stamp,raw=self.raw.tolist(),filtered=self.filtered.tolist(),
+                    velocity=self.velocity.tolist(),angular_velocity=self.angular_velocity.tolist())
+
+    def restore(self, state, *, stamp=None):
+        """Restore recorded history for offline replay, optionally rebasing time."""
+        if state is None:
+            self.reset();return
+        try:
+            source=float(state['stamp']);at=source if stamp is None else float(stamp)
+            raw=pose_matrix(state['raw']).copy();filtered=pose_matrix(state['filtered']).copy()
+            velocity=np.asarray(state['velocity'],dtype=float)
+            angular=np.asarray(state['angular_velocity'],dtype=float)
+            if (not math.isfinite(source) or not math.isfinite(at) or
+                    velocity.shape!=(3,) or angular.shape!=(3,) or
+                    not np.isfinite(velocity).all() or not np.isfinite(angular).all()):
+                raise ValueError('invalid filter state')
+        except (KeyError,TypeError,ValueError) as exc:
+            raise ValueError('VR_INVALID_FILTER_STATE') from exc
+        self.stamp,self.raw,self.filtered=at,raw,filtered
+        self.velocity,self.angular_velocity=velocity.copy(),angular.copy()
+
     def update(self, pose, stamp):
         pose = pose_matrix(pose)
-        if not math.isfinite(stamp) or (self.stamp is not None and stamp <= self.stamp):
+        if not math.isfinite(stamp) or (self.stamp is not None and stamp < self.stamp):
             raise ValueError('VR_FILTER_TIME_ORDER')
+        # Button-only/coalesced frames can reuse a pose measurement timestamp.
+        # Keep the last filtered sample; never invent dt or advance its clock.
+        if self.stamp is not None and stamp == self.stamp:
+            return self.filtered.copy()
         if self.stamp is None or not self.config['enabled']:
             self.filtered = pose.copy()
         else:
@@ -77,3 +104,11 @@ class OneEuroPose:
             self.filtered[:3,:3] = rotation_exp(ra*rotation_log(pose[:3,:3]@self.filtered[:3,:3].T))@self.filtered[:3,:3]
         self.raw, self.stamp = pose, stamp
         return self.filtered.copy()
+
+
+def configured_pose_filter(config):
+    """Absent configuration keeps legacy input; validate explicit settings."""
+    if config is None:
+        return None
+    result = OneEuroPose(config)
+    return result if config['enabled'] else None

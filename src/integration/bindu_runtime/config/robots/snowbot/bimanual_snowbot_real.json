@@ -166,6 +166,19 @@
   "tool_gain": 10.0,
   "posture_gain": 0.1,
   "shared_motion_weight": 0.1,
+  "pose_filter": {
+    "enabled": true,
+    "position": {
+      "min_cutoff_hz": 4.0,
+      "beta": 8.0,
+      "derivative_cutoff_hz": 1.0
+    },
+    "rotation": {
+      "min_cutoff_hz": 4.0,
+      "beta": 2.0,
+      "derivative_cutoff_hz": 1.0
+    }
+  },
   "limit_margin": 0.15,
   "damper_gain": 6.0,
   "right_axial_grasp": {

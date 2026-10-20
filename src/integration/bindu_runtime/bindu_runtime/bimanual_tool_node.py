@@ -363,6 +363,9 @@ class BimanualToolNode(RuntimeNode):
                 'tool_transform':None if isinstance(session,IndependentArmsSession) else self.cfg['left_to_tool'],
                 'position_scale':self.cfg['position_scale'],'rotation_scale':1.,
                 'vr_tool_mapping':self.cfg.get('vr_tool_mapping','legacy_wrist'),
+                'pose_filter':self.cfg.get('pose_filter') if self.input_source=='vr' else None,
+                'pose_filter_space':('per_hand_robot_pose' if isinstance(session,IndependentArmsSession)
+                    else 'paired_controller_pose') if self.input_source=='vr' else None,
                 'mapping_frame':'robot_base','geometry_kind':self.cfg.get('demo',{}).get('geometry_kind','shovel'),
                 'max_integration_interval':reference.max_interval,'max_sample_gap':reference.max_sample_gap,
                 'right_axial_grasp':bool(session.axial),
@@ -455,7 +458,8 @@ class BimanualToolNode(RuntimeNode):
                     awaiting=''
                     reference.reset()
                     pending_reference=None
-                    session.reanchor()
+                    if isinstance(session,IndependentArmsSession):session.reanchor(preserve_active=True)
+                    else:session.reanchor()
                     last_grasp_generation=session.grasp_generation
                     self.event('BIMANUAL_GRASP_REQUESTED',json.dumps({
                         'mode':session.grasp_mode,'generation':last_grasp_generation,
@@ -507,6 +511,15 @@ class BimanualToolNode(RuntimeNode):
                                 'feedback':work_feedback,
                                 'input_stamp':session.stamp,'input_seq':session.seq,'grasp_mode':session.grasp_mode,
                                 'controller_pose':session.anchor_input.tolist(),
+                                'raw_controller_pose':session.raw_input.tolist() if self.input_source=='vr' else None,
+                                'pose_filter':self.cfg.get('pose_filter') if self.input_source=='vr' else None,
+                                'pose_filter_state':([hand.pose_filter.snapshot() if hand.pose_filter else None
+                                    for hand in session.hands] if isinstance(session,IndependentArmsSession) else
+                                    session.pose_filter.snapshot() if isinstance(session,BimanualSession) and session.pose_filter else None),
+                                'controller_anchors':([value.tolist() if value is not None else None
+                                    for value in session.anchors] if isinstance(session,IndependentArmsSession) else None),
+                                'robot_anchors':([value.tolist() if value is not None else None
+                                    for value in session.robot_anchors] if isinstance(session,IndependentArmsSession) else None),
                                 'control_point_in_tool_m':session.control_point_in_tool.tolist() if isinstance(session,BimanualSession) else None,
                                 'feedback_sampled_at':work_sampled_at,'capture_completed_at':reference.sampled_at,
                                 'input_after_capture':reference.input_after_capture,
