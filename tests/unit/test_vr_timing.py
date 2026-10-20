@@ -68,6 +68,34 @@ class VRInputClockTests(unittest.TestCase):
         owner.now.assert_called_once()
 
 
+class ControllerSocketTests(unittest.TestCase):
+    def test_immediate_ack_is_rearmed_and_unsupported_sockets_are_nonfatal(self):
+        import socket
+        from unittest.mock import Mock
+        from bindu_teleoperation.vr.receiver import quick_ack
+        sock=Mock()
+        if hasattr(socket,'TCP_QUICKACK'):
+            self.assertTrue(quick_ack(sock));self.assertTrue(quick_ack(sock))
+            self.assertEqual(sock.setsockopt.call_count,2)
+            sock.setsockopt.side_effect=OSError('unsupported')
+        self.assertFalse(quick_ack(None));self.assertFalse(quick_ack(sock))
+
+    def test_kernel_tcp_metrics_are_not_confused_with_one_way_latency(self):
+        import struct,socket
+        from unittest.mock import Mock
+        from bindu_teleoperation.vr.receiver import controller_socket_status
+        info=bytearray(104)
+        for offset,value in ((68,14000),(72,3000),(100,9)):struct.pack_into('=I',info,offset,value)
+        sock=Mock();sock.getsockopt.side_effect=lambda _level,option,*_args: bytes(info) if option==socket.TCP_INFO else 1
+        actual=controller_socket_status(sock)
+        self.assertTrue(actual['tcp_nodelay'])
+        self.assertAlmostEqual(actual['rtt_s'],.014)
+        self.assertEqual(actual['total_retransmissions'],9)
+        sock.getsockopt.side_effect=OSError('closed')
+        self.assertEqual(controller_socket_status(sock),{})
+        self.assertEqual(controller_socket_status(None),{})
+
+
 class ControllerTimingTests(unittest.TestCase):
     def test_blocked_diagnostic_dds_publish_does_not_block_input_report_enqueue(self):
         import queue

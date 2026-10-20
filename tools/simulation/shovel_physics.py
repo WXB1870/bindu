@@ -62,6 +62,8 @@ def load_motion(path):
 
 
 def wooden_parts(recipe, material):
+    kind=recipe.get('geometry_kind','shovel')
+    if kind not in ('shovel','rod'):raise ValueError('INVALID_WOOD_GEOMETRY_KIND')
     density = float(material['density_kg_m3'])
     wall = float(material['tray_wall_m'])
     size = np.asarray(recipe['pan_size_m'], dtype=float)
@@ -85,6 +87,7 @@ def wooden_parts(recipe, material):
     parts = [dict(name='Shaft', kind='cylinder', radius=radius, length=length,
                   rotation=basis, center=left+axis*np.mean(ends), mass=mass,
                   inertia=basis @ np.diag([radial, radial, axial]) @ basis.T)]
+    if kind=='rod':return parts
     def box(name, dims, offset):
         dims = np.asarray(dims)
         m = density*np.prod(dims)

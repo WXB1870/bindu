@@ -89,6 +89,18 @@ class ShovelPhysicsTests(unittest.TestCase):
         np.testing.assert_allclose(c2, com)
         np.testing.assert_allclose(i2, 2*inertia)
 
+    def test_deployed_short_tool_has_only_its_shaft_mass_and_contact_shape(self):
+        cfg=json.loads((ROOT/'src/integration/bindu_runtime/config/robots/snowbot/bimanual_snowbot_real.json').read_text())
+        recipe=cfg['demo'];mount=np.array(cfg['left_to_tool']).reshape(4,4)
+        recipe['left_grip_in_tool_m']=(np.linalg.inv(mount) @ np.r_[recipe['grip_offset_m'],1.])[:3].tolist()
+        recipe['pan_size_m']=[100.,100.,100.]
+        parts=wooden_parts(recipe,self.cfg['material'])
+        self.assertEqual([p['name'] for p in parts],['Shaft'])
+        self.assertAlmostEqual(parts[0]['length'],.54)
+        mass,_,inertia=compound_mass(parts)
+        self.assertAlmostEqual(mass,650*np.pi*.018**2*.54)
+        self.assertGreater(np.linalg.eigvalsh(inertia).min(),0.)
+
     def test_parallel_axis_matches_two_point_masses(self):
         parts = [dict(mass=2., center=np.array([x, 0., 0.]), inertia=np.eye(3)*.1) for x in (-1., 1.)]
         mass, com, inertia = compound_mass(parts)

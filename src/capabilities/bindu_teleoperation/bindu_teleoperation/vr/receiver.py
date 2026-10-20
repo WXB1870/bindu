@@ -7,6 +7,8 @@ import asyncio
 import math
 import multiprocessing as mp
 import queue
+import socket
+import struct
 import time
 import tempfile
 import uuid
@@ -88,10 +90,39 @@ def _latest_put(output, item):
         return True
 
 
+def quick_ack(sock):
+    """Re-arm Linux's one-shot immediate ACK mode; never affect frame validity."""
+    if sock is None or not hasattr(socket,'TCP_QUICKACK'):return False
+    try:
+        sock.setsockopt(socket.IPPROTO_TCP,socket.TCP_QUICKACK,1)
+        return True
+    except OSError:return False
+
+
+def controller_socket_status(sock):
+    """Read kernel evidence separately from browser and server-loop clocks."""
+    if sock is None:return {}
+    result={}
+    try:result['tcp_nodelay']=bool(sock.getsockopt(socket.IPPROTO_TCP,socket.TCP_NODELAY))
+    except OSError:pass
+    if hasattr(socket,'TCP_INFO'):
+        try:
+            info=sock.getsockopt(socket.IPPROTO_TCP,socket.TCP_INFO,104)
+            if len(info)>=104:
+                # Linux struct tcp_info's stable initial 104 bytes.
+                result.update(rtt_s=struct.unpack_from('=I',info,68)[0]*1e-6,
+                    rtt_variation_s=struct.unpack_from('=I',info,72)[0]*1e-6,
+                    total_retransmissions=struct.unpack_from('=I',info,100)[0])
+        except OSError:pass
+    return result
+
+
 def _serve(config, output, feedback, health):
     try:
         from vuer import Vuer
         from vuer.schemas import MotionControllers, Scene, Grid
+
+        controller_sockets={}
 
         class LocalVuer(Vuer):
             async def socket_index(self, request):
@@ -110,7 +141,18 @@ def _serve(config, output, feedback, health):
                     return Response(text=html.replace('<head>',
                         '<head><script src="/static/client-timing.js"></script>', 1),
                         content_type='text/html', headers={'Cache-Control': 'no-store'})
-                return await super().socket_index(request)
+                from vuer.server import websocket_handler
+                return await websocket_handler(request,self.downlink,compress=False)
+
+            async def downlink(self, request, ws):
+                sock=request.transport.get_extra_info('socket') if request.transport else None
+                if sock is not None:
+                    try:sock.setsockopt(socket.IPPROTO_TCP,socket.TCP_NODELAY,1)
+                    except OSError:pass
+                controller_sockets[id(ws)]=sock
+                quick_ack(sock)
+                try:return await super().downlink(request,ws)
+                finally:controller_sockets.pop(id(ws),None)
 
         static = tempfile.TemporaryDirectory(prefix='bindu-vr-static-')
         # Serve Pillow's bundled font locally; the headset needs no font CDN.
@@ -159,6 +201,8 @@ def _serve(config, output, feedback, health):
             emit_health(dict(stamp=now,source_id=identity,seq=seq,
                 event_interval_s=gap,event_loop_delay_max_s=loop_delay,
                 websocket_clients=len(app.ws),last_event_stamp=last_event,
+                controller_fps=60 if config.get('mapping')=='pico_snowbot_v1' else 30,
+                socket=controller_socket_status(controller_sockets.get(id(app.ws.get(owner.CURRENT_WS_ID)))) if owner else {},
                 stage='websocket_handler',stamp_semantics='server_event_receipt'))
             last_report=now;loop_delay=0.
         from .connectivity import VRConnectivity
@@ -175,6 +219,7 @@ def _serve(config, output, feedback, health):
                 last_event=None
             if owner is not session:
                 return  # A second browser must not interleave commands.
+            quick_ack(controller_sockets.get(id(app.ws.get(session.CURRENT_WS_ID))))
             seq += 1
             now = time.time()
             emit_health(controller_timing.observe(getattr(event, 'bindu_timing', None),
@@ -206,7 +251,8 @@ def _serve(config, output, feedback, health):
             from .display import render
             session.set(Scene(camPosition=[0., 1., 2.], camRotation=[0., 0., 0.],
                 bgChildren=[Grid(key='default-grid'),
-                            MotionControllers(stream=True, key='motionControllers', left=True, right=True)]))
+                            MotionControllers(stream=True, key='motionControllers', left=True, right=True,
+                                fps=60 if config.get('mapping')=='pico_snowbot_v1' else 30)]))
             render_error = ''
             render_key = None
             loop_probe = asyncio.create_task(monitor_loop(session))

@@ -42,6 +42,7 @@ class PicoControl:
                 not math.isfinite(self.pose_jump_rotation_rad) or not 0<self.pose_jump_rotation_rad<=math.pi):
             raise ValueError('PICO_POSE_JUMP_CONFIG')
         self.last_pose_jump=None
+        self.last_input_timeout=None
         self.max_age, self.prepare_hold = max_age, prepare_hold
         self.phase, self.reason = 'checking', 'WAITING_FOR_INPUT_AND_FEEDBACK'
         self.generation = 0
@@ -123,6 +124,10 @@ class PicoControl:
         if self.phase != 'locked' or self.pending and self.pending.operation != 'stop':
             if self.guided_loading and self.phase == 'loading':
                 self.load, self.load_source = 'unknown', 'interrupted_loading'
+            if reason=='PICO_INPUT_TIMEOUT':
+                self.last_input_timeout=dict(stamp=now,phase=self.phase,source_id=self.source,
+                    input_seq=self.seq,input_stamp=self.stamp,input_age_s=now-self.stamp,
+                    input_max_age_s=self.max_age,hand_stamps={f.side:f.stamp for f in self.frames or ()})
             self.phase,self.reason,self.changed_at='locked',reason,now
             self.a_since=None
             self.supported=False
@@ -441,7 +446,7 @@ class PicoControl:
                     mode_target=self.pending.value if self.pending and self.pending.operation=='select_mode' else None,
                     source_id=self.source,load_state=self.load,load_source=self.load_source,external_support=self.supported,
                     last_prepare_check=self.last_prepare_check,
-                    last_pose_jump=self.last_pose_jump,
+                    last_pose_jump=self.last_pose_jump,last_input_timeout=self.last_input_timeout,
                     guided_loading=self.guided_loading,loading_goal=self.loading_goal,
                     loading_opened=list(self.loading_opened),idle_input_lost=self.idle_input_lost,
                     grasp_requested='right_axial' if (self.pending.value if self.pending and self.pending.operation=='switch_grasp' else self.virtual) else 'rigid',

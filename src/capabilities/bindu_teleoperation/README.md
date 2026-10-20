@@ -47,6 +47,8 @@ BINDU_VR_ENV="$PWD/install/local_setup.bash" bash tools/run_vr.sh \
 
 ## 扫雪输入与握持
 
+统一Snowbot位置配方的虚拟工具采用直径36 mm、长54 cm的杆体：两握点间距34 cm，两端各伸出10 cm。`demo.geometry_kind=rod`与`shaft_from_left_grip_m=[-0.44,0.10]`由QP几何检查、电脑／头显显示和PhysX形状共用，铲头不参与此代理的碰撞或质量计算。握点标定、相对控制映射、1 cm／0.02 rad耦合容差及20 mm本体净空不变；实体工具须使用其标定几何。
+
 真机 VR 手柄采用相对映射：接合时记录手柄基准和当前实测工具姿态，后续把手柄的位置／旋转增量经坐标标定与比例映射，叠加到工具基准上。松握停止跟随，重新接合时重建基准。例如比例为 1 时，手柄沿标定后的前向移动 5 cm，工具目标相对接合姿态前移 5 cm。
 
 输入链路为：**VR 手柄位姿 → 接合基准下的相对增量 → 机器人基座系工具目标 → QP**。这里的基座系工具目标是相对映射的计算结果；“绝对工具位姿”描述该结果的坐标表达。
@@ -344,6 +346,12 @@ ros2 action send_goal /bindu_sim/teleop/session bindu_interfaces/action/TeleopSe
 - 会话到时表示控制结束，不代表抓取成功。运行层继续拒绝真实设备模式；本批没有连接电机、部署真机服务或承诺 IK 达到 100 Hz。
 
 
+
+### VR 输入频率与超时诊断
+
+PICO的`MotionControllers`显式以60 Hz发送手柄输入，其他旧映射保持30 Hz。接收连接启用`TCP_NODELAY`，Linux逐帧重置一次性的`TCP_QUICKACK`，并关闭WebSocket压缩；不增加心跳位姿，不修改原始接收时间或250 ms输入有效期。`websocket_handler`健康日志记录发送频率、内核RTT／RTT变化和发送侧累计重传；它们与浏览器计时共同定位传输空档，不能当作单向延迟。无线丢包仍可能超过停止门限。
+
+`PICO_STATE.last_input_timeout`在触发锁定时保存原始序号、源时间、各手时间、输入年龄、门限及当时阶段。迟到包恢复后，当前输入可以新鲜，但该故障证据不会被新帧覆盖。
 
 ### VR 位姿 One Euro 滤波
 

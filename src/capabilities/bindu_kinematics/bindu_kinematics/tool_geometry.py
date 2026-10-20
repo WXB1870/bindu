@@ -290,18 +290,20 @@ def make_collision_checker(urdf, recipe, conservative_convex=False, *, tool_pres
         if name in contacts:
             center, half_length = contacts[name]['center_m'], contacts[name]['half_length_m']
             if (not np.isfinite([center, half_length]).all() or half_length <= 0 or
-                    center-half_length <= ends[0] or center+half_length >= ends[1]):
+                    center-half_length < ends[0]-1e-9 or center+half_length > ends[1]+1e-9):
                 raise ValueError('INVALID_SHAFT_CONTACT_BAND')
             # Cylinder cut faces bound each allowed contact band precisely;
             # unlike skipping a hand mesh this still checks the rest of the rod.
             if not check_grasp_contacts:
-                spans = [(ends[0], center-half_length), (center+half_length, ends[1])]
+                spans = [(ends[0], max(ends[0],center-half_length)),
+                         (min(ends[1],center+half_length), ends[1])]
         segments[name] = []
         for a, b in spans:
+            if b-a<=1e-12:continue  # Contact bands may meet either physical end.
             key = (a, b, name in contacts)
             if key not in segment_cache:
                 query_radius = radius-grasp_penetration if check_grasp_contacts and name in contacts else radius
-                segment_cache[key] = (fcl.Cylinder(query_radius, b-a) if name in contacts else fcl.Capsule(radius, b-a),
+                segment_cache[key] = (fcl.Cylinder(query_radius, b-a) if name in contacts or geometry_kind=='rod' else fcl.Capsule(radius, b-a),
                     np.array(recipe['left_grip_in_tool_m'])+shaft_axis*(a+b)/2)
             segments[name].append(segment_cache[key])
     pan = fcl.Box(*recipe['pan_size_m'])
@@ -310,7 +312,7 @@ def make_collision_checker(urdf, recipe, conservative_convex=False, *, tool_pres
     bin_limit = recipe.get('receiving_bin', {}).get('min_clearance_m', .02)
     if not np.isfinite(bin_limit) or bin_limit <= 0:
         raise ValueError('INVALID_BIN_CLEARANCE')
-    full_shaft = fcl.Capsule(radius, ends[1]-ends[0])
+    full_shaft = (fcl.Cylinder if geometry_kind=='rod' else fcl.Capsule)(radius, ends[1]-ends[0])
     shaft_center = np.array(recipe['left_grip_in_tool_m'])+shaft_axis*sum(ends)/2
     # AABB distance is a conservative lower bound. Skip an exact mesh query
     # only when it cannot violate the gate or reduce the recorded global minimum.

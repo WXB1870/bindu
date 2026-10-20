@@ -56,6 +56,24 @@ class DualModeTests(unittest.TestCase):
 
 
 class StateTests(unittest.TestCase):
+    def test_timeout_keeps_triggering_old_frame_evidence_after_fresh_input_returns(self):
+        rig=Rig(guided=True,dual=True);rig.grips=[1.,1.];rig.step();rig.complete()
+        core=rig.core;old_stamp=core.stamp;old_seq=core.seq
+        rig.now=old_stamp+.26
+        core.update_feedback(PicoFeedback(rig.now,False),rig.now)
+        core.tick(rig.now)
+        evidence=core.last_input_timeout
+        self.assertEqual((core.phase,core.reason),('locked','PICO_INPUT_TIMEOUT'))
+        self.assertEqual(evidence['phase'],'following')
+        self.assertEqual(evidence['input_seq'],old_seq)
+        self.assertAlmostEqual(evidence['input_age_s'],.26)
+        core.tick(rig.now+.01)
+        rig.step(.01)
+        self.assertIs(core.last_input_timeout,evidence)
+        self.assertTrue(core.snapshot(rig.now)['input_fresh'])
+        self.assertEqual(core.snapshot(rig.now)['last_input_timeout'],evidence)
+
+
     def test_pair_skew_compares_each_hand_with_its_own_previous_time(self):
         rig=Rig();core=rig.core;t=rig.now+.02
         pair=tuple(replace(f,seq=rig.seq+1,stamp=t+i*.0007) for i,f in enumerate(core.frames))

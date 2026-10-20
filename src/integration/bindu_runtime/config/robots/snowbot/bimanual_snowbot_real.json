@@ -51,7 +51,7 @@
   "max_angular_speed": 2.4,
   "solve_timeout_us": 30000,
   "demo": {
-    "description": "Nominal CAD geometry for Snowbot real position teleoperation. Verify tool mounting, ground and limits onsite. No startup/preparation trajectory or gripper actuation.",
+    "description": "Virtual tool proxy: 0.34 m grip spacing with 0.10 m overhang at each end; shared display and collision geometry. Physical tool geometry requires onsite calibration.",
     "display_urdf": "snowbot_display.urdf",
     "grip_offset_m": [
       0.119,
@@ -64,8 +64,8 @@
       0.766044443118978
     ],
     "shaft_from_left_grip_m": [
-      -1.2,
-      0.15
+      -0.44,
+      0.1
     ],
     "shaft_radius_m": 0.018,
     "pan_size_m": [
@@ -141,7 +141,8 @@
       0.0
     ],
     "check_grasp_contacts": false,
-    "max_grasp_penetration_m": 0.005
+    "max_grasp_penetration_m": 0.005,
+    "geometry_kind": "rod"
   },
   "right_to_tool": [
     -0.7180654330047566,
