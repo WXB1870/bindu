@@ -4,6 +4,7 @@ import json
 import unittest
 from pathlib import Path
 from dataclasses import replace
+from unittest.mock import patch
 import numpy as np
 from ament_index_python.packages import get_package_share_directory
 from bindu_contracts.profile import Profile
@@ -86,22 +87,46 @@ class IndependentNativeTests(unittest.TestCase):
         self.feedback={n:0. for n in self.solver.model_names}
 
     def test_recorded_collision_candidates_shrink_without_ending_control(self):
-        from bindu_contracts.profile import Profile
         data=json.loads((ROOT/'tests/config/teleoperation/snowbot_candidate_steps.json').read_text())
         cfg=dict(self.cfg,**data['recorded_config'])
         profile=replace(Profile.load(ROOT/'src/integration/bindu_runtime/config/robots/snowbot/snowbot_real_position.json'),
                         max_speed=data['recorded_joint_speed'],joint_dynamics={})
-        solver=BimanualQP(cfg,profile);solver.empty_collision_check=self.solver.empty_collision_check
-        self.addCleanup(solver.close)
-        for case,scale in zip(data['independent_cases'],(.25,.5)):
+        solver=BimanualQP(cfg,profile);self.addCleanup(solver.close)
+        solver.empty_collision_check=self.solver.empty_collision_check
+        strict=BimanualQP(dict(cfg,geometry_step_backtracking=False),profile)
+        self.addCleanup(strict.close);strict.empty_collision_check=self.solver.empty_collision_check
+        for case in data['independent_cases']:
             with self.subTest(code=case['recorded_code']):
+                target=np.array(case['target']).reshape(2,4,4)
+                reference=np.array(case['reference'])
+                strict.capture_independent(case['capture'])
+                raw=[];check=strict.check_independent_path
+                def record(feedback,*path):
+                    raw.append(np.array(path[0]).copy())
+                    return check(feedback,*path)
+                with patch.object(strict,'check_independent_path',side_effect=record):
+                    with self.assertRaisesRegex(ValueError,'SELF_COLLISION'):
+                        strict.solve_independent(case['feedback'],target,active_mask=case['active_mask'],
+                            reference=reference,dt=case['dt'])
+                self.assertFalse(strict.captured)
+                self.assertEqual(len(raw),1)
+
                 solver.capture_independent(case['capture'])
-                positions,_=solver.solve_independent(case['feedback'],
-                    np.array(case['target']).reshape(2,4,4),active_mask=case['active_mask'],
-                    reference=case['reference'],dt=case['dt'])
+                positions,_=solver.solve_independent(case['feedback'],target,active_mask=case['active_mask'],
+                    reference=reference,dt=case['dt'])
+                step=solver.last_geometry_step;scale=step['scale']
+                # Native limit tapering can change the candidate direction.
+                # Require the first safe common reduction, not a fixed fraction.
+                self.assertGreater(scale,0.)
+                self.assertLess(scale,1.)
                 self.assertTrue(solver.captured)
-                self.assertEqual(solver.last_geometry_step['scale'],scale)
-                solver.check_independent_path(case['feedback'],positions,case['reference'])
+                self.assertTrue(step['first_rejection'].startswith(case['recorded_code'].split(' t=')[0]))
+                np.testing.assert_allclose(np.array(positions)-reference,scale*(raw[0]-reference),atol=1e-10)
+                self.assertGreater(np.max(np.abs(np.array(positions)-reference)),1e-6)
+                solver.check_independent_path(case['feedback'],positions,reference)
+                larger=reference+2*scale*(raw[0]-reference)
+                with self.assertRaisesRegex(ValueError,'SELF_COLLISION'):
+                    solver.check_independent_path(case['feedback'],larger,reference)
 
     def test_zero_can_capture_normally_but_tool_grasp_still_rejects(self):
         with self.assertRaisesRegex(ValueError,'BIMANUAL_GRASP_POSE'):self.solver.capture(self.feedback)
