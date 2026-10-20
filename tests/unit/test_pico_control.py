@@ -53,6 +53,51 @@ class PrepareReturnPathTests(unittest.IsolatedAsyncioTestCase):
             await PicoNode.validate_prepare(self.node(changed=True),PicoIntent(1,'prepare'))
 
 
+class OperationCancellationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_gripper_handoff_refreshes_stopped_feedback_before_held_a_completion(self):
+        from types import SimpleNamespace as S
+        from unittest.mock import Mock,AsyncMock
+        from bindu_runtime.pico_node import PicoNode
+        r=Rig(guided=True,direct=True);r.triggers=[1.,0.];r.step()
+        r.triggers=[0.,0.];r.step();r.stopped=False;r.buttons[1]=1;r.step()
+        intent=r.core.pending
+        node=S(control=r.core,cancel_tool=AsyncMock(),current=Mock(),
+            position_ops=S(move_grippers=AsyncMock()),now=lambda:r.now,
+            feedback=Mock(return_value=PicoFeedback(r.now,True,('closed','closed'))),
+            event=Mock(),simulation=True)
+        await PicoNode.perform(node,intent)
+        node.feedback.assert_called_once()
+        self.assertEqual(r.core.reason,'PREPARE_HOLD_AFTER_GRIPPER_STOP')
+        self.assertEqual(r.core.a_since,r.now)
+
+    async def run_superseded(self, cleanup_error=None):
+        from types import SimpleNamespace as S
+        from unittest.mock import Mock,AsyncMock
+        from bindu_runtime.pico_node import PicoNode,Superseded
+        r=Rig(guided=True,direct=True);r.triggers=[1.,0.];old=r.step()[-1]
+        r.triggers=[0.,0.];replacement=r.step()[-1]
+        node=S(control=r.core,cancel_tool=AsyncMock(side_effect=[None,cleanup_error]),
+            current=Mock(side_effect=Superseded('PICO_OPERATION_SUPERSEDED')),
+            now=lambda:r.now,event=Mock(),simulation=True)
+        await PicoNode.perform(node,old)
+        self.assertEqual(node.cancel_tool.await_count,2)
+        self.assertEqual(r.core.pending,replacement)
+        return node
+
+    async def test_normal_replacement_is_cancellation_and_keeps_new_intent(self):
+        node=await self.run_superseded()
+        self.assertEqual(node.event.call_args.args[0],'PICO_OPERATION_CANCELED')
+        value=json.loads(node.event.call_args.args[1])
+        self.assertEqual(value['outcome'],'superseded')
+        self.assertNotIn('success',value)
+
+    async def test_failed_stop_during_replacement_remains_a_real_error(self):
+        node=await self.run_superseded(RuntimeError('PICO_STOP_UNCONFIRMED'))
+        self.assertEqual(node.event.call_args.args[0],'PICO_OPERATION_RESULT')
+        value=json.loads(node.event.call_args.args[1])
+        self.assertFalse(value['success']);self.assertIn('PICO_STOP_UNCONFIRMED',value['reason'])
+
+
 class DualModeTests(unittest.TestCase):
     def test_default_normal_accepts_one_hand_and_releases_independently(self):
         r=Rig('unknown',guided=True,dual=True)

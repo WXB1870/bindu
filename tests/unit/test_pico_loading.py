@@ -101,6 +101,73 @@ class DirectGripperTests(unittest.TestCase):
         r.core.ingest(*pair,r.now)
         self.assertEqual([e.operation for e in r.core.drain()],['stop'])
 
+    def closing_with_a(self):
+        r=self.rig();r.triggers=[1.,0.];r.step();r.modes=('open','closed');r.complete();r.step()
+        r.triggers=[0.,0.];r.step();r.stopped=False;r.buttons[1]=1
+        r.step()
+        return r
+
+    def test_held_a_waits_for_gripper_hold_then_restarts_full_hold_timer(self):
+        for mode in ('independent_arms','bimanual_tool'):
+            with self.subTest(mode=mode):
+                r=self.closing_with_a();r.core.teleop_mode=mode
+                for _ in range(60):r.step()
+                self.assertEqual(r.core.phase,'gripper_control')
+                self.assertEqual(r.core.reason,'PREPARE_WAITING_FOR_GRIPPER_STOP')
+                self.assertEqual(r.core.snapshot(r.now)['operator_guide']['step'],'prepare_wait')
+                r.stopped=True;r.modes=('closed','closed');r.complete()
+                self.assertEqual(r.core.reason,'PREPARE_HOLD_AFTER_GRIPPER_STOP')
+                for _ in range(45):self.assertFalse(r.step())
+                for _ in range(7):r.step()
+                self.assertEqual(r.core.pending.operation,'prepare')
+
+    def test_a_release_before_or_after_gripper_completion_never_queues_return(self):
+        for release_before in (True,False):
+            with self.subTest(release_before=release_before):
+                r=self.closing_with_a()
+                if release_before:r.buttons[1]=0;r.step()
+                r.stopped=True;r.modes=('closed','closed');r.complete();r.step()
+                r.buttons[1]=0;r.step()
+                for _ in range(60):self.assertFalse(r.step())
+                self.assertIsNone(r.core.pending)
+
+    def test_a_with_trigger_held_requires_release_and_no_held_startup_key_can_arm_return(self):
+        r=self.rig();r.triggers=[1.,0.];r.step();r.buttons[1]=1;r.step()
+        self.assertEqual(r.core.reason,'PREPARE_RELEASE_TRIGGERS_FIRST')
+        r.triggers=[0.,0.];r.step();r.core.armed[4]=False
+        r.modes=('closed','closed');r.complete()
+        for _ in range(60):self.assertFalse(r.step())
+        self.assertIsNone(r.core.pending)
+
+    def test_timeout_y_or_squeeze_interrupts_a_wait_without_later_return(self):
+        for cause in ('timeout','Y','squeeze'):
+            with self.subTest(cause=cause):
+                r=self.closing_with_a();old=r.core.pending.token
+                if cause=='timeout':
+                    r.now+=.3;r.core.update_feedback(PicoFeedback(r.now,False,r.modes),r.now)
+                    r.core.tick(r.now);r.core.drain()
+                elif cause=='Y':r.buttons[0]=2;r.step()
+                else:r.grips=[1.,0.];r.step()
+                self.assertFalse(r.core.complete(old,True,now=r.now))
+                r.stopped=True;r.modes=('closed','closed');r.complete()
+                r.buttons=[0,1];r.grips=[0.,0.];r.step()
+                for _ in range(60):self.assertFalse(r.step())
+                self.assertIsNone(r.core.pending)
+
+    def test_squeeze_also_cancels_the_hold_timer_after_grippers_have_stopped(self):
+        for cause in ('squeeze','coalesced_release'):
+            with self.subTest(cause=cause):
+                r=self.closing_with_a();r.stopped=True;r.modes=('closed','closed');r.complete();r.step()
+                self.assertEqual(r.core.reason,'PREPARE_HOLD_AFTER_GRIPPER_STOP')
+                if cause=='squeeze':r.grips=[1.,0.];effects=r.step()
+                else:
+                    r.now+=.02
+                    pair=[replace(f,seq=f.seq+1,stamp=r.now,clutch_seq=f.clutch_seq+1) for f in r.core.frames]
+                    r.core.ingest(*pair,r.now);effects=r.core.drain()
+                self.assertFalse(effects);self.assertIsNone(r.core.pending)
+                self.assertIsNone(r.core.a_since);self.assertTrue(r.core.prepare_blocked)
+                self.assertEqual(r.core.reason,'PREPARE_RELEASED')
+
 
 class GuidedLoadingTests(unittest.TestCase):
     def start_loading(self, rig):

@@ -25,6 +25,12 @@ class PicoHUDTests(unittest.TestCase):
         self.assertIn('松开闭合',spec['detail'])
         self.assertIn('双侧握松开',spec['detail'])
 
+    def test_a_wait_during_gripper_close_uses_shared_operator_guidance(self):
+        from bindu_teleoperation.vr.hud import hud_spec
+        guide=dict(title='等待夹爪闭合停稳',detail='保持按住 A；停稳后重新计时',key='A',step='prepare_wait')
+        spec=hud_spec(self.view('gripper_control',operator_guide=guide))
+        self.assertEqual((spec['title'],spec['detail']),(guide['title'],guide['detail']))
+
     def test_mode_banner_uses_confirmed_mode_and_clears_stale_context(self):
         from bindu_teleoperation.vr.hud import hud_spec
         from bindu_teleoperation.vr.display import render

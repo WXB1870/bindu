@@ -471,7 +471,7 @@ class PicoNode(RuntimeNode):
         self.tool_phase=msg.feedback.mode
 
     async def perform(self,intent):
-        ok=False;reason='';read_only=False;rejected=False
+        ok=False;reason='';read_only=False;rejected=False;canceled=False
         try:
             await self.cancel_tool()
             self.current(intent)
@@ -545,15 +545,33 @@ class PicoNode(RuntimeNode):
                 await self.follow(intent)
             elif intent.operation!='stop':raise RuntimeError('PICO_OPERATION_UNSUPPORTED')
             ok=True
+        except Superseded:
+            # A newer fenced intent owns the workflow. Keep the same measured
+            # stop barrier; a cleanup failure remains a real operation error.
+            reason='PICO_OPERATION_SUPERSEDED'
+            try:
+                await self.cancel_tool()
+                canceled=True
+            except Exception as stop_error:
+                reason+=':'+type(stop_error).__name__+':'+str(stop_error)
         except Exception as exc:
             reason=type(exc).__name__+':'+str(exc)
             try:
                 await self.cancel_tool()
                 rejected=read_only
             except Exception as stop_error:reason+=':'+type(stop_error).__name__+':'+str(stop_error)
+        if ok and intent.operation=='manual_grippers':
+            # The release barrier has just observed fresh device hold. Read it
+            # now rather than depending on the coordinator timer's previous
+            # feedback sample when handing a held A request back to standby.
+            self.control.update_feedback(self.feedback(),self.now())
         self.control.complete(intent.token,ok,reason,self.now(),rejected=rejected)
-        self.event('PICO_OPERATION_RESULT',json.dumps(dict(token=intent.token,operation=intent.operation,
-            success=ok,reason=reason,read_only_rejection=rejected,simulated_actuator=self.simulation)))
+        if canceled:
+            self.event('PICO_OPERATION_CANCELED',json.dumps(dict(token=intent.token,operation=intent.operation,
+                outcome='superseded',reason=reason,simulated_actuator=self.simulation)))
+        else:
+            self.event('PICO_OPERATION_RESULT',json.dumps(dict(token=intent.token,operation=intent.operation,
+                success=ok,reason=reason,read_only_rejection=rejected,simulated_actuator=self.simulation)))
 
     def tick(self):
         tick_at=time.monotonic()

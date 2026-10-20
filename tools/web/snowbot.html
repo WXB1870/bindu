@@ -376,6 +376,9 @@ const phases={checking:'连接检查',standby:'待命',preparing:'准备中',con
 Object.assign(phases,{selecting_mode:'模式切换中',gripper_control:'夹爪开合中'});
 const reasons={WAITING_FOR_INPUT_AND_FEEDBACK:'等待有效的双手输入与关节反馈。',READY_FOR_OPERATOR:'控制链已就绪，尚未执行准备。',PREPARED:'已到达装夹准备姿态。',SIMULATED_TOOL_PREFLIGHT:'正在检查工具与跟随条件。',TOOL_GRASP_VERIFIED:'工具控制检查通过，可以接合跟随。',FOLLOWING:'双手位移控制工具，松开任一侧握可暂停。',SQUEEZE_RELEASED:'已松开侧握，工具跟随已暂停。',PICO_Y_STOP:'已收到 Y 停止请求。',PICO_INPUT_TIMEOUT:'手柄数据未及时更新。',PICO_PAIR_INVALID:'双手柄输入未通过有效性检查。',PICO_POSE_INVALID:'手柄位姿无效。',PICO_CONNECTION_CHANGED:'检测到新的 VR 连接，需要重新接管。',RECOVERED_TO_STANDBY:'已恢复待命，等待工具检查。',PICO_POSE_ORIGIN_JUMP:'手柄坐标发生突变，控制已阻断。',PREPARE_RELEASED:'准备操作已中断。',PREPARE_REQUIRES_EMPTY_AND_RELEASED_SQUEEZE:'准备条件未满足：需要空手并松开双侧握。',PICO_FEEDBACK_UNAVAILABLE:'执行反馈不可用，控制已阻断。',PICO_FEEDBACK_STALE:'执行反馈已过期，控制已阻断。',OPEN_REQUIRES_LOADING_AND_SUPPORT:'收到开爪输入，工具跟随已中断。',GRASP_MODE_CONFIRMED:'握持切换已确认。',CONFIRM_GRASP_CHANGE_BEFORE_REENGAGE:'握持方式尚未确认，暂不能接合。'};
 Object.assign(reasons,{
+  PREPARE_WAITING_FOR_GRIPPER_STOP:'正在等待夹爪闭合停稳，持续按住 A 可继续回位。',
+  PREPARE_RELEASE_TRIGGERS_FIRST:'先松开两侧扳机，让夹爪闭合停稳。',
+  PREPARE_HOLD_AFTER_GRIPPER_STOP:'夹爪已停稳，正在重新计算 A 的长按时间。',
   GRIPPER_REQUIRES_STOP_AND_RELEASED_SQUEEZE:'夹爪开合需要停稳并松开双侧握，请松开扳机后重新按下。',
   GRIPPER_CONTROL_COMPLETE:'夹爪已闭合停稳，等待下一步操作。',
   TELEOP_MODE_SELECTED:'模式已切换，仍保持当前位置；重新握合才开始跟随。',

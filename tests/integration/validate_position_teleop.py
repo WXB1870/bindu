@@ -257,7 +257,15 @@ def scenario(out, mode, websocket=False, ordinary=False, physics=False, replay=N
         if prepare_return:
             expected_mode='independent_arms' if ordinary else 'bimanual_tool'
             assert views[-1]['load_state']=='unknown' and views[-1]['teleop_mode']==expected_mode
-            source['buttons'][1]=1
+            source['trigger']=[1.,0.]
+            wait(lambda:views[-1]['pending']=='manual_grippers')
+            source['trigger']=[0.,0.];phase('standby')
+            checks.append('rapid Trigger release replaces opening and finishes closed hold')
+            source['trigger']=[1.,1.];phase('gripper_control')
+            source['buttons'][1]=1;source['trigger']=[0.,0.]
+            wait(lambda:views[-1]['reason']=='PREPARE_WAITING_FOR_GRIPPER_STOP',5.)
+            assert not accepted
+            checks.append('held A reports gripper-stop wait and sends no arm command before confirmed hold')
             wait(lambda:len(accepted)>0,35.)
             pump(.12);source['buttons'][1]=0
             wait(lambda:views[-1]['pending'] is None and not states[-1].lease_active and
@@ -288,6 +296,10 @@ def scenario(out, mode, websocket=False, ordinary=False, physics=False, replay=N
             checks.append('repeated A at measured preset sends no redundant motion and never starts following')
             terminate(observer,node);observer=None
             events=[json.loads(line)['data'] for line in (trace_dir/'runtime-events.jsonl').read_text().splitlines()]
+            canceled=[json.loads(e['code']) for e in events if e['state']=='PICO_OPERATION_CANCELED']
+            assert canceled and all(c['outcome']=='superseded' for c in canceled)
+            assert not any('PICO_OPERATION_SUPERSEDED' in e['code'] for e in events if e['state']=='PICO_OPERATION_RESULT')
+            checks.append('superseded operations are cancellation events; new intents and actual stop errors stay distinct')
             validations=[json.loads(e['code']) for e in events if e['state']=='PICO_PREPARE_VALIDATION']
             assert {v['load_state'] for v in validations}>={'unknown','held'}
             assert all(v['operation'] in ('prepare_path','prepare_recovery_path') and
