@@ -1,8 +1,25 @@
 # bindu_contracts：公共契约与端口
 
-[项目模块导航](../../../README.md#模块快速导航) · [职责与边界](#职责与边界) · [源码导航](#源码导航) · [接入与验证](#接入与验证) · [关联模块](#关联模块)
+[项目模块导航](../../../README.md#模块快速导航) · [编译与运行](#编译与运行) · [职责与边界](#职责与边界) · [源码导航](#源码导航) · [接入与验证](#接入与验证) · [关联模块](#关联模块)
 
 定义算法、执行器与设备适配之间共享的数据和接口。它是 Python 库，不依赖 ROS，也不创建节点或连接设备。
+
+## 编译与运行
+
+以下命令在仓库根目录执行；先安装 ROS 2、colcon 及 [基础依赖](../../../运行与验证.md#环境准备与构建)。示例使用 Jazzy，Humble 环境将加载路径中的 `jazzy` 换为 `humble`；新终端需重新加载 ROS 与工作区。
+
+```bash
+source /opt/ros/jazzy/setup.bash
+colcon build --base-paths src --packages-up-to bindu_contracts --executor sequential
+source install/local_setup.bash
+python3 - <<'PY'
+from bindu_contracts.profile import Profile
+profile = Profile.load('src/integration/bindu_runtime/config/simulation/wheel_sim.json')
+print(profile.name, profile.groups)
+PY
+```
+
+本包没有独立 ROS 可执行程序；上例读取本体配置，不连接设备。其他模块通过 `bindu_contracts` 导入契约和端口。
 
 ## 职责与边界
 

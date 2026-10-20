@@ -1,8 +1,33 @@
 # bindu_recording：异步结构化记录
 
-[项目模块导航](../../../README.md#模块快速导航) · [职责与边界](#职责与边界) · [源码导航](#源码导航) · [接入与验证](#接入与验证) · [关联模块](#关联模块)
+[项目模块导航](../../../README.md#模块快速导航) · [编译与运行](#编译与运行) · [职责与边界](#职责与边界) · [源码导航](#源码导航) · [接入与验证](#接入与验证) · [关联模块](#关联模块)
 
 把收到的控制、反馈和事件交给有界队列与后台写线程，生成压缩 JSONL、清单和汇总，避免在控制回调中直接写磁盘。
+
+## 编译与运行
+
+在仓库根目录执行；需要 ROS 2、colcon 及 [基础依赖](../../../运行与验证.md#环境准备与构建)。Humble 环境将 `jazzy` 换为 `humble`。
+
+```bash
+source /opt/ros/jazzy/setup.bash
+colcon build --base-paths src --packages-up-to bindu_recording --executor sequential
+source install/local_setup.bash
+python3 -c "from bindu_recording.recorder import AsyncRecorder; print(AsyncRecorder.__name__)"
+```
+
+本包为记录库，ROS 订阅节点是 `bindu_runtime recorder`。先准备 [运行装配依赖](../../integration/bindu_runtime/README.md#编译与运行)，再在需要采集的话题命名空间启动：
+
+```bash
+colcon build --base-paths src --packages-up-to bindu_runtime --executor sequential \
+  --cmake-args -DCMAKE_BUILD_TYPE=Release \
+  -DPython3_EXECUTABLE="$(command -v python3)" -DPYTHON_EXECUTABLE="$(command -v python3)"
+source install/local_setup.bash
+ros2 run bindu_runtime recorder --ros-args -r __ns:=/bindu_sim \
+  -p runtime_mode:=simulation -p recording_mode:=normal \
+  -p run_id:="recording_demo_$(date +%Y%m%d-%H%M%S)" -p output:="$PWD/artifacts/recording"
+```
+
+另一已加载相同环境的终端用 `ros2 topic echo /bindu_sim/recorder/health --once` 查看健康；Ctrl+C 会排空队列并写入汇总。目录为 `artifacts/recording/<run_id>/`，包含 `manifest.json`、`episode.jsonl.gz` 和 `summary.json`。无上游消息时数据可为空；采集现有会话须与其 namespace、profile、run_id、runtime_mode 一致。已有 launch 若已启动记录器，不要再重复启动。
 
 ## 职责与边界
 

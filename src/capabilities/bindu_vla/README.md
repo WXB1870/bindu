@@ -1,8 +1,31 @@
 # bindu_vla：远端 Pi 推理客户端
 
-[项目模块导航](../../../README.md#模块快速导航) · [职责与边界](#职责与边界) · [源码导航](#源码导航) · [接入与验证](#接入与验证) · [关联模块](#关联模块)
+[项目模块导航](../../../README.md#模块快速导航) · [编译与运行](#编译与运行) · [职责与边界](#职责与边界) · [源码导航](#源码导航) · [接入与验证](#接入与验证) · [关联模块](#关联模块)
 
 通过 ZMQ 与远端 Pi 服务交换观测和动作。本模块实现客户端适配，不包含本地 VLA 模型训练或推理。
+
+## 编译与运行
+
+在仓库根目录执行；需要 ROS 2、colcon、NumPy 和 PyZMQ，见 [环境准备](../../../运行与验证.md#环境准备与构建)。Humble 环境将 `jazzy` 换为 `humble`。
+
+```bash
+source /opt/ros/jazzy/setup.bash
+colcon build --base-paths src --packages-up-to bindu_vla --executor sequential
+source install/local_setup.bash
+python3 -m unittest discover -s tests -p 'test_pi.py' -v
+```
+
+本包提供客户端库；ROS 程序是 `bindu_runtime pi_client`。要运行包含回环服务、观测与模拟执行的检查，先准备 [运行装配依赖](../../integration/bindu_runtime/README.md#编译与运行)，再执行：
+
+```bash
+colcon build --base-paths src --packages-up-to bindu_runtime --executor sequential \
+  --cmake-args -DCMAKE_BUILD_TYPE=Release \
+  -DPython3_EXECUTABLE="$(command -v python3)" -DPYTHON_EXECUTABLE="$(command -v python3)"
+source install/local_setup.bash
+python3 tests/validate_pi.py --output "artifacts/pi-check-$(date +%Y%m%d-%H%M%S)"
+```
+
+验证器自行启动并收尾模拟服务和节点，无需模型权重。手工启动客户端装配使用 `ros2 launch bindu_runtime skeleton.launch.py recording_mode:=normal pi_enabled:=true`，但仍需提供配置匹配的 ZMQ 服务及新鲜观测，查询就绪后才能开始会话；具体命令见 [Pi 客户端入口](../../../运行与验证.md#pi-客户端运行入口)。该入口默认使用模拟设备。
 
 ## 职责与边界
 

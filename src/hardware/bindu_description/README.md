@@ -1,8 +1,24 @@
 # bindu_description：本体模型与资产
 
-[项目模块导航](../../../README.md#模块快速导航) · [职责与边界](#职责与边界) · [源码导航](#源码导航) · [接入与验证](#接入与验证) · [关联模块](#关联模块)
+[项目模块导航](../../../README.md#模块快速导航) · [编译与运行](#编译与运行) · [职责与边界](#职责与边界) · [源码导航](#源码导航) · [接入与验证](#接入与验证) · [关联模块](#关联模块)
 
 通过 ament_cmake 安装 URDF、网格和配套资产，供显示、运动学与仿真使用。本包不包含设备驱动。
+
+## 编译与运行
+
+在仓库根目录执行；需要 ROS 2、colcon 和 ament_cmake，见 [环境准备](../../../运行与验证.md#环境准备与构建)。Humble 环境将 `jazzy` 换为 `humble`。
+
+```bash
+source /opt/ros/jazzy/setup.bash
+colcon build --base-paths src --packages-up-to bindu_description --executor sequential \
+  --cmake-args -DCMAKE_BUILD_TYPE=Release \
+  -DPython3_EXECUTABLE="$(command -v python3)" -DPYTHON_EXECUTABLE="$(command -v python3)"
+source install/local_setup.bash
+ls "$(ros2 pkg prefix --share bindu_description)/urdf"
+python3 -c "from xml.etree import ElementTree as ET; print(ET.parse('src/hardware/bindu_description/urdf/snowbot_control.urdf').getroot().tag)"
+```
+
+构建会安装现有模型及网格，不需要重新下载原始资产。本包没有独立节点；模型由运动学、`robot_state_publisher` 或浏览器显示加载。完整模型显示和反馈链使用 [运行装配](../../integration/bindu_runtime/README.md#编译与运行)；上述检查只验证模型文件，不启动设备。
 
 ## 职责与边界
 

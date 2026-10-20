@@ -1,10 +1,39 @@
 # bindu_bimanual_qp：原生双臂工具 QP
 
-[项目模块导航](../../../README.md#模块快速导航) · [职责与边界](#职责与边界) · [源码导航](#源码导航) · [扫雪接口与库版本](#扫雪接口与库版本) · [接入与验证](#接入与验证) · [关联模块](#关联模块)
+[项目模块导航](../../../README.md#模块快速导航) · [编译与运行](#编译与运行) · [职责与边界](#职责与边界) · [源码导航](#源码导航) · [扫雪接口与库版本](#扫雪接口与库版本) · [接入与验证](#接入与验证) · [关联模块](#关联模块)
 
 基于 Pinocchio、ProxSuite 和 Eigen 的 C++17 联合求解库，输出 `libbindu_bimanual_qp.so`。通过 C ABI 提供双臂与腰部持工具控制，以及普通双臂的独立末端目标。
 
 普通模式使用两个末端任务，不施加刚性工具闭合约束；共享腰部和未接合臂的速度固定为0，仍使用同一组关节位置／速度边界。新增`bq_capture_independent`、`bq_flange_poses`、`bq_solve_independent`为ABI v1的增量能力，旧工具接口与布局不变。调用者负责控制权、反馈时效、组合路径碰撞和离合交接，本库不发送设备命令。
+
+## 编译与运行
+
+在仓库根目录执行。需要 ROS 2／colcon、C++17、Eigen3、SIMDe，以及版本匹配的 Pinocchio／ProxSuite；wheel 安装方式及 `CMAKE_PREFIX_PATH`、`LD_LIBRARY_PATH` 设置见 [运行装配依赖准备](../../integration/bindu_runtime/README.md#依赖准备)。Humble 环境将 `jazzy` 换为 `humble`，并在加载 ROS 后设置数值依赖路径。
+
+```bash
+source /opt/ros/jazzy/setup.bash
+# 若使用 wheel，在此按上述依赖准备加载其环境。
+colcon build --base-paths src --packages-up-to bindu_bimanual_qp --executor sequential \
+  --cmake-args -DCMAKE_BUILD_TYPE=Release \
+  -DPython3_EXECUTABLE="$(command -v python3)" -DPYTHON_EXECUTABLE="$(command -v python3)"
+source install/local_setup.bash
+python3 - <<'PY'
+import ctypes
+from pathlib import Path
+from ament_index_python.packages import get_package_prefix
+library = Path(get_package_prefix('bindu_bimanual_qp')) / 'lib/libbindu_bimanual_qp.so'
+print('ABI:', ctypes.CDLL(str(library)).bq_abi_version())
+PY
+```
+
+当前预期输出 `ABI: 1`。本包是共享库，没有 `ros2 run` 节点；由 [BimanualQP](../bindu_kinematics/README.md#编译与运行) 加载。原生求解回归可单独运行：
+
+```bash
+colcon test --packages-select bindu_bimanual_qp --event-handlers console_direct+
+colcon test-result --test-result-base build/bindu_bimanual_qp --verbose
+```
+
+测试目标需构建时保持 `BUILD_TESTING` 开启并安装 ament_cmake_gtest；它使用测试模型，不发送设备命令。
 
 ## 职责与边界
 

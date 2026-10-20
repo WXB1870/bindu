@@ -1,8 +1,24 @@
 # bindu_interfaces：ROS 2 通信接口
 
-[项目模块导航](../../../README.md#模块快速导航) · [职责与边界](#职责与边界) · [源码导航](#源码导航) · [接入与验证](#接入与验证) · [关联模块](#关联模块)
+[项目模块导航](../../../README.md#模块快速导航) · [编译与运行](#编译与运行) · [职责与边界](#职责与边界) · [源码导航](#源码导航) · [接入与验证](#接入与验证) · [关联模块](#关联模块)
 
 使用 rosidl 定义 ROS 2 消息、服务和动作，供节点之间交换命令、状态与会话信息。此包采用 ament_cmake 构建。
+
+## 编译与运行
+
+在仓库根目录执行，前提为已安装 ROS 2、colcon 和 [接口生成依赖](../../../运行与验证.md#环境准备与构建)。Humble 环境将 `jazzy` 换为 `humble`；每个新终端都需加载 ROS 与工作区。
+
+```bash
+source /opt/ros/jazzy/setup.bash
+colcon build --base-paths src --packages-up-to bindu_interfaces --executor sequential \
+  --cmake-args -DCMAKE_BUILD_TYPE=Release \
+  -DPython3_EXECUTABLE="$(command -v python3)" -DPYTHON_EXECUTABLE="$(command -v python3)"
+source install/local_setup.bash
+ros2 interface show bindu_interfaces/msg/MotionCommand
+ros2 interface show bindu_interfaces/action/TeleopSession
+```
+
+预期打印生成后的字段定义。本包只生成通信类型，没有独立节点；修改接口后，还需重新构建使用它的包，例如 `colcon build --base-paths src --packages-up-to bindu_runtime --executor sequential`，再重新加载工作区。
 
 ## 职责与边界
 

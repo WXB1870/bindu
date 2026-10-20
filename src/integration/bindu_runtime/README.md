@@ -1,8 +1,62 @@
 # bindu_runtime：ROS 运行装配
 
-[项目模块导航](../../../README.md#模块快速导航) · [职责与边界](#职责与边界) · [配置目录](#配置目录) · [扫雪遥操作](#扫雪遥操作) · [源码导航](#源码导航) · [接入与验证](#接入与验证) · [关联模块](#关联模块)
+[项目模块导航](../../../README.md#模块快速导航) · [编译与运行](#编译与运行) · [职责与边界](#职责与边界) · [配置目录](#配置目录) · [扫雪遥操作](#扫雪遥操作) · [源码导航](#源码导航) · [接入与验证](#接入与验证) · [关联模块](#关联模块)
 
 提供 ROS 2 节点、launch 与配置，把公共契约、执行库、设备和能力组合为可启动的运行实例。算法核心仍在各自模块中维护。
+
+## 编译与运行
+
+以下命令均在仓库根目录执行，使用与 ROS 消息 ABI 匹配的系统 Python。示例为 Ubuntu 24.04／Jazzy；Ubuntu 22.04／Humble 将 `jazzy` 换为 `humble`，不要在同一终端混用发行版。基础 ROS、colcon、rosdep 和各包依赖按 [环境准备](../../../运行与验证.md#环境准备与构建) 安装。
+
+### 依赖准备
+
+运行包依赖运动学及原生 QP，即使只启动任务示例，首次构建也要准备 C++17、Python 开发头文件、Eigen3、SIMDe，以及匹配的 Pinocchio／ProxSuite。已有可用数值环境可直接加载；若使用仓库固定版本的 wheel，先在新的终端准备隔离目录：
+
+```bash
+source /opt/ros/jazzy/setup.bash
+python3 -m pip install --target artifacts/teleop-deps -r tools/requirements-teleop.txt \
+  proxsuite==0.7.3 'scipy==1.15.3; python_version < "3.11"' \
+  'scipy==1.16.3; python_version >= "3.11"'
+export BINDU_TELEOP_DEPS="$PWD/artifacts/teleop-deps"
+export BINDU_PYTHON_VERSION="$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
+export PYTHONPATH="$BINDU_TELEOP_DEPS/cmeel.prefix/lib/python$BINDU_PYTHON_VERSION/site-packages:$BINDU_TELEOP_DEPS${PYTHONPATH:+:$PYTHONPATH}"
+export LD_LIBRARY_PATH="$BINDU_TELEOP_DEPS/cmeel.prefix/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export CMAKE_PREFIX_PATH="$BINDU_TELEOP_DEPS/cmeel.prefix${CMAKE_PREFIX_PATH:+:$CMAKE_PREFIX_PATH}"
+# 保持标准库优先，避免依赖目录中的旧版同名回移包遮蔽标准库。
+export PYTHONPATH="$(python3 -c 'import sysconfig; print(sysconfig.get_path("stdlib"))'):$PYTHONPATH"
+export OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1
+```
+
+安装只需在首次准备或依赖变更时执行；每个新终端仍需加载 ROS、上述依赖路径和对应工作区。不要直接复用其他机器的 `.so` 或本地 `artifacts/vr/env.sh`。Conda／独立构建目录的配置见 [兼容性说明](../../../运行与验证.md#conda-兼容性)。
+
+### 构建与模拟启动
+
+在已准备上述依赖的同一终端执行：
+
+```bash
+colcon build --base-paths src --packages-up-to bindu_runtime --executor sequential \
+  --cmake-args -DCMAKE_BUILD_TYPE=Release \
+  -DPython3_EXECUTABLE="$(command -v python3)" -DPYTHON_EXECUTABLE="$(command -v python3)"
+source install/local_setup.bash
+ros2 launch bindu_runtime skeleton.launch.py runtime_mode:=simulation recording_mode:=normal
+```
+
+`--packages-up-to bindu_runtime` 构建运行包及其依赖链，共15包，不含可选 `bindu_lio`。三维建图需改用 `--packages-up-to bindu_runtime bindu_lio` 并准备 PCL／OpenMP；直接构建全部包使用 `colcon build --base-paths src --executor sequential --cmake-args -DCMAKE_BUILD_TYPE=Release`。
+
+此入口启动模拟执行、感知、任务与记录，不自动提交运动任务。另一终端在仓库根目录加载相同 ROS、依赖与 `install/local_setup.bash`，保持 ROS 域一致后查看：
+
+```bash
+ros2 service call /bindu_sim/tasks/ready std_srvs/srv/Trigger '{}'
+ros2 topic echo /bindu_sim/execution/state --once
+```
+
+任务提交见 [任务模块命令](../../tasks/bindu_tasks/README.md#编译与运行)，Ctrl+C 收尾。需要检查启动参数时，先用 `ros2 launch bindu_runtime skeleton.launch.py --show-args`，无需启动节点。
+
+### VR、导航与真机入口
+
+- PICO 与浏览器操作台：按 [遥操作模块命令](../../capabilities/bindu_teleoperation/README.md#编译与运行) 加载查看器依赖与 TLS，再用 `bash tools/run_vr.sh --config src/integration/bindu_runtime/config/deployments/snowbot_vr_sim.json`。
+- 三维建图／定位：按 [LIO 模块命令](../../capabilities/bindu_lio/README.md#编译与运行) 构建可选包并提供点云、IMU及标定配置。
+- 真实 Snowbot：沿用 [现场部署顺序](../../../运行与验证.md#snowbot-真机最小遥操作)，准备厂商消息、现场配方与反馈，默认只读；构建和启动上层不等于底层使能或真机验收。
 
 ## 职责与边界
 
@@ -108,7 +162,7 @@ PICO运行节点：[pico_node.py](bindu_runtime/pico_node.py)；模拟开合参�
 
 ## 接入与验证
 
-构建依赖、环境加载、启动参数和验证命令统一维护在 [运行与验证](../../../运行与验证.md)，请按对应场景使用；上表用于定位文件，不是可直接执行的命令清单。
+常用构建、环境加载与启动命令见本文[编译与运行](#编译与运行)；完整场景参数、操作顺序和验证边界见 [运行与验证](../../../运行与验证.md)。
 
 - 环境切换：[统一仿真与真实模式选择](../../../运行与验证.md#统一仿真与真实模式选择)。
 - 本体与装配检查：[本体配置](../../../tests/test_robot_configuration.py)、[模式](../../../tests/test_runtime_mode.py)、[遥操作装配](../../../tests/test_teleop_deployment.py)。

@@ -1,8 +1,40 @@
 # bindu_teleoperation：遥操作输入与会话
 
-[项目模块导航](../../../README.md#模块快速导航) · [职责与边界](#职责与边界) · [扫雪输入与握持](#扫雪输入与握持) · [PICO 按键方案](#pico-按键方案) · [源码导航](#源码导航) · [接入与验证](#接入与验证) · [关联模块](#关联模块)
+[项目模块导航](../../../README.md#模块快速导航) · [编译与运行](#编译与运行) · [职责与边界](#职责与边界) · [扫雪输入与握持](#扫雪输入与握持) · [PICO 按键方案](#pico-按键方案) · [源码导航](#源码导航) · [接入与验证](#接入与验证) · [关联模块](#关联模块)
 
 处理 VR 输入、坐标映射、位姿滤波、单臂／双臂工具会话与模式切换。ROS 节点由运行装配模块提供。
+
+## 编译与运行
+
+在仓库根目录执行；需要 ROS 2／colcon，Vuer／NumPy／Pillow 及运行装配的 Pinocchio、CasADi、ProxSuite 等依赖。先按 [依赖准备](../../integration/bindu_runtime/README.md#依赖准备) 安装并加载匹配环境；Humble 环境将 `jazzy` 换为 `humble`，数值依赖路径在 ROS 之后加载。
+
+```bash
+source /opt/ros/jazzy/setup.bash
+# 在此加载上述数值依赖环境。
+colcon build --base-paths src --packages-up-to bindu_teleoperation --executor sequential
+source install/local_setup.bash
+python3 -m unittest discover -s tests -p 'test_one_euro.py' -v
+```
+
+本包是输入／会话库，ROS 程序在 `bindu_runtime`。要运行完整 Snowbot PICO 模拟与电脑操作台，在同一依赖环境继续构建装配、准备查看器，再启动统一入口：
+
+```bash
+colcon build --base-paths src --packages-up-to bindu_runtime --executor sequential \
+  --cmake-args -DCMAKE_BUILD_TYPE=Release \
+  -DPython3_EXECUTABLE="$(command -v python3)" -DPYTHON_EXECUTABLE="$(command -v python3)"
+source install/local_setup.bash
+python3 -m pip install --target artifacts/snowbot-viewer-deps -r tools/requirements-snowbot-viewer.txt
+export BINDU_VIEWER_DEPS="$PWD/artifacts/snowbot-viewer-deps"
+# 指定当前工作区，复用本终端的数值依赖，避免加载本机历史 env.sh。
+BINDU_VR_ENV="$PWD/install/local_setup.bash" bash tools/run_vr.sh \
+  --config src/integration/bindu_runtime/config/deployments/snowbot_vr_sim.json --check
+BINDU_VR_ENV="$PWD/install/local_setup.bash" bash tools/run_vr.sh \
+  --config src/integration/bindu_runtime/config/deployments/snowbot_vr_sim.json
+```
+
+`--check` 只做配置／依赖／端口检查，第二条命令启动。电脑访问 `http://127.0.0.1:8013/`；默认头显输入只监听本机。连接真实 PICO 时需在两条命令中都增加 `--host 0.0.0.0 --cert-file /绝对路径/server.crt --key-file /绝对路径/server.key`，并确保头显信任证书、地址与主机一致。首次连通先按 [输入诊断步骤](../../../运行与验证.md#vr-首次连通检查) 检查；诊断和正式入口不能同时占用8012端口。
+
+统一入口以待命开始，按键与接合步骤见本文 [PICO 按键方案](#pico-按键方案) 和 [运行流程](../../../运行与验证.md#vr-统一部署与启动)。收尾先松 Squeeze、确认保持，再 Ctrl+C。物理测试增加 `--physics` 并安装 Isaac Sim 6.2；真机改用已核实的现场配方，厂商消息、夹爪标定和反馈条件见 [现场部署](../../../运行与验证.md#snowbot-真机最小遥操作)。
 
 ## 职责与边界
 

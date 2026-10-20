@@ -1,8 +1,33 @@
 # bindu_kinematics：运动学与求解封装
 
-[项目模块导航](../../../README.md#模块快速导航) · [职责与边界](#职责与边界) · [扫雪求解与反馈](#扫雪求解与反馈) · [源码导航](#源码导航) · [接入与验证](#接入与验证) · [关联模块](#关联模块)
+[项目模块导航](../../../README.md#模块快速导航) · [编译与运行](#编译与运行) · [职责与边界](#职责与边界) · [扫雪求解与反馈](#扫雪求解与反馈) · [源码导航](#源码导航) · [接入与验证](#接入与验证) · [关联模块](#关联模块)
 
 提供模型驱动的正运动学、单臂 IK、几何检查及双臂工具 QP 的 Python 接口。求解结果作为候选关节目标交给共享执行层。
+
+## 编译与运行
+
+在仓库根目录执行。先安装并加载 [数值依赖](../../integration/bindu_runtime/README.md#依赖准备)：FK／单臂 IK 需要 Pinocchio、NumPy／CasADi，双臂路径还需原生 QP 的 ProxSuite／Eigen3／SIMDe。Humble 环境将 `jazzy` 换为 `humble`，并在加载 ROS 后设置数值依赖路径。
+
+```bash
+source /opt/ros/jazzy/setup.bash
+# 若使用 wheel，在此加载上述数值依赖环境。
+colcon build --base-paths src --packages-up-to bindu_kinematics bindu_description --executor sequential \
+  --cmake-args -DCMAKE_BUILD_TYPE=Release \
+  -DPython3_EXECUTABLE="$(command -v python3)" -DPYTHON_EXECUTABLE="$(command -v python3)"
+source install/local_setup.bash
+python3 - <<'PY'
+import pinocchio as pin
+import casadi
+from bindu_kinematics.bimanual import BimanualQP
+from ament_index_python.packages import get_package_share_directory
+from pathlib import Path
+urdf = Path(get_package_share_directory('bindu_description')) / 'urdf/snowbot_control.urdf'
+model = pin.buildModelFromUrdf(str(urdf))
+print('model nq:', model.nq, 'QP wrapper:', BimanualQP.__name__)
+PY
+```
+
+预期能加载 Snowbot 控制模型及求解封装；此检查不执行设备运动，也不代表完整 IK／QP 验收。本包没有独立 ROS 节点，持续求解由 [遥操作装配](../bindu_teleoperation/README.md#编译与运行) 启动工作进程；单独更新原生接口时同步重建 `bindu_bimanual_qp`。
 
 ## 职责与边界
 

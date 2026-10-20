@@ -1,8 +1,35 @@
 # bindu_execution：共享执行与停止管理
 
-[项目模块导航](../../../README.md#模块快速导航) · [职责与边界](#职责与边界) · [扫雪位置执行](#扫雪位置执行) · [源码导航](#源码导航) · [接入与验证](#接入与验证) · [关联模块](#关联模块)
+[项目模块导航](../../../README.md#模块快速导航) · [编译与运行](#编译与运行) · [职责与边界](#职责与边界) · [扫雪位置执行](#扫雪位置执行) · [源码导航](#源码导航) · [接入与验证](#接入与验证) · [关联模块](#关联模块)
 
 为遥操作、规划和 VLA 提供统一执行入口。Python 管理命令与状态，原生 C++ 实现插值和在线轨迹计算。
+
+## 编译与运行
+
+在仓库根目录执行；需要 ROS 2、colcon、C++17 编译器及匹配 Python 的开发头文件，见 [环境准备](../../../运行与验证.md#环境准备与构建)。Humble 环境将 `jazzy` 换为 `humble`。
+
+```bash
+source /opt/ros/jazzy/setup.bash
+colcon build --base-paths src --packages-up-to bindu_execution --executor sequential
+source install/local_setup.bash
+python3 - <<'PY'
+from bindu_execution.interpolation import Curve, State
+curve = Curve.between(0.0, 1.0, State.rest((0.0,)), State.rest((0.1,)))
+print(curve.sample(0.5))
+PY
+```
+
+上例只运行原生插值计算，预期中点位置为 `0.05`。本包是执行库，ROS 节点名为 `bindu_runtime execution`。需要模拟设备与状态发布时，先按 [运行装配](../../integration/bindu_runtime/README.md#编译与运行) 准备其依赖，再执行：
+
+```bash
+colcon build --base-paths src --packages-up-to bindu_runtime --executor sequential \
+  --cmake-args -DCMAKE_BUILD_TYPE=Release \
+  -DPython3_EXECUTABLE="$(command -v python3)" -DPYTHON_EXECUTABLE="$(command -v python3)"
+source install/local_setup.bash
+ros2 launch bindu_runtime skeleton.launch.py runtime_mode:=simulation recording_mode:=normal
+```
+
+该装配同时启动模拟执行、感知、任务和记录节点，不会自动提交任务。其他终端需加载相同环境，可用 `ros2 topic echo /bindu_sim/execution/state --once` 查看反馈；Ctrl+C 收尾。
 
 ## 职责与边界
 
