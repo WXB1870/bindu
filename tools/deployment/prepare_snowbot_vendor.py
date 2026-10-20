@@ -43,6 +43,20 @@ SITE_118_FILES = {
 }
 
 
+SITE_118_FEEDBACK_FILES = {
+    'ctl_msgs/msg/RetInformation.msg':
+        '7925166be4a6ec7e008fe1bf6893e3f24743ec2a3f07e41dcc789eb9d24cc5d3',
+    'servo_control/include/servo_control/ethercat_driver.h':
+        '2d47b3224261ef21850af6093fefd4019c5cc955e2f8a609711d039953038485',
+    'servo_control/include/servo_control/transmit.h':
+        'cde444e060f532d21ebc94aafa8a49366d140bbfd0d5009858dd977bcabd0c0e',
+    'servo_control/src/servo_control/ethercat_driver.cpp':
+        'bf4edd5ca3da8892bde7ed3d2dbc460415d1798f125665cafb4a14db8ffe963b',
+    'servo_control/src/servo_control/transmit.cpp':
+        '6476366b45bb1ead0d977a7b7fd0dfab70d40d020633db60ef010908d2dad548',
+}
+
+
 def digest(path):
     result = hashlib.sha256()
     with path.open('rb') as stream:
@@ -91,8 +105,8 @@ def prepare(archive, output):
     return output
 
 
-def prepare_118(source, output):
-    """Copy the exact reviewed 118 source tree and apply only position fixes."""
+def prepare_118(source, output, *, feedback=False):
+    """Copy reviewed 118 sources; optionally extend measured PDO feedback after position fixes."""
     source, output = Path(source).resolve(), Path(output).absolute()
     if not source.is_dir() or not SITE_118_FILES:
         raise ValueError('SNOWBOT_118_SOURCE_REQUIRED')
@@ -103,7 +117,8 @@ def prepare_118(source, output):
         raise ValueError('SNOWBOT_OUTPUT_EXISTS')
     if any(path.is_symlink() for path in source.rglob('*')):
         raise ValueError('SNOWBOT_118_SOURCE_SYMLINK')
-    for relative, expected in SITE_118_FILES.items():
+    expected_files = dict(SITE_118_FILES, **(SITE_118_FEEDBACK_FILES if feedback else {}))
+    for relative, expected in expected_files.items():
         path = source/relative
         if path.is_symlink() or not path.is_file() or digest(path) != expected:
             raise ValueError('SNOWBOT_118_SOURCE_VERSION_MISMATCH:'+relative)
@@ -117,11 +132,20 @@ def prepare_118(source, output):
         for package in ('dual_arm_control', 'servo_control'):
             shutil.copyfile(ASSETS/'position_contract.h',
                             stage/'src'/package/'include/bindu_position_contract.h')
+        if feedback:
+            subprocess.run(['patch', '--batch', '--forward', '--fuzz=0', '-p1',
+                            '-i', str(ASSETS/'feedback_118.patch')], cwd=stage/'src',
+                           check=True, capture_output=True, text=True)
+            shutil.copyfile(ASSETS/'feedback_snapshot.h',
+                            stage/'src/servo_control/include/servo_control/bindu_feedback_snapshot.h')
         manifest = dict(schema=1, source='snowbot_118_native_position',
-                        source_files=SITE_118_FILES,
+                        source_files=expected_files,
                         patch_sha256=digest(ASSETS/'position_118.patch'),
                         helper_sha256=digest(ASSETS/'position_contract.h'),
                         hardware_started=False, full_driver_build_verified=False)
+        if feedback:
+            manifest.update(feedback_patch_sha256=digest(ASSETS/'feedback_118.patch'),
+                            feedback_helper_sha256=digest(ASSETS/'feedback_snapshot.h'))
         (stage/'bindu_vendor_build.json').write_text(json.dumps(manifest, indent=2)+'\n')
         stage.rename(output)
     except BaseException:
@@ -136,8 +160,13 @@ def main():
     parser.add_argument('--output', required=True, type=Path)
     parser.add_argument('--site-118', action='store_true',
                         help='输入为本机118源码根目录；生成独立副本，只修复首帧/使能/计时，不包含保护补丁')
+    parser.add_argument('--feedback', action='store_true',
+                        help='与--site-118合用，增加20轴真实反馈及PDO采样元数据，不启动设备')
     args = parser.parse_args()
-    print((prepare_118 if args.site_118 else prepare)(args.archive, args.output))
+    if args.feedback and not args.site_118:
+        parser.error('--feedback requires --site-118')
+    print(prepare_118(args.archive, args.output, feedback=args.feedback) if args.site_118
+          else prepare(args.archive, args.output))
 
 
 if __name__ == '__main__':

@@ -12,7 +12,7 @@ from bindu_contracts.contracts import Motion
 from bindu_contracts.profile import Profile
 from bindu_execution.delegated_position import DelegatedPositionExecutor
 from bindu_execution.executor import Rejected
-from bindu_hardware.snowbot import GROUPS, VendorHealth, SnowbotIO, decode_feedback, feedback_schema
+from bindu_hardware.snowbot import GROUPS, VendorHealth, SnowbotIO, decode_feedback, feedback_schema, feedback_sample
 
 CONFIG = ROOT/'src/integration/bindu_runtime/config'
 
@@ -416,6 +416,73 @@ class SnowbotAdapterTests(unittest.TestCase):
         self.assertEqual(stamp, 10.02)
         bad = copy.deepcopy(msg); bad.r_position = [0.]*7
         with self.assertRaises(ValueError): decode_feedback(bad)
+
+    def sampled_feedback(self, **changes):
+        fields = dict(header=S(stamp=S(sec=10, nanosec=20000000)),
+                      l_position=[.1]*8, r_position=[-.1]*8,
+                      l_speed=[0.]*8, r_speed=[0.]*8,
+                      head_position=[.2, .3], head_speed=[0.]*2,
+                      torso_position=[.4, .5], torso_speed=[0.]*2,
+                      pdo_sample=1, pdo_age=.001, pdo_wkc=42, pdo_expected_wkc=42,
+                      feedback_valid_mask=0xfffff, feedback_status=[39]*20)
+        return S(**dict(fields, **changes))
+
+    def test_sampled_feedback_dates_measurement_and_omits_invalid_optional_groups(self):
+        msg = self.sampled_feedback()
+        q, v, stamp = decode_feedback(msg)
+        self.assertAlmostEqual(stamp, 10.019)
+        self.assertEqual(q['head_joint_1'], .2)
+        self.assertEqual(q['body_joint_2'], .5)
+        self.assertEqual(feedback_sample(msg), 1)
+        msg.feedback_valid_mask &= ~(1 << 16)
+        msg.head_position[0] = float('nan')
+        q, v, stamp = decode_feedback(msg)
+        self.assertNotIn('head_joint_1', q)
+        self.assertNotIn('head_joint_2', q)
+        self.assertIn('body_joint_1', q)
+        msg.feedback_valid_mask &= ~(1 << 18)
+        q, _, _ = decode_feedback(msg)
+        self.assertNotIn('body_joint_1', q)
+
+    def test_invalid_pdo_never_becomes_feedback_despite_fresh_ros_header(self):
+        for fields in (dict(pdo_sample=0), dict(pdo_sample=True), dict(pdo_age=.021),
+                       dict(pdo_age=-1.), dict(pdo_age=float('nan')), dict(pdo_wkc=41),
+                       dict(pdo_expected_wkc=0), dict(feedback_valid_mask=0xffffe),
+                       dict(feedback_valid_mask=0x100ffff), dict(feedback_status=[])):
+            with self.subTest(fields=fields), self.assertRaisesRegex(ValueError, 'SNOWBOT_PDO'):
+                decode_feedback(self.sampled_feedback(**fields))
+        msg = self.sampled_feedback()
+        del msg.pdo_age
+        with self.assertRaisesRegex(ValueError, 'METADATA_INCOMPLETE'):
+            decode_feedback(msg)
+
+    def test_republication_cannot_refresh_or_confirm_feedback_and_rollback_fails(self):
+        msg = self.sampled_feedback()
+        q, v, stamp = decode_feedback(msg)
+        self.io.observe(q, v, stamp, 10.02, sample=feedback_sample(msg))
+        self.assertTrue(self.io.last_pdo_sample)
+        before = (self.io.received_at, self.io.last_source_stamp)
+        self.assertFalse(self.io.observe(q, v, stamp+.01, 10.03, sample=1))
+        self.assertEqual((self.io.received_at, self.io.last_source_stamp), before)
+        self.now = 10.23
+        with self.assertRaisesRegex(RuntimeError, 'UNAVAILABLE'):
+            self.io.require_feedback()
+        # A stationary sample is new when the successful PDO sequence advances.
+        self.assertTrue(self.io.observe(q, v, 10.229, 10.23, sample=2))
+        self.io.require_feedback(('head', 'waist'))
+        for sample in (1, None):
+            with self.assertRaisesRegex(ValueError, 'PDO_SEQUENCE'):
+                self.io.observe(q, v, 10.239, 10.24, sample=sample)
+
+    def test_pdo_schema_requires_complete_typed_metadata(self):
+        fields = {'header': 'std_msgs/Header', **{prefix+'_'+kind: 'double[8]'
+                  for prefix in ('l', 'r') for kind in ('position', 'speed', 'iq')}}
+        fields.update(pdo_sample='uint64')
+        self.assertFalse(feedback_schema(fields)['compatible'])
+        fields.update(pdo_age='double', pdo_wkc='int32', pdo_expected_wkc='int32',
+                      feedback_valid_mask='uint32', feedback_status='uint16[20]')
+        self.assertTrue(feedback_schema(fields)['pdo_sampling_metadata'])
+        self.assertTrue(feedback_schema(fields)['compatible'])
 
     def test_native_16_axis_feedback_is_kept_without_zero_filling_head_or_waist(self):
         msg = S(header=S(stamp=S(sec=10, nanosec=20000000)),

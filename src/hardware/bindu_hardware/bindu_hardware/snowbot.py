@@ -25,6 +25,9 @@ SLOT_MASKS.update(left_tool_axis=0x80, right_tool_axis=0x8000)
 FEEDBACK_LAYOUT = (('l', ('left_arm', 'left_tool_axis')),
                    ('r', ('right_arm', 'right_tool_axis')),
                    ('torso', ('waist',)), ('head', ('head',)))
+PDO_FIELDS = {'pdo_sample': ('uint64',), 'pdo_age': ('double', 'float64'),
+              'pdo_wkc': ('int32',), 'pdo_expected_wkc': ('int32',),
+              'feedback_valid_mask': ('uint32',), 'feedback_status': ('uint16[20]',)}
 
 
 def feedback_schema(fields):
@@ -43,7 +46,12 @@ def feedback_schema(fields):
                 errors.append(name+f':float64[{size}]')
         if not any(prefix+'_'+kind+':' in e for e in errors for kind in required):
             available.extend(groups)
+    sampled = any(name in fields for name in PDO_FIELDS)
+    if sampled:
+        errors.extend(name+':'+types[0] for name, types in PDO_FIELDS.items()
+                      if fields.get(name) not in types)
     return dict(compatible=not errors, errors=errors, available_groups=available,
+                pdo_sampling_metadata=sampled and not any(e.split(':')[0] in PDO_FIELDS for e in errors),
                 missing_groups=[g for g in GROUPS if g not in available])
 
 
@@ -118,8 +126,30 @@ class VendorHealth:
             raise RuntimeError('SNOWBOT_DRIVE_UNAVAILABLE')
 
 
+def feedback_sample(msg):
+    """Validate optional PDO metadata; native legacy frames stay explicitly unverified."""
+    if not any(hasattr(msg, name) for name in PDO_FIELDS):
+        return None
+    if not all(hasattr(msg, name) for name in PDO_FIELDS):
+        raise ValueError('SNOWBOT_PDO_METADATA_INCOMPLETE')
+    sample, age = msg.pdo_sample, msg.pdo_age
+    if (type(sample) is not int or not 0 < sample < 2**64 or
+            type(age) not in (int, float) or not math.isfinite(age) or not 0 <= age <= .02):
+        raise ValueError('SNOWBOT_PDO_SAMPLE_STALE_OR_INVALID')
+    if (type(msg.pdo_wkc) is not int or type(msg.pdo_expected_wkc) is not int or
+            msg.pdo_expected_wkc <= 0 or msg.pdo_wkc != msg.pdo_expected_wkc):
+        raise ValueError('SNOWBOT_PDO_WKC')
+    mask = msg.feedback_valid_mask
+    if type(mask) is not int or not 0 <= mask <= 0xfffff or len(msg.feedback_status) != 20:
+        raise ValueError('SNOWBOT_PDO_VALIDITY')
+    if mask & 0xffff != 0xffff:
+        raise ValueError('SNOWBOT_PDO_ARM_FEEDBACK_INVALID')
+    return sample
+
+
 def decode_feedback(msg):
     """Accept native 16-axis and extended feedback, preserving missing axes."""
+    sample = feedback_sample(msg)
     positions, velocities = {}, {}
     for prefix, groups in FEEDBACK_LAYOUT:
         names = [n for g in groups for n in GROUPS[g]]
@@ -128,12 +158,16 @@ def decode_feedback(msg):
             continue
         if q is None or v is None or len(q) != len(names) or len(v) != len(names):
             raise ValueError('SNOWBOT_FEEDBACK_LAYOUT')
+        if sample is not None and prefix in ('torso', 'head'):
+            mask = SLOT_MASKS[groups[0]]
+            if msg.feedback_valid_mask & mask != mask:
+                continue
         positions.update(zip(names, q))
         velocities.update(zip(names, v))
     stamp = msg.header.stamp
     if stamp.sec < 0 or not 0 <= stamp.nanosec < 1000000000:
         raise ValueError('SNOWBOT_FEEDBACK_STAMP')
-    return positions, velocities, stamp.sec+stamp.nanosec*1e-9
+    return positions, velocities, stamp.sec+stamp.nanosec*1e-9 - (msg.pdo_age if sample is not None else 0.)
 
 
 class SnowbotIO:
@@ -154,6 +188,7 @@ class SnowbotIO:
         self.received_at = 0.
         self.invalid = ''
         self.last_source_stamp = 0.
+        self.last_pdo_sample = None
         self.targets = {}
         self.reference = {}
         self.stop_failures = ()
@@ -172,7 +207,7 @@ class SnowbotIO:
     def reference_positions(self):
         return dict(self.reference)
 
-    def observe(self, positions, velocities, stamp, now):
+    def observe(self, positions, velocities, stamp, now, *, sample=None):
         names = set(self.profile.limits)
         required = {n for prefix, groups in FEEDBACK_LAYOUT[:2] for g in groups for n in GROUPS[g]}
         if (not required <= set(positions) <= names or set(velocities) != set(positions) or
@@ -181,13 +216,21 @@ class SnowbotIO:
                 not all(math.isfinite(v) for v in (*positions.values(), *velocities.values(), stamp, now))):
             self.invalid = 'SNOWBOT_FEEDBACK_INVALID'
             raise ValueError(self.invalid)
+        if self.last_pdo_sample is not None:
+            if sample is None or sample < self.last_pdo_sample:
+                self.invalid = 'SNOWBOT_PDO_SEQUENCE'
+                raise ValueError(self.invalid)
+            if sample == self.last_pdo_sample:
+                return False  # Re-publication never renews measurement freshness or confirms rest.
         if stamp <= self.last_source_stamp or not 0 <= now-stamp <= self.feedback_max_age:
             self.invalid = 'SNOWBOT_FEEDBACK_STALE_OR_UNORDERED'
             raise ValueError(self.invalid)
         self.last_source_stamp, self.received_at, self.invalid = stamp, now, ''
+        self.last_pdo_sample = sample
         self.last_feedback = Feedback(stamp, dict(positions), 0., 0., (0., 0.),
                                       self.simulated, joint_velocities=dict(velocities))
         self.source_stamps = {g: stamp for g in self.profile.groups if g not in self.missing_feedback_groups}
+        return True
 
     def require_feedback(self, groups=()):
         now = self.now()

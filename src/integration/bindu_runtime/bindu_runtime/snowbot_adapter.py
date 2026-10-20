@@ -2,7 +2,7 @@
 import secrets
 from rcl_interfaces.msg import ParameterDescriptor
 from bindu_execution.delegated_position import DelegatedPositionExecutor
-from bindu_hardware.snowbot import GROUPS, WRITABLE, VendorHealth, SnowbotIO, decode_feedback
+from bindu_hardware.snowbot import GROUPS, WRITABLE, VendorHealth, SnowbotIO, decode_feedback, feedback_sample
 from .execution_node import ExecutionNode, run_execution
 
 
@@ -109,8 +109,8 @@ class SnowbotDevices:
                     writers[0].node_namespace.rstrip('/')+'/'+writers[0].node_name != self.health_receivers['servo']):
                 raise ValueError('SNOWBOT_FEEDBACK_PUBLISHER_IDENTITY')
             q, v, stamp = decode_feedback(msg)
-            self.io.observe(q, v, stamp, self.node.now())
-            if self.grippers:
+            advanced = self.io.observe(q, v, stamp, self.node.now(), sample=feedback_sample(msg))
+            if advanced and self.grippers:
                 self.grippers.observe(msg, q, v, stamp)
         except ValueError as exc:
             self.io.invalid = str(exc)
