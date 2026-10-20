@@ -75,7 +75,7 @@ def websocket_input(port, source, stop, errors):
         if not stop.is_set():errors.append(type(exc).__name__+':'+str(exc))
 
 
-def scenario(out, mode, websocket=False, ordinary=False, physics=False, replay=None, collision_recovery=False, prepare_return=None):
+def scenario(out, mode, websocket=False, ordinary=False, physics=False, replay=None, collision_recovery=False, prepare_return=None, stop_boundary=False):
     token=uuid.uuid4().hex[:8];ns='/position_'+token;vendor='/fixture_'+token
     node=rclpy.create_node('position_fixture_'+token)
     states=[];views=[];accepted=[];grippers={};packets=[]
@@ -257,6 +257,22 @@ def scenario(out, mode, websocket=False, ordinary=False, physics=False, replay=N
         if prepare_return:
             expected_mode='independent_arms' if ordinary else 'bimanual_tool'
             assert views[-1]['load_state']=='unknown' and views[-1]['teleop_mode']==expected_mode
+            if stop_boundary:
+                from bindu_contracts.profile import Profile
+                profile=Profile.load(CFG/'snowbot_real_position.json')
+                assert initial['arm_r_joint_3']<profile.limits['arm_r_joint_3'][0]
+                source['buttons'][1]=1
+                wait(lambda:len(accepted)>0,35.)
+                source['buttons'][1]=0
+                wait(lambda:views[-1]['pending'] is None and views[-1]['stop_confirmed'] and
+                     not states[-1].lease_active and states[-1].state not in ('RUNNING','STOPPING'))
+                assert not states[-1].stop_failures
+                actual=dict(zip(states[-1].joints.name,states[-1].joints.position))
+                assert actual['arm_r_joint_3']<profile.limits['arm_r_joint_3'][0]
+                assert all(profile.limits[n][0]<=v<=profile.limits[n][1]
+                           for m in accepted for n,v in zip(m.joint_names,m.positions))
+                checks.append('measured boundary overrun remains visible; legal A starts, immediate release confirms actual hold')
+                accepted.clear();pump(.3)
             source['trigger']=[1.,0.]
             wait(lambda:views[-1]['pending']=='manual_grippers')
             source['trigger']=[0.,0.];phase('standby')
@@ -686,6 +702,7 @@ def main():
     p.add_argument('--collision-recovery',action='store_true',help='Recorded shallow self-collision: reject follow, release A, then hold A to recover')
     p.add_argument('--prepare-return',type=Path,nargs='?',const=ROOT/'tests/config/teleoperation/snowbot_prepare_offset.json',
                    help='Recorded measured joint map: test unknown/held A return, cancel and repeat in either mode')
+    p.add_argument('--stop-boundary',action='store_true',help='With physics and a boundary --prepare-return fixture: cancel A immediately and verify the out-of-limit measured hold')
     p.add_argument('--until',type=float,help='Freeze recorded inputs/events at this UNIX timestamp')
     p.add_argument('--clock',choices=('client','received'),default='client')
     p.add_argument('--runs',type=int,default=1)
@@ -694,6 +711,7 @@ def main():
     if prepare_return:prepare_return=prepare_return.get('feedback',prepare_return)
     if args.prepare_return and (args.collision_recovery or args.replay_log):p.error('--prepare-return cannot combine with recovery/replay')
     if args.physics and (args.mode!='simulation' or not args.websocket_input):p.error('--physics requires --mode simulation --websocket-input')
+    if args.stop_boundary and (not args.physics or not args.prepare_return):p.error('--stop-boundary requires --physics and --prepare-return')
     if args.collision_recovery and (args.mode!='simulation' or args.teleop_mode!='tool' or not args.websocket_input or args.replay_log):
         p.error('--collision-recovery requires simulation, tool, WebSocket and no raw replay')
     if not 1<=args.runs<=10:p.error('--runs must be 1..10')
@@ -719,7 +737,7 @@ def main():
                 for ordinary in ((True,False) if args.teleop_mode=='both' else (args.teleop_mode=='ordinary',)):
                     out=args.output/(('ordinary-' if ordinary else 'tool-')+m+('' if args.runs==1 else f'-{run:02}'));out.mkdir()
                     case=scenario(out,m,args.websocket_input,ordinary,physics=args.physics,replay=replay,
-                                  collision_recovery=args.collision_recovery,prepare_return=prepare_return);result.append(case)
+                                  collision_recovery=args.collision_recovery,prepare_return=prepare_return,stop_boundary=args.stop_boundary);result.append(case)
                     (out/'verification.json').write_text(json.dumps(case,indent=2))
                     print(out.name+': '+str(len(case['checks']))+' checks passed',flush=True)
         (args.output/'verification.json').write_text(json.dumps(result,indent=2));print(json.dumps(result,indent=2))

@@ -31,6 +31,18 @@ class Superseded(RuntimeError):
     pass
 
 
+def prepare_reference(profile,names,measured):
+    """Keep explicit A references legal without rewriting measured feedback."""
+    result=dict(measured)
+    tolerance=profile.feedback_tolerances['joint_position']
+    for n in names:
+        q=measured[n];lo,hi=profile.limits[n]
+        if not math.isfinite(q) or not lo-tolerance<=q<=hi+tolerance:
+            raise RuntimeError('PREPARE_START_JOINT_LIMIT:'+n)
+        result[n]=min(hi,max(lo,q))
+    return result
+
+
 class PicoNode(RuntimeNode):
     def __init__(self):
         super().__init__('pico_control', allow_hardware=True, default_mode='simulation')
@@ -317,7 +329,8 @@ class PicoNode(RuntimeNode):
                 await self.pause()
             s,q=self.reading();end=[targets.get(n,q[n]) for n in self.names]
             revision=s.revision;segment=0
-            before=State.rest(tuple(q[n] for n in self.names));after=State.rest(tuple(end))
+            start=prepare_reference(self.profile,self.names,q) if self.position_contract and intent.operation=='prepare' else q
+            before=State.rest(tuple(start[n] for n in self.names));after=State.rest(tuple(end))
             curve=Curve.between(0.,duration,before,after)
             if not curve.valid(self.profile,self.names):raise RuntimeError('PICO_MOTION_LIMITS')
             if fit_duration:
@@ -381,6 +394,14 @@ class PicoNode(RuntimeNode):
             if time.monotonic()>end:raise RuntimeError('PICO_PREPARE_VALIDATOR_TIMEOUT')
             await self.pause()
         names=[n for g in self.tool_cfg['resource_groups'] for n in self.profile.groups[g]]
+        reference=prepare_reference(self.profile,names,q) if self.position_contract and not gripper_move else q
+        extra={}
+        if reference!=q:
+            extra['reference']=reference
+            self.event('PICO_PREPARE_BOUNDARY_REFERENCE',json.dumps(dict(
+                measured={n:q[n] for n in names if q[n]!=reference[n]},
+                reference={n:reference[n] for n in names if q[n]!=reference[n]},
+                tolerance_rad=self.profile.feedback_tolerances['joint_position'])))
         self.validation_result=None
         # Explicit A return is independent of load metadata and the captured
         # two-hand grasp. The operator observes the tool; robot CAD, joint
@@ -391,7 +412,7 @@ class PicoNode(RuntimeNode):
         self.event('PICO_PREPARE_VALIDATION',json.dumps(dict(operation=operation,load_state=self.control.load,
             load_state_checked=False,tool_present=gripper_move,coupling_checked=False)))
         if not self.validator.submit(operation,intent.token,q,
-                                     target if gripper_move else [target[n] for n in names]):
+                                     target if gripper_move else [target[n] for n in names],**extra):
             raise RuntimeError('PICO_PREPARE_VALIDATOR_BUSY')
         end=time.monotonic()+30.
         while self.validation_result is None:

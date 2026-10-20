@@ -19,12 +19,13 @@ class PrepareReturnPathTests(unittest.IsolatedAsyncioTestCase):
         from unittest.mock import Mock
         node=S(control=S(load=load,teleop_mode=mode),position_contract=True,
             prepare_positions={'joint':.2},names=('joint',),cfg={},
-            tool_cfg={'resource_groups':['arm']},profile=S(groups={'arm':('joint',)}),
+            tool_cfg={'resource_groups':['arm']},profile=S(groups={'arm':('joint',)},
+                limits={'joint':(-1.,1.)},feedback_tolerances={'joint_position':.002}),
             current=Mock(),event=Mock(),validation_result=None)
         state=S(joints=S(name=['joint'],velocity=[0.]))
         readings=[(state,{'joint':0.}),(state,{'joint':.01 if changed else 0.})]
         node.reading=Mock(side_effect=readings)
-        def submit(operation, token, feedback, target):
+        def submit(operation, token, feedback, target, **kwargs):
             node.validation_result=('error',token,error) if error else ('result',token,{})
             return True
         node.validator=S(ready=True,busy=False,startup_timeout=1.,submit=Mock(side_effect=submit))
@@ -51,6 +52,35 @@ class PrepareReturnPathTests(unittest.IsolatedAsyncioTestCase):
                 await PicoNode.validate_prepare(self.node(error=error),PicoIntent(1,'prepare'))
         with self.assertRaisesRegex(RuntimeError,'PREPARE_STATE_CHANGED'):
             await PicoNode.validate_prepare(self.node(changed=True),PicoIntent(1,'prepare'))
+
+    async def test_boundary_reference_is_explicit_and_does_not_replace_measured_validation_start(self):
+        from bindu_runtime.pico_node import PicoNode
+        from bindu_teleoperation.pico import PicoIntent
+        from types import SimpleNamespace as S
+        node=self.node();measured={'joint':-1.00007}
+        state=S(joints=S(name=['joint'],velocity=[0.]))
+        node.reading.side_effect=[(state,measured),(state,measured)]
+        await PicoNode.validate_prepare(node,PicoIntent(1,'prepare'))
+        node.validator.submit.assert_called_once_with('prepare_path',1,measured,[.2],reference={'joint':-1.})
+        self.assertEqual(measured,{'joint':-1.00007})
+
+    def test_boundary_reference_preserves_strict_curve_limits_and_rejects_large_overrun(self):
+        from bindu_runtime.pico_node import prepare_reference
+        from bindu_execution.interpolation import Curve,State
+        from bindu_contracts.profile import Profile
+        from tests.support.paths import ROOT
+        profile=Profile.load(ROOT/'src/integration/bindu_runtime/config/robots/snowbot/snowbot_real_position.json')
+        for name in ('arm_r_joint_3','arm_l_joint_3'):
+            lo,hi=profile.limits[name]
+            for actual,target in ((lo-.00007,lo+.1),(hi+.00007,hi-.1)):
+                measured={name:actual};legal=prepare_reference(profile,[name],measured)
+                curve=Curve.between(0.,2.,State.rest(legal.values()),State.rest([target]))
+                self.assertTrue(curve.valid(profile,[name]))
+                for t in np.linspace(0,2,101):self.assertTrue(lo<=curve.sample(t).q[0]<=hi)
+                self.assertEqual(measured[name],actual)
+            for bad in (lo-.002001,hi+.002001,float('nan')):
+                with self.assertRaisesRegex(RuntimeError,'PREPARE_START_JOINT_LIMIT'):
+                    prepare_reference(profile,[name],{name:bad})
 
 
 class OperationCancellationTests(unittest.IsolatedAsyncioTestCase):

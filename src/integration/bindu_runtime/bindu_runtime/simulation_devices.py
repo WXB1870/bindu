@@ -148,8 +148,11 @@ class PhysicsPositionIO(SnowbotIO):
             targets.update(positions)
             ack_stamps.append(ack_at)
         if set(targets)!=set(self.stop_targets):return None
+        tolerance=self.profile.feedback_tolerances['joint_position']
+        # Measured braking points can slightly cross a nominal limit. Preserve
+        # the actual ACK; the command gate still enforces the nominal limits.
         if any(type(q) not in (float,int) or not math.isfinite(q) or
-               not self.profile.limits[n][0] <= q <= self.profile.limits[n][1]
+               not self.profile.limits[n][0]-tolerance <= q <= self.profile.limits[n][1]+tolerance
                for n,q in targets.items()):
             return None
         if self.hold_ack is None:

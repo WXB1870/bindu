@@ -115,6 +115,8 @@ class PhysicsPositionState:
 
         Force drives can rest with a static position bias. The drive target
         remains fixed; the separate stop ACK describes the actual braking point.
+        Only measured feedback uses the configured position tolerance at limits;
+        all new set targets still pass the strict nominal command gate.
         Neither timeout fallback holds nor a still-moving sample can ACK a stop.
         """
         position_limit=self.profile.feedback_tolerances['joint_position']
@@ -127,7 +129,7 @@ class PhysicsPositionState:
                     *[velocities.get(n,float('nan')) for n in names]]
             if (not all(math.isfinite(v) for v in values) or
                     any(abs(velocities[n])>velocity_limit or
-                        not self.profile.limits[n][0]<=measured[n]<=self.profile.limits[n][1] for n in names)):
+                        not self.profile.limits[n][0]-position_limit<=measured[n]<=self.profile.limits[n][1]+position_limit for n in names)):
                 self.hold_candidates.pop(group,None)
                 continue
             positions={n:measured[n] for n in names}

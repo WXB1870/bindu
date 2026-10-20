@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "source_run": "vr_handoff_f487306_20261020_3b98",
+  "feedback": {
+    "body_joint_1": 0.11858949810266495,
+    "body_joint_2": 0.06915891170501709,
+    "head_joint_1": 0.0014189070789143443,
+    "head_joint_2": -6.492952525150031e-05,
+    "arm_l_joint_1": 0.08464507013559341,
+    "arm_l_joint_2": 0.34733808040618896,
+    "arm_l_joint_3": 0.35997235774993896,
+    "arm_l_joint_4": -0.4022509753704071,
+    "arm_l_joint_5": -0.9226658940315247,
+    "arm_l_joint_6": 0.11436188220977783,
+    "arm_l_joint_7": -1.1217156648635864,
+    "arm_r_joint_1": -0.1273254007101059,
+    "arm_r_joint_2": -0.5884851813316345,
+    "arm_r_joint_3": -0.5800695419311523,
+    "arm_r_joint_4": 0.40098124742507935,
+    "arm_r_joint_5": -1.972193717956543,
+    "arm_r_joint_6": 1.0977330207824707,
+    "arm_r_joint_7": 1.2314642667770386,
+    "arm_l_joint_8": -1.7026202840497717e-05,
+    "arm_r_joint_8": 3.2608892070129514e-05
+  },
+  "reason": "STOP_UNCONFIRMED:vendor_hold; right joint 3 stable just below -0.58 rad",
+  "teleop_mode": "independent_arms",
+  "load_state": "unknown"
+}

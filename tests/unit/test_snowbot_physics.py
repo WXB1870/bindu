@@ -168,6 +168,26 @@ class PositionPhysicsTests(unittest.TestCase):
         self.core.accept(self.command(3,stamp=S(sec=11,nanosec=200000000)),11.21,self.q)
         self.assertFalse(self.core.hold_acknowledgments)
 
+    def test_measured_boundary_bias_can_ack_without_clipping_actual_or_drive_target(self):
+        self.q['arm_r_joint_3']=-.5799692869
+        self.core.accept(self.command(operation='hold',group='right_arm'),10.01,self.q)
+        self.core.stepped();self.q['arm_r_joint_3']=-.5800696015
+        for at in (10.02,10.13):self.core.observe_holds(self.q,dict.fromkeys(self.q,0.),at)
+        ack=self.core.hold_acknowledgments['right_arm']
+        self.assertEqual(ack['positions']['arm_r_joint_3'],self.q['arm_r_joint_3'])
+        self.assertEqual(self.core.hold_positions['arm_r_joint_3'],-.5799692869)
+
+    def test_measured_overrun_beyond_feedback_tolerance_cannot_ack(self):
+        self.core.accept(self.command(operation='hold',group='right_arm'),10.01,self.q)
+        self.core.stepped();self.q['arm_r_joint_3']=-.582001
+        for at in (10.02,10.13):self.core.observe_holds(self.q,dict.fromkeys(self.q,0.),at)
+        self.assertFalse(self.core.hold_acknowledgments)
+
+    def test_tiny_out_of_limit_motion_target_is_still_rejected(self):
+        values=[0.]*7;values[2]=-.5800001
+        with self.assertRaisesRegex(ValueError,'SIM_JOINT_LIMIT'):
+            self.core.accept(self.command(group='right_arm',positions=values),10.01,self.q)
+
     def test_missing_samples_cannot_supply_a_stable_hold_window(self):
         velocity=dict.fromkeys(self.q,0.)
         self.core.accept(self.command(operation='hold'),10.01,self.q);self.core.stepped()
@@ -287,6 +307,20 @@ class PhysicsPositionStopTests(unittest.TestCase):
         self.assertIsNone(self.io.confirmed_stop_targets())
         self.observe()
         self.assertEqual(self.io.confirmed_stop_targets()['arm_r_joint_1'],.0077)
+
+    def test_measured_boundary_bias_releases_stop_with_actual_ack(self):
+        self.q['arm_r_joint_3']=-.5800696015;self.now+=.01;self.observe()
+        self.engine.halt(self.now);self.now+=.02;self.observe();self.acknowledge()
+        self.assertEqual(self.io.confirmed_stop_targets()['arm_r_joint_3'],self.q['arm_r_joint_3'])
+        self.engine.tick(self.now)
+        self.assertIsNone(self.engine.stopping);self.assertFalse(self.engine.stop_fault)
+
+    def test_ack_beyond_measured_boundary_envelope_cannot_release_stop(self):
+        self.engine.halt(self.now);self.now+=.02
+        self.q['arm_r_joint_3']=-.582001;self.observe();self.acknowledge()
+        self.assertIsNone(self.io.confirmed_stop_targets())
+        self.engine.tick(self.now)
+        self.assertIsNotNone(self.engine.stopping)
 
     def test_missing_wrong_or_stale_ack_cannot_confirm_even_stationary_joints(self):
         self.engine.halt(self.now);self.tick()

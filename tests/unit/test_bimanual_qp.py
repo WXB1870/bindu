@@ -233,6 +233,35 @@ class AbiLoadingTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'WORKER_TIMEOUT'):
                 worker.poll()
 
+    def test_prepare_boundary_reference_checks_actual_prefix_and_rejects_unsafe_correction(self):
+        from bindu_kinematics.bimanual_worker import _run
+        cfg={'urdf':'/tmp/model.urdf','demo':{'display_urdf':'display.urdf','grip_offset_m':[0.,0.,0.]}}
+        profile=S(limits={'joint':(-1.,1.)},feedback_tolerances={'joint_position':.002})
+        for actual,collision,reason in ((-1.00007,False,None),(-1.00007,True,'SELF_COLLISION'),
+                                       (-1.002001,False,'PREPARE_START_JOINT_LIMIT')):
+            with self.subTest(actual=actual,collision=collision):
+                solver=S(tool=np.eye(4),model_names=['joint'],names=['joint'],close=Mock())
+                requests=Mock();requests.get.side_effect=[
+                    ('prepare_path',1,{'joint':actual},[.2],{'joint':-1.},None,'rigid',None),None]
+                results=[];paths=[]
+                def check(samples):
+                    paths.append(samples)
+                    if collision:raise ValueError('SELF_COLLISION: actual prefix')
+                    return {'samples':len(samples)}
+                with patch('bindu_kinematics.bimanual.BimanualQP',return_value=solver), \
+                        patch('bindu_kinematics.tool_geometry.make_collision_checker',return_value=check), \
+                        patch('bindu_kinematics.bimanual_worker.gc.collect'), \
+                        patch('bindu_kinematics.bimanual_worker.gc.freeze'):
+                    _run(cfg,profile,requests,S(put=results.append))
+                if reason:
+                    self.assertEqual(results[-1][0],'error');self.assertIn(reason,results[-1][2])
+                else:
+                    self.assertEqual(results[-1][0],'result')
+                    self.assertEqual(paths[0][0]['q']['joint'],actual)
+                    self.assertEqual(paths[0][-1]['q']['joint'],-1.)
+                    self.assertEqual(paths[1][0]['q']['joint'],-1.)
+                    self.assertAlmostEqual(paths[1][-1]['q']['joint'],.2)
+
 
 class CandidateGeometryBacktracking(unittest.TestCase):
     @classmethod

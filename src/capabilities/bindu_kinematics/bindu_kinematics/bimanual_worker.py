@@ -61,6 +61,23 @@ def _run(config, profile, requests, results, preload_path_checks=False):
                     for name,q in zip(names,after):
                         if not profile.limits[name][0]<=q<=profile.limits[name][1]:
                             raise ValueError('PREPARE_JOINT_LIMIT')
+                    if reference is not None:
+                        # A may start at a measured stop just outside a nominal
+                        # limit. Validate the actual-to-legal prefix as well as
+                        # the exact reference path; never hide a CAD collision.
+                        start=np.array([reference[n] for n in names])
+                        tolerance=profile.feedback_tolerances['joint_position']
+                        if (loaded or not np.isfinite(start).all() or
+                                any(not profile.limits[n][0]<=q<=profile.limits[n][1] for n,q in zip(names,start)) or
+                                np.max(np.abs(start-before))>tolerance):
+                            raise ValueError('PREPARE_START_JOINT_LIMIT')
+                        count=max(1,int(np.ceil(np.max(np.abs(start-before))/.001)))
+                        prefix=[]
+                        for f in np.linspace(0,1,count+1):
+                            q=dict(feedback);q.update(zip(names,before+f*(start-before)))
+                            prefix.append(dict(t=float(f),q={n:q[n] for n in solver.model_names},tool=tool))
+                        check(prefix)
+                        before=start
                     count=max(1,int(np.ceil(np.max(np.abs(after-before))/.01)))
                     samples=[]
                     for f in np.linspace(0,1,count+1):
