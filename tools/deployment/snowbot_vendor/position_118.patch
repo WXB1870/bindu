@@ -1,0 +1,180 @@
+--- a/dual_arm_control/include/dual_arm_control/msgPublish.h
++++ b/dual_arm_control/include/dual_arm_control/msgPublish.h
+@@ -13,0 +14 @@
++#include "bindu_position_contract.h"
+@@ -377,0 +379,2 @@
++        bindu_position::TopicCapture topic_capture_;
++        bool topic_seed_pending_ = false;
+--- a/dual_arm_control/src/dual_arm_control/msgPublish.cpp
++++ b/dual_arm_control/src/dual_arm_control/msgPublish.cpp
+@@ -1021 +1021 @@
+-            if(!has_received_command_){
++            if(!has_received_command_ && !modCtlMsg_get.ifStreamingJointPosition){
+@@ -1050 +1050 @@
+-            const bool recalculate = ifFirstTemp ||
++            const bool recalculate = ifFirstTemp || ifReInit_get ||
+@@ -1136,0 +1137,9 @@
++        if (modCtlMsg_get.ifStreamingJointPosition && topic_seed_pending_) {
++            // The seed/reset request is a single packet, not a per-frame feedback reset.
++            ifUseRet_toStRunin = 0;
++            if_runin_renew = 0;
++            modCtlMsg_get.ifUseRet = 0;
++            modCtlMsg_get.ifUseRetToStartRunin = false;
++            ifReInit_get = false;
++            topic_seed_pending_ = false;
++        }
+@@ -1171,0 +1181,8 @@
++    bool finite = true;
++    for (int i = 0; i < SINGLEARMDOF; ++i)
++        finite = finite && std::isfinite(msg->l_position[i]) && std::isfinite(msg->r_position[i]) &&
++            std::isfinite(msg->l_speed[i]) && std::isfinite(msg->r_speed[i]) &&
++            std::isfinite(msg->l_iq[i]) && std::isfinite(msg->r_iq[i]);
++    topic_capture_.observe(rclcpp::Time(msg->header.stamp).seconds(), this->now().seconds(),
++                           bindu_position::steady_seconds(), finite);
++    if (!finite) return;
+@@ -1197,0 +1215,15 @@
++    const double received = bindu_position::steady_seconds();
++    const bool topic = msg->if_streaming_joint_position;
++    if (topic && !topic_capture_.fresh(this->now().seconds(), received)) {
++        RCLCPP_WARN(this->get_logger(), "Topic takeover rejected: measured feedback unavailable/stale");
++        has_received_upperMonitor_command_ = false;
++        return;
++    }
++    if (topic) {
++        topic_seed_pending_ = topic_seed_pending_ ||
++            topic_capture_.needs_seed(received, msg->if_reinit);
++        topic_capture_.accept(received);
++    } else {
++        topic_capture_.reset();
++        topic_seed_pending_ = false;
++    }
+@@ -1382,0 +1415,11 @@
++    if (topic) {
++        if (topic_seed_pending_) {
++            // Synchronize both the middle follower and the servo interpolator once.
++            lArm_stPos_get = lArm_pos_atRuninSt = lArm_pos_fdback;
++            rArm_stPos_get = rArm_pos_atRuninSt = rArm_pos_fdback;
++        }
++        ifReInit_get = topic_seed_pending_;
++        modCtlMsg_get.ifUseRet = topic_seed_pending_;
++        ifUseRet_toStRunin = topic_seed_pending_ ? 1 : 0;
++        if_runin_renew = topic_seed_pending_ ? 1 : 0;
++    }
+--- a/robot_control/include/robot_control/msgPublisher.h
++++ b/robot_control/include/robot_control/msgPublisher.h
+@@ -205,0 +206,3 @@
++        bool topic_seed_pending_ = true;
++        bool topic_target_seen_ = false;
++        std::chrono::steady_clock::time_point topic_last_target_{};
+--- a/robot_control/src/robot_control/msgPublisher.cpp
++++ b/robot_control/src/robot_control/msgPublisher.cpp
+@@ -605 +605,3 @@
+-            ifForceToRetZero = leftExceeded || rightExceeded;
++            // Topic takeover starts at measured state; homing is not an implicit target.
++            ifForceToRetZero = control_source_ != ControlSource::Topic &&
++                (leftExceeded || rightExceeded);
+@@ -672 +674 @@
+-        }else{
++        }else if (control_source_ != ControlSource::Topic){
+@@ -718 +720 @@
+-    // 仿真反馈当前由 servo_node 发布为零值，Topic 轨迹使用控制器内部上一段目标作为起点。
++    // The middle node replaces initialization state with fresh measured feedback on takeover.
+@@ -738 +740 @@
+-    // Topic 模式收到新目标后立即从当前反馈开始插补，不在起点停留 1 秒。
++    // No artificial one-second dwell at the start of a Topic segment.
+@@ -774,2 +776,2 @@
+-    // 仿真反馈不是实际关节位置，不能用全零反馈重置轨迹起点。
+-    upperMonitor_dataSend.ifUseRet = 0;
++    // Seed once at takeover/restart, then retain the continuous controller state.
++    upperMonitor_dataSend.ifUseRet = topic_seed_pending_;
+@@ -777,4 +779,3 @@
+-    // 这个标志只用于标识“Topic 点位模式”；并不代表每条消息都重建轨迹。
+-    // 插补起点仍沿用上一段控制器输出，不能改成当前反馈，否则会抖动。
+-    // 仿真反馈为零值，下层沿用内部上一段轨迹状态作为插补起点。
+-    upperMonitor_dataSend.ifUseRetToStartRunin = false;
++    upperMonitor_dataSend.ifReInit = topic_seed_pending_;
++    upperMonitor_dataSend.ifUseRetToStartRunin = topic_seed_pending_;
++    topic_seed_pending_ = false;
+@@ -819,14 +820,8 @@
+-    const auto same_position = [](const auto& incoming, const std::vector<double>& current) {
+-        if (current.size() != incoming.size()) {
+-            return false;
+-        }
+-        return std::equal(
+-            incoming.begin(), incoming.end(), current.begin(),
+-            [](double next, double old) { return std::abs(next - old) < 1e-9; });
+-    };
+-
+-    // 同一目标持续发布时不重复重建轨迹，避免到位后被反复重新触发。
+-    if (same_position(msg->l_arm_position, jointPositionMsg.ctlDesMsg.lArm_desMsg) &&
+-        same_position(msg->r_arm_position, jointPositionMsg.ctlDesMsg.rArm_desMsg)) {
+-        return;
+-    }
++    const auto received = std::chrono::steady_clock::now();
++    if (!topic_target_seen_ ||
++            std::chrono::duration<double>(received-topic_last_target_).count() > 0.2)
++        topic_seed_pending_ = true;
++    topic_target_seen_ = true;
++    topic_last_target_ = received;
++    // Forward equal holds too: a fresh measurement may arrive after the first request.
++    // The middle follower detects unchanged targets without rebuilding its trajectory.
+--- a/servo_control/src/JntController/runinController.cpp
++++ b/servo_control/src/JntController/runinController.cpp
+@@ -468,0 +469 @@
++        posFilter_l[i].reset(lArmPos_FirstTempInp[i]);
+@@ -471,0 +473 @@
++        posFilter_r[i].reset(rArmPos_FirstTempInp[i]);
+--- a/servo_control/src/ros_controller/rosLoop.cpp
++++ b/servo_control/src/ros_controller/rosLoop.cpp
+@@ -3,0 +4 @@
++#include "bindu_position_contract.h"
+@@ -815,2 +816,2 @@
+-    time_res = this->now().seconds() + this->now().nanoseconds() * 1e-9;
+-    time_last = this->now().seconds() + this->now().nanoseconds() * 1e-9;
++    time_res = bindu_position::steady_seconds();
++    time_last = bindu_position::steady_seconds();
+@@ -1593 +1594 @@
+-        double m_timeSpot = m_now.seconds() + m_now.nanoseconds() * 1e-9;
++        double m_timeSpot = m_now.seconds();
+@@ -1712 +1713,2 @@
+-    if_runin_renew = msg->if_runin_renew;
++    // Keep a reset request until ctlMsg_runin consumes it, even if DDS batches packets.
++    if_runin_renew = (if_runin_renew == 1 || msg->if_runin_renew == 1) ? 1 : 0;
+@@ -1714 +1716 @@
+-    if_useret_to_start_runin = msg->if_useret_to_start_runin;
++    if_useret_to_start_runin = if_useret_to_start_runin || msg->if_useret_to_start_runin;
+@@ -1725,2 +1727,2 @@
+-        EtherCAT_setSingleMotorEnable(7, true);   // 左夹爪
+-        EtherCAT_setSingleMotorEnable(15, true);  // 右夹爪
++        // Arm commands leave both gripper enable masks unchanged.
++        // Explicit gripper callbacks retain ownership of those motors.
+@@ -1818,2 +1820,3 @@
+-        time_res = this->now().seconds() + this->now().nanoseconds() * 1e-9;
+-        winlen = std::round((time_res - time_last) / 0.002) + 2;
++        time_res = bindu_position::steady_seconds();
++        const double interval = if_temp_runin_renew ? tempTime_upperMonitor : time_res-time_last;
++        winlen = std::min(100, bindu_position::interpolation_steps(interval, TEMPTIME, 100) + 2);
+@@ -1848,0 +1852,2 @@
++        if_runin_renew = 0;
++        if_useret_to_start_runin = 0;
+@@ -1945 +1950 @@
+-    double time_now = this->now().seconds() + this->now().nanoseconds() * 1e-9;
++    double time_now = bindu_position::steady_seconds();
+@@ -1961 +1966 @@
+-        g_left_winlen = std::round(dt / 0.001);
++        g_left_winlen = bindu_position::interpolation_steps(dt, TEMPTIME, 500);
+@@ -1981 +1986 @@
+-        g_right_winlen = std::round(dt / 0.001);
++        g_right_winlen = bindu_position::interpolation_steps(dt, TEMPTIME, 500);
+@@ -2072 +2077 @@
+-    double now = this->now().seconds() + this->now().nanoseconds() * 1e-9;
++    double now = bindu_position::steady_seconds();
+@@ -2093 +2098 @@
+-    t_winlen = std::round(dt / 0.001);
++    t_winlen = bindu_position::interpolation_steps(dt, TEMPTIME, 500);
+@@ -2124 +2129 @@
+-    double now = this->now().seconds() + this->now().nanoseconds() * 1e-9;
++    double now = bindu_position::steady_seconds();
+@@ -2145 +2150 @@
+-    h_winlen = std::round(dt / 0.001);
++    h_winlen = bindu_position::interpolation_steps(dt, TEMPTIME, 500);

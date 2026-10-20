@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prepare a patched controller workspace from the exact reviewed ZIP; never run it."""
+"""Prepare a separate controller copy from reviewed ZIP/118 sources; never run it."""
 import argparse
 import hashlib
 import json
@@ -12,6 +12,35 @@ import zipfile
 
 SOURCE_SHA256 = '24170d47483dc25c391b64662d2ff41d945e3318dc201fd27c4529410ca625f3'
 ASSETS = Path(__file__).resolve().parent/'snowbot_vendor'
+
+# Pin the changed files and the execution kernels used by the 118 patch.
+# The older ZIP/guard path below remains a distinct, incompatible source line.
+SITE_118_FILES = {
+    'dual_arm_control/include/controller/ArmController.h':
+        '5311a62a2ae0669618a93fda1016eafc7962c7993ee88305eca48a875ca59a2e',
+    'dual_arm_control/include/controller/TopicJointState.h':
+        '5fa62daf483525680be606aadbe277b084349c000c12c4b2da8df757b0401b65',
+    'dual_arm_control/include/dual_arm_control/msgPublish.h':
+        '63d81b1b4508589a939ebcb3016e49f823b4bbb8f5e8547da60c7d5cbe0a2596',
+    'dual_arm_control/include/robot_config/msgDefine.h':
+        'fa38978db08dd9908ecfeb36002f520562f4f7dc91dd60c68dbd18d379c4a5f2',
+    'dual_arm_control/src/controller/ArmController.cpp':
+        'eafbd7e537bb8229ccfdd8ac9a68111df1aabc6d22f09e1128197735dd372598',
+    'dual_arm_control/src/dual_arm_control/msgPublish.cpp':
+        '47fd3557eaf12944fd917f91dc64eb4593a545e9d37ac42df5929419b77461dd',
+    'robot_control/include/robot_control/msgPublisher.h':
+        'b0bffc3a8b3dc039d5ba95a7f807ddcaa1c1cfb8e948cf91ef06c636e06fd20d',
+    'robot_control/src/robot_control/msgPublisher.cpp':
+        '81c37a8436d3e49d0729c79b8cb8b2926c997711631e532b980aa5fd509ffdd1',
+    'servo_control/include/JntController/runinController.h':
+        '684cd5cfff6f0dd425126bf22cd105d6189a64503a6c0bc39759dc41fe865af4',
+    'servo_control/include/ros_controller/rosLoopMsgDefine.h':
+        '631e6fc13c5f9f0c9a767a99b458d8bf2b65788d55a9d900f82ca1615628f87a',
+    'servo_control/src/JntController/runinController.cpp':
+        '790efaa87bb10f0c7d6d6370c88c4332d18268c2a0f6e4394dd443d14778f261',
+    'servo_control/src/ros_controller/rosLoop.cpp':
+        '2539801ceed2b10ab695e69da08591772dc2ef2327fc97226e513b4392d2ea38',
+}
 
 
 def digest(path):
@@ -62,12 +91,53 @@ def prepare(archive, output):
     return output
 
 
+def prepare_118(source, output):
+    """Copy the exact reviewed 118 source tree and apply only position fixes."""
+    source, output = Path(source).resolve(), Path(output).absolute()
+    if not source.is_dir() or not SITE_118_FILES:
+        raise ValueError('SNOWBOT_118_SOURCE_REQUIRED')
+    if (output.resolve() == source or source in output.resolve().parents or
+            output.resolve() in source.parents):
+        raise ValueError('SNOWBOT_SOURCE_OUTPUT_OVERLAP')
+    if output.exists() or output.is_symlink():
+        raise ValueError('SNOWBOT_OUTPUT_EXISTS')
+    if any(path.is_symlink() for path in source.rglob('*')):
+        raise ValueError('SNOWBOT_118_SOURCE_SYMLINK')
+    for relative, expected in SITE_118_FILES.items():
+        path = source/relative
+        if path.is_symlink() or not path.is_file() or digest(path) != expected:
+            raise ValueError('SNOWBOT_118_SOURCE_VERSION_MISMATCH:'+relative)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    stage = Path(tempfile.mkdtemp(prefix='.snowbot-118-', dir=output.parent))
+    try:
+        shutil.copytree(source, stage/'src', symlinks=True)
+        subprocess.run(['patch', '--batch', '--forward', '--fuzz=0', '-p1',
+                        '-i', str(ASSETS/'position_118.patch')], cwd=stage/'src',
+                       check=True, capture_output=True, text=True)
+        for package in ('dual_arm_control', 'servo_control'):
+            shutil.copyfile(ASSETS/'position_contract.h',
+                            stage/'src'/package/'include/bindu_position_contract.h')
+        manifest = dict(schema=1, source='snowbot_118_native_position',
+                        source_files=SITE_118_FILES,
+                        patch_sha256=digest(ASSETS/'position_118.patch'),
+                        helper_sha256=digest(ASSETS/'position_contract.h'),
+                        hardware_started=False, full_driver_build_verified=False)
+        (stage/'bindu_vendor_build.json').write_text(json.dumps(manifest, indent=2)+'\n')
+        stage.rename(output)
+    except BaseException:
+        shutil.rmtree(stage)
+        raise
+    return output
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('archive', type=Path)
     parser.add_argument('--output', required=True, type=Path)
+    parser.add_argument('--site-118', action='store_true',
+                        help='输入为本机118源码根目录；生成独立副本，只修复首帧/使能/计时，不包含保护补丁')
     args = parser.parse_args()
-    print(prepare(args.archive, args.output))
+    print((prepare_118 if args.site_118 else prepare)(args.archive, args.output))
 
 
 if __name__ == '__main__':

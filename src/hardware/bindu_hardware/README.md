@@ -214,7 +214,14 @@ ROS_LOCALHOST_ONLY=1 ROS_DOMAIN_ID=226 python3 -m tests.integration.validate_sno
 
 2026-10-13按用户提供的`src.zip`增加独立`snowbot_adapter`入口；原控制包的消息、J1～J7顺序、rad单位和URDF限位作为本次依据。`snowbot_vendor_position.json`单独维护20轴反馈及源限位，不覆盖既有Snowbot仿真profile、G1或二代轮式配置。原始控制源码不迁入公共模块；控制侧修改维护为`tools/deployment/snowbot_vendor/bindu_guard.patch`及独立看门狗头文件，由准备工具对已核对的ZIP生成工作副本。
 
-**准备与构建。** `tools/deployment/prepare_snowbot_vendor.py`只接受本次ZIP的SHA256，拒绝覆盖已有输出，校验压缩路径后应用补丁并记录来源／补丁指纹；不启动节点或设备。控制侧补丁修正插补计时重复相加，插补间隔采用单调时钟；臂部窗口按真实1 ms周期计算，腰头／夹爪不再把20 ms误计为40 ms。原ZIP和参考展开目录保持不变。普通Bindu构建不编译底层驱动，其他机器人无需安装底层消息或应用补丁。
+**118原生位置补丁。** `position_118.patch`单独修复接管起点、臂命令隐式使能夹爪及重复计时；不包含历史自定义夹爪／保护补丁。先将118厂商源码只读复制到本机，再运行以下命令生成独立工作副本；工具核对12份执行源码的SHA256，拒绝原地修改、覆盖或符号链接，记录补丁／头文件指纹，不构建或启动设备。夹爪标定暂缓，原生保护、完整ROS构建和现场验收边界见[底层问题记录](../../../底层驱动问题记录.md)。
+
+```bash
+python3 -m tools.deployment.prepare_snowbot_vendor /本机/118厂商源码/src \
+  --site-118 --output artifacts/snowbot-118-position
+```
+
+**历史ZIP准备与构建。** 不带`--site-118`时仅接受原ZIP的SHA256，拒绝覆盖已有输出，校验压缩路径后应用历史保护补丁并记录来源／补丁指纹；不启动节点或设备。控制侧补丁修正插补计时重复相加，插补间隔采用单调时钟；臂部窗口按真实1 ms周期计算，腰头／夹爪不再把20 ms误计为40 ms。原ZIP和参考展开目录保持不变。普通Bindu构建不编译底层驱动，其他机器人无需安装底层消息或应用补丁。以下保护参数说明属于该历史ZIP路径，不能作为118原生位置补丁已具备保护能力的依据。
 
 ```bash
 python3 -m tools.deployment.prepare_snowbot_vendor /home/wxb/Downloads/src.zip \
