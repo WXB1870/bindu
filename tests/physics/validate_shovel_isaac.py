@@ -48,54 +48,12 @@ def verify(motion_path, output):
     if (not np.isfinite(times).all() or not np.isfinite([fps,duration]).all() or fps <= 0 or
             len(times) != round(duration*fps)+1 or not np.allclose(times,np.arange(len(times))/fps)):
         raise ValueError('INVALID_MOTION_TIMELINE')
-    tree = ET.parse(source)
-    package = source.parent.parent
-    for mesh in tree.findall('.//mesh'):
-        uri = mesh.get('filename')
-        prefix = f'package://{package.name}/'
-        if uri.startswith(prefix):
-            mesh.set('filename', str(package/uri.removeprefix(prefix)))
-        elif not Path(uri).is_absolute():
-            raise ValueError('UNRESOLVED_ISAAC_MESH:'+uri)
-    roots = {link.get('name') for link in tree.findall('link')} - {
-        joint.find('child').get('link') for joint in tree.findall('joint')}
-    if len(roots) != 1:
-        raise ValueError('URDF_REQUIRES_ONE_ROOT')
-    absolute = output/'model.urdf'
-    tree.write(absolute, encoding='utf-8', xml_declaration=True)
-    enable_extension('isaacsim.asset.importer.urdf')
-    from isaacsim.asset.importer.urdf import URDFImporter, URDFImporterConfig
-    usd = URDFImporter(URDFImporterConfig(urdf_path=str(absolute), usd_path=str(output/'usd'),
-                                        fix_base=True, merge_fixed_joints=False,
-                                        allow_self_collision=False)).import_urdf()
-    world = World(stage_units_in_meters=1., physics_dt=.01, rendering_dt=.05)
-    model = world.stage.DefinePrim('/World/Robot', 'Xform')
-    model.GetReferences().AddReference(str(usd))
-    variant = model.GetVariantSets().GetVariantSet('Physics')
-    if variant.IsValid() and not variant.SetVariantSelection('physx'):
-        raise ValueError('PHYSX_ASSET_VARIANT_REQUIRED')
-    links = {prim.GetName(): prim for prim in Usd.PrimRange(model)
-             if prim.IsA(UsdGeom.Xform)}
-    root = roots.pop()
+    from tools.simulation.isaac_kinematic_scene import build_scene
     frames = (motion['left_frame'], motion['right_frame'])
-    if not {root, *frames}.issubset(links):
-        raise ValueError('ISAAC_LINK_LAYOUT')
-    articulation_roots = [p for p in Usd.PrimRange(model) if p.HasAPI(UsdPhysics.ArticulationRootAPI)]
-    if len(articulation_roots) != 1:
-        raise ValueError('ISAAC_ARTICULATION_LAYOUT')
-    body = world.scene.add(SingleArticulation(str(articulation_roots[0].GetPath()), name='robot'))
-    # Massless fixed flanges are Xforms in 6.2; never add a rigid body to
-    # those frames just to read their pose.
-    flanges = {name: world.scene.add(SingleXFormPrim(str(links[name].GetPath()), name=name))
-               for name in frames}
     ground_z = float(motion['recipe']['ground']['z_in_base_m'])
     if not np.isfinite(ground_z):
         raise ValueError('NONFINITE_GROUND')
-    # Procedural plane: no network/default-environment asset dependency.
-    PhysicsSchemaTools.addGroundPlane(world.stage, '/World/Ground', 'Z', 5.,
-                                      Gf.Vec3f(0.,0.,ground_z), Gf.Vec3f(.5,.5,.5))
-    world.get_physics_context().set_gravity(0.)
-    world.reset()
+    world, body, flanges = build_scene(source, output, frames, ground_z)
     names = body.dof_names
     maximum = dict(joint_rad=0., flange_translation_m=0., flange_rotation_rad=0., right_grip_m=0.)
     left_to_tool = np.array(motion['left_to_tool']).reshape(4, 4)
@@ -287,7 +245,8 @@ def preview(app, context, output, record_video=False, playback_once=False):
     with panel.frame:
         with ui.ScrollingFrame():
             with ui.VStack(spacing=5):
-                ui.Label('Side grip / right axial support / receiving bin',height=22)
+                ui.Label('Side grip / both hands locked / receiving bin' if loose_change is None else
+                         'Side grip / right axial support / receiving bin',height=22)
                 ui.Label('1x trajectory time | Kinematic replay',height=20)
                 ui.Label('No snow / load / contact dynamics',height=20)
                 ui.Label('Gold stripe: shaft | Pointer: actual right palm',height=20)

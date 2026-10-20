@@ -27,8 +27,7 @@ class DeploymentTests(unittest.TestCase):
         self.assertEqual(real['pico_enabled'],'true')
         self.assertEqual(real['command_enabled'],'false')
         recipe=json.loads((SHARE/'config/deployments/snowbot_vr_sim.json').read_text())
-        for key,value in (('position_contract','true'),('pico_simulation_demo',True),
-                          ('device_backend','external_simulation')):
+        for key,value in (('position_contract','true'),('pico_simulation_demo',True)):
             bad=json.loads(json.dumps(recipe));bad['arguments'][key]=value
             with tempfile.TemporaryDirectory() as tmp:
                 path=Path(tmp)/'bad.json';path.write_text(json.dumps(bad))

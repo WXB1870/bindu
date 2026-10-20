@@ -29,11 +29,11 @@ class MappingTests(unittest.TestCase):
 
     def test_pico_status_panel_does_not_show_single_arm_or_legacy_trigger_mapping(self):
         from bindu_teleoperation.vr.display import status_lines
-        lines=status_lines(dict(pico=True,mode='loading',reason='WAIT',load_state='held',
+        lines=status_lines(dict(pico=True,mode='loading',reason='WAIT',load_state='held',teleop_mode='bimanual_tool',
                                 external_support=True,gripper_modes=['closed','open']))
         self.assertEqual(len(lines),3)
         text=' '.join(line for line,_ in lines)
-        self.assertIn('双手工具',text);self.assertIn('装卸',text);self.assertIn('既有流程',text)
+        self.assertIn('扫雪耦合',text);self.assertIn('装卸',text);self.assertIn('既有流程',text)
         self.assertNotIn('SINGLE ARM',text)
 
     def test_position_coordinator_uses_same_hud_in_both_modes(self):

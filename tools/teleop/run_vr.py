@@ -223,7 +223,9 @@ def copy_output(child, path):
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description='从部署配置启动 VR 遥操作与电脑界面。')
-    parser.add_argument('--config', type=Path, default=ROOT/'src/integration/bindu_runtime/config/deployments/snowbot_vr_sim.json')
+    parser.add_argument('--config', type=Path,
+                        default=os.environ.get('BINDU_VR_CONFIG') or ROOT/'src/integration/bindu_runtime/config/deployments/snowbot_vr_sim.json',
+                        help='部署配方；默认使用 BINDU_VR_CONFIG 或仓库仿真配方')
     parser.add_argument('--diagnostics', action=argparse.BooleanOptionalAction, default=True,
                         help='当前调试阶段默认记录完整输入、反馈和事件；--no-diagnostics 关闭')
     parser.add_argument('--check', action='store_true', help='仅检查环境、证书和端口')

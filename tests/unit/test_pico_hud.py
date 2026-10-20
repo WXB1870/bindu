@@ -18,6 +18,26 @@ class PicoHUDTests(unittest.TestCase):
         return dict(pico=True,mode=mode,reason='FOLLOWING',input_fresh=True,raw_input_valid=True,
             grasp_applied='rigid',grasp_requested='rigid',**values)
 
+    def test_mode_banner_uses_confirmed_mode_and_clears_stale_context(self):
+        from bindu_teleoperation.vr.hud import hud_spec
+        from bindu_teleoperation.vr.display import render
+        for mode,name,hint in [('independent_arms','普通双臂','左右手柄各控一臂'),
+                               ('bimanual_tool','扫雪耦合','双手柄共同控制工具')]:
+            view=self.view(teleop_mode=mode)
+            spec=hud_spec(view)
+            self.assertEqual((spec['context'],spec['mode_hint']),(name,hint))
+            hud=render(view).serialize()['children'][0]
+            self.assertEqual(hud['userData']['control_mode'],name)
+            self.assertEqual(hud['userData']['control_hint'],hint)
+        view=self.view('selecting_mode',teleop_mode='independent_arms',mode_target='bimanual_tool')
+        spec=hud_spec(view)
+        self.assertEqual(spec['context'],'普通双臂')
+        self.assertIn('扫雪耦合',spec['title'])
+        view['mode']='DISPLAY_STALE'
+        spec=hud_spec(view)
+        self.assertEqual(spec['context'],'模式待确认')
+        self.assertNotIn('共同控制',spec['mode_hint'])
+
     def test_reference_six_states_use_feedback_and_hide_normal_notice(self):
         from bindu_teleoperation.vr.hud import hud_spec
         following=hud_spec(self.view())

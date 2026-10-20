@@ -67,7 +67,7 @@ def websocket_source(port, source, stop, errors, records, period):
 
 
 def run_shovel_cycle(node,source,views,states,events,trace,raw,projected,tool_inputs,
-                     tool_path,model_root,out,pump,wait,phase,click,result,wire,operator_speed):
+                     tool_path,model_root,out,pump,wait,phase,click,result,wire,operator_speed,rigid_only=False):
     """A synthetic operator: inverse-map a tool recipe into raw headset poses.
 
     All actuation goes through WebSocket -> VR receiver -> PICO -> tool Action.
@@ -102,8 +102,10 @@ def run_shovel_cycle(node,source,views,states,events,trace,raw,projected,tool_in
     current=anchor('rigid');home=current['tool'].copy()
     start_index=len(trace);wire_start=len(wire);began=time.monotonic();waits=[];desired=[]
     source['cycle_targets']=desired;source['cycle_anchors']=anchors
-    result['shovel_cycle']=dict(last_recipe_time=0.,trace_start=start_index)
-    schedule=recipe['grasp_schedule'][1:];next_switch=0;t=0.
+    grasp_policy='rigid_only' if rigid_only else 'configured_switches'
+    result['shovel_cycle']=dict(last_recipe_time=0.,trace_start=start_index,grasp_policy=grasp_policy)
+    schedule=[] if rigid_only else recipe['grasp_schedule'][1:]
+    next_switch=0;t=0.
     def raw_poses(target,a):
         center=a['input'][:3,3]+basis.T @ (target[:3,3]-a['tool'][:3,3])/cfg['position_scale']
         rotation=basis.T @ target[:3,:3] @ a['tool'][:3,:3].T @ basis @ a['input'][:3,:3]
@@ -166,10 +168,11 @@ def run_shovel_cycle(node,source,views,states,events,trace,raw,projected,tool_in
     tracking=check_tool_trace(trace[start_index:end_index],requests,cfg,model_root,out,
                              captures=[dict(t=a['stamp'],mode=a['mode']) for a in anchors])
     assert tracking['max_lift_m']>=recipe['acceptance']['min_lift_m'],'Shovel must actually lift, not only preserve a static grasp'
-    assert [a['mode'] for a in anchors]==['rigid','right_axial','rigid']
-    assert [a['continuation'] for a in anchors]==[False,True,True], 'Only continuous X handoffs may use the short hold'
+    assert [a['mode'] for a in anchors]==(['rigid'] if rigid_only else ['rigid','right_axial','rigid'])
+    assert [a['continuation'] for a in anchors]==([False] if rigid_only else [False,True,True]), 'Only continuous X handoffs may use the short hold'
     assert all(f['runtime_mode']=='simulation' for f in raw+projected)
     result['shovel_cycle']=dict(recipe_duration_s=recipe['keyframes'][-1]['t'],operator_speed=operator_speed,wall_s=motion_wall,
+        grasp_policy=grasp_policy,
         feedback_start_stamp=trace[start_index]['stamp'],feedback_end_stamp=trace[end_index-1]['stamp'],
         grasp_waits=waits,tracking=tracking,websocket_events=len(wire)-wire_start,
         raw_frames=len(raw),projected_frames=len(projected),tool_pose_messages=len(tool_inputs),
@@ -303,6 +306,7 @@ def main():
     parser.add_argument('--websocket-input',action='store_true',help='Send raw CONTROLLER_MOVE events through the real Vuer receiver')
     parser.add_argument('--shovel-cycle',action='store_true',help='Complete the shovel recipe using paired poses, Squeeze and X')
     parser.add_argument('--minimal',action='store_true',help='No recorder or single-arm worker; verify optional recording is absent')
+    parser.add_argument('--rigid-only',action='store_true',help='Compare the same shovel recipe with X never pressed and both hands rigid')
     parser.add_argument('--operator-speed',type=float,default=1.,help='Scale synthetic controller movement speed, not robot limits')
     parser.add_argument('--input-period',type=float,default=.01,help='Raw VR event period in seconds')
     parser.add_argument('--rod-demo',action='store_true',help='Validate short rod, relative 6D motion, repeated clutch and stops')
@@ -318,6 +322,8 @@ def main():
         parser.error('--input-period must be in [0.005, 0.05]')
     if args.shovel_cycle and (not args.websocket_input or args.crash_coordinator or args.reject_virtual):
         parser.error('--shovel-cycle requires --websocket-input and the ordinary scenario')
+    if args.rigid_only and not args.shovel_cycle:
+        parser.error('--rigid-only requires --shovel-cycle')
     if args.websocket_input and (args.crash_coordinator or args.reject_virtual):
         parser.error('WebSocket validation uses the ordinary scenario')
     out=Path(args.output).resolve();out.mkdir(parents=True,exist_ok=False)
@@ -472,8 +478,9 @@ def main():
         pump(.15);source['grip']=[1.,1.];phase('following',timeout=15.)
         if args.shovel_cycle:
             run_shovel_cycle(node,source,views,states,events,trace,raw,projected,tool_inputs,
-                tool,model,out,pump,wait,phase,click,result,wire,args.operator_speed)
-            check('full shovel cycle controlled only by raw WebXR poses, Squeeze and X')
+                tool,model,out,pump,wait,phase,click,result,wire,args.operator_speed,args.rigid_only)
+            check('full rigid-only shovel cycle through raw WebXR poses and Squeeze' if args.rigid_only else
+                  'full shovel cycle controlled only by raw WebXR poses, Squeeze and X')
             result.update(success=True,accepted_commands=len(accepted),final=views[-1]);return
         count=len(accepted);source['delta']=.003;pump(.7)
         assert len(accepted)>count

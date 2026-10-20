@@ -82,6 +82,27 @@ def project_state(data, now, identity):
     return result
 
 
+def tool_display_pose(data, left_pose, mount, now):
+    """Use measured tool feedback when available, otherwise show a FK preview.
+
+    The preview uses the same geometry/mount as collision checking. It does not
+    declare a tool loaded or change the independent/coupled control mode.
+    The caller must first validate joint feedback and session identity.
+    """
+    if data.get('pico', {}).get('teleop_mode') != 'bimanual_tool':
+        return None, 'inactive'
+    if data['device_backend'] == 'external_simulation':
+        physics = data.get('physics', {})
+        if (physics.get('run_id') != data['run_id'] or
+                physics.get('profile_hash') != data['profile_hash'] or
+                not 0 <= now-physics.get('stamp', 0.) <= .2):
+            return None, 'unavailable'
+        if physics.get('tool_present'):
+            from tools.teleop.snowbot_errors import transform
+            return transform(physics['tool_pose']), 'measured'
+    return left_pose @ mount, 'preview'
+
+
 class EventLog:
     """Small local diagnostic stream, independent of control and training recording."""
     def __init__(self, path=None):
@@ -370,7 +391,7 @@ def serve(args, read_state=None, stop=None):
                     elif action['action']=='tool':tool_enabled=action['enabled']
             except queue.Empty:
                 pass
-            status='WAITING'
+            status='WAITING';tool_source='unavailable';tool_visible=False
             try:
                 value=read_state()
                 q=validate_state(value,time.time(),args.run_id,data['profile_hash'],names,
@@ -388,24 +409,21 @@ def serve(args, read_state=None, stop=None):
                     for side in ('left','right'):
                         pose=vis.data.oMf[model.getFrameId(config[side+'_frame'])].homogeneous
                         viewer[side+'_tip'].set_transform(pose)
-                        if side=='left' and args.device_backend!='external_simulation':
-                            viewer['shovel'].set_transform(pose @ mount)
                     last_stamp=value['feedback_stamp'];count+=1
                 pico=value.get('pico',{})
-                if args.device_backend=='external_simulation':
-                    physics=value.get('physics',{})
-                    present=(0 <= time.time()-physics.get('stamp',0) <= .2 and physics.get('tool_present'))
-                    if present:
-                        from tools.teleop.snowbot_errors import transform
-                        viewer['shovel'].set_transform(transform(physics['tool_pose']))
-                    viewer['shovel'].set_property('visible',bool(tool_enabled and present))
-                else:viewer['shovel'].set_property('visible',tool_enabled and pico.get('load_state')=='held')
+                left_pose=vis.data.oMf[model.getFrameId(config['left_frame'])].homogeneous
+                tool_pose,tool_source=tool_display_pose(value,left_pose,mount,time.time())
+                if tool_pose is not None:
+                    viewer['shovel'].set_transform(tool_pose)
+                tool_visible=bool(tool_enabled and tool_pose is not None)
+                viewer['shovel'].set_property('visible',tool_visible)
                 status=pico.get('phase','waiting')+' | '+pico.get('reason','')
             except (OSError,ValueError,KeyError) as exc:
                 status=str(exc);viewer['shovel'].set_property('visible',False)
             if time.monotonic()-last_save>=1.:
                 model_status.publish(dict(updated_at=time.time(),
-                    url=web_url,applied_frames=count,status=status,robot_commands_published=0))
+                    url=web_url,applied_frames=count,status=status,robot_commands_published=0,
+                    tool_source=tool_source,tool_visible=tool_visible))
                 last_save=time.monotonic()
             time.sleep(.033)
     finally:

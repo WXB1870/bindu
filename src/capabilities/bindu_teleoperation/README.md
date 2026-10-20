@@ -45,13 +45,13 @@ BINDU_VR_ENV="$PWD/install/local_setup.bash" bash tools/run_vr.sh \
 
 首次连接实体头显使用[独立连通检查](#vr-首次连通检查)：只采集双手柄并显示位姿、按键和断流，不启动机器人控制；通过后再进入仿真遥操作。
 
+PICO头显采用[简短六态HUD](bindu_teleoperation/vr/hud.py)，正常跟随隐藏诊断，暂停／异常显示原因与下一步，停稳与换握结果均以反馈确认。电脑端Meshcat模型、按键及事件诊断和默认关闭的简化运动学流程见[浏览器操作台](../../../运行与验证.md#真实-pico-的简化仿真与浏览器操作台)。
+
 ## 扫雪输入与握持
 
 统一Snowbot位置配方的虚拟工具采用直径36 mm、长54 cm的杆体：两握点间距34 cm，两端各伸出10 cm。`demo.geometry_kind=rod`与`shaft_from_left_grip_m=[-0.44,0.10]`由QP几何检查、电脑／头显显示和PhysX形状共用，铲头不参与此代理的碰撞或质量计算。握点标定、相对控制映射、1 cm／0.02 rad耦合容差及20 mm本体净空不变；实体工具须使用其标定几何。
 
-真机 VR 手柄采用相对映射：接合时记录手柄基准和当前实测工具姿态，后续把手柄的位置／旋转增量经坐标标定与比例映射，叠加到工具基准上。松握停止跟随，重新接合时重建基准。例如比例为 1 时，手柄沿标定后的前向移动 5 cm，工具目标相对接合姿态前移 5 cm。
-
-输入链路为：**VR 手柄位姿 → 接合基准下的相对增量 → 机器人基座系工具目标 → QP**。这里的基座系工具目标是相对映射的计算结果；“绝对工具位姿”描述该结果的坐标表达。
+输入链路为：**VR 手柄位姿 → 接合基准下的相对增量 → 机器人基座系工具目标 → QP**。真机手柄采用相对输入；基座系目标是映射结果。松握停止跟随，重接以当前实测工具和手柄重新建立基准，具体计算见[相对位姿映射](#相对位姿映射)。
 
 当前扫雪装配默认 `tool_input_source=tool_pose`，在命名空间内订阅 `teleop/tool/input` 的 [ToolPoseInput](../../shared/bindu_interfaces/msg/ToolPoseInput.msg)。该接口接收已经映射好的目标 `pose` 与右手握持请求 `tight`；两轴腰部和双臂关节由 QP 自动分配。
 
@@ -64,11 +64,9 @@ BINDU_VR_ENV="$PWD/install/local_setup.bash" bash tools/run_vr.sh \
 
 `tight`表达软件约束请求，实体夹爪指令及握持确认尚未接入；当前真实位置链收到`tight=false`会停止。换握先等待已接纳提交和实测停稳，再捕获当前握姿；绝对工具目标保持原坐标语义。
 
-现有成对 VR 路径通过 `tool_input_source=vr` 消费 `VRInput`，由 `BimanualSession` 内部完成上述相对映射。Snowbot统一位置配方以两手中点增量控制握点中点、连线转向决定杆轴并融合双腕自转；PICO用X请求虚握，旧v34保留右Trigger虚握。`ToolPoseSession` 则消费上游映射好的工具目标；面向统一工具消息的现场 VR 转接仍待接入，头显与实体夹持尚未验收。操作与按键见[右手虚握说明](#vr-手柄控制右手虚握2026-10-09)。
+`tool_input_source=vr` 由 `BimanualSession` 消费成对 `VRInput` 并完成相对映射；`ToolPoseSession` 消费上游已映射的目标，两者不重复映射。PICO使用下表；旧`v34`保留[右Trigger虚握](#vr-手柄控制右手虚握2026-10-09)。现场头显、实体夹持及面向统一工具消息的VR转接仍待验收。
 
-模式选择使用 `teleop/select_mode`，工具模式名为 `bimanual_tool`；随后显式启动 `teleop/tool_session`。暂停／恢复使用 `teleop/tool_pause`：服务响应表示请求接纳，停稳确认由会话反馈给出；恢复需要请求之后的新输入。启动、准备握姿和完整流程从[扫雪运行入口](../../integration/bindu_runtime/README.md#扫雪遥操作)进入。
-
-[真机最小位置链](../../integration/bindu_runtime/README.md#snowbot-真机最小遥操作)仍需显式管理上述Action，仅支持位姿／Squeeze／Y；其他实体操作待适配。
+普通装配先用 `teleop/select_mode` 选择 `bimanual_tool`，再启动 `teleop/tool_session`；统一PICO配方由协调器管理这两步；[真机最小位置链](../../integration/bindu_runtime/README.md#snowbot-真机最小遥操作)仍需显式管理Action，仅支持位姿／Squeeze／Y。暂停／恢复用 `teleop/tool_pause`：响应只表示接纳，停稳由反馈确认，恢复需请求后的新输入。完整流程从[扫雪运行入口](../../integration/bindu_runtime/README.md#扫雪遥操作)进入。
 
 ## PICO 按键方案
 
@@ -226,28 +224,49 @@ python3 -m tests.integration.validate_bimanual --snowbot --axial-grasp --tool-po
 
 
 
-### PICO 扫雪操作流程（目标方案）
+### 验证与未接入项
 
-**独立PICO运动学仿真链已接入；实体开合、夹持力／滑移、真实底层待命与会话恢复尚未开放，不能用作真机操作规程。** 实体按键与相对计算见[遥操作模块](#pico-按键方案)，资格和停止／虚握规则见[执行契约6.1](../../../动作执行契约.md#61-snowbot-工具操作与握持切换)。Squeeze即手柄侧握键，旧代码字段仍叫`grip`；Trigger指食指扳机。
-
-**程序入口。** 构建并加载上述工作区后：
+`VRInput`、`RecorderHealth`新增字段及`PicoContext`须与受影响节点同批重建，不能混用旧安装。以下验证自带模拟进程和已知夹具；每次选择新输出目录，不启动硬件：
 
 ```bash
-# 新PICO协调器；默认不启动头显接收器，也不自动准备。
-ros2 launch bindu_runtime teleop_only.launch.py \
-  config:=$(ros2 pkg prefix --share bindu_runtime)/config/deployments/teleop_pico_snowbot_sim.json
-ros2 topic echo /bindu_teleop/teleop/pico/state
+python3 -m tests unit pico
+python3 -m tests integration pico --output artifacts/pico-check
+python3 -m tests integration pico --crash-coordinator --output artifacts/pico-crash-check
+# 需工具配置已开启check_grasp_contacts：
+python3 -m tests integration pico --reject-virtual --output artifacts/pico-invalid-grasp-check
 ```
 
-接PICO接收器时，直接使用`robot_teleop.launch.py tool_input_source:=vr pico_enabled:=true vr_enabled:=true`，并配置`host`及有效TLS证书／密钥路径。新映射只在该入口启用；旧`v34`仍保留右Trigger虚握。旧schema1配方仅支持`kinematic`；统一位置契约支持三种设备后端，见[统一VR入口](../../../运行与验证.md#vr-统一部署与启动)。默认零位不等于有效准备姿态；A会检查实测起点和空手路径，遇碰撞／限位拒绝，不能用演示角度绕过。
+完整铲雪可使用真实 Vuer 接收端的合成手柄输入，发送 MessagePack `CONTROLLER_MOVE`、OpenXR 列主序双手矩阵及原始按键；接收器自行生成来源、序号和按键边沿，后续经过 PICO 协调器、相对映射、联合 QP 和共享执行器。验证器不发布 `VRInput`、`ToolPoseInput` 或关节命令。加载上述工作区及 Vuer／WebSocket 依赖后运行：
 
-协调器订阅`teleop/vr/raw`，发布经资格控制的`teleop/vr/input`，串接既有`teleop/select_mode`、`teleop/tool_session`和执行租约；无需用户另行手动开启工具会话。原始输入时间不刷新，按键计数在合并位姿后仍保留。准备与第8轴模拟开合使用120 ms参考段、250 ms有效期，协调器挂起也由执行层断流收敛。切换X前先按配置检查含工具的第8轴路径；检查范围仍取决于工具配置，包括是否启用夹指接触检查。
+```bash
+export ROS_DOMAIN_ID=181 ROS_LOCALHOST_ONLY=1
+export OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1
+python3 -m tests integration pico --websocket-input --shovel-cycle \
+  --operator-speed 1 --input-period .02 --output artifacts/pico-vr-shovel-check
+```
 
-启动／重启的持物状态固定为`unknown`，默认不会推断为空手。先在该服务明确声明空手才允许A准备，声明持铲后由B核对握持再接合；进入装卸后，完成装夹／卸载还需新的持物声明。跟随、故障及VR来源更换会作废外部承载声明。新协调器使用独立输入来源身份，先停止旧工具会话（包括暂停但仍保留租约的会话），拒绝上一实例的声明，再等待新操作。
+`--operator-speed`只缩放模拟手柄移动速度，位姿在发包线程按当前时刻计算。X按下／释放分别等待模拟夹爪动作和QP重新捕获，期间手柄保持原位，配方时钟暂停；松Squeeze后核对停稳，再用Y锁定。每批保存原始WebSocket包、原始／投影VR帧、映射基准、目标及实际关节反馈；有界验证器暂停自身循环GC以免证据采集阻塞发送线程，运行节点的GC与时限不变。
 
-完全关闭记录器时，右摇杆点击无动作，状态为`recording_enabled=false`、`recording=null`。
+为缩短X切换，PICO验证工作进程启动时预加载空手／持物CAD上下文，每次仍核对新鲜实测起点及完整路径；只复用几何模型，不缓存通过结果。模拟虚握小角度运动按同一速度／加速度／jerk限值缩短，缩短搜索以300 ms为下限，给120 ms参考段留出传输余量，实际选用0.356秒曲线；装卸大开合仍用配置的1.5秒。停止、到位、重捕获和初始Squeeze接合条件不变。
 
-`teleop/pico/context`为[PicoContext](../../shared/bindu_interfaces/srv/PicoContext.srv)服务，需填写状态中含协调器实例身份的`source_id`与`expected_generation`，再声明`load_state=empty/held/unknown`及`external_support`；仅停稳且无待执行操作时接受。它是人工声明，不是传感器证明，B也不能替代缺失夹持反馈。`teleop/pico/state`报告模拟第8轴模式、QP阶段、交接状态和阻断原因，`vr_source_id`另保留原始VR连接身份，`physical_gripper_confirmed=null`。开合／虚握角仅在[pico_snowbot_sim.json](../../integration/bindu_runtime/config/robots/snowbot/pico_snowbot_sim.json)定义为模拟代理，禁止照搬实机。右摇杆通过`recorder/capture`切换实际记录开关，记录健康与是否正在采集分别表达。
+2026-10-15进一步优化连续X换握：符合[连续换握契约](../../../动作执行契约.md)时，将重复的1秒接合等待改为80 ms；实际夹爪动作、停稳、完整路径和新基准捕获仍执行。两轮真实Vuer原始输入整套铲雪为27.03／27.10秒，两次切换等待分别0.86／0.82秒、0.97／0.80秒；此前为1.85／1.76秒、全程28.98秒。最终批2,717个反馈姿态CAD零违规，刚握／虚握握点峰值0.783／0.637 mm；绝对工具跟踪峰值269.55 mm／0.37806 rad仍按report_only记录。35项PICO及23项模式检查、12项真实WebSocket按键／断流／持铲重启回归和两包重建通过。批次索引`artifacts/mode-switch-2026-10-15/verification.json`；Isaac窗口替换为最终27.14秒实际反馈的只读回放，实体夹持和真机未验收。
+
+全程刚握对照沿用同一工具配方、模型、控制参数与保护，在上述完整铲雪命令中加`--rigid-only`，例如`--operator-speed .7 --input-period .02 --rigid-only`；只在验证器中不发送X，原始位姿／Squeeze及全部生产链路不变，不修改默认握持配置。2026-10-15本批虚握1倍档27.08秒通过；刚握1倍／0.85倍在配方13.22／12.69秒因候选杆—`body_link_2`净空19.07／19.55 mm触发20 mm保护，未完成整轮，实际已执行采样最小净空21.72／21.56 mm、CAD零违规。刚握0.7倍35.81秒完成，3,588姿态CAD零违规、握点峰值0.976 mm、最小本体净空27.30 mm，实际倒雪／回位通过；无X与虚握标志已独立核对。Isaac展示该成功档的35.86秒实际反馈、1,794个姿态，全程双手刚握。索引`artifacts/rigid-grasp-2026-10-15/verification.json`保留快档失败和慢档成功；该比较不能判断真实夹持内力。
+
+2026-10-15用户明确本场景优先验证双臂耦合，工具绝对跟踪不再强制20 mm。扫雪配置的`demo.acceptance.tool_tracking_policy=report_only`保留20 mm／0.03 rad参考值及全部实测误差，但超出参考值不单独拒绝；缺省策略仍为`required`。运动学实测验收要求握点相对几何误差≤1 mm、杆轴偏差≤0.02 rad，刚握还检查每次确认捕获后的双臂相对转角≤0.02 rad；虚握允许绕杆转动，重新刚握捕获当时转角。回位和阶段工具角度同样按策略记录参考达标情况；关节动态限值、碰撞／地面／完整杆指爪穿透、停止／断流和实际抬升检查继续保留。这些是运动学协调指标，不能代替接触载荷或实体夹持判据。
+
+此前耦合优先批采用`relative_gain=6`、`max_reference_error=0.06 rad`，工具增益为6；当时缩小参考超前预算以改善耦合，未提高关节速度／加速度／jerk限值。新批`artifacts/coupling-priority-2026-10-15/vr-fast/results.json`通过真实VR通信入口完成28.98秒周期，直接工具目标消息为0，较此前39.31秒缩短约26%；2,906个实际反馈姿态CAD零违规。刚握／虚握最大握点误差0.886／0.746 mm，刚握相对转角0.00244 rad；工具位置／旋转峰值290.99 mm／0.46115 rad，超出参考值且明确记录。实测铲入164.95 mm、抬升883.45 mm，倒雪箱口包络通过。0.9倍档31.68秒也通过，握点峰值0.656／0.568 mm、工具位置峰值241.93 mm。18项动作／策略检查及两包重建通过，详见本批索引；Isaac只读显示实际ROS反馈，控制闭环仍为ROS运动学仿真，现场头显、无线／TLS、实体夹持和接触动力学未验收。
+
+当前已修复快动作末端滞后：`max_reference_error`恢复为0.15 rad，`relative_gain=6`及关节0.75 rad/s、9 rad/s²、162 rad/s³不变。该参数是已接纳关节参考相对实测的超前预算，不是工具误差评分门槛；此前0.06 rad与同步C2执行的暂态滞后不匹配，反复触发整组缩步。仍保留20%传输余量、参考超差停止、1 mm耦合门槛及原几何检查。两轮真实Vuer原始输入快档26.88／26.89秒完成；最终左右握点到目标峰值24.60／23.85 mm（旧批190.19／209.51 mm）、RMS 5.52／5.92 mm，耦合峰值0.875 mm，2,695个实测姿态CAD零违规，铲入／抬升／倒雪／回位通过。新增快配方行为回归独立检查4 cm跟踪和原耦合要求，不改变report_only任务策略；旧0.06 rad配置明确触发该测试失败。证据`artifacts/tracking-fix-2026-10-15/verification.json`。当前控制为ROS运动学仿真，未验证现场头显、接触载荷或真机。
+
+此前严格工具跟踪批`artifacts/vr-shovel-interface-2026-10-15/run-20/results.json`为39.31秒、位置峰值16.97 mm，保留作为旧验收目标的对照；其他候选失败记录不改写。旧批29项PICO、36项QP、14项动作检查、12项WebSocket场景及错误虚握拒绝专项见其索引，100 Hz持载重启曾出现PICO_PAIR_INVALID，补诊断复测通过但偶发根因未确认。
+
+2026-10-15完成116项相关检查、12项ROS场景及崩溃停止／错误虚握拒绝专项，证据为`artifacts/pico-controls-2026-10-15/verification.json`。现场PICO、Isaac端到端物理操作、实体夹爪／力与滑移、真实恢复及本批Humble／Orin未验收。实体接入顺序为底层待命改造 → 标定夹爪及六维反馈 → 只读逐键核对 → 物理启动／重启 → 实机有支撑装夹，重点补验：
+
+- 按住键启动／重连、旧请求、同帧冲突、拒绝后不补执行、合并位姿中的短暂松握、追踪／坐标原点异常。
+- 左右扳机独立及交叉释放、作业误扣只停止、失联不自动闭合、X与开爪互斥、单爪失败；虚握抖动／中断、迟到乱序确认、左手承载不足及沿杆滑移。
+- 关节／夹爪／六维反馈冻结、停止未确认、新会话拒绝及底层持载重启；逐次保存操作请求、实际夹持、QP模式、停止证据和代次。
+
 
 
 
@@ -367,43 +386,31 @@ PICO的`MotionControllers`显式以60 Hz发送手柄输入，其他旧映射保�
 
 
 
-### 8.3.3 PICO 扫雪按键与状态关系（设计）
+### 8.3.3 PICO 扫雪控制关系
 
-**状态：独立PICO运动学仿真已接入映射、操作状态与执行／QP链；真实底层默认待命、实体开合／虚握确认及会话重新绑定尚未实现。** 用户确认使用PICO手柄，具体型号及独立v4源码位置尚待核对。各部分在对应模块／主文档维护：
-
-| 内容 | 维护位置 |
-|---|---|
-| Squeeze／Trigger术语、实体按键表、协议别名、相对位姿计算与旧映射边界 | [遥操作模块：PICO按键方案](#pico-按键方案) |
-| 装卸资格、夹爪开合、虚握子状态、停止／恢复优先级及状态图 | [动作执行契约6.1](../../../动作执行契约.md#61-snowbot-工具操作与握持切换) |
-| 空手装夹、持铲重接、作业／卸载顺序与待实施验证 | [运行与验证：PICO扫雪操作流程](#pico-扫雪操作流程目标方案) |
-| 底层待命启动、保持前提与受控会话交接 | [本节前述启动方案](../../../软件架构设计.md#832-snowbot-实机启动与准备) |
-
-GUI／手柄只提交操作与持续使能状态；遥操作模块负责输入归一化、相对映射和锚点，工具会话负责状态资格及请求／确认协调，QP负责工具与腰臂约束，执行与设备层负责唯一写入、底层接口和实测停止确认。实际夹持／六维反馈在设备边界接入，不在按键层实现新的柔顺控制环。准备／装卸操作与连续工具载荷分开，不能让同一次扳机按下同时打开实体爪并放宽QP。
-
-**信号与控制关系。**
+PICO操作链已接入ROS运动学仿真；下图实线为当前链路，虚线为实体接入目标。职责入口：[按键与相对映射](#pico-按键方案) · [操作契约与状态图](../../../动作执行契约.md#61-snowbot-工具操作与握持切换) · [配置、步骤及验证](../../../运行与验证.md#pico-扫雪操作流程)。
 
 ```mermaid
 flowchart LR
-    PICO[PICO物理输入] --> RAW[左右身份／物理键名归一化<br/>来源、时间、序号、连接代次]
-    RAW --> OP[A/B/X/Y、摇杆点击及双扳机开合请求]
-    RAW --> VR[双手位姿、Squeeze和X虚握请求]
-    OP --> STATE[启动与装卸状态机<br/>资格、控制权、停止、确认]
-    STATE -->|仅准备资格有效| PREP[准备Action：联合验证路径]
-    STATE -->|仅装卸资格有效| CLAW[实体夹爪适配与实际确认]
-    STATE -->|允许跟随| MAP[相对映射与锚点管理]
-    VR --> MAP
-    MAP --> TOOL[工具目标pose＋握持请求tight]
-    TOOL --> QP[双臂及两轴腰QP<br/>握持、限位、几何与载荷检查]
-    PREP --> EXEC[共享执行与设备适配<br/>单一控制权、停止确认]
-    QP --> EXEC
-    EXEC --> LOW[底层控制：已有插值／柔顺]
-    CLAW --> LOW
-    LOW --> FB[实际关节、夹持、六维力／力矩和健康反馈]
-    FB --> STATE
+    PICO[PICO位姿、Squeeze、Trigger及面键] --> RX[VR接收器：身份、时间及累计边沿]
+    RX -->|teleop/vr/raw| CO[PicoControl／PicoNode<br/>操作资格、确认及控制权交接]
+    CO -->|有效VRInput、模式及工具Action| MAP[BimanualSession<br/>相对映射与实测锚点]
+    CO --> OP[空手准备／模拟第8轴<br/>CAD路径预检]
+    MAP --> QP[双臂与两轴腰QP]
+    QP --> EXEC[共享执行：唯一写入、限位与停止]
+    OP --> EXEC
+    EXEC --> SIM[运动学设备]
+    SIM --> FB[关节位置／速度反馈]
+    FB --> CO
     FB --> MAP
-    FB --> QP
-    FB --> UI[VR状态面板／GUI／异步记录]
-    STATE --> UI
+    CO --> UI[VR状态面板／异步记录]
+    EXEC -.实体接入.-> LOW[底层位置控制：已有平滑／柔顺]
+    CO -.实体开合／虚握.-> CLAW[夹爪适配]
+    CLAW -.-> LOW
+    LOW -.-> REALFB[实际关节、夹持、六维及健康反馈]
+    REALFB -.-> CO
+    REALFB -.-> MAP
+    REALFB -.载荷观测／约束待接入.-> QP
 ```
 
 统一位置契约按配置选择运动学设备、Isaac物理设备或Snowbot真机接口，上层PICO、QP和夹爪状态机共用。轻量FK显示常驻并只读选定后端的关节反馈；Isaac作为独立设备进程通过既有仿真消息接收目标、返回物理关节状态，工具真值用于显示，不进入上层运动求解。独立Isaac私有实验的载荷观测仍为研究路径；统一VR的双腕六维、实体夹持确认与物理内力限值优化尚未接通。共同抵抗力矩范围及模型参数须标定，不在按键层增加控制环；启动与反馈语义见[统一入口](../../../运行与验证.md#vr-统一部署与启动)。

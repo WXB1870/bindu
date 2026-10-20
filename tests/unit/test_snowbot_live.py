@@ -2,6 +2,7 @@
 from tests.support.paths import ROOT
 import copy
 import importlib.util
+import json
 from pathlib import Path
 import sys
 import tempfile
@@ -153,12 +154,91 @@ class WebFeedbackTests(unittest.TestCase):
         self.assertFalse(self.project(store.read(), now=11.)['valid'])
 
 
+class ToolDisplayPoseTests(unittest.TestCase):
+    def setUp(self):
+        import numpy as np
+        self.np = np
+        self.left = np.eye(4)
+        self.left[:3, :3] = [[0., -1., 0.], [1., 0., 0.], [0., 0., 1.]]
+        self.left[:3, 3] = [.2, .3, .4]
+        self.mount = np.eye(4)
+        self.mount[0, 3] = .1
+        self.data = dict(device_backend='external_simulation', run_id='run', profile_hash='profile',
+                         pico=dict(load_state='empty', teleop_mode='bimanual_tool'),
+                         physics=dict(stamp=10., run_id='run', profile_hash='profile', tool_present=False))
+
+    def test_tool_is_hidden_outside_coupled_mode_even_when_physically_present(self):
+        for backend in ('external_simulation', 'kinematic', 'snowbot_vendor'):
+            for mode in ('independent_arms', None):
+                data = dict(self.data, device_backend=backend, pico=dict(teleop_mode=mode),
+                            physics=dict(self.data['physics'], tool_present=True))
+                with self.subTest(backend=backend, mode=mode):
+                    self.assertEqual(web.tool_display_pose(data, self.left, self.mount, 10.1),
+                                     (None, 'inactive'))
+
+    def test_unloaded_tool_has_measured_left_frame_preview_in_all_backends(self):
+        before = copy.deepcopy(self.data)
+        for backend in ('external_simulation', 'kinematic', 'snowbot_vendor'):
+            with self.subTest(backend=backend):
+                pose, source = web.tool_display_pose(dict(self.data, device_backend=backend),
+                                                    self.left, self.mount, 10.1)
+                self.np.testing.assert_allclose(pose[:3, 3], [.2, .4, .4])
+                self.np.testing.assert_allclose(pose[:3, :3], self.left[:3, :3])
+                self.assertEqual(source, 'preview')
+        self.assertEqual(self.data, before)
+
+    def test_installed_physical_tool_uses_its_measured_pose_instead_of_fk(self):
+        actual = self.np.eye(4)
+        actual[:3, 3] = [.9, .8, .7]
+        self.data['physics'].update(tool_present=True, tool_pose=actual.ravel().tolist())
+        pose, source = web.tool_display_pose(self.data, self.left, self.mount, 10.1)
+        self.np.testing.assert_allclose(pose, actual)
+        self.assertEqual(source, 'measured')
+
+    def test_stale_missing_or_other_session_physics_does_not_become_a_preview(self):
+        for change in (dict(stamp=9.), dict(stamp=11.), dict(run_id='other'),
+                       dict(profile_hash='other')):
+            data = dict(self.data, physics=dict(self.data['physics'], **change))
+            self.assertEqual(web.tool_display_pose(data, self.left, self.mount, 10.1),
+                             (None, 'unavailable'))
+        self.assertEqual(web.tool_display_pose(dict(self.data, physics={}),
+                                              self.left, self.mount, 10.1),
+                         (None, 'unavailable'))
+
+    def test_invalid_measured_tool_pose_cannot_fall_back_to_fk(self):
+        self.data['physics'].update(tool_present=True, tool_pose=[0.] * 16)
+        with self.assertRaisesRegex(ValueError, 'DISPLAY_ERROR_TRANSFORM'):
+            web.tool_display_pose(self.data, self.left, self.mount, 10.1)
+
+
 class SimulationEntryTests(unittest.TestCase):
     def setUp(self):
         environment = patch.dict(entry.os.environ)
         environment.start()
         self.addCleanup(environment.stop)
         entry.os.environ.pop('BINDU_VR_CONFIG', None)
+
+    def test_local_default_recipe_and_explicit_override(self):
+        fallback=ROOT/'src/integration/bindu_runtime/config/deployments/snowbot_vr_sim.json'
+        with tempfile.TemporaryDirectory() as directory:
+            base=Path(directory)
+            recipe=json.loads(fallback.read_text())
+            recipe['arguments'].update(host='0.0.0.0',cert_file='server.crt',key_file='server.key')
+            for name in ('server.crt','server.key'):
+                (base/name).touch()
+            config=base/'site.json'
+            config.write_text(json.dumps(recipe))
+            with patch.dict(entry.os.environ,{'BINDU_VR_CONFIG':str(config)}):
+                args=entry.parse_args([])
+                control,_=entry.commands(args)
+                self.assertEqual(args.config,config)
+                self.assertEqual(args.host,'0.0.0.0')
+                self.assertEqual(args.cert_file,str(base/'server.crt'))
+                self.assertEqual(args.key_file,str(base/'server.key'))
+                self.assertIn('host:=0.0.0.0',control)
+                explicit=entry.parse_args(['--config',str(fallback)])
+                self.assertEqual(explicit.host,'127.0.0.1')
+                self.assertEqual(explicit.cert_file,'')
 
     def test_physics_selects_external_feedback_and_keeps_browser(self):
         args=entry.parse_args(['--physics','--run-id','physics_test'])

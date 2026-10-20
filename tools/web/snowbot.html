@@ -317,7 +317,7 @@ details[open]>summary:after { transform: rotate(225deg); }
         <div class="overlay" id="stale" role="status">正在连接关节反馈…</div>
         <div class="stage-status"><span><i class="legend-swatch" style="color:#c9ced8" aria-hidden="true"></i> 左臂末端 <i class="legend-swatch" style="color:#b7a794;margin-left:14px" aria-hidden="true"></i> 右臂末端</span></div>
       </div>
-      <div class="view-foot"><span>关节反馈 <output id="feedback-age">等待更新</output></span></div>
+      <div class="view-foot"><span id="tool-source" hidden></span><span>关节反馈 <output id="feedback-age">等待更新</output></span></div>
     </section>
       <section class="panel events-panel" id="events-panel"><div class="panel-head"><h2>最近事件 <small id="event-count">0 条</small></h2><div class="event-actions"><select id="event-filter" aria-label="事件显示范围"><option value="state">状态与异常</option><option value="all">全部事件</option><option value="input">手柄按键</option></select><button id="pause" aria-pressed="false" title="仅暂停事件列表，实时状态继续更新">暂停事件</button></div></div><div class="events" id="events" role="log" aria-label="最近状态变化"><div class="empty">等待状态更新</div></div></section>
     </div>
@@ -649,6 +649,8 @@ function render(data,online){
   badge('system-health',!online?'状态服务断连':!fresh?'反馈不可用':!pcFresh?'PICO 状态过期':p.phase==='locked'?'控制已锁定':tracked?'反馈在线':'等待手柄',!online||!fresh||!pcFresh?'bad':p.phase==='locked'?'warn':tracked?'good':'warn');
   const modelLive=viewer&&meshConnected&&fresh&&modelMeshes>0&&data.model&&finite(data.model.updated_at)&&Math.max(0,data.server_time-data.model.updated_at)<=2;
   badge('model-health',modelLive?'模型实时更新':meshConnected&&!modelMeshes?'场景加载中':meshConnected?'模型保持末帧':'模型未连接',modelLive?'good':'warn');
+  const toolSource=$('tool-source');toolSource.hidden=!(modelLive&&data.model.tool_visible);
+  toolSource.textContent=data.model?.tool_source==='measured'?'工具反馈':'工具预览，随左握点';
   const overlay=$('stale');overlay.hidden=!!modelLive;
   if(viewer)overlay.textContent=!online?'状态服务断连，模型可能保留最后一帧。':!fresh?'关节反馈已过期，当前显示为最后一帧。':!meshConnected?'模型服务连接中，正在重试…':!modelMeshes?'正在载入机器人模型…':'模型尚未确认更新，当前显示可能保留末帧。';
   text('phase',state.status);$('phase').className='phase '+state.tone;$('control-panel').dataset.tone=state.tone;

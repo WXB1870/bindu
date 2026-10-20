@@ -15,10 +15,14 @@ def hud_spec(view):
     # Older observers cannot prove the applied grasp from a requested value.
     grip = '右手虚握' if applied == 'right_axial' else '刚握' if applied == 'rigid' else '握持待确认'
     spec = dict(state='paused', status='待命', grip=grip, tone='warning',
-                title='', detail='', action='Y 停止', context='双手工具')
-    if view.get('tool_variant')=='short_rod':spec['context']='双手短棍'
+                title='', detail='', action='Y 停止', context='模式待确认',mode_hint='等待有效控制状态')
     independent=view.get('teleop_mode')=='independent_arms'
-    if independent:spec.update(context='普通双臂',grip='逐臂离合')
+    if independent:spec.update(context='普通双臂',mode_hint='左右手柄各控一臂',grip='逐臂离合')
+    elif view.get('teleop_mode')=='bimanual_tool':
+        spec.update(context='扫雪耦合',mode_hint='双手柄共同控制工具')
+        if view.get('tool_variant')=='short_rod':spec.update(context='短棍耦合',mode_hint='双手柄共同控制短棍')
+    if mode in ('DISPLAY_STALE','DISPLAY_WAITING'):
+        spec.update(context='模式待确认',mode_hint='等待有效控制状态')
     def notice(title, detail):
         spec.update(title=title, detail=detail)
     input_fault = any(x in reason for x in ('INPUT_TIMEOUT','PAIR_INVALID','POSE_INVALID','TRACKING','CONNECTION_CHANGED','POSE_ORIGIN','TIME_REVERSED'))
@@ -52,7 +56,7 @@ def hud_spec(view):
         spec.update(status='准备中',grip='工具')
         notice('正在前往准备姿态', '继续按住 A；松开 A 即暂停准备')
     elif mode == 'selecting_mode':
-        target='普通双臂' if view.get('mode_target')=='independent_arms' else '扫雪工具'
+        target={'independent_arms':'普通双臂','bimanual_tool':'扫雪耦合'}.get(view.get('mode_target'),'目标')
         spec['status']='切换模式中'
         notice('正在检查'+target+'模式', '保持松握；切换完成后仍待命，不自动运动')
     elif mode in ('confirming_tool','engaging'):
@@ -129,7 +133,7 @@ def _font_path():
 
 
 @lru_cache(maxsize=64)
-def hud_image(state, status, grip, tone, title, detail, action, context):
+def hud_image(state, status, grip, tone, title, detail, action, context, mode_hint):
     """Cache PNG-ready artwork; no font fetch, per-frame metrics or scene images."""
     from PIL import Image, ImageDraw, ImageFont
     image = Image.new('RGBA',(1440,330),(0,0,0,0))
@@ -138,22 +142,25 @@ def hud_image(state, status, grip, tone, title, detail, action, context):
     ink, muted, edge = '#e5eeea','#a7bbb0','#41574b'
     panel, inset = '#182721','#263a30'
     color = {'good':'#72dab7','warning':'#f0c476','danger':'#ffaaa0'}[tone]
-    # One short bottom bar; the notice appears above it only when needed.
-    draw.rounded_rectangle((60,244,1380,326),radius=18,fill=panel,outline=edge,width=2)
-    draw.text((88,265),context,font=font(26),fill=muted)
-    draw.line((270,268,270,302),fill=edge,width=2)
-    draw.ellipse((300,278,312,290),fill=color)
-    draw.text((330,263),status,font=font(30),fill=ink)
-    draw.text((690,265),grip,font=font(26),fill=muted)
-    draw.line((1058,268,1058,302),fill=edge,width=2)
-    draw.rounded_rectangle((1084,266,1118,300),radius=17,fill=inset,outline=edge,width=2)
-    draw.text((1093,266),action[0],font=font(25),fill=ink)
-    draw.text((1130,266),action[2:],font=font(25),fill=ink)
+    # Mode and hand mapping stay visible independently of follow/stop status.
+    draw.rounded_rectangle((60,196,1380,326),radius=18,fill=panel,outline=edge,width=2)
+    mode_color='#9fc7ff' if context=='普通双臂' else '#80debf' if context in ('扫雪耦合','短棍耦合') else muted
+    draw.text((88,203),'当前控制模式',font=font(19),fill=muted)
+    draw.text((88,227),context,font=font(38),fill=mode_color)
+    draw.text((88,281),mode_hint,font=font(24),fill=muted)
+    draw.line((460,218,460,304),fill=edge,width=2)
+    draw.ellipse((490,232,502,244),fill=color)
+    draw.text((520,215),status,font=font(30),fill=ink)
+    draw.text((520,274),grip,font=font(26),fill=muted)
+    draw.line((1058,218,1058,304),fill=edge,width=2)
+    draw.rounded_rectangle((1084,244,1118,278),radius=17,fill=inset,outline=edge,width=2)
+    draw.text((1093,244),action[0],font=font(25),fill=ink)
+    draw.text((1130,244),action[2:],font=font(25),fill=ink)
     if title:
-        draw.rounded_rectangle((175,60,1265,216),radius=22,fill=panel,outline=edge,width=2)
-        draw.rounded_rectangle((198,88,204,183),radius=3,fill=color)
-        draw.text((230,82),title,font=font(34),fill=ink)
-        draw.text((230,139),detail,font=font(27),fill=muted)
+        draw.rounded_rectangle((175,28,1265,178),radius=22,fill=panel,outline=edge,width=2)
+        draw.rounded_rectangle((198,54,204,150),radius=3,fill=color)
+        draw.text((230,48),title,font=font(34),fill=ink)
+        draw.text((230,105),detail,font=font(27),fill=muted)
     return image
 
 
@@ -178,4 +185,5 @@ def render_hud(view):
         distanceToCamera=1.,height=.25,aspect=1440/330,position=[0.,-.28,0.],
         interpolate=True,opacity=1.,material={'depthTest':False,'depthWrite':False,'toneMapped':False},
         userData={'hud_state':spec['state'],'status':spec['status'],
+                  'control_mode':spec['context'],'control_hint':spec['mode_hint'],
                   'title':spec['title'],'detail':spec['detail']})
