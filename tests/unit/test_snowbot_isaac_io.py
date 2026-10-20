@@ -4,7 +4,7 @@ import queue
 import time
 import unittest
 
-from tools.snowbot_isaac_io import PhysicsPublisher, latest_put
+from tools.simulation.snowbot_isaac_io import PhysicsPublisher, latest_put
 
 
 def stalled_publisher(release, samples, reports, ready, stop):

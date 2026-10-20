@@ -6,11 +6,11 @@ cd -- "$bindu_root"
 export BINDU_TELEOP_WORKSPACE="${BINDU_TELEOP_WORKSPACE:-$bindu_root/artifacts/real-teleop}"
 for bindu_argument in "$@"; do
   if [[ "$bindu_argument" == --help || "$bindu_argument" == -h ]]; then
-    exec python3 "$bindu_root/tools/snowbot_teleop.py" "$@"
+    exec python3 -m tools.deployment.snowbot_teleop "$@"
   fi
 done
 case "${1:-}" in
-  configure|-h|--help|'') exec python3 "$bindu_root/tools/snowbot_teleop.py" "$@" ;;
+  configure|-h|--help|'') exec python3 -m tools.deployment.snowbot_teleop "$@" ;;
   build|check|start|status|gripper) ;;
   *) echo "未知命令：$1；使用 --help 查看用法。" >&2; exit 2 ;;
 esac
@@ -71,4 +71,4 @@ if [[ ! -f "$BINDU_TELEOP_WORKSPACE/install/local_setup.bash" ]]; then
   echo '缺少专用安装环境；先运行 build，或设置 BINDU_TELEOP_WORKSPACE。' >&2; exit 2
 fi
 source "$BINDU_TELEOP_WORKSPACE/install/local_setup.bash"
-exec python3 "$bindu_root/tools/snowbot_teleop.py" "$@"
+exec python3 -m tools.deployment.snowbot_teleop "$@"

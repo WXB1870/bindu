@@ -261,8 +261,8 @@ def main():
             from bindu_contracts.profile import Profile
             from bindu_kinematics.bimanual import BimanualQP
             import sys
-            sys.path.insert(0,str(root/'tools'))
-            from plan_shovel_motion import target_at,grasp_mode_at
+            sys.path.insert(0,str(root))
+            from tools.analysis.plan_shovel_motion import target_at,grasp_mode_at
             tool_cfg=json.loads(config.read_text());recipe=tool_cfg['demo']
             tool_cfg['urdf']=str(root/'src/hardware/bindu_description/urdf'/tool_cfg['urdf'])
             solver=BimanualQP(tool_cfg,Profile.load(profile))

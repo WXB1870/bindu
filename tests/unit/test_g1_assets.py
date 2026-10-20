@@ -9,9 +9,9 @@ import xml.etree.ElementTree as ET
 import pinocchio as pin
 
 DESC=ROOT/'src/hardware/bindu_description'
-sys.path.insert(0,str(ROOT/'tools'))
-from prepare_g1_description import verify_description
-from prepare_g1_physics import prepare, validate_physics_model
+sys.path.insert(0,str(ROOT))
+from tools.models.prepare_g1_description import verify_description
+from tools.models.prepare_g1_physics import prepare, validate_physics_model
 
 
 def structure(node):

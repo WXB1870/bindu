@@ -4,6 +4,36 @@ Bindu 是基于 ROS 2 的模块化机器人控制系统，面向遥操作与移�
 
 当前重点是机器人遥操作：在仿真中完善单臂控制、双臂持工具与腰臂协调，为现场 VR 和真实设备接入建立基础。
 
+## 项目结构
+
+```text
+bindu/
+├── src/                        # ROS 2 功能包；模块内 README 提供构建与运行命令
+│   ├── shared/                 # 公共契约、消息与服务
+│   ├── control/                # 共享执行与控制权
+│   ├── hardware/               # 设备适配、模型与网格
+│   ├── capabilities/           # 遥操作、运动学、导航、感知、规划与 VLA
+│   ├── tasks/                  # 任务编排
+│   ├── data/                   # 数据记录
+│   └── integration/            # ROS 节点、launch 与运行配置
+├── tools/
+│   ├── teleop/                 # VR 输入、操作台与反馈观察
+│   ├── simulation/             # Isaac 场景、物理后端与控制进程
+│   ├── models/                 # 本体模型及仿真资产准备
+│   ├── deployment/             # 现场配方、底层补丁与环境验证
+│   ├── analysis/               # 离线轨迹、工作空间与实验分析
+│   ├── requirements/           # 可选 Python 依赖清单
+│   ├── config/                 # 工具使用的通信配置
+│   ├── web/                    # 操作台静态页面
+│   └── *.sh                    # 常用启动入口
+├── tests/                      # 单元、集成、物理、回放与公共夹具
+├── README.md                   # 项目入口与模块导航
+├── 运行与验证.md                # 环境、测试和运行说明入口
+└── build/、install/、log/、artifacts/  # 本机构建及实验产物，不提交
+```
+
+常用启动命令保留在 `tools/*.sh`；Python 工具从仓库根目录以 `python3 -m tools.<分类>.<模块>` 调用，例如 `python3 -m tools.models.prepare_snowbot_description --help`。原始参考资产和本地过程记录保持原位。
+
 ## 项目内容
 
 - **遥操作**：单臂末端控制、双臂工具位姿跟踪、握持切换、模式选择与会话管理。

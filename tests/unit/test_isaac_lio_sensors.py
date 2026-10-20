@@ -4,8 +4,8 @@ from pathlib import Path
 import sys
 import unittest
 import numpy as np
-sys.path.insert(0, str(ROOT/'tools'))
-from isaac_lio_sensors import InertialSampler, rotation_xyzw
+sys.path.insert(0, str(ROOT))
+from tools.simulation.isaac_lio_sensors import InertialSampler, rotation_xyzw
 
 
 class InertialSamplerTests(unittest.TestCase):

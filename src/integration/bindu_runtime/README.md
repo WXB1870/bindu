@@ -14,7 +14,7 @@
 
 ```bash
 source /opt/ros/jazzy/setup.bash
-python3 -m pip install --target artifacts/teleop-deps -r tools/requirements-teleop.txt \
+python3 -m pip install --target artifacts/teleop-deps -r tools/requirements/requirements-teleop.txt \
   proxsuite==0.7.3 'scipy==1.15.3; python_version < "3.11"' \
   'scipy==1.16.3; python_version >= "3.11"'
 export BINDU_TELEOP_DEPS="$PWD/artifacts/teleop-deps"
@@ -252,7 +252,7 @@ python3 -m tests integration navigation --g1 --output artifacts/g1-navigation
 
 ### 部署自动化
 
-[`tools/snowbot_teleop.sh`](../../../tools/snowbot_teleop.sh)提供下列命令，复用现有四节点真机配方；辅助校验在[`snowbot_teleop.py`](../../../tools/snowbot_teleop.py)。默认面向Humble，不安装系统依赖、不启动底层控制、不自动选择模式或开启会话。先完成[环境准备](../../../运行与验证.md#环境准备与构建)及匹配的Pinocchio／ProxSuite／SciPy依赖安装，在新终端设置现场路径：
+[`tools/snowbot_teleop.sh`](../../../tools/snowbot_teleop.sh)提供下列命令，复用现有四节点真机配方；辅助校验在[`snowbot_teleop.py`](../../../tools/deployment/snowbot_teleop.py)。默认面向Humble，不安装系统依赖、不启动底层控制、不自动选择模式或开启会话。先完成[环境准备](../../../运行与验证.md#环境准备与构建)及匹配的Pinocchio／ProxSuite／SciPy依赖安装，在新终端设置现场路径：
 
 ```bash
 export BINDU_ROS_DISTRO=humble

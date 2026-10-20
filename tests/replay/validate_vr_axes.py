@@ -16,8 +16,8 @@ import time
 
 import numpy as np
 
-sys.path.insert(0,str(ROOT/'tools'))
-from snowbot_errors import pinocchio_fk,angle
+sys.path.insert(0,str(ROOT))
+from tools.teleop.snowbot_errors import pinocchio_fk,angle
 from bindu_contracts.teleoperation import VRFrame
 from bindu_hardware.drivers.simulated_joints import SimJointDriver,SynchronizedJointProgress
 from bindu_kinematics.bimanual import BimanualQP

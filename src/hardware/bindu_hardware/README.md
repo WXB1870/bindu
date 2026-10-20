@@ -84,12 +84,12 @@ PICO目标方案中的左右Trigger各控制一爪开合、X请求右爪虚握�
 先按上文重建工作区，生成新增`SimulationCommand/SimulationFeedback`接口，然后准备固定版本资产：
 
 ```bash
-python3 tools/prepare_g1_physics.py
+python3 -m tools.models.prepare_g1_physics
 # 源资产已在bindu_description；可追加 --description 指向已安装的资产包
 export BINDU_INSTALL="$PWD/install"
 export ISAAC_SIM_PATH="$HOME/isaacsim/_build/linux-x86_64/release"
 # 本机 Fast DDS 仿真专用；所有参与终端使用相同设置，仅限制ROS DDS发现/传输到本机，不限制单独的Vuer WebSocket网络
-export FASTRTPS_DEFAULT_PROFILES_FILE="$PWD/tools/fastdds_local_sim.xml"
+export FASTRTPS_DEFAULT_PROFILES_FILE="$PWD/tools/config/fastdds_local_sim.xml"
 tools/run_g1_isaac.sh
 ```
 
@@ -97,7 +97,7 @@ tools/run_g1_isaac.sh
 
 ```bash
 export ROS_DOMAIN_ID=125 ROS_LOCALHOST_ONLY=1
-export FASTRTPS_DEFAULT_PROFILES_FILE="$PWD/tools/fastdds_local_sim.xml"
+export FASTRTPS_DEFAULT_PROFILES_FILE="$PWD/tools/config/fastdds_local_sim.xml"
 python3 -m tests.physics.validate_physics --output artifacts/g1-physics-check
 # 另一次独立实验：先重启Isaac，再验证逆解与动态指令流
 python3 -m tests.physics.validate_physics --suite dynamics --output artifacts/g1-physics-dynamics
@@ -208,12 +208,12 @@ ROS_LOCALHOST_ONLY=1 ROS_DOMAIN_ID=226 python3 -m tests.integration.validate_sno
 
 ### Snowbot 位置控制适配层
 
-2026-10-13按用户提供的`src.zip`增加独立`snowbot_adapter`入口；原控制包的消息、J1～J7顺序、rad单位和URDF限位作为本次依据。`snowbot_vendor_position.json`单独维护20轴反馈及源限位，不覆盖既有Snowbot仿真profile、G1或二代轮式配置。原始控制源码不迁入公共模块；控制侧修改维护为`tools/snowbot_vendor/bindu_guard.patch`及独立看门狗头文件，由准备工具对已核对的ZIP生成工作副本。
+2026-10-13按用户提供的`src.zip`增加独立`snowbot_adapter`入口；原控制包的消息、J1～J7顺序、rad单位和URDF限位作为本次依据。`snowbot_vendor_position.json`单独维护20轴反馈及源限位，不覆盖既有Snowbot仿真profile、G1或二代轮式配置。原始控制源码不迁入公共模块；控制侧修改维护为`tools/deployment/snowbot_vendor/bindu_guard.patch`及独立看门狗头文件，由准备工具对已核对的ZIP生成工作副本。
 
-**准备与构建。** `tools/prepare_snowbot_vendor.py`只接受本次ZIP的SHA256，拒绝覆盖已有输出，校验压缩路径后应用补丁并记录来源／补丁指纹；不启动节点或设备。控制侧补丁修正插补计时重复相加，插补间隔采用单调时钟；臂部窗口按真实1 ms周期计算，腰头／夹爪不再把20 ms误计为40 ms。原ZIP和参考展开目录保持不变。普通Bindu构建不编译底层驱动，其他机器人无需安装底层消息或应用补丁。
+**准备与构建。** `tools/deployment/prepare_snowbot_vendor.py`只接受本次ZIP的SHA256，拒绝覆盖已有输出，校验压缩路径后应用补丁并记录来源／补丁指纹；不启动节点或设备。控制侧补丁修正插补计时重复相加，插补间隔采用单调时钟；臂部窗口按真实1 ms周期计算，腰头／夹爪不再把20 ms误计为40 ms。原ZIP和参考展开目录保持不变。普通Bindu构建不编译底层驱动，其他机器人无需安装底层消息或应用补丁。
 
 ```bash
-python3 tools/prepare_snowbot_vendor.py /home/wxb/Downloads/src.zip \
+python3 -m tools.deployment.prepare_snowbot_vendor /home/wxb/Downloads/src.zip \
   --output artifacts/snowbot-vendor-workspace
 ```
 
@@ -282,7 +282,7 @@ python3 -m tests.integration.validate_snowbot_vendor \
 日常物理后端复用VR、QP、位置执行和浏览器观察。启动及完整流程检查：
 
 ```bash
-python3 tools/run_vr.py --physics --config src/integration/bindu_runtime/config/deployments/snowbot_vr_sim.json
+python3 -m tools.teleop.run_vr --physics --config src/integration/bindu_runtime/config/deployments/snowbot_vr_sim.json
 ROS_DOMAIN_ID=191 ROS_LOCALHOST_ONLY=1 python3 -m tests integration position --mode simulation --teleop-mode both --physics --websocket-input --output artifacts/vr-physics-check
 ```
 

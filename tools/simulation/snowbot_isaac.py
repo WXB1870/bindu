@@ -106,8 +106,8 @@ def main():
         from builtin_interfaces.msg import Time
         from bindu_contracts.profile import Profile
         from bindu_hardware.drivers.physics import PhysicsPositionState
-        from run_shovel_physics import build_scene,quaternion,pose
-        from shovel_physics import MeasuredJointVelocity
+        from tools.simulation.run_shovel_physics import build_scene,quaternion,pose
+        from tools.simulation.shovel_physics import MeasuredJointVelocity
         from isaacsim.core.utils.types import ArticulationAction
         from isaacsim.core.simulation_manager import SimulationManager
         from pxr import UsdGeom,UsdPhysics
@@ -141,7 +141,7 @@ def main():
         core=PhysicsPositionState(profile,simulator_id,initial,live['command_timeout_s'])
         rclpy.init(args=[],signal_handler_options=SignalHandlerOptions.NO)
         node=rclpy.create_node('snowbot_isaac',namespace='/'+session['namespace'].strip('/'))
-        from snowbot_isaac_io import PhysicsPublisher
+        from tools.simulation.snowbot_isaac_io import PhysicsPublisher
         publisher=PhysicsPublisher(node.get_namespace())
         seq=0;tool_present=False;requests=[]
         measured=dict(zip(names,map(float,body.get_joint_positions())))
@@ -177,7 +177,7 @@ def main():
         gc.collect();gc.freeze();gc.disable()
         def stamp(t):
             ns=round(t*1e9);return Time(sec=ns//1000000000,nanosec=ns%1000000000)
-        from snowbot_diagnostics import DiagnosticWriter
+        from tools.teleop.snowbot_diagnostics import DiagnosticWriter
         trace=DiagnosticWriter(args.output/'diagnostics.jsonl')
         native_start=SimulationManager.get_num_physics_steps()
         start=time.monotonic()

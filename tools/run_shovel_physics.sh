@@ -4,10 +4,10 @@ set -euo pipefail
 bindu_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 bindu_sdk="${ISAAC_SIM_PATH:-$HOME/isaacsim-6.2.0}"
 bindu_state="${BINDU_ISAAC_STATE:-$bindu_root/artifacts/isaac62-state}"
-bindu_script="$bindu_root/tools/run_shovel_physics.py"
+bindu_script="$bindu_root/tools/simulation/run_shovel_physics.py"
 bindu_ros=false
 if [ "${1:-}" = --vr ]; then
-  bindu_script="$bindu_root/tools/snowbot_isaac.py"
+  bindu_script="$bindu_root/tools/simulation/snowbot_isaac.py"
   bindu_ros=true
   shift
 fi
@@ -15,7 +15,7 @@ if [ "${1:-}" = --kinematic ]; then
   bindu_script="$bindu_root/tests/physics/validate_shovel_isaac.py"
   shift
 elif [ "${1:-}" = --live ]; then
-  bindu_script="$bindu_root/tools/snowbot_live.py"
+  bindu_script="$bindu_root/tools/teleop/snowbot_live.py"
   shift
 fi
 test -x "$bindu_sdk/python.sh"
@@ -42,5 +42,6 @@ if "$bindu_ros"; then
   export PYTHONPATH="$bindu_root/src/shared/bindu_contracts:$bindu_root/src/hardware/bindu_hardware:$PYTHONPATH"
 fi
 export LD_LIBRARY_PATH="$bindu_nv_dirs${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export PYTHONPATH="$bindu_root${PYTHONPATH:+:$PYTHONPATH}"
 exec "$bindu_sdk/python.sh" --no-ros-env "$bindu_script" "$@" \
   --portable --portable-root "$bindu_state/kit" --/isaac/startup/ros_bridge_extension=

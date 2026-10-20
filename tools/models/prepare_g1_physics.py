@@ -15,11 +15,11 @@ from pathlib import Path
 import shutil
 import xml.etree.ElementTree as ET
 
-from derive_g1_model import REVISION, SOURCE_SHA256
-from prepare_g1_description import (PREFIX, MANIFEST, digest, verify_description,
+from tools.models.derive_g1_model import REVISION, SOURCE_SHA256
+from tools.models.prepare_g1_description import (PREFIX, MANIFEST, digest, verify_description,
                                     prepare as prepare_description)
 
-ROOT = Path(__file__).resolve().parents[1]
+from tools import ROOT
 DESCRIPTION = ROOT/'src/hardware/bindu_description'
 
 
@@ -58,10 +58,10 @@ def validate_physics_model(model, root=ROOT, description=None):
     """Reject stale source geometry, body axes, profiles or prepared outputs."""
     model=Path(model);description=Path(description or root/'src/hardware/bindu_description').resolve()
     path=model/'provenance.json'
-    if not path.is_file():raise ValueError('G1_PHYSICS_CACHE_MISSING: run tools/prepare_g1_physics.py')
+    if not path.is_file():raise ValueError('G1_PHYSICS_CACHE_MISSING: run tools/models/prepare_g1_physics.py')
     record=json.loads(path.read_text())
     if record.get('schema_version')!=2:
-        raise ValueError('G1_PHYSICS_CACHE_LEGACY: regenerate with tools/prepare_g1_physics.py')
+        raise ValueError('G1_PHYSICS_CACHE_LEGACY: regenerate with tools/models/prepare_g1_physics.py')
     if record.get('description')!=str(description):
         raise ValueError('G1_PHYSICS_ASSET_LOCATION_CHANGED: regenerate the cache')
     assets=verify_description(description)

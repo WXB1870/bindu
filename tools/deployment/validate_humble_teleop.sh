@@ -2,7 +2,7 @@
 # Build and test the simulated teleop assembly in Ubuntu 22.04 / ROS 2 Humble.
 set -eo pipefail
 
-bindu_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+bindu_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
 output_path="${1:-$bindu_root/artifacts/humble-teleop-$(date +%Y%m%d-%H%M%S)}"
 mkdir -p -- "$output_path"
 output_path="$(cd -- "$output_path" && pwd)"
@@ -27,7 +27,7 @@ python3 -m venv --system-site-packages /validation/venv
 source /validation/venv/bin/activate
 # CMake < 3.30 can overwrite PACKAGE_PREFIX_DIR while finding Eigen/Simde,
 # breaking the installed ProxSuite Python-module target path.
-python3 -m pip install -r /workspace/tools/requirements-teleop.txt \
+python3 -m pip install -r /workspace/tools/requirements/requirements-teleop.txt \
   proxsuite==0.7.3 scipy==1.15.3 cmake==3.31.6
 source /opt/ros/humble/setup.bash
 cmeel_prefix="$(python3 -c 'from pathlib import Path; import site; print(next(str(Path(p)/"cmeel.prefix") for p in site.getsitepackages() if (Path(p)/"cmeel.prefix").is_dir()))')"

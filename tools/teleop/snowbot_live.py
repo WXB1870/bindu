@@ -11,7 +11,7 @@ import time
 import threading
 import copy
 
-ROOT = Path(__file__).resolve().parents[1]
+from tools import ROOT
 
 
 def display_tool_config(data):
@@ -62,7 +62,7 @@ def observe(args, publish=None, stop=None):
     from bindu_runtime.common import EVENT_QOS
     from bindu_runtime.robot_setup import RobotSetup
     robot = RobotSetup.load(args.robot_config)
-    from snowbot_errors import EndEffectorErrors, pinocchio_fk
+    from tools.teleop.snowbot_errors import EndEffectorErrors, pinocchio_fk
     error_config = json.loads(robot.tool_config.read_text())
     errors = EndEffectorErrors(error_config, pinocchio_fk(robot.urdf, error_config))
     meta = dict(schema=1, run_id=args.run_id, profile_hash=robot.profile.digest,
@@ -78,7 +78,7 @@ def observe(args, publish=None, stop=None):
         args.state_file.parent.mkdir(parents=True, exist_ok=True)
     if args.trace_file:
         args.trace_file.parent.mkdir(parents=True, exist_ok=True)
-    from snowbot_diagnostics import DiagnosticWriter
+    from tools.teleop.snowbot_diagnostics import DiagnosticWriter
     diagnostics=DiagnosticWriter(args.trace_file) if args.trace_file else None
     ns = '/'+args.namespace.strip('/')
     def execution(msg):
@@ -185,7 +185,7 @@ def observe(args, publish=None, stop=None):
 def dashboard(args):
     """ROS observation and browser serving share memory in this display process."""
     import signal
-    from snowbot_web import serve
+    from tools.teleop.snowbot_web import serve
     state, stop = LatestState(), threading.Event()
     def observe_worker():
         try:
@@ -262,7 +262,7 @@ def display(args, app):
     from pxr import Gf, UsdGeom, UsdLux
     from isaacsim.core.utils.types import ArticulationAction
     from isaacsim.core.utils.viewports import set_camera_view
-    from isaac_kinematic_scene import build_scene
+    from tools.simulation.isaac_kinematic_scene import build_scene
     import omni.ui as ui
     data = json.loads(args.state_file.read_text())
     model = Path(data['display_urdf'])
@@ -397,7 +397,7 @@ def main():
         parser.error('Isaac display requires --output')
     if args.web:
         args.output.mkdir(parents=True,exist_ok=True)
-        from snowbot_web import serve
+        from tools.teleop.snowbot_web import serve
         serve(args)
         return
     args.output.mkdir(parents=True, exist_ok=False)

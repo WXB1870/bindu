@@ -20,9 +20,9 @@ import xml.etree.ElementTree as ET
 import numpy as np
 from scipy.spatial.transform import Rotation
 
-from shovel_physics import load_motion, wooden_parts, compound_mass, grip_wrench, internal_wrench, MeasuredJointVelocity
+from tools.simulation.shovel_physics import load_motion, wooden_parts, compound_mass, grip_wrench, internal_wrench, MeasuredJointVelocity
 
-ROOT = Path(__file__).resolve().parents[1]
+from tools import ROOT
 sys.path.insert(0, str(ROOT/'src/capabilities/bindu_kinematics'))
 
 
@@ -212,7 +212,7 @@ def build_scene(motion, cfg, output):
             [link.GetPath() for link in links.values()])
     z = motion['recipe']['ground']['z_in_base_m']-cfg.get('diagnostic_ground_drop_m',0.)
     PhysicsSchemaTools.addGroundPlane(stage, '/World/Ground', 'Z', 5., Gf.Vec3f(0., 0., z), Gf.Vec3f(.5))
-    from shovel_geometry import bin_boxes
+    from tools.analysis.shovel_geometry import bin_boxes
     for name, size, center in bin_boxes(motion['recipe']):
         cube = UsdGeom.Cube.Define(stage, '/World/Bin/'+name)
         cube.CreateSizeAttr(1.)
@@ -387,7 +387,7 @@ def simulate(app, args, motion, cfg):
     stopped_since = None
     input_path = args.motion.parent/'tool_inputs.json'
     if args.closed_loop:
-        from shovel_control import ControlClient
+        from tools.simulation.shovel_control import ControlClient
         frames = json.loads(input_path.read_text())
         if not frames or any(b['stamp'] <= a['stamp'] for a,b in zip(frames,frames[1:])):
             raise ValueError('CONTROL_INPUT_ORDER')
@@ -427,7 +427,7 @@ def simulate(app, args, motion, cfg):
     idle_wall = 0.
     next_gui_render = started
     if args.record_video:
-        from shovel_video import ViewportRecorder
+        from tools.simulation.shovel_video import ViewportRecorder
         recorder = ViewportRecorder(output, args.video_fps)
     try:
         for step in range(count+1):
@@ -790,12 +790,12 @@ def main():
         raise FileExistsError(args.output)
     args.isaac_version = os.environ.get('ISAAC_VERSION', 'unknown')
     args.source_hashes = {name:digest(path) for name,path in (
-        ('config',args.config),('runner',__file__),('math',ROOT/'tools/shovel_physics.py'))}
+        ('config',args.config),('runner',__file__),('math',ROOT/'tools/simulation/shovel_physics.py'))}
     snapshots = args.output/'sources';snapshots.mkdir()
-    for path in (Path(__file__),ROOT/'tools/shovel_physics.py',args.config):
+    for path in (Path(__file__),ROOT/'tools/simulation/shovel_physics.py',args.config):
         (snapshots/path.name).write_bytes(path.read_bytes())
     if args.record_video:
-        (snapshots/'shovel_video.py').write_bytes((ROOT/'tools/shovel_video.py').read_bytes())
+        (snapshots/'shovel_video.py').write_bytes((ROOT/'tools/simulation/shovel_video.py').read_bytes())
     from isaacsim import SimulationApp
     sys.argv = [sys.argv[0]]+kit_args
     app = SimulationApp({'headless':not args.gui, 'fast_shutdown':True, 'width':1280, 'height':900})

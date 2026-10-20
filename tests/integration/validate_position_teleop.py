@@ -176,7 +176,7 @@ def scenario(out, mode, websocket=False, ordinary=False, physics=False, replay=N
     if physics:
         with socket.socket() as probe:
             probe.bind(('127.0.0.1',0));web_port=probe.getsockname()[1]
-        command=[sys.executable,str(ROOT/'tools/run_vr.py'),'--config',str(path),'--physics',
+        command=[sys.executable, '-m', 'tools.teleop.run_vr','--config',str(path),'--physics',
             '--domain-id',os.environ['ROS_DOMAIN_ID'],'--namespace',ns,'--port',str(web_port),
             '--vr-port',str(port),'--output',str(out/'unified-session')]
     process=subprocess.Popen(command,
@@ -224,7 +224,7 @@ def scenario(out, mode, websocket=False, ordinary=False, physics=False, replay=N
         observer_robot=(json.loads((out/'unified-session/session.json').read_text())['configs']['robot_config']['path']
                         if physics else str(Path(get_package_share_directory('bindu_runtime'))/selected_robot[9:])
                         if selected_robot.startswith('@runtime/') else selected_robot)
-        observer=subprocess.Popen([sys.executable,str(ROOT/'tools/snowbot_live.py'),'--observe',
+        observer=subprocess.Popen([sys.executable, '-m', 'tools.teleop.snowbot_live','--observe',
             '--namespace',ns,'--run-id',json.loads((out/'unified-session/session.json').read_text())['run_id'] if physics else views[-1]['run_id'],
             '--robot-config',observer_robot,
             '--runtime-mode',mode,'--device-backend','external_simulation' if physics else 'kinematic' if mode=='simulation' else 'snowbot_vendor',
@@ -272,8 +272,8 @@ def scenario(out, mode, websocket=False, ordinary=False, physics=False, replay=N
             phase('tool_standby')
             wait(lambda:not states[-1].lease_active and states[-1].state not in ('RUNNING','STOPPING'))
             assert not states[-1].stop_failures
-            sys.path.insert(0,str(ROOT/'tools'))
-            from snowbot_errors import pinocchio_fk
+            sys.path.insert(0,str(ROOT))
+            from tools.teleop.snowbot_errors import pinocchio_fk
             from bindu_kinematics.tool_geometry import coupling_metrics
             tool_cfg=json.loads((CFG/'bimanual_snowbot_real.json').read_text())
             robot_meta=json.loads((out/'unified-session/session.json').read_text())

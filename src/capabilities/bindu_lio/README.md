@@ -33,7 +33,7 @@ ros2 launch bindu_runtime lio.launch.py namespace:=/bindu_lio_test \
 
 该配置仅为合成输入夹具，launch 不产生传感器数据，也不启动雷达驱动；无输入时不会完成建图。现场必须替换话题、坐标系、外参和点时间配置。有输入并完成建图后，另一已加载相同环境／ROS 域的终端可调用 `ros2 service call /bindu_lio_test/lio/save_map std_srvs/srv/Trigger '{}'` 保存 PCD，已有文件拒绝覆盖；Ctrl+C 收尾。
 
-重载地图定位还需在独立运行环境安装 `python3 -m pip install --target artifacts/lio-python -r tools/requirements-navigation.txt`，仅在定位终端加入 `export PYTHONPATH="$PWD/artifacts/lio-python${PYTHONPATH:+:$PYTHONPATH}"`。随后使用 `mode:=localization pcd_map:=/绝对路径/map.pcd` 并提供初始位姿；完整步骤见 [三维导航入口](#历史三维导航迁移入口)，不要将 Open3D 依赖目录混入 colcon 构建环境。
+重载地图定位还需在独立运行环境安装 `python3 -m pip install --target artifacts/lio-python -r tools/requirements/requirements-navigation.txt`，仅在定位终端加入 `export PYTHONPATH="$PWD/artifacts/lio-python${PYTHONPATH:+:$PYTHONPATH}"`。随后使用 `mode:=localization pcd_map:=/绝对路径/map.pcd` 并提供初始位姿；完整步骤见 [三维导航入口](#历史三维导航迁移入口)，不要将 Open3D 依赖目录混入 colcon 构建环境。
 
 ## 职责与边界
 
@@ -125,7 +125,7 @@ source /opt/ros/jazzy/setup.bash
 colcon build --packages-select bindu_lio bindu_runtime --cmake-args -DCMAKE_BUILD_TYPE=Release
 source install/setup.bash
 # 仅给定位进程使用的可选Python依赖
-python3 -m pip install --target artifacts/lio-python -r tools/requirements-navigation.txt
+python3 -m pip install --target artifacts/lio-python -r tools/requirements/requirements-navigation.txt
 ```
 
 启动示例中的传感器配置是**合成测试fixture**，零外参不是实机标定，也不是现有Isaac二维射线输入的适配：
@@ -148,7 +148,7 @@ ros2 service call /bindu_lio_test/lio/save_map std_srvs/srv/Trigger '{}'
 
 复用上面的房间、站立收臂模型、`navigation_mapping_sites.json`和Nav2装配，Isaac启动参数改为`--navigation-sensors src/integration/bindu_runtime/config/navigation/navigation_lio_isaac.json`。该配置独立描述8个仰角、360个方位、每12个物理步完成一帧的三维射线扫描和IMU；逐束采样使用当时的PhysX姿态，`time`保存实际采集偏移。5mm距离噪声沿用二维基线，IMU另加0.02m/s²和0.002rad/s的高斯噪声，均为未标定的测试假设。
 
-`tools/isaac_lio_sensors.py`只发布原始点云和IMU，不发布机器人位置、地图或TF。IMU通过物理姿态的差分获得，使用与执行器一致的墙上采集时间，并转换重力/角速度到传感器坐标；这不是特定雷达型号的完整误差模型。建图时FAST-LIO按测量时间发布map→odom原点定义；定位时该边仅由ICP发布，避免保留静态恒等变换跨模式冒充有效定位。
+`tools/simulation/isaac_lio_sensors.py`只发布原始点云和IMU，不发布机器人位置、地图或TF。IMU通过物理姿态的差分获得，使用与执行器一致的墙上采集时间，并转换重力/角速度到传感器坐标；这不是特定雷达型号的完整误差模型。建图时FAST-LIO按测量时间发布map→odom原点定义；定位时该边仅由ICP发布，避免保留静态恒等变换跨模式冒充有效定位。
 
 新工作区先重建`bindu_lio`和`bindu_runtime`。Open3D运行依赖只在运行时加入`PYTHONPATH`，不要让其附带的setuptools进入colcon构建环境。保持与Isaac相同的ROS域，Nav2按前面的`require_scan:=true`入口启动；第三个终端运行：
 

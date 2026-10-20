@@ -11,7 +11,7 @@ from bindu_hardware.drivers.physics import PhysicsPositionState
 class PhysicsRealtimeTests(unittest.TestCase):
     def setUp(self):
         import importlib.util
-        spec=importlib.util.spec_from_file_location('snowbot_isaac',ROOT/'tools/snowbot_isaac.py')
+        spec=importlib.util.spec_from_file_location('snowbot_isaac',ROOT/'tools/simulation/snowbot_isaac.py')
         module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
         self.module=module
         self.monitor=module.RealtimeStatus(10.,.15)
@@ -154,7 +154,7 @@ class PositionPhysicsTests(unittest.TestCase):
 
     def test_live_config_rejects_nonfinite_or_unsafe_clock_parameters_without_isaac(self):
         import importlib.util,copy
-        spec=importlib.util.spec_from_file_location('snowbot_isaac',ROOT/'tools/snowbot_isaac.py')
+        spec=importlib.util.spec_from_file_location('snowbot_isaac',ROOT/'tools/simulation/snowbot_isaac.py')
         module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
         c=json.loads((ROOT/'src/integration/bindu_runtime/config/robots/snowbot/snowbot_shovel_physics.json').read_text())
         module.validate_live_config(c)

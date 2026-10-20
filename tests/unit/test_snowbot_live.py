@@ -10,13 +10,13 @@ import subprocess
 import signal
 from unittest.mock import patch
 
-spec = importlib.util.spec_from_file_location('snowbot_live', ROOT/'tools/snowbot_live.py')
+spec = importlib.util.spec_from_file_location('snowbot_live', ROOT/'tools/teleop/snowbot_live.py')
 helper = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(helper)
-webspec = importlib.util.spec_from_file_location('snowbot_web', ROOT/'tools/snowbot_web.py')
+webspec = importlib.util.spec_from_file_location('snowbot_web', ROOT/'tools/teleop/snowbot_web.py')
 web = importlib.util.module_from_spec(webspec)
 webspec.loader.exec_module(web)
-entryspec = importlib.util.spec_from_file_location('run_vr_sim', ROOT/'tools/run_vr.py')
+entryspec = importlib.util.spec_from_file_location('run_vr_sim', ROOT/'tools/teleop/run_vr.py')
 entry = importlib.util.module_from_spec(entryspec)
 entryspec.loader.exec_module(entry)
 
@@ -87,7 +87,7 @@ class WebFeedbackTests(unittest.TestCase):
             controller_states={'left':dict(valid=True,buttons=1,squeeze=1.,trigger=0.)}))
 
     def project(self,data,now=10.1):
-        with patch.dict(sys.modules,{'snowbot_live':helper}):
+        with patch.dict(sys.modules,{'tools.teleop.snowbot_live':helper}):
             return web.project_state(data,now,self.data)
 
     def test_executor_restart_is_not_silently_displayed(self):

@@ -16,4 +16,5 @@ export PYTHONPATH="$bindu_isaac/kit/python/lib/python3.12:$PYTHONPATH"
 export LD_LIBRARY_PATH="$bindu_isaac/kit/python/lib:$LD_LIBRARY_PATH"
 export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-125}" ROS_LOCALHOST_ONLY=1
 export OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1
-exec "$bindu_isaac/python.sh" -u "$bindu_root/tools/run_g1_isaac.py" "$@"
+export PYTHONPATH="$bindu_root${PYTHONPATH:+:$PYTHONPATH}"
+exec "$bindu_isaac/python.sh" -u "$bindu_root/tools/simulation/run_g1_isaac.py" "$@"

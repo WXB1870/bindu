@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 from pathlib import Path
+from tools import ROOT
 import xml.etree.ElementTree as ET
 
 REVISION = '2d496b053f0d4e9e2688f59fac66022f447226be'
@@ -58,7 +59,7 @@ def derive(source, root):
               '     Bindu modifications: leg_joint5 fixed at zero; provisional waist yaw leg_joint4 enabled;\n'
               '     wheels and grippers omitted;\n'
               '     visual/collision meshes removed. Kinematics only, not calibrated hardware.\n'
-              '     Regenerate with tools/derive_g1_model.py; do not hand-edit. -->\n')
+              '     Regenerate with tools/models/derive_g1_model.py; do not hand-edit. -->\n')
     out.write_text(notice+ET.tostring(robot, encoding='unicode')+'\n')
     (root/'src/integration/bindu_runtime/config/robots/g1/g1_provisional_sim.json').write_text(json.dumps(profile, indent=2)+'\n')
 
@@ -67,4 +68,4 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('source', type=Path)
     args = parser.parse_args()
-    derive(args.source, Path(__file__).resolve().parents[1])
+    derive(args.source, ROOT)

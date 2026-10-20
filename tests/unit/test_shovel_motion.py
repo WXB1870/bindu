@@ -9,9 +9,9 @@ import unittest
 import numpy as np
 import pinocchio as pin
 
-sys.path.insert(0, str(ROOT/'tools'))
-from plan_shovel_motion import collision_check, validate_recipe, target_at, grasp_mode_at, run_input_stream
-from shovel_geometry import bin_boxes, check_dump
+sys.path.insert(0, str(ROOT))
+from tools.analysis.plan_shovel_motion import collision_check, validate_recipe, target_at, grasp_mode_at, run_input_stream
+from tools.analysis.shovel_geometry import bin_boxes, check_dump
 from scipy.spatial.transform import Rotation
 from bindu_kinematics.tool_geometry import tracking_acceptance, coupling_metrics
 

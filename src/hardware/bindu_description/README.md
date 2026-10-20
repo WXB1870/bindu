@@ -40,7 +40,7 @@ python3 -c "from xml.etree import ElementTree as ET; print(ET.parse('src/hardwar
 
 ## 接入与验证
 
-模型准备入口：[G1](../../../tools/prepare_g1_description.py)、[Snowbot](../../../tools/prepare_snowbot_description.py)、[Huawei](../../../tools/prepare_huawei_description.py)。修改前确认生成来源，避免只修改会被重新生成的文件。
+模型准备入口：[G1](../../../tools/models/prepare_g1_description.py)、[Snowbot](../../../tools/models/prepare_snowbot_description.py)、[Huawei](../../../tools/models/prepare_huawei_description.py)。修改前确认生成来源，避免只修改会被重新生成的文件。
 
 - 本体选择与启动校验：[robot_setup.py](../../integration/bindu_runtime/bindu_runtime/robot_setup.py)。
 - 模型检查：[G1 资产](../../../tests/unit/test_g1_assets.py)、[G1 运动学](../../../tests/unit/test_g1_model.py)、[Snowbot](../../../tests/unit/test_snowbot_description.py)、[Huawei](../../../tests/unit/test_huawei_description.py)。
@@ -71,32 +71,32 @@ python3 -c "from xml.etree import ElementTree as ET; print(ET.parse('src/hardwar
 
 Snowbot 的三份 URDF 是同一机器人针对不同用途的生成结果。31 个 STL 仅保存一份，完整模型与显示模型通过 `package://bindu_description/meshes/snowbot/…` 引用；`bindu_description` 的安装规则一起安装 `urdf/` 与 `meshes/`。文件存在不等于几何可用于碰撞：源资产中的 `head_link_1.STL` 为空网格，相关检查边界见[雪铲几何验证](#单杆雪铲的握姿与工作空间2026-10-08)。
 
-Snowbot 来源及压缩包 SHA256 在 [`SNOWBOT_ASSETS_NOTICE`](SNOWBOT_ASSETS_NOTICE) 中维护；[`prepare_snowbot_description.py`](../../../tools/prepare_snowbot_description.py) 校验该指纹并一次生成三份 URDF 和共享网格。原 ZIP 由用户提供，不随仓库分发。重新生成命令：
+Snowbot 来源及压缩包 SHA256 在 [`SNOWBOT_ASSETS_NOTICE`](SNOWBOT_ASSETS_NOTICE) 中维护；[`prepare_snowbot_description.py`](../../../tools/models/prepare_snowbot_description.py) 校验该指纹并一次生成三份 URDF 和共享网格。原 ZIP 由用户提供，不随仓库分发。重新生成命令：
 
 ```bash
-python3 tools/prepare_snowbot_description.py /path/to/snowbot_20260728_首次全身.zip
+python3 -m tools.models.prepare_snowbot_description /path/to/snowbot_20260728_首次全身.zip
 # 仅检查生成结果时，可追加 --output /tmp/bindu-snowbot-description
 ```
 
 Huawei原URDF来自用户历史v3.4工程，STL来自旧电脑备份的`Music/huawei_new/meshes`。101个源文件引用按SHA256合并为94份网格；显示模型统一使用`package://bindu_description/meshes/huawei_v34/…`，文件名别名、源／生成指纹保存在[`huawei_v34.assets.json`](huawei_v34.assets.json)。原件保留在历史资料区，不修改或清理。生成脚本校验固定URDF指纹和已记录网格指纹，拒绝混用其他版本；资产未附许可声明，见[`HUAWEI_ASSETS_NOTICE`](HUAWEI_ASSETS_NOTICE)。
 
 ```bash
-python3 tools/prepare_huawei_description.py /path/to/huawei_urdf_wheel.urdf \
+python3 -m tools.models.prepare_huawei_description /path/to/huawei_urdf_wheel.urdf \
   --mesh-root /path/to/huawei_new
 # --mesh-root 指向含 meshes/ 的目录；可追加 --output /tmp/bindu-huawei-description 检查派生结果
 ```
 
 旧单臂启动入口及观察节点的默认模型目录已改为安装后的`bindu_description/urdf/`；运行配置仍显式选择Huawei、G1或Snowbot模型。旧`bindu_kinematics/models/`路径不再提供副本。此次只统一资产与引用，未改变控制策略、关节参数或默认本体选择；有碰撞网格不等于现有IK或物理仿真已完成碰撞／接触验收。
 
-G1固定上游版本、源URDF指纹及控制模型派生规则由[`derive_g1_model.py`](../../../tools/derive_g1_model.py)维护。此前物理准备脚本将源网格、完整上游USD与生成缓存混放在`artifacts/`；现在86个源网格引用合并为78份共享文件，保存在`meshes/g1/`，显示所需26份USD／纹理依赖在`usd/g1/`，与控制／显示模型及[`g1.assets.json`](g1.assets.json)一起安装。未使用的上游ROS、传感器、物理变体和演示环境不随当前包复制；历史源目录保持原样。
+G1固定上游版本、源URDF指纹及控制模型派生规则由[`derive_g1_model.py`](../../../tools/models/derive_g1_model.py)维护。此前物理准备脚本将源网格、完整上游USD与生成缓存混放在`artifacts/`；现在86个源网格引用合并为78份共享文件，保存在`meshes/g1/`，显示所需26份USD／纹理依赖在`usd/g1/`，与控制／显示模型及[`g1.assets.json`](g1.assets.json)一起安装。未使用的上游ROS、传感器、物理变体和演示环境不随当前包复制；历史源目录保持原样。
 
 ```bash
 # 需要更新运动学派生模型及profile时执行；随后更新显示资产：
-python3 tools/derive_g1_model.py /path/to/galbot_one_golf_description/urdf/galbot_one_golf.urdf
-python3 tools/prepare_g1_description.py --source /path/to/galbot_one_golf_description
+python3 -m tools.models.derive_g1_model /path/to/galbot_one_golf_description/urdf/galbot_one_golf.urdf
+python3 -m tools.models.prepare_g1_description --source /path/to/galbot_one_golf_description
 # 没有本地上游目录时，省略--source，下载并校验固定提交的压缩包。
 # 当前源码已含源网格/USD；准备物理缓存无需再次下载：
-python3 tools/prepare_g1_physics.py
+python3 -m tools.models.prepare_g1_physics
 # 使用安装后的资产包：追加 --description /path/to/install/bindu_description/share/bindu_description
 ```
 
@@ -106,4 +106,4 @@ python3 tools/prepare_g1_physics.py
 
 ### 单杆雪铲的握姿与工作空间（2026-10-08）
 
-名义模型、握点与几何参数由`src/integration/bindu_runtime/config/robots/snowbot/`及`src/hardware/bindu_description/`维护；当前设备配置与名义实验姿态不能互相代替。`tools/plan_shovel_motion.py`负责工具位姿输入实验与几何评分，`tests.replay.validate_vr_axes`核对真实接合姿态的方向映射。原2026-10-08工作空间扫描、姿态比较和离线结果保留在本地`过程记录/2026-10-08.md`，不作为真机可达域验收。
+名义模型、握点与几何参数由`src/integration/bindu_runtime/config/robots/snowbot/`及`src/hardware/bindu_description/`维护；当前设备配置与名义实验姿态不能互相代替。`tools/analysis/plan_shovel_motion.py`负责工具位姿输入实验与几何评分，`tests.replay.validate_vr_axes`核对真实接合姿态的方向映射。原2026-10-08工作空间扫描、姿态比较和离线结果保留在本地`过程记录/2026-10-08.md`，不作为真机可达域验收。

@@ -9,7 +9,7 @@ import ssl
 import sys
 import time
 
-ROOT = Path(__file__).resolve().parents[1]
+from tools import ROOT
 for package in ('shared/bindu_contracts', 'capabilities/bindu_teleoperation'):
     sys.path.insert(0, str(ROOT/'src'/package))
 

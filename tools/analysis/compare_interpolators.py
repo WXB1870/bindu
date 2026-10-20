@@ -18,10 +18,7 @@ import subprocess
 import sys
 import time
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path[:0] = [str(p.parent) for p in (ROOT/'src').rglob('package.xml')]
-from bindu_contracts.profile import Profile
-from bindu_execution.interpolation import State, fit_target, fit_online, fit_stop
+from tools import ROOT
 
 HARNESS = r'''
 #include "dexbot/interpolation/adaptive_interpolator.hpp"
@@ -119,7 +116,11 @@ def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--legacy-root',type=Path,required=True)
     parser.add_argument('--output',type=Path,required=True)
-    args=parser.parse_args();args.output.mkdir(parents=True,exist_ok=True)
+    args=parser.parse_args()
+    sys.path[:0] = [str(p.parent) for p in (ROOT/'src').rglob('package.xml')]
+    from bindu_contracts.profile import Profile
+    from bindu_execution.interpolation import State, fit_target, fit_online, fit_stop
+    args.output.mkdir(parents=True,exist_ok=True)
     compiler=shutil.which('c++')
     if not compiler: raise RuntimeError('C++ compiler required')
     harness=args.output/'legacy_harness.cpp';harness.write_text(HARNESS)

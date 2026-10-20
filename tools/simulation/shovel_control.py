@@ -14,7 +14,7 @@ import subprocess
 import sys
 import time
 
-ROOT = Path(__file__).resolve().parents[1]
+from tools import ROOT
 LOADED_SOURCE = Path(__file__).read_bytes()
 
 
@@ -29,7 +29,7 @@ class ControlClient:
         env = os.environ.copy()
         for key in ('PYTHONHOME','PYTHONEXE','LD_PRELOAD','CONDA_PREFIX','VIRTUAL_ENV'):
             env.pop(key,None)
-        env['PYTHONPATH'] = os.pathsep.join([str(ROOT/'src'/p) for p in packages]+[
+        env['PYTHONPATH'] = os.pathsep.join([str(ROOT)]+[str(ROOT/'src'/p) for p in packages]+[
             '/opt/ros/jazzy/lib/python3.12/site-packages',
             '/opt/ros/jazzy/local/lib/python3.12/dist-packages'])
         env['AMENT_PREFIX_PATH'] = os.pathsep.join([str(p) for p in (ROOT/'install').iterdir()

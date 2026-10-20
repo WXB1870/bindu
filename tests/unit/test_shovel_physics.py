@@ -14,10 +14,10 @@ from types import SimpleNamespace
 import numpy as np
 from scipy.spatial.transform import Rotation
 
-sys.path.insert(0, str(ROOT/'tools'))
-from shovel_physics import wooden_parts, compound_mass, grip_wrench, internal_wrench, MeasuredJointVelocity, load_motion
-from run_shovel_physics import contact_wrench, validate_grasp_config
-from shovel_control import GripLoadObserver, ControlClient
+sys.path.insert(0, str(ROOT))
+from tools.simulation.shovel_physics import wooden_parts, compound_mass, grip_wrench, internal_wrench, MeasuredJointVelocity, load_motion
+from tools.simulation.run_shovel_physics import contact_wrench, validate_grasp_config
+from tools.simulation.shovel_control import GripLoadObserver, ControlClient
 
 
 class ShovelPhysicsTests(unittest.TestCase):

@@ -5,7 +5,7 @@ bindu_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 cd -- "$bindu_root"
 for bindu_argument in "$@"; do
   if [[ "$bindu_argument" == --help || "$bindu_argument" == -h ]]; then
-    exec python3 tools/run_vr.py "$@"
+    exec python3 -m tools.teleop.run_vr "$@"
   fi
 done
 bindu_env="${BINDU_VR_ENV:-$bindu_root/artifacts/vr/env.sh}"
@@ -27,4 +27,4 @@ if [[ -n "$bindu_viewer_deps" ]]; then
   export PYTHONPATH="$bindu_viewer_deps${PYTHONPATH:+:$PYTHONPATH}"
 fi
 export PYTHONDONTWRITEBYTECODE=1 OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1
-exec python3 tools/run_vr.py "$@"
+exec python3 -m tools.teleop.run_vr "$@"

@@ -125,7 +125,7 @@ artifacts/native-test/test_native
 保留历史源码的主工作区可运行以下对照。工具分别测旧 C++、标量自适应、新原生在线/五次曲线策略，输出 CSV/JSON；原生策略耗时包含 Python 绑定开销，七轴项目使用实际在线策略。当前本机离线正弦 RMS 为0.099219 rad，旧内核为0.097335 rad；固定时序策略不会为了降低误差自行改变轨迹时间。测试值不等于机器人定位精度或端到端延迟，内核仍有动态分配，Python/ROS 串行执行壳仍在，不宣称硬实时。
 
 ```bash
-python3 tools/compare_interpolators.py --legacy-root 历史代码/legs_necks_control \
+python3 -m tools.analysis.compare_interpolators --legacy-root 历史代码/legs_necks_control \
   --output artifacts/interpolation-comparison
 ```
 

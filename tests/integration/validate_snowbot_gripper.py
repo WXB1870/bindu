@@ -154,7 +154,7 @@ def scenario(output, name, enabled, calibrated, *, freeze=False, shutdown=False)
         recipe['arguments'].update(namespace=ns,vendor_namespace=vendor,command_enabled=True,gripper_config=str(path.resolve()))
         site=output/(name+'-site.json');site.write_text(json.dumps(recipe))
         with (output/(name+'-cli.log')).open('w') as cli_log:
-            client=subprocess.Popen(['python3',str(ROOT/'tools/snowbot_teleop.py'),'gripper',
+            client=subprocess.Popen(['python3', '-m', 'tools.deployment.snowbot_teleop','gripper',
                 '--config',str(site.resolve()),'--side','right','--operation','close','--load-state','empty'],
                 stdout=cli_log,stderr=subprocess.STDOUT)
             try:

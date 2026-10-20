@@ -10,7 +10,7 @@ from types import SimpleNamespace as NS
 import unittest
 from unittest.mock import patch
 
-spec = importlib.util.spec_from_file_location('snowbot_teleop_tools', ROOT/'tools/snowbot_teleop.py')
+spec = importlib.util.spec_from_file_location('snowbot_teleop_tools', ROOT/'tools/deployment/snowbot_teleop.py')
 helper = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(helper)
 

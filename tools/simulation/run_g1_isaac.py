@@ -13,9 +13,9 @@ from pathlib import Path
 import time
 import uuid
 import xml.etree.ElementTree as ET
-from prepare_g1_physics import validate_physics_model
+from tools.models.prepare_g1_physics import validate_physics_model
 
-ROOT = Path(__file__).resolve().parents[1]
+from tools import ROOT
 
 
 def build_scene(model, cfg, room=None, description=None):
@@ -45,7 +45,7 @@ def build_scene(model, cfg, room=None, description=None):
     world = World(stage_units_in_meters=1., physics_dt=cfg['physics_dt'], rendering_dt=cfg['physics_dt'])
     world.scene.add_default_ground_plane()
     if room:
-        from isaac_navigation_scene import add_room
+        from tools.simulation.isaac_navigation_scene import add_room
         add_room(world, room)
     stage = world.stage
     scene_api = PhysxSchema.PhysxSceneAPI.Apply(stage.GetPrimAtPath(world.get_physics_context().prim_path))
@@ -266,11 +266,11 @@ def main():
             node = rclpy.create_node('isaac_physics', namespace=args.namespace, cli_args=['--ros-args',
                 '-r', '/tf:='+args.namespace+'/tf', '-r', '/tf_static:='+args.namespace+'/tf_static'])
             if room:
-                from isaac_navigation_scene import NavigationSensors
+                from tools.simulation.isaac_navigation_scene import NavigationSensors
                 from std_msgs.msg import String
                 from isaacsim.core.utils.viewports import set_camera_view
                 if sensor_cfg['mode']=='lio':
-                    from isaac_lio_sensors import LioSensors
+                    from tools.simulation.isaac_lio_sensors import LioSensors
                     sensors = LioSensors(node, sensor_cfg, '/G1')
                 else:
                     sensors = NavigationSensors(node, world, room, nav_robot, '/G1', sensor_cfg)

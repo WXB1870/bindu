@@ -23,7 +23,7 @@ colcon build --base-paths src --packages-up-to bindu_runtime --executor sequenti
   --cmake-args -DCMAKE_BUILD_TYPE=Release \
   -DPython3_EXECUTABLE="$(command -v python3)" -DPYTHON_EXECUTABLE="$(command -v python3)"
 source install/local_setup.bash
-python3 -m pip install --target artifacts/snowbot-viewer-deps -r tools/requirements-snowbot-viewer.txt
+python3 -m pip install --target artifacts/snowbot-viewer-deps -r tools/requirements/requirements-snowbot-viewer.txt
 export BINDU_VIEWER_DEPS="$PWD/artifacts/snowbot-viewer-deps"
 # 指定当前工作区，复用本终端的数值依赖，避免加载本机历史 env.sh。
 BINDU_VR_ENV="$PWD/install/local_setup.bash" bash tools/run_vr.sh \
@@ -210,7 +210,7 @@ ros2 service call /bindu_teleop/teleop/tool_pause std_srvs/srv/SetBool '{data: f
 本机安装Docker后可运行以下脚本；它下载官方镜像和依赖，只读挂载源码，构建与测试产物写入指定目录。容器构建和模拟验收不启动真实设备，仍需在目标Orin环境重建与测量。
 
 ```bash
-bash tools/validate_humble_teleop.sh artifacts/humble-teleop-check
+bash tools/deployment/validate_humble_teleop.sh artifacts/humble-teleop-check
 ```
 
 本轮 Jazzy 模拟验证覆盖专用 launch 无启动动作、运动中暂停、0.8 秒输入断流保持、恢复、握持切换、暂停时取消及切回单臂，独立观察节点参与实测。原始结果在 `artifacts/teleop-deployment-2026-10-09/`。诊断重放仍出现几何检查包含在内的 30 ms 求解超时，保留失败且未放宽阈值；目标硬件需测分段耗时与停止延迟，100 Hz 配置不能作为实时性能保证。
@@ -259,13 +259,13 @@ ros2 topic echo /bindu_teleop/teleop/pico/state
 
 首次接实体头显先运行独立输入诊断，再做机器人仿真跟随。该入口复用正式的 Vuer／`CONTROLLER_MOVE` 解码与 PICO 按键计数，但不加载 ROS、IK、执行器或驱动，也不发布运动命令。头显直接使用**自带 PICO 浏览器**，与电脑在可互通的局域网；不需要 XRoboToolkit 或 pico-ros2-bridge。
 
-下面以电脑地址 `192.168.1.116` 为例。选择已装有 Vuer、NumPy、Pillow 的 Python 环境（依赖见 `tools/requirements-teleop.txt`）；生成证书还需 `cryptography`。本机已存在的 `bindu` 环境可用，其他电脑须改为自己的 Python 路径。已有可信的服务器证书时直接跳过生成步骤，指定原证书和私钥。
+下面以电脑地址 `192.168.1.116` 为例。选择已装有 Vuer、NumPy、Pillow 的 Python 环境（依赖见 `tools/requirements/requirements-teleop.txt`）；生成证书还需 `cryptography`。本机已存在的 `bindu` 环境可用，其他电脑须改为自己的 Python 路径。已有可信的服务器证书时直接跳过生成步骤，指定原证书和私钥。
 
 ```bash
 cd /home/wxb/bindu
-/home/wxb/miniforge3/envs/bindu/bin/python tools/vr_connectivity.py \
+/home/wxb/miniforge3/envs/bindu/bin/python -m tools.teleop.vr_connectivity \
   --make-cert artifacts/vr-connectivity/tls --advertise-host 192.168.1.116
-/home/wxb/miniforge3/envs/bindu/bin/python tools/vr_connectivity.py \
+/home/wxb/miniforge3/envs/bindu/bin/python -m tools.teleop.vr_connectivity \
   --host 0.0.0.0 --advertise-host 192.168.1.116 \
   --cert-file artifacts/vr-connectivity/tls/server.crt \
   --key-file artifacts/vr-connectivity/tls/server.key --duration 1800
@@ -301,7 +301,7 @@ https://192.168.1.116:8012/?ws=wss%3A%2F%2F192.168.1.116%3A8012%2F
 可选依赖在 Ubuntu 24.04 / Python 3.12 / x86_64 验证；Orin 尚未验证。先按[环境准备与构建](../../../运行与验证.md#环境准备与构建)构建并加载 ROS 与工作区，再在当前工作区隔离安装依赖。下面的库路径用于避免 ROS 自带 EigenPy 与 Pinocchio wheel 混用，仅影响当前终端：
 
 ```bash
-python3 -m pip install --target artifacts/teleop-deps -r tools/requirements-teleop.txt
+python3 -m pip install --target artifacts/teleop-deps -r tools/requirements/requirements-teleop.txt
 export BINDU_TELEOP_DEPS="$PWD/artifacts/teleop-deps"
 export BINDU_PYTHON_VERSION="$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
 export PYTHONPATH="$BINDU_TELEOP_DEPS:$BINDU_TELEOP_DEPS/cmeel.prefix/lib/python$BINDU_PYTHON_VERSION/site-packages:$PYTHONPATH"

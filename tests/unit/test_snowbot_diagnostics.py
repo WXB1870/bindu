@@ -8,7 +8,7 @@ import threading
 import unittest
 from unittest.mock import patch
 
-spec=importlib.util.spec_from_file_location('snowbot_diagnostics',ROOT/'tools/snowbot_diagnostics.py')
+spec=importlib.util.spec_from_file_location('snowbot_diagnostics',ROOT/'tools/teleop/snowbot_diagnostics.py')
 diagnostics=importlib.util.module_from_spec(spec)
 spec.loader.exec_module(diagnostics)
 

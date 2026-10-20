@@ -17,10 +17,10 @@ from scipy.spatial.transform import Rotation
 
 from bindu_contracts.profile import Profile
 from bindu_kinematics.bimanual import BimanualQP
-from shovel_geometry import bin_boxes, check_dump
+from tools.analysis.shovel_geometry import bin_boxes, check_dump
 from bindu_kinematics.tool_geometry import collision_check, tracking_acceptance, coupling_metrics
 
-ROOT = Path(__file__).resolve().parents[1]
+from tools import ROOT
 
 
 def validate_recipe(config):
@@ -224,7 +224,7 @@ def generate(config_path, description, output):
     solver = BimanualQP(config, profile)
     source_paths = (config_path, Path(config['urdf']), display,
                     config_path.parent/recipe['profile'], Path(__file__).resolve(),
-                    Path(__import__('shovel_geometry').__file__).resolve(),
+                    Path(__import__('tools.analysis.shovel_geometry', fromlist=['']).__file__).resolve(),
                     Path(__import__('bindu_kinematics.tool_geometry',fromlist=['']).__file__).resolve(),
                     Path(__import__('bindu_kinematics.bimanual', fromlist=['__file__']).__file__),
                     Path(solver.lib._name))

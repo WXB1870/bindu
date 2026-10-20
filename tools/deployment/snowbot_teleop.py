@@ -14,7 +14,7 @@ import sys
 import time
 import uuid
 
-ROOT = Path(__file__).resolve().parents[1]
+from tools import ROOT
 SHARE = ROOT/'src/integration/bindu_runtime'
 RECIPE = SHARE/'config/deployments/snowbot_real_teleop.json'
 

@@ -77,8 +77,8 @@ def run_shovel_cycle(node,source,views,states,events,trace,raw,projected,tool_in
     import sys
     from bisect import bisect_right
     root=ROOT
-    sys.path.insert(0,str(root/'tools'))
-    from plan_shovel_motion import target_at
+    sys.path.insert(0,str(root))
+    from tools.analysis.plan_shovel_motion import target_at
     from tests.support.bimanual_trace import check_tool_trace
     from bindu_teleoperation.vr.mapping import OPENXR_TO_ROBOT,robot_pose,mapping_rotation,relative_target
     cfg=json.loads(tool_path.read_text());cfg['urdf']=str(model_root/cfg['urdf'])

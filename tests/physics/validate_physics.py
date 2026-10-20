@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Validate a running Isaac GUI/backend through Bindu's real execution services.
 
-Start tools/run_g1_isaac.py first. This validator owns only its ROS launch.
+Start tools/simulation/run_g1_isaac.py first. This validator owns only its ROS launch.
 It uses an isolated namespace, physics feedback and provisional tolerances.
 """
 from tests.support.paths import ROOT

@@ -3,6 +3,7 @@ import json
 import asyncio
 import threading
 from pathlib import Path
+from tools import ROOT
 import queue
 import time
 
@@ -38,7 +39,7 @@ def meshcat_urdf(source, output):
 
 def project_state(data, now, identity):
     """Do not let a recently read file make stale robot/input data look live."""
-    from snowbot_live import validate_state
+    from tools.teleop.snowbot_live import validate_state
     result = {k:data.get(k) for k in ('run_id','written_at','feedback_stamp','execution','code')}
     result.update(valid=False, pico_fresh=False, pico={}, server_time=now)
     result['diagnostics']=data.get('diagnostics',{})
@@ -133,7 +134,7 @@ def _server(read_state, trace_file, output, port, ready, views, identity, stop, 
     import tornado.ioloop
     from meshcat.servers.zmqserver import (ZMQWebSocketBridge, WebSocketHandler,
         StaticFileHandlerNoCache, VIEWER_ROOT, VIEWER_HTML)
-    html = Path(__file__).with_name('web')/'snowbot.html'
+    html = ROOT/'tools/web/snowbot.html'
     log = EventLog(Path(output)/'events.jsonl' if trace_file else None)
     latest = {}
     client_status = {}
@@ -276,7 +277,7 @@ def serve(args, read_state=None, stop=None):
     import meshcat
     import meshcat.geometry as geom
     from pinocchio.visualize import MeshcatVisualizer
-    from snowbot_live import validate_state, display_tool_config, LatestState
+    from tools.teleop.snowbot_live import validate_state, display_tool_config, LatestState
     stop = stop or threading.Event()
     if read_state is None:
         read_state = lambda: json.loads(args.state_file.read_text())
@@ -395,7 +396,7 @@ def serve(args, read_state=None, stop=None):
                     physics=value.get('physics',{})
                     present=(0 <= time.time()-physics.get('stamp',0) <= .2 and physics.get('tool_present'))
                     if present:
-                        from snowbot_errors import transform
+                        from tools.teleop.snowbot_errors import transform
                         viewer['shovel'].set_transform(transform(physics['tool_pose']))
                     viewer['shovel'].set_property('visible',bool(tool_enabled and present))
                 else:viewer['shovel'].set_property('visible',tool_enabled and pico.get('load_state')=='held')

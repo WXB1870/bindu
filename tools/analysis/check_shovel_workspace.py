@@ -17,7 +17,7 @@ from scipy.optimize import least_squares
 from scipy.spatial.transform import Rotation
 
 from bindu_contracts.profile import Profile
-from plan_shovel_motion import ROOT, collision_check, validate_recipe
+from tools.analysis.plan_shovel_motion import ROOT, collision_check, validate_recipe
 
 
 def search(config_path, description):

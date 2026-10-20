@@ -18,14 +18,14 @@ import threading
 import time
 import uuid
 
-ROOT = Path(__file__).resolve().parents[1]
+from tools import ROOT
 
 
 def commands(args):
     control = ['ros2', 'launch', 'bindu_runtime', args.launch,
                *[f'{key}:={value}' for key,value in args.deployment.items() if value!=''],
                f'run_id:={args.run_id}']
-    display = [sys.executable, str(ROOT/'tools/snowbot_live.py'), '--dashboard',
+    display = [sys.executable, '-m', 'tools.teleop.snowbot_live', '--dashboard',
         '--namespace', args.namespace, '--run-id', args.run_id, '--port', str(args.port),
         '--robot-config', args.deployment['robot_config'],
         '--runtime-mode', args.deployment['runtime_mode'],
@@ -64,7 +64,7 @@ def check(args):
         if not simulation or not (sdk/'python.sh').is_file():
             raise ValueError('Isaac物理后端要求仿真模式和可用的ISAAC_SIM_PATH')
         physics=json.loads(Path(args.deployment['physics_config']).read_text())
-        from snowbot_isaac import validate_live_config
+        from tools.simulation.snowbot_isaac import validate_live_config
         validate_live_config(physics)
     if (tool.get('simulation_only') is not False or pico.get('schema_version')!=2 or
             pico.get('simulation_only') is not simulation or
@@ -74,7 +74,7 @@ def check(args):
         from rclpy.type_support import check_for_type_support
         from snowbot_ctl_msgs.msg import JointPositionCommand, RetInformation
         for cls in (JointPositionCommand,RetInformation):check_for_type_support(cls)
-    from snowbot_teleop import ensure_stopped
+    from tools.deployment.snowbot_teleop import ensure_stopped
     ensure_stopped(args.deployment)
     for host, port in ((args.host, args.vr_port), ('127.0.0.1', args.port)):
         with socket.socket() as probe:
@@ -115,7 +115,7 @@ def stop_group(process, grace=12.):
 def run(args):
     os.environ['ROS_DOMAIN_ID']=str(args.domain_id)
     if args.declare_load:
-        from snowbot_live import declare_load
+        from tools.teleop.snowbot_live import declare_load
         args.robot_config=args.deployment['robot_config']
         args.runtime_mode=args.deployment['runtime_mode']
         args.run_id=args.context_run_id

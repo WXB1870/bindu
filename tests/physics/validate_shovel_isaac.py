@@ -24,9 +24,9 @@ def verify(motion_path, output):
     from isaacsim.core.utils.extensions import enable_extension
     from isaacsim.core.utils.types import ArticulationAction
 
-    sys.path.insert(0, str(Path(__file__).resolve().parents[2]/'tools'))
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]/'src/capabilities/bindu_kinematics'))
-    from shovel_geometry import check_dump
+    from tools.analysis.shovel_geometry import check_dump
     motion = json.loads(motion_path.read_text())
     source = Path(motion['display_urdf'])
     if motion['schema'] != 2 or hashlib.sha256(source.read_bytes()).hexdigest() != motion['display_sha256']:
@@ -214,7 +214,7 @@ def preview(app, context, output, record_video=False, playback_once=False):
     from isaacsim.core.utils.types import ArticulationAction
     from isaacsim.core.utils.viewports import set_camera_view
     import omni.ui as ui
-    from shovel_geometry import bin_boxes
+    from tools.analysis.shovel_geometry import bin_boxes
     world,body,flanges,motion = context
     stage,recipe = world.stage,motion['recipe']
     UsdLux.DomeLight.Define(stage,'/World/Light').CreateIntensityAttr(1100.)
