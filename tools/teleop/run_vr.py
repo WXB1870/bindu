@@ -44,11 +44,14 @@ def check(args):
     """Check before starting any control nodes; never print TLS contents."""
     import importlib
     for module in ('rclpy', 'bindu_interfaces.msg', 'bindu_runtime',
-                   'bindu_execution', 'pinocchio', 'meshcat', 'tornado', 'vuer'):
+                   'meshcat', 'tornado'):
         importlib.import_module(module)
     if args.cert_file:
-        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-        context.load_cert_chain(str(args.cert_file), str(args.key_file), password='')
+        try:
+            context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            context.load_cert_chain(str(args.cert_file), str(args.key_file), password='')
+        except (OSError, ssl.SSLError):
+            raise ValueError('TLS 证书/私钥无法加载或不匹配') from None
     elif args.host not in ('127.0.0.1','localhost','::1'):
         raise ValueError('局域网头显入口需要配置 TLS 证书和私钥')
     from bindu_runtime.robot_setup import RobotSetup
@@ -70,10 +73,8 @@ def check(args):
             pico.get('simulation_only') is not simulation or
             grippers.get('simulation_only',False) is not simulation):
         raise ValueError('部署、工具、PICO 和夹爪配置范围不匹配')
-    if not simulation:
-        from rclpy.type_support import check_for_type_support
-        from snowbot_ctl_msgs.msg import JointPositionCommand, RetInformation
-        for cls in (JointPositionCommand,RetInformation):check_for_type_support(cls)
+    from tools.deployment.runtime_check import check_runtime
+    check_runtime(args.deployment, robot)
     from tools.deployment.snowbot_teleop import ensure_stopped
     ensure_stopped(args.deployment)
     for host, port in ((args.host, args.vr_port), ('127.0.0.1', args.port)):

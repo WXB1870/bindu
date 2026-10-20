@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Snowbot deployment configuration, offline checks and read-only ROS observation."""
 import argparse
-import importlib
 import json
 import hashlib
 import math
@@ -91,35 +90,13 @@ def preflight(path):
         raise ValueError('需要 Snowbot 真机模型与工具配置')
     if tool.get('demo', {}).get('initial_positions_rad'):
         raise ValueError('真机工具配置包含演示初始关节')
-    # Detect an old installed configuration even when the source recipe is newer.
-    for installed in (Path(args['robot_config']), robot.profile_path, robot.tool_config):
-        if installed.is_relative_to(share):
-            source = SHARE/installed.relative_to(share)
-            if source.is_file() and source.read_bytes() != installed.read_bytes():
-                raise ValueError('安装配置与源码不同，请重建：'+str(source))
-    # Importing generated Python messages alone does not load their native typesupport.
-    from rclpy.type_support import check_for_type_support
-    for module, names in (
-            ('snowbot_ctl_msgs.msg', ('JointPositionCommand', 'RetInformation')),
-            ('bindu_interfaces.msg', ('ExecutionState', 'VRInput', 'TeleopModeState')),
-            ('bindu_interfaces.action', ('SelectTeleopMode', 'TeleopSession'))):
-        package = importlib.import_module(module)
-        for name in names:
-            check_for_type_support(getattr(package, name))
+    from tools.deployment.runtime_check import check_runtime
+    check_runtime(args, robot)
     if args.get('gripper_config'):
         from bindu_hardware.snowbot_gripper import validate_config
         grippers = validate_config(json.loads(Path(args['gripper_config']).read_text()), robot.profile)
-        check_for_type_support(getattr(importlib.import_module('bindu_interfaces.msg'), 'GripperState'))
-        check_for_type_support(getattr(importlib.import_module('bindu_interfaces.srv'), 'GripperControl'))
         if not grippers['calibrated']:
             print('夹爪配置未现场标定：状态可读，夹爪写入将拒绝。')
-    for module in ('pinocchio', 'casadi', 'vuer', 'bindu_execution.interpolation'):
-        importlib.import_module(module)
-    # Constructing the solver validates the native ABI/model/config, without targets or IO.
-    from bindu_kinematics.bimanual import BimanualQP
-    tool['urdf'] = str(robot.urdf)
-    solver = BimanualQP(tool, robot.profile)
-    solver.close()
     if args.get('cert_file'):
         # Do not include SSL exceptions in output: they may contain private file paths.
         try:

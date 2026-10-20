@@ -26,5 +26,8 @@ fi
 if [[ -n "$bindu_viewer_deps" ]]; then
   export PYTHONPATH="$bindu_viewer_deps${PYTHONPATH:+:$PYTHONPATH}"
 fi
+# Vuer dependencies can include the obsolete argparse backport.
+bindu_stdlib="$(python3 -c 'import sysconfig; print(sysconfig.get_path("stdlib"))')"
+export PYTHONPATH="$bindu_stdlib${PYTHONPATH:+:$PYTHONPATH}"
 export PYTHONDONTWRITEBYTECODE=1 OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1
 exec python3 -m tools.teleop.run_vr "$@"

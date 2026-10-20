@@ -1,0 +1,11 @@
+# Complete x86 VR + browser + native QP build environment; no Isaac.
+-r requirements-teleop.txt
+-r requirements-snowbot-viewer.txt
+proxsuite==0.7.3
+scipy==1.15.3; python_version < "3.11"
+scipy==1.16.3; python_version >= "3.11"
+# Older CMake breaks ProxSuite's imported target after finding Eigen/SIMDe.
+cmake==3.31.6
+# Compatible with ROS ament_python/colcon setup.py builds on both interpreters.
+setuptools==68.1.2
+wheel==0.45.1

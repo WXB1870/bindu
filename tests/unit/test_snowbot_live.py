@@ -154,6 +154,12 @@ class WebFeedbackTests(unittest.TestCase):
 
 
 class SimulationEntryTests(unittest.TestCase):
+    def setUp(self):
+        environment = patch.dict(entry.os.environ)
+        environment.start()
+        self.addCleanup(environment.stop)
+        entry.os.environ.pop('BINDU_VR_CONFIG', None)
+
     def test_physics_selects_external_feedback_and_keeps_browser(self):
         args=entry.parse_args(['--physics','--run-id','physics_test'])
         physics,control,display=entry.commands(args)

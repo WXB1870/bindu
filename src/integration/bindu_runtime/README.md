@@ -56,7 +56,51 @@ ros2 topic echo /bindu_sim/execution/state --once
 
 - PICO 与浏览器操作台：按 [遥操作模块命令](../../capabilities/bindu_teleoperation/README.md#编译与运行) 加载查看器依赖与 TLS，再用 `bash tools/run_vr.sh --config src/integration/bindu_runtime/config/deployments/snowbot_vr_sim.json`。
 - 三维建图／定位：按 [LIO 模块命令](../../capabilities/bindu_lio/README.md#编译与运行) 构建可选包并提供点云、IMU及标定配置。
-- 真实 Snowbot：沿用 [现场部署顺序](#snowbot-真机最小遥操作)，准备厂商消息、现场配方与反馈，默认只读；构建和启动上层不等于底层使能或真机验收。
+- 真实 Snowbot：优先使用 [x86 独立部署](#x86-真机部署已有适配底层)；底层联调沿用 [现场部署顺序](#snowbot-真机最小遥操作)，准备厂商消息、现场配方与反馈，默认只读；构建和启动上层不等于底层使能或真机验收。
+
+## x86 真机部署（已有适配底层）
+
+目标机使用与本机相同的已适配厂商 `src`，支持 Ubuntu 22.04／ROS 2 Humble／Python 3.10，或 Ubuntu 24.04／Jazzy／Python 3.12。真机保留浏览器运动学显示，不需要 Isaac。新机重新编译，不复制本机 `install/`、`.so`、venv 或串联历史实验目录的 `artifacts/vr/env.sh`。
+
+**1．准备系统依赖与现有底层消息。** 先安装对应 ROS 2。在新终端进入本仓库，以下以 Jazzy 为例，22.04 改用 Humble：
+
+```bash
+source /opt/ros/jazzy/setup.bash
+sudo apt-get update
+sudo apt-get install -y build-essential python3-dev python3-venv \
+  python3-colcon-common-extensions python3-rosdep libeigen3-dev libsimde-dev \
+  python3-yaml python3-zmq "ros-$ROS_DISTRO-nav2-msgs" "ros-$ROS_DISTRO-robot-state-publisher"
+# 首次使用 rosdep 时先执行 sudo rosdep init；已初始化不重复执行。
+rosdep update
+mapfile -t bindu_packages < <(colcon list --base-paths src --packages-up-to bindu_runtime --paths-only)
+rosdep install --from-paths "${bindu_packages[@]}" --ignore-src --rosdistro "$ROS_DISTRO" \
+  --skip-keys 'pinocchio proxsuite' -r -y
+```
+
+Pinocchio／ProxSuite 由下一步固定版本 wheel 提供。这里只解析运行依赖链，不安装可选 LIO／Isaac。底层 `src` 在自己的工作区按既有流程构建；若只准备上层编译和只读检查，可在底层工作区用 `colcon build --packages-select snowbot_ctl_msgs` 仅构建消息。不要为迁移重新套补丁，也不要启动控制器；`local_setup.bash` 必须来自目标 ROS／系统 Python 重新生成的消息安装，不能复制另一机器的二进制。
+
+**2．独立准备并构建 Bindu。** [`x86_real.py`](../../../tools/deployment/x86_real.py) 自动核对 OS／架构／Python 配对，从系统 Python 建立继承 ROS 系统包的 venv，安装[完整固定依赖清单](../../../tools/requirements/requirements-x86-real.txt)，然后构建运行依赖链15包：
+
+```bash
+# 将路径替换为新机已适配厂商工作区的实际安装位置。
+python3 -m tools.deployment.x86_real prepare \
+  --vendor-setup /绝对路径/vendor_ws/install/local_setup.bash
+python3 -m tools.deployment.x86_real build
+```
+
+默认产物均在忽略入库的 `artifacts/x86-real/`，可在每条命令加同一个 `--workspace /绝对路径/部署目录`。`prepare` 可在同一部署目录重试，保留已编辑的现场配方；拒绝接管无部署标识的非空目录或改换厂商环境。源码移动、系统／Python／ROS 升级时新建部署目录。生成的 `env.sh` 清除继承的 Python／ROS 覆盖层，只加载选定 ROS、厂商 `local_setup.bash`、独立 venv 和本次安装；保留调用方 DDS／ROS 域设置。`environment.json` 记录实际 Python、模块路径／版本、包前缀、提交及脏工作区状态，`requirements-resolved.txt` 记录本次解析的依赖版本；固定直接依赖不等于锁定所有传递依赖。
+
+**3．核实现场配方后预检。** 编辑生成的 `artifacts/x86-real/site.json`：它来自统一 PICO 真机配方，默认 `command_enabled=false`，不是本机仿真配方。填写底层命名空间／接收节点；头显跨机访问时设置 `host=0.0.0.0` 及新机 IP 对应的 TLS 证书／私钥绝对路径。证书生成与头显信任步骤见[首次输入诊断](../../capabilities/bindu_teleoperation/README.md#vr-首次连通检查)。现场 PICO 准备位与夹爪标定用独立配置路径引用，未标定时不填模拟值、不改写标定状态。源码或依赖清单变更后重新 `build`；检查入口会按构建时的源码指纹拒绝旧产物。
+
+```bash
+ROS_DOMAIN_ID=42 python3 -m tools.deployment.x86_real check
+# 现场已核实并处于授权实验范围内时，前台启动上层和浏览器；Ctrl+C 收尾。
+ROS_DOMAIN_ID=42 python3 -m tools.deployment.x86_real start
+```
+
+底层与上层使用相同 ROS 域／兼容 RMW；分机通信另核对 DDS 发现与网卡配置，不能用强制 localhost 掩盖。电脑页面默认 `http://127.0.0.1:8013/`，头显使用现场 HTTPS 地址8012端口。该工具不启动厂商控制器、不使能电机；写权限仍由已审阅的现场配方显式决定。底层本身启动可能回零／清零，持物时遵守[现场启动限制](#现场部署顺序)。
+
+`check` 在启动控制节点前实际加载执行层扩展、QP／Pinocchio 和 ROS 消息原生支持，构造并关闭 QP；核对安装中的 robot／profile／tool／PICO／夹爪配置与当前源码、TLS、端口和重复节点。它会短暂建立只读 ROS 图检查节点，不发送运动指令。底层新鲜反馈、手柄按键、现场准备位／夹爪标定、停机保持与实机性能仍须现场逐项验收；完整操作见[统一入口](../../../运行与验证.md#vr-统一部署与启动)。
 
 ## 职责与边界
 
