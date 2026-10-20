@@ -91,6 +91,18 @@ class SnowbotAdapterTests(unittest.TestCase):
             with self.assertRaises(RuntimeError): self.io.write_joints(target)
         self.assertFalse(self.sent)
 
+    def test_stop_marks_explicit_hold_without_marking_normal_targets(self):
+        kinds = []
+        original = self.io.send
+        def send(groups, target):
+            kinds.append(self.io.sending_hold)
+            original(groups, target)
+        self.io.send = send
+        self.io.write_joints({n:self.q[n] for n in GROUPS['left_arm']})
+        self.io.stop()
+        self.assertEqual(kinds, [False, True])
+        self.assertFalse(self.io.sending_hold)
+
     def test_bad_captured_other_arm_cannot_bypass_limit_check(self):
         self.q['arm_r_joint_2'] = 1.
         self.now += .01
@@ -304,6 +316,9 @@ class SnowbotAdapterTests(unittest.TestCase):
         from bindu_runtime.snowbot_adapter import SnowbotDevices
         transport = SnowbotDevices.__new__(SnowbotDevices)
         transport.node = Mock()
+        transport.node.get_clock.return_value.now.return_value.nanoseconds = 10_000_000_000
+        transport.command_sequence, transport.session = 0, 123
+        transport.io = S(sending_hold=False)
         transport.check_health = Mock()
         transport.node.count_publishers.return_value = 1
         transport.arm_type = S
@@ -549,18 +564,26 @@ class SnowbotAdapterTests(unittest.TestCase):
 
 class SnowbotRosBindingTests(unittest.TestCase):
     """Use installed message classes with mocked publishers; never create a node."""
-    def test_native_gripper_send_has_five_fields_and_only_selected_hand(self):
+    def test_native_gripper_send_preserves_prefix_and_guards_only_selected_hand(self):
         from bindu_runtime.snowbot_gripper import SnowbotGrippers
+        from bindu_runtime.snowbot_adapter import SnowbotDevices
         binding = SnowbotGrippers.__new__(SnowbotGrippers)
         binding.health = Mock()
-        binding.devices = S(array_type=lambda data:S(data=data))
+        devices = SnowbotDevices.__new__(SnowbotDevices)
+        devices.node = Mock()
+        devices.node.get_clock.return_value.now.return_value.nanoseconds = 10_000_000_000
+        devices.session, devices.command_sequence = 123, 0
+        devices.array_type = lambda data:S(data=data)
+        binding.devices = devices
         binding.core = S(cfg=json.loads((CONFIG/'robots/snowbot/snowbot_grippers_real.json').read_text()))
         binding.publishers = {side:Mock() for side in ('left', 'right')}
         binding.send('right', .02, False, 999)
-        self.assertEqual(binding.publishers['right'].publish.call_args.args[0].data, [.02, 0., 0., 100., 30.])
+        self.assertEqual(binding.publishers['right'].publish.call_args.args[0].data,
+                         [.02, 0., 0., 100., 30., 10., 1., 0., 123., 0.])
         binding.publishers['left'].publish.assert_not_called()
         binding.send('right', .01, True, 1000)
-        self.assertEqual(binding.publishers['right'].publish.call_args.args[0].data, [.01, 0., 0., 100., 30.])
+        self.assertEqual(binding.publishers['right'].publish.call_args.args[0].data,
+                         [.01, 0., 0., 100., 30., 10., 2., 0., 123., 1.])
 
     def measured_devices(self):
         from bindu_runtime.snowbot_adapter import SnowbotDevices

@@ -63,7 +63,8 @@ class SnowbotGrippers:
     def send(self, side, position, hold, sequence):
         self.health()
         cfg = self.core.cfg['grippers'][side]
-        self.publishers[side].publish(self.devices.array_type(data=native_command(position, cfg)))
+        values = self.devices.guarded_array(native_command(position, cfg), hold)
+        self.publishers[side].publish(self.devices.array_type(data=values))
 
     def observe(self, msg, q, v, when):
         if self.core is None:

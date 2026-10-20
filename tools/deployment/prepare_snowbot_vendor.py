@@ -56,6 +56,17 @@ SITE_118_FEEDBACK_FILES = {
         '6476366b45bb1ead0d977a7b7fd0dfab70d40d020633db60ef010908d2dad548',
 }
 
+SITE_118_GUARD_FILES = {
+    'servo_control/include/ros_controller/rosLoop.h':
+        'c0ab7fdf401c60fb2afe056726da41abd7a1812200f867b18acf4ca280761e0c',
+    'ctl_msgs/msg/JointPositionCommand.msg':
+        '3e5bd58056f00a0450d1f0154a40a4e0c7d990d5fe49155ee6a9dd013b9f6cb4',
+    'ctl_msgs/msg/MidNodeCtlMsgSend.msg':
+        '2a18e59b4bd655dcb02e67ddb8e7449aa4f956ee8e4f12a298049db5aeefa887',
+    'ctl_msgs/msg/CtlInformation.msg':
+        '0a8769ed34ca9820123e046195cfadbc575e78a9dcebd0828d33ea30cc00be8d',
+}
+
 
 def digest(path):
     result = hashlib.sha256()
@@ -105,9 +116,10 @@ def prepare(archive, output):
     return output
 
 
-def prepare_118(source, output, *, feedback=False):
+def prepare_118(source, output, *, feedback=False, guard=False):
     """Copy reviewed 118 sources; optionally extend measured PDO feedback after position fixes."""
     source, output = Path(source).resolve(), Path(output).absolute()
+    feedback = feedback or guard
     if not source.is_dir() or not SITE_118_FILES:
         raise ValueError('SNOWBOT_118_SOURCE_REQUIRED')
     if (output.resolve() == source or source in output.resolve().parents or
@@ -118,6 +130,8 @@ def prepare_118(source, output, *, feedback=False):
     if any(path.is_symlink() for path in source.rglob('*')):
         raise ValueError('SNOWBOT_118_SOURCE_SYMLINK')
     expected_files = dict(SITE_118_FILES, **(SITE_118_FEEDBACK_FILES if feedback else {}))
+    if guard:
+        expected_files.update(SITE_118_GUARD_FILES)
     for relative, expected in expected_files.items():
         path = source/relative
         if path.is_symlink() or not path.is_file() or digest(path) != expected:
@@ -138,6 +152,13 @@ def prepare_118(source, output, *, feedback=False):
                            check=True, capture_output=True, text=True)
             shutil.copyfile(ASSETS/'feedback_snapshot.h',
                             stage/'src/servo_control/include/servo_control/bindu_feedback_snapshot.h')
+        if guard:
+            subprocess.run(['patch', '--batch', '--forward', '--fuzz=0', '-p1',
+                            '-i', str(ASSETS/'guard_118.patch')], cwd=stage/'src',
+                           check=True, capture_output=True, text=True)
+            for package in ('servo_control', 'robot_control', 'dual_arm_control'):
+                shutil.copyfile(ASSETS/'guard_118.h',
+                                stage/'src'/package/'include/bindu_guard_118.h')
         manifest = dict(schema=1, source='snowbot_118_native_position',
                         source_files=expected_files,
                         patch_sha256=digest(ASSETS/'position_118.patch'),
@@ -146,6 +167,10 @@ def prepare_118(source, output, *, feedback=False):
         if feedback:
             manifest.update(feedback_patch_sha256=digest(ASSETS/'feedback_118.patch'),
                             feedback_helper_sha256=digest(ASSETS/'feedback_snapshot.h'))
+        if guard:
+            manifest.update(guard_patch_sha256=digest(ASSETS/'guard_118.patch'),
+                            guard_helper_sha256=digest(ASSETS/'guard_118.h'),
+                            guard_default=False, native_position_guard_version=1)
         (stage/'bindu_vendor_build.json').write_text(json.dumps(manifest, indent=2)+'\n')
         stage.rename(output)
     except BaseException:
@@ -162,10 +187,14 @@ def main():
                         help='输入为本机118源码根目录；生成独立副本，只修复首帧/使能/计时，不包含保护补丁')
     parser.add_argument('--feedback', action='store_true',
                         help='与--site-118合用，增加20轴真实反馈及PDO采样元数据，不启动设备')
+    parser.add_argument('--guard', action='store_true',
+                        help='与--site-118合用，包含反馈及原生位置期限保护；保护模式须现场显式选择')
     args = parser.parse_args()
     if args.feedback and not args.site_118:
         parser.error('--feedback requires --site-118')
-    print(prepare_118(args.archive, args.output, feedback=args.feedback) if args.site_118
+    if args.guard and not args.site_118:
+        parser.error('--guard requires --site-118')
+    print(prepare_118(args.archive, args.output, feedback=args.feedback, guard=args.guard) if args.site_118
           else prepare(args.archive, args.output))
 
 

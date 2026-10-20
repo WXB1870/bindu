@@ -30,6 +30,16 @@ PDO_FIELDS = {'pdo_sample': ('uint64',), 'pdo_age': ('double', 'float64'),
               'feedback_valid_mask': ('uint32',), 'feedback_status': ('uint16[20]',)}
 
 
+def guard_array(values, stamp_ns, sequence, session, hold):
+    """118 v1: native prefix followed by source time, sequence, session and hold."""
+    if (type(stamp_ns) is not int or not 0 < stamp_ns < 9_000_000_000_000_000_000 or
+            type(sequence) is not int or not 0 < sequence < 2**53 or
+            type(session) is not int or not 0 < session < 2**64 or type(hold) is not bool):
+        raise ValueError('SNOWBOT_GUARD_METADATA')
+    return [*values, stamp_ns * 1e-9, float(sequence),
+            float(session >> 32), float(session & 0xffffffff), float(hold)]
+
+
 def feedback_schema(fields):
     """Inspect installed ROS fields; optional head/waist are never synthesized."""
     errors, available = [], []
@@ -194,6 +204,7 @@ class SnowbotIO:
         self.stop_failures = ()
         self.stop_targets = {}
         self.stop_requested_at = 0.
+        self.sending_hold = False
         # ExecutionState expects independently dated sources. Base is absent.
         self.feedback = self
         self.source_stamps = {}
@@ -265,7 +276,7 @@ class SnowbotIO:
             raise RuntimeError('SNOWBOT_GRIPPER_CONTEXT_ONLY')
         return selected
 
-    def _send(self, target):
+    def _send(self, target, *, hold=False):
         groups = self._groups(target)
         if {'left_arm', 'right_arm'} & groups:
             # First command captures the other owned arm; never assume zero.
@@ -276,7 +287,11 @@ class SnowbotIO:
         if any(not math.isfinite(q) or not self.profile.limits[n][0] <= q <= self.profile.limits[n][1]
                for n, q in target.items()):
             raise RuntimeError('SNOWBOT_JOINT_LIMIT')
-        self.send(groups, target)
+        self.sending_hold = hold
+        try:
+            self.send(groups, target)
+        finally:
+            self.sending_hold = False
 
     def write_joints(self, target):
         if not self.command_enabled:
@@ -329,7 +344,7 @@ class SnowbotIO:
             try:
                 self.require_feedback(groups)
                 hold = {n: self.last_feedback.positions[n] for g in coupled if g in groups for n in GROUPS[g]}
-                self._send(hold)
+                self._send(hold, hold=True)
             except RuntimeError:
                 failures.update(groups)
             else:

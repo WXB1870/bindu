@@ -39,7 +39,9 @@ def scenario(output, name, enabled, calibrated, *, freeze=False, shutdown=False)
     node.create_subscription(Float64MultiArray,vendor+'/body/motor_cmd',lambda _:None,1)
     node.create_subscription(Float64MultiArray,vendor+'/head/motor_cmd',lambda _:None,1)
     def target(side, msg):
-        assert len(msg.data)==5 and list(msg.data[1:3])==[0.,0.]
+        assert len(msg.data)==10 and list(msg.data[1:3])==[0.,0.]
+        assert int(msg.data[7])*2**32+int(msg.data[8])==session
+        assert msg.data[9] in (0.,1.)
         packets.append(dict(side=side, data=list(msg.data)))
         q[GROUPS[side+'_tool_axis'][0]]=msg.data[0]
     for side in ('left','right'):
@@ -55,10 +57,16 @@ def scenario(output, name, enabled, calibrated, *, freeze=False, shutdown=False)
             if not hasattr(feedback,prefix+'_position'):continue
             names=[n for g in groups for n in GROUPS[g]]
             setattr(feedback,prefix+'_position',[q[n] for n in names]);setattr(feedback,prefix+'_speed',[0.]*len(names))
+        feedback.pdo_sample=sample
+        feedback.pdo_age=.001
+        feedback.pdo_wkc=feedback.pdo_expected_wkc=40
+        feedback.feedback_valid_mask=0xfffff
+        feedback.feedback_status=[39]*20
         feedback_pub.publish(feedback)
         source_pub.publish(String(data=json.dumps(dict(schema=1,stamp=now,source='topic'))))
         health_pub.publish(String(data=json.dumps(dict(schema=1,stamp=now,sample=sample,sample_age=.001,
             operational=True,ready=True,guard_enabled=True,guard_armed=bool(session),guard_latched=False,
+            native_position_guard_version=1,
             guard_session=session,wkc=40,expected_wkc=40,present_mask=0xfffff,fault_mask=0,
             enable_requested_mask=0xfffff,operation_enabled_mask=0xfffff))))
         if control['vr']:

@@ -269,7 +269,7 @@ class VendorInterfaceTests(unittest.TestCase):
             target.setdefault(expected['topic'], []).append(info)
         self.node.get_publishers_info_by_topic.side_effect = lambda topic: self.writers.get(topic, [])
         self.node.get_subscriptions_info_by_topic.side_effect = lambda topic: self.readers.get(topic, [])
-        self.health = Mock(messages={})
+        self.health = Mock(messages={'servo': {'native_position_guard_version': 1}})
         self.feedback = NS(header=NS(stamp=NS(sec=10, nanosec=0)),
             l_position=[.1]*8, r_position=[-.1]*8, l_speed=[0.]*8, r_speed=[0.]*8)
 

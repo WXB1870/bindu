@@ -152,6 +152,8 @@ def assess_robot_interface(args, node, messages, now, health):
         errors.append(str(exc))
     try:
         health.require(tuple(GROUPS), armed=False)
+        if health.messages.get('servo', {}).get('native_position_guard_version') != 1:
+            raise RuntimeError('SNOWBOT_NATIVE_GUARD_REQUIRED')
     except RuntimeError as exc:
         errors.append(str(exc))
     if args.get('gripper_config'):

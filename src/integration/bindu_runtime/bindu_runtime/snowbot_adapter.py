@@ -23,6 +23,7 @@ class SnowbotDevices:
         self.session = secrets.randbits(64) or 1
         self.health = VendorHealth(node.now, expected_session=self.session)
         self.heartbeat_sequence = 0
+        self.command_sequence = 0
         self.heartbeat_running = False
         self.heartbeat_type = UInt64MultiArray
         self.arm_type, self.array_type = JointPositionCommand, Float64MultiArray
@@ -85,6 +86,8 @@ class SnowbotDevices:
             if self.node.count_publishers(topic) != 1:
                 raise RuntimeError('SNOWBOT_HEALTH_UNAVAILABLE:'+channel)
         self.health.require(groups, armed=armed)
+        if self.health.messages['servo'].get('native_position_guard_version') != 1:
+            raise RuntimeError('SNOWBOT_NATIVE_GUARD_REQUIRED')
 
     def heartbeat(self):
         if not self.heartbeat_running:
@@ -116,6 +119,18 @@ class SnowbotDevices:
             self.io.invalid = str(exc)
             self.node.get_logger().warn(str(exc), throttle_duration_sec=1.)
 
+    def guard_metadata(self, hold=False):
+        self.command_sequence += 1
+        return dict(bindu_stamp_ns=self.node.get_clock().now().nanoseconds,
+                    bindu_sequence=self.command_sequence, bindu_session=self.session,
+                    bindu_hold=hold)
+
+    def guarded_array(self, values, hold=False):
+        from bindu_hardware.snowbot import guard_array
+        m = self.guard_metadata(hold)
+        return guard_array(values, m['bindu_stamp_ns'], m['bindu_sequence'],
+                           m['bindu_session'], m['bindu_hold'])
+
     def send(self, groups, target):
         # Validate all subscribers before sending the first packet. Across the
         # controller's three topics this is still not an atomic hardware operation.
@@ -124,10 +139,14 @@ class SnowbotDevices:
             msg = self.arm_type()
             msg.l_arm_position = [float(target[n]) for n in GROUPS['left_arm']]
             msg.r_arm_position = [float(target[n]) for n in GROUPS['right_arm']]
+            for key, value in self.guard_metadata(self.io.sending_hold).items():
+                setattr(msg, key, value)
             packets.append(('arms', msg))
         for group in ('waist', 'head'):
             if group in groups:
-                packets.append((group, self.array_type(data=[float(target[n]) for n in GROUPS[group]])))
+                values = [float(target[n]) for n in GROUPS[group]]
+                packets.append((group, self.array_type(
+                    data=self.guarded_array(values, self.io.sending_hold))))
         self.check_ready(groups)
         for group, msg in packets:
             self.publishers[group].publish(msg)
