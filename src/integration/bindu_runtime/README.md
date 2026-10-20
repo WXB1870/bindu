@@ -153,13 +153,15 @@ python3 -m tools.teleop.vr_connectivity \
 | 字段／配置 | 现场填写依据 |
 |---|---|
 | `runtime_mode`、`device_backend` | 保持 `real`、`snowbot_vendor` |
-| `vendor_namespace` | 底层根话题用 `/`；只有实际为 `/snowbot/...` 才使用默认 `/snowbot` |
+| `vendor_namespace` | 统一真机配方默认 `/`，匹配118原底层根话题；只有现场实际完成 `/snowbot/...` remap时才改为 `/snowbot` |
 | `arm_receiver_node`、`servo_receiver_node`、`mid_receiver_node` | 默认节点不匹配时增加字段，填实际完整节点名 |
 | `host`、`port`、`cert_file`、`key_file` | `0.0.0.0`、8012，以及新机 IP 对应的证书／私钥绝对路径 |
 | `pico_config` | 现场独立副本；具名关节 `prepare_positions_rad` 单位 rad，缺省为 `null`，A 准备不可用 |
 | `gripper_config` | 现场独立副本；默认 `calibrated=false`，实测开／闭／虚握开度与保持后才设为已标定 |
 
-`@runtime/` 指向本次安装包；其他配置路径相对 `site.json`，跨目录可用绝对路径。现场副本可从 `src/integration/bindu_runtime/config/robots/snowbot/` 的 `pico_snowbot_position_real.json`、`snowbot_grippers_real.json` 复制，未标定时保留原状态，不套模拟值。普通双臂从当前实测末端接合，不依赖 A 准备位；夹爪与持工具操作按各自标定和确认条件开放。源码或依赖清单变更后重新 `build`；检查入口会按构建时的源码指纹拒绝旧产物。
+`@runtime/` 指向本次安装包；其他配置路径相对 `site.json`，跨目录可用绝对路径。`prepare`保留已经存在的现场配方，更新源码模板不会自动迁移旧`site.json`；118已有的`/snowbot`副本应在本机改为`/`后同步，保留TLS路径、端口和只读状态。现场副本可从 `src/integration/bindu_runtime/config/robots/snowbot/` 的 `pico_snowbot_position_real.json`、`snowbot_grippers_real.json` 复制，未标定时保留原状态，不套模拟值。普通双臂从当前实测末端接合，不依赖 A 准备位；夹爪与持工具操作按各自标定和确认条件开放。源码或依赖清单变更后重新 `build`；检查入口会按构建时的源码指纹拒绝旧产物。
+
+**118反馈传输。** x86部署入口在加载现有环境前默认设置`FASTDDS_BUILTIN_TRANSPORTS=UDPv4`，新生成的`env.sh`也采用该默认值；显式传输选择、ROS域和RMW设置保留。更新入口脚本即可覆盖旧`env.sh`未设置传输的情况，不必为此重新`prepare`。该设置用于处理root驱动与cc观察端之间已确认的默认传输收包问题，证据及边界见[底层D118-13](../../../底层驱动问题记录.md#已确认接口与问题)，不修改驱动或共享内存权限。接收帧率、ROS发布时间与成功PDO采样分别核验，收到16轴消息不能解除头腰测量和保护门槛。
 
 ```bash
 ROS_DOMAIN_ID=42 python3 -m tools.deployment.x86_real check

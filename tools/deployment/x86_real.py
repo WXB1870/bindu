@@ -40,6 +40,9 @@ def clean_environment():
            if key not in OVERLAYS and not key.startswith(('CONDA_', '_CE_'))}
     env.update(PATH=SYSTEM_PATH, PYTHONNOUSERSITE='1', PYTHONDONTWRITEBYTECODE='1',
                OPENBLAS_NUM_THREADS='1', OMP_NUM_THREADS='1')
+    # Avoid 118's cross-user Fast DDS default-transport receive failure.
+    # Apply this before sourcing even an existing deployment's older env.sh.
+    env['FASTDDS_BUILTIN_TRANSPORTS'] = env.get('FASTDDS_BUILTIN_TRANSPORTS') or 'UDPv4'
     return env
 
 
@@ -63,6 +66,7 @@ def environment_script(workspace, profile):
         'export PATH='+q(SYSTEM_PATH),
         'export PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1',
         'export OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1',
+        'export FASTDDS_BUILTIN_TRANSPORTS="${FASTDDS_BUILTIN_TRANSPORTS:-UDPv4}"',
         'export CMAKE_BUILD_PARALLEL_LEVEL="${CMAKE_BUILD_PARALLEL_LEVEL:-2}"',
         'source '+q(f"/opt/ros/{profile['ros']}/setup.bash")+' || return',
         'source '+q(profile['vendor_setup'])+' || return',

@@ -52,12 +52,40 @@ class X86DeploymentTests(unittest.TestCase):
                        'source "$1"; /usr/bin/python3 -c '\
                        "'import os,json; print(json.dumps(dict(os.environ)))'", 'test', str(env_file)]
             env = dict(os.environ, PYTHONPATH='/old', AMENT_PREFIX_PATH='/old')
+            env.pop('FASTDDS_BUILTIN_TRANSPORTS', None)
             result = json.loads(subprocess.check_output(command, env=env, text=True))
             self.assertNotIn('AMENT_PREFIX_PATH', result)
             self.assertNotIn('/old', result['PYTHONPATH'])
             self.assertEqual(result['BINDU_VR_CONFIG'], str(workspace/'site.json'))
             self.assertEqual(result['VENDOR_LOADED'], '1')
             self.assertEqual(result['VENV_LOADED'], '1')
+            self.assertEqual(result['FASTDDS_BUILTIN_TRANSPORTS'], 'UDPv4')
+            env['FASTDDS_BUILTIN_TRANSPORTS'] = 'DEFAULT'
+            overridden = json.loads(subprocess.check_output(command, env=env, text=True))
+            self.assertEqual(overridden['FASTDDS_BUILTIN_TRANSPORTS'], 'DEFAULT')
+
+    def test_existing_deployment_inherits_udp_without_regenerating_environment(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            # An environment generated before the cross-user feedback fix.
+            old_script = 'export PREPARED_BEFORE_DDS_FIX=1\n'
+            (workspace/'env.sh').write_text(old_script)
+            output = workspace/'child.json'
+            code = ('import json,os,sys; from pathlib import Path; '
+                    'Path(sys.argv[1]).write_text(json.dumps(dict(os.environ)))')
+            for selected, expected in ((None, 'UDPv4'), ('', 'UDPv4'), ('DEFAULT', 'DEFAULT')):
+                with self.subTest(selected=selected):
+                    env = dict(ROS_DOMAIN_ID='193', RMW_IMPLEMENTATION='rmw_fastrtps_cpp')
+                    if selected is not None:
+                        env['FASTDDS_BUILTIN_TRANSPORTS'] = selected
+                    with patch.dict(os.environ, env, clear=True):
+                        x86_real.in_environment(workspace, ['/usr/bin/python3', '-c', code, str(output)])
+                    child = json.loads(output.read_text())
+                    self.assertEqual(child['FASTDDS_BUILTIN_TRANSPORTS'], expected)
+                    self.assertEqual(child['ROS_DOMAIN_ID'], '193')
+                    self.assertEqual(child['RMW_IMPLEMENTATION'], 'rmw_fastrtps_cpp')
+                    self.assertEqual(child['PREPARED_BEFORE_DDS_FIX'], '1')
+                    self.assertEqual((workspace/'env.sh').read_text(), old_script)
 
     def test_vr_wrapper_keeps_stdlib_before_viewer_backports(self):
         with tempfile.TemporaryDirectory() as tmp:

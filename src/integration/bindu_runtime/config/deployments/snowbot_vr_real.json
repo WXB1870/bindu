@@ -8,7 +8,7 @@
     "device_backend": "snowbot_vendor",
     "command_enabled": false,
     "gripper_config": "@runtime/config/robots/snowbot/snowbot_grippers_real.json",
-    "vendor_namespace": "/snowbot",
+    "vendor_namespace": "/",
     "side": "left",
     "tool_input_source": "vr",
     "vr_enabled": true,
