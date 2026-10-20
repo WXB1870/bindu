@@ -43,17 +43,17 @@
 -    tempCtlData_pub.header.stamp = this->now();  // 添加当前时间戳
 +    tempCtlData_pub.header.stamp = this->now();  // publication time
 +    bindu_guard118::to_message(bindu_command_, tempCtlData_pub);
-@@ -1222,0 +1224,10 @@
+@@ -1222,0 +1224,7 @@
 +    if (topic) {
 +        const auto command = bindu_guard118::from_message(*msg);
 +        if ((command.session || bindu_command_.session) && (count_publishers("upperMonitor_msg_send") != 1 ||
 +            !bindu_guard118::valid(command, now().nanoseconds()) ||
 +            command.sequence <= bindu_command_.sequence ||
 +            (bindu_command_.session && command.session != bindu_command_.session))) return;
-+        bindu_command_ = command;
-+    } else {
-+        bindu_command_ = {};
 +    }
+@@ -1227,0 +1236,2 @@
++    // Do not stamp old cached targets with a command rejected for stale feedback.
++    bindu_command_ = topic ? bindu_guard118::from_message(*msg) : bindu_guard118::Command{};
 --- a/robot_control/include/robot_control/msgPublisher.h
 +++ b/robot_control/include/robot_control/msgPublisher.h
 @@ -0,0 +1,2 @@
@@ -199,8 +199,9 @@
 @@ -1119 +1143 @@
 -    if (!sigInterrupt.load()) {
 +    if (!bindu_guard_mode_ && !sigInterrupt.load()) {
-@@ -1200 +1224,9 @@
+@@ -1200,2 +1224,12 @@
 -    if (arm_startup_ready && head_torso_startup_ready && !sigInterrupt.load()) {
+-        notify_systemd("READY=1\nSTATUS=Startup homing complete; arm brakes engaged");
 +    if (bindu_guard_mode_) {
 +        arm_startup_ready = head_torso_startup_ready = EtherCAT_isOperational();
 +        EtherCAT_setMotorEnable(false);
@@ -210,7 +211,10 @@
 +    }
 +    bindu_startup_ready_ = arm_startup_ready && head_torso_startup_ready && !sigInterrupt.load();
 +    if (bindu_startup_ready_) {
-@@ -1216,0 +1249,8 @@
++        notify_systemd(bindu_guard_mode_
++            ? "READY=1\nSTATUS=Bindu guard ready; axes disabled; brake state unverified"
++            : "READY=1\nSTATUS=Startup homing complete; arm brakes engaged");
+@@ -1216,0 +1251,8 @@
 +        if (bindu_guard_mode_ && sigInterrupt.load()) {
 +            shutdown_mode_ = true;
 +            EtherCAT_binduTrip();
@@ -219,7 +223,7 @@
 +            rclcpp::sleep_for(std::chrono::milliseconds(50));
 +            break;
 +        }
-@@ -1677,0 +1718,23 @@
+@@ -1677,0 +1720,23 @@
 +    if (bindu_guard_mode_) {
 +        const auto command = bindu_guard118::from_message(*msg);
 +        if (!bindu_startup_ready_ || count_publishers("ctl_data_pub") != 1 ||
@@ -243,14 +247,14 @@
 +            EtherCAT_binduGravity(8+i, msg->r_torque_grav_comp[i]);
 +        }
 +    }
-@@ -1705 +1768 @@
+@@ -1705 +1770 @@
 -    } else if (retZero_lock) {
 +    } else if (retZero_lock && !bindu_guard_mode_) {
-@@ -1909 +1972,2 @@
+@@ -1909 +1974,2 @@
 -    if (shutdown_mode_) return;   // 关机回零期间忽略外部夹爪指令
 +    if (shutdown_mode_) return;   // shutdown owns output
 +    if (bindu_guard_mode_ && !bindu_array(msg, is_left ? 1 : 2, 5)) return;
-@@ -1979,0 +2044,15 @@
+@@ -1979,0 +2046,15 @@
 +    if (bindu_guard_mode_) {
 +        // Fixed per-cycle position increment, independent of source retries.
 +        // The reviewed real recipe's maximum is 0.2 rad/s; repeated targets do
@@ -266,11 +270,11 @@
 +        }
 +        return;
 +    }
-@@ -2037,0 +2117 @@
+@@ -2037,0 +2119 @@
 +    if (bindu_guard_mode_ && !bindu_array(msg, 4, 2)) return;
-@@ -2090,0 +2171 @@
+@@ -2090,0 +2173 @@
 +    if (bindu_guard_mode_ && !bindu_array(msg, 3, 2)) return;
-@@ -2186,0 +2268,30 @@
+@@ -2186,0 +2270,30 @@
 +
 +bool ServoNode::bindu_array(const std_msgs::msg::Float64MultiArray::SharedPtr& msg,
 +                           unsigned channel, unsigned prefix) {
@@ -327,7 +331,7 @@
 +                auto& hold = bindu_hold_[m];
 +                if (guard_touched & (1u << m))
 +                    hold.capture(motor_fb_pos_[m].load(), motor_cmd_pos_[m].load(), 0, 0, 0);
-+                csp_rx_[m]->controlword = keep_enabled ? 0x000f : 0x0006;
++                csp_rx_[m]->controlword = keep_enabled ? 0x001f : 0x0006;
 +                csp_rx_[m]->ModeOp = MODE_CSP;
 +                csp_rx_[m]->position = static_cast<int32_t>(std::llround(hold.position / bindu_feedback::csp_scale));
 +                csp_rx_[m]->velocity = 0; csp_rx_[m]->torque = 0;
@@ -336,7 +340,7 @@
 +                if (guard_touched & (1u << m))
 +                    hold.capture(motor_fb_pos_[m].load(), motor_cmd_pos_[m].load(),
 +                        m_rx_[m]->KP, m_rx_[m]->KD, bindu_gravity_[m].load());
-+                m_rx_[m]->controlword = keep_enabled ? 0x000f : 0x0006;
++                m_rx_[m]->controlword = keep_enabled ? 0x001f : 0x0006;
 +                m_rx_[m]->target_position = hold.position;
 +                m_rx_[m]->target_speed = 0;
 +                m_rx_[m]->target_torque = hold.torque;
