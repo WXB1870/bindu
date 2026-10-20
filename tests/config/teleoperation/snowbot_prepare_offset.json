@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "source_run": "vr_grippers_2588087_20261020_a7a4",
+  "reason": "RuntimeError:PREPARE_TOOL_COUPLING: joint path changes the captured two-hand grasp",
+  "teleop_mode": "independent_arms",
+  "load_state": "unknown",
+  "feedback": {
+    "body_joint_1": 0.19061768054962158,
+    "body_joint_2": 0.4348084330558777,
+    "head_joint_1": 0.000955668103415519,
+    "head_joint_2": -5.098814654047601e-05,
+    "arm_l_joint_1": -0.5919708013534546,
+    "arm_l_joint_2": 0.3078087270259857,
+    "arm_l_joint_3": 0.5475051403045654,
+    "arm_l_joint_4": -0.2664610743522644,
+    "arm_l_joint_5": -1.1538493633270264,
+    "arm_l_joint_6": 0.21894362568855286,
+    "arm_l_joint_7": -1.1267993450164795,
+    "arm_r_joint_1": 0.5669352412223816,
+    "arm_r_joint_2": -1.0881030559539795,
+    "arm_r_joint_3": -0.3816838264465332,
+    "arm_r_joint_4": 0.6427851915359497,
+    "arm_r_joint_5": 0.2953598201274872,
+    "arm_r_joint_6": 0.7358734011650085,
+    "arm_r_joint_7": 1.2514828443527222,
+    "arm_l_joint_8": -1.3416234651231207e-05,
+    "arm_r_joint_8": 9.517856597085483e-06
+  }
+}

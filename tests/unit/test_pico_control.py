@@ -13,6 +13,46 @@ from bindu_teleoperation.bimanual_session import BimanualSession
 from tests.support.pico import Rig
 
 
+class PrepareReturnPathTests(unittest.IsolatedAsyncioTestCase):
+    def node(self, load='unknown', mode='bimanual_tool', *, error=None, changed=False):
+        from types import SimpleNamespace as S
+        from unittest.mock import Mock
+        node=S(control=S(load=load,teleop_mode=mode),position_contract=True,
+            prepare_positions={'joint':.2},names=('joint',),cfg={},
+            tool_cfg={'resource_groups':['arm']},profile=S(groups={'arm':('joint',)}),
+            current=Mock(),event=Mock(),validation_result=None)
+        state=S(joints=S(name=['joint'],velocity=[0.]))
+        readings=[(state,{'joint':0.}),(state,{'joint':.01 if changed else 0.})]
+        node.reading=Mock(side_effect=readings)
+        def submit(operation, token, feedback, target):
+            node.validation_result=('error',token,error) if error else ('result',token,{})
+            return True
+        node.validator=S(ready=True,busy=False,startup_timeout=1.,submit=Mock(side_effect=submit))
+        return node
+
+    async def test_return_does_not_preserve_captured_grasp_in_either_mode_or_any_load_state(self):
+        from bindu_runtime.pico_node import PicoNode
+        from bindu_teleoperation.pico import PicoIntent
+        for load in ('empty','held','unknown'):
+            for mode in ('independent_arms','bimanual_tool'):
+                with self.subTest(load=load,mode=mode):
+                    node=self.node(load,mode)
+                    self.assertEqual(await PicoNode.validate_prepare(node,PicoIntent(1,'prepare')),{'joint':.2})
+                    node.validator.submit.assert_called_once_with('prepare_path',1,{'joint':0.},[.2])
+                    self.assertEqual((node.control.load,node.control.teleop_mode),(load,mode))
+                    event=json.loads(node.event.call_args.args[1])
+                    self.assertFalse(event['load_state_checked']);self.assertFalse(event['coupling_checked'])
+
+    async def test_return_still_propagates_robot_collision_limits_and_changed_feedback(self):
+        from bindu_runtime.pico_node import PicoNode
+        from bindu_teleoperation.pico import PicoIntent
+        for error in ('SELF_COLLISION: arm / body t=0.5','PREPARE_JOINT_LIMIT'):
+            with self.subTest(error=error),self.assertRaisesRegex(RuntimeError,error):
+                await PicoNode.validate_prepare(self.node(error=error),PicoIntent(1,'prepare'))
+        with self.assertRaisesRegex(RuntimeError,'PREPARE_STATE_CHANGED'):
+            await PicoNode.validate_prepare(self.node(changed=True),PicoIntent(1,'prepare'))
+
+
 class DualModeTests(unittest.TestCase):
     def test_default_normal_accepts_one_hand_and_releases_independently(self):
         r=Rig('unknown',guided=True,dual=True)

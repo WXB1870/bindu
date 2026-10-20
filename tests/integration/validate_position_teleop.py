@@ -19,7 +19,7 @@ import rclpy
 from std_msgs.msg import String, Float64MultiArray, UInt64MultiArray
 from snowbot_ctl_msgs.msg import RetInformation, JointPositionCommand, CtlInformation, MidNodeCtlMsgSend
 from bindu_interfaces.msg import VRInput, ExecutionState, MotionCommand, GripperState
-from bindu_interfaces.srv import Lease, SubmitMotion
+from bindu_interfaces.srv import Lease, SubmitMotion, PicoContext
 from bindu_runtime.common import stamp, seconds
 from bindu_contracts.teleoperation import VRFrame
 from bindu_teleoperation.vr.receiver import ButtonCounters
@@ -75,7 +75,7 @@ def websocket_input(port, source, stop, errors):
         if not stop.is_set():errors.append(type(exc).__name__+':'+str(exc))
 
 
-def scenario(out, mode, websocket=False, ordinary=False, physics=False, replay=None, collision_recovery=False):
+def scenario(out, mode, websocket=False, ordinary=False, physics=False, replay=None, collision_recovery=False, prepare_return=None):
     token=uuid.uuid4().hex[:8];ns='/position_'+token;vendor='/fixture_'+token
     node=rclpy.create_node('position_fixture_'+token)
     states=[];views=[];accepted=[];grippers={};packets=[]
@@ -95,9 +95,12 @@ def scenario(out, mode, websocket=False, ordinary=False, physics=False, replay=N
         source.update(raw_pair=replay['segment']['pairs'][0],raw_held=False,raw_replay=False,raw_index=0)
     if collision_recovery:
         fixture['device_initial_positions_rad']=json.loads((ROOT/'tests/config/teleoperation/snowbot_prepare_collision.json').read_text())['feedback']
+    if prepare_return:
+        fixture['device_initial_positions_rad']=dict(prepare_return)
+        fixture['initial_load_state']='unknown'
     fixture['initial_teleop_mode']='independent_arms' if ordinary else 'bimanual_tool'
     q=fixture['device_initial_positions_rad'].copy()
-    if mode=='real' and not ordinary:
+    if mode=='real' and not ordinary and not prepare_return:
         # Synthetic measured posture, deliberately independent of an A command.
         # The actual real deployment continues to use only vendor feedback.
         q.update(fixture['prepare_positions_rad'])
@@ -251,6 +254,48 @@ def scenario(out, mode, websocket=False, ordinary=False, physics=False, replay=N
         assert views[-1]['capabilities']['axial_grasp'] is True
         checks.append('same feedback contract, no startup commands, configured axial position capability explicit')
         pump(.3)
+        if prepare_return:
+            expected_mode='independent_arms' if ordinary else 'bimanual_tool'
+            assert views[-1]['load_state']=='unknown' and views[-1]['teleop_mode']==expected_mode
+            source['buttons'][1]=1
+            wait(lambda:len(accepted)>0,35.)
+            pump(.12);source['buttons'][1]=0
+            wait(lambda:views[-1]['pending'] is None and not states[-1].lease_active and
+                 states[-1].state not in ('RUNNING','STOPPING'))
+            assert not states[-1].stop_failures
+            stopped_at=len(accepted);pump(.3);assert len(accepted)==stopped_at
+            checks.append('unknown-load A starts from recorded offset; releasing A cancels and confirms hold')
+            context=node.create_client(PicoContext,ns+'/teleop/pico/context')
+            response=call(node,context,PicoContext.Request(source_id=views[-1]['source_id'],
+                expected_generation=views[-1]['generation'],load_state='held',external_support=False))
+            assert response.success,response.code
+            wait(lambda:views[-1]['load_state']=='held');pump(.2)
+            source['buttons'][1]=1
+            wait(lambda:views[-1]['reason']=='PREPARED' and views[-1]['pending'] is None,45.)
+            source['buttons'][1]=0;pump(.3)
+            measured=dict(zip(states[-1].joints.name,states[-1].joints.position))
+            names=[n for g in ('waist','left_arm','right_arm') for n in GROUPS[g]]
+            assert max(abs(measured[n]-fixture['prepare_positions_rad'][n]) for n in names)<.002
+            assert views[-1]['load_state']=='held' and views[-1]['teleop_mode']==expected_mode
+            assert views[-1]['stop_confirmed'] and views[-1]['phase']=='standby'
+            assert views[-1]['gripper_modes']==['closed','closed'] and not states[-1].stop_failures
+            checks.append('held-load A reaches preset despite changed two-hand relationship; mode/load/grippers retained')
+            before=len(accepted);last_check=views[-1]['last_prepare_check']['stamp'];source['buttons'][1]=1
+            wait(lambda:views[-1]['pending'] is None and views[-1]['reason']=='PREPARED' and
+                 views[-1]['last_prepare_check']['stamp']>last_check,5.)
+            source['buttons'][1]=0;pump(.3)
+            assert len(accepted)==before and views[-1]['reason']=='PREPARED'
+            checks.append('repeated A at measured preset sends no redundant motion and never starts following')
+            terminate(observer,node);observer=None
+            events=[json.loads(line)['data'] for line in (trace_dir/'runtime-events.jsonl').read_text().splitlines()]
+            validations=[json.loads(e['code']) for e in events if e['state']=='PICO_PREPARE_VALIDATION']
+            assert {v['load_state'] for v in validations}>={'unknown','held'}
+            assert all(v['operation'] in ('prepare_path','prepare_recovery_path') and
+                       not v['load_state_checked'] and not v['tool_present'] and not v['coupling_checked'] for v in validations)
+            health=json.loads((trace_dir/'diagnostics-health.json').read_text())
+            assert not health['active'] and not health['error'] and not health['dropped'] and not peer_errors
+            checks.append('fresh body path validation persists for both loads; no load/coupling gate or diagnostic loss')
+            return dict(mode=mode,teleop_mode=expected_mode,checks=checks,accepted=len(accepted),vendor_packets=len(packets))
         if not collision_recovery and not replay:
             before=len(accepted);load=views[-1]['load_state']
             source['trigger']=[1.,0.]
@@ -495,7 +540,7 @@ def scenario(out, mode, websocket=False, ordinary=False, physics=False, replay=N
         wait(lambda:views[-1]['reason']=='PREPARED' and views[-1]['pending'] is None)
         source['buttons'][1]=0;pump(.2)
         assert views[-1]['load_state']=='held' and len(accepted)==before
-        checks.append('held-tool A validates coupling and tool CAD; already-reached pose submits no motion or gripper commands')
+        checks.append('held-tool A ignores load/captured coupling; already-reached pose submits no motion or gripper commands')
         before=len(accepted);source['grip']=1.;phase('following');set_delta(.006)
         wait(lambda:len(accepted)>before+5)
         error_sample('rigid')
@@ -597,7 +642,8 @@ def scenario(out, mode, websocket=False, ordinary=False, physics=False, replay=N
         attempts=[json.loads(e['code']) for e in events if e['state']=='PICO_PREPARE_CHECK']
         assert attempts and attempts[0]['accepted'] and all(attempts[0]['checks'].values()),attempts
         validations=[json.loads(e['code']) for e in events if e['state']=='PICO_PREPARE_VALIDATION']
-        assert any(v['operation']=='loaded_prepare_path' and v['tool_present'] and v['coupling_checked'] for v in validations)
+        assert any(v['load_state']=='held' and v['operation'] in ('prepare_path','prepare_recovery_path') and
+                   not v['load_state_checked'] and not v['tool_present'] and not v['coupling_checked'] for v in validations)
         assert any(e['state']=='PICO_ENGAGE_CHECK' for e in events)
         if mode=='simulation':
             assert any(json.loads(e['code']).get('read_only_rejection') for e in events if e['state']=='PICO_OPERATION_RESULT')
@@ -626,10 +672,15 @@ def main():
     p.add_argument('--replay-log',type=Path,help='Replay one captured raw VR segment through the isolated physics stack')
     p.add_argument('--replay-seq',type=int)
     p.add_argument('--collision-recovery',action='store_true',help='Recorded shallow self-collision: reject follow, release A, then hold A to recover')
+    p.add_argument('--prepare-return',type=Path,nargs='?',const=ROOT/'tests/config/teleoperation/snowbot_prepare_offset.json',
+                   help='Recorded measured joint map: test unknown/held A return, cancel and repeat in either mode')
     p.add_argument('--until',type=float,help='Freeze recorded inputs/events at this UNIX timestamp')
     p.add_argument('--clock',choices=('client','received'),default='client')
     p.add_argument('--runs',type=int,default=1)
     args=p.parse_args()
+    prepare_return=json.loads(args.prepare_return.read_text()) if args.prepare_return else None
+    if prepare_return:prepare_return=prepare_return.get('feedback',prepare_return)
+    if args.prepare_return and (args.collision_recovery or args.replay_log):p.error('--prepare-return cannot combine with recovery/replay')
     if args.physics and (args.mode!='simulation' or not args.websocket_input):p.error('--physics requires --mode simulation --websocket-input')
     if args.collision_recovery and (args.mode!='simulation' or args.teleop_mode!='tool' or not args.websocket_input or args.replay_log):
         p.error('--collision-recovery requires simulation, tool, WebSocket and no raw replay')
@@ -656,7 +707,7 @@ def main():
                 for ordinary in ((True,False) if args.teleop_mode=='both' else (args.teleop_mode=='ordinary',)):
                     out=args.output/(('ordinary-' if ordinary else 'tool-')+m+('' if args.runs==1 else f'-{run:02}'));out.mkdir()
                     case=scenario(out,m,args.websocket_input,ordinary,physics=args.physics,replay=replay,
-                                  collision_recovery=args.collision_recovery);result.append(case)
+                                  collision_recovery=args.collision_recovery,prepare_return=prepare_return);result.append(case)
                     (out/'verification.json').write_text(json.dumps(case,indent=2))
                     print(out.name+': '+str(len(case['checks']))+' checks passed',flush=True)
         (args.output/'verification.json').write_text(json.dumps(result,indent=2));print(json.dumps(result,indent=2))
