@@ -1,6 +1,7 @@
 {
   "simulation_only": true,
   "live": {
+    "stop_settle_s": 0.1,
     "physics_dt_s": 0.004,
     "feedback_hz": 100,
     "max_wall_lag_s": 0.15,

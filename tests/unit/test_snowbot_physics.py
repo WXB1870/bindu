@@ -128,6 +128,73 @@ class PositionPhysicsTests(unittest.TestCase):
         self.core.accept(self.command(operation='hold'),10.01,self.q)
         self.assertEqual(self.core.hold_positions['arm_r_joint_8'],.002)
 
+    def test_stop_ack_waits_for_measured_stable_rest_and_keeps_drive_target(self):
+        self.core.accept(self.command(operation='hold',group='right_arm'),10.01,self.q)
+        velocity=dict.fromkeys(self.q,0.)
+        # Recorded shoulder bias: the force drive rests 2.126 mrad away from
+        # its requested hold, outside the unchanged 2 mrad arrival tolerance.
+        self.q['arm_r_joint_1']=-.002126
+        self.core.observe_holds(self.q,velocity,10.02)
+        self.assertFalse(self.core.hold_acknowledgments)  # No post-step ACK yet.
+        self.core.stepped()
+        velocity['arm_r_joint_1']=.02
+        self.core.observe_holds(self.q,velocity,10.03)
+        self.assertFalse(self.core.hold_acknowledgments)
+        velocity['arm_r_joint_1']=0.
+        self.core.observe_holds(self.q,velocity,10.04)
+        self.core.observe_holds(self.q,velocity,10.09)
+        self.assertFalse(self.core.hold_acknowledgments)
+        self.core.observe_holds(self.q,velocity,10.15)
+        ack=self.core.hold_acknowledgments['right_arm']
+        self.assertEqual(ack['sequence'],1)
+        self.assertEqual(ack['stamp'],10.15)
+        self.assertEqual(ack['positions']['arm_r_joint_1'],-.002126)
+        self.assertEqual(self.core.hold_positions['arm_r_joint_1'],0.)
+        self.assertEqual(self.core.targets['arm_r_joint_1'],0.)
+        self.q['arm_r_joint_1']=-.02
+        self.core.observe_holds(self.q,velocity,10.3)
+        self.assertEqual(ack['positions']['arm_r_joint_1'],-.002126)  # Never chase drift.
+
+    def test_timeout_hold_cannot_ack_an_explicit_stop_and_new_set_clears_ack(self):
+        velocity=dict.fromkeys(self.q,0.)
+        self.core.accept(self.command(),10.01,self.q)
+        self.core.stepped();self.core.expire(10.3,self.q)
+        for at in (10.31,10.5):self.core.observe_holds(self.q,velocity,at)
+        self.assertFalse(self.core.hold_acknowledgments)
+        self.core.accept(self.command(2,'hold',stamp=S(sec=11,nanosec=0)),11.01,self.q)
+        self.core.stepped()
+        for at in (11.02,11.2):self.core.observe_holds(self.q,velocity,at)
+        self.assertIn('right_tool_axis',self.core.hold_acknowledgments)
+        self.core.accept(self.command(3,stamp=S(sec=11,nanosec=200000000)),11.21,self.q)
+        self.assertFalse(self.core.hold_acknowledgments)
+
+    def test_missing_samples_cannot_supply_a_stable_hold_window(self):
+        velocity=dict.fromkeys(self.q,0.)
+        self.core.accept(self.command(operation='hold'),10.01,self.q);self.core.stepped()
+        self.core.observe_holds(self.q,velocity,10.02)
+        self.core.observe_holds(self.q,velocity,10.5)
+        self.assertFalse(self.core.hold_acknowledgments)
+        self.core.observe_holds(self.q,velocity,10.61)
+        self.assertIn('right_tool_axis',self.core.hold_acknowledgments)
+
+    def test_hold_settling_resets_on_motion_drift_or_invalid_feedback(self):
+        velocity=dict.fromkeys(self.q,0.)
+        self.core.accept(self.command(operation='hold'),10.01,self.q);self.core.stepped()
+        self.core.observe_holds(self.q,velocity,10.02)
+        velocity['arm_r_joint_8']=.02
+        self.core.observe_holds(self.q,velocity,10.10)
+        velocity['arm_r_joint_8']=0.
+        self.core.observe_holds(self.q,velocity,10.11)
+        self.q['arm_r_joint_8']=.003
+        self.core.observe_holds(self.q,velocity,10.19)
+        self.core.observe_holds(self.q,velocity,10.22)
+        self.assertFalse(self.core.hold_acknowledgments)
+        velocity['arm_r_joint_8']=float('nan')
+        self.core.observe_holds(self.q,velocity,10.23)
+        velocity['arm_r_joint_8']=0.
+        for at in (10.24,10.35):self.core.observe_holds(self.q,velocity,at)
+        self.assertIn('right_tool_axis',self.core.hold_acknowledgments)
+
     def test_timeout_holds_only_commanded_group_at_measured_position(self):
         self.core.accept(self.command(),10.01,self.q)
         self.q['arm_r_joint_8']=.025
@@ -158,7 +225,8 @@ class PositionPhysicsTests(unittest.TestCase):
         module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
         c=json.loads((ROOT/'src/integration/bindu_runtime/config/robots/snowbot/snowbot_shovel_physics.json').read_text())
         module.validate_live_config(c)
-        for key,value in [('physics_dt_s',float('nan')),('max_wall_lag_s',1.),('command_timeout_s',.1),('headless','true')]:
+        for key,value in [('physics_dt_s',float('nan')),('max_wall_lag_s',1.),('command_timeout_s',.1),
+                          ('stop_settle_s',0.),('stop_settle_s',float('nan')),('headless','true')]:
             changed=copy.deepcopy(c);changed['live'][key]=value
             with self.assertRaises(ValueError):module.validate_live_config(changed)
 
@@ -192,7 +260,10 @@ class PhysicsPositionStopTests(unittest.TestCase):
     def acknowledge(self,**changes):
         h=dict(stamp=self.now,ready=True,simulator_id='boot',
                applied_sequences=dict(self.io.hold_sequences),
-               hold_positions={n:self.q[n] for n in self.io.stop_targets})
+               hold_positions=dict(self.io.stop_targets),
+               hold_acknowledgments={g:dict(sequence=seq,stamp=self.now,
+                    positions={n:self.q[n] for n in self.profile.groups[g]})
+                    for g,seq in self.io.hold_sequences.items()})
         h.update(changes);self.wire.health=h
 
     def test_hold_uses_device_position_after_all_post_step_acks(self):
@@ -221,13 +292,43 @@ class PhysicsPositionStopTests(unittest.TestCase):
         self.engine.halt(self.now);self.tick()
         for changes in ({'stamp':10.}, {'stamp':9.}, {'stamp':self.now+.1},
                         {'ready':False}, {'simulator_id':'old'},
-                        {'applied_sequences':{}}, {'hold_positions':{}},
-                        {'hold_positions':dict.fromkeys(self.io.stop_targets,float('nan'))}):
+                        {'applied_sequences':{}}, {'hold_acknowledgments':{}},
+                        {'hold_acknowledgments':{'right_arm':dict(sequence=1,stamp=self.now,positions={})}}):
             with self.subTest(changes=changes):
                 self.acknowledge(**changes)
                 self.assertIsNone(self.io.confirmed_stop_targets())
         self.acknowledge();self.wire.failed=True
         self.assertIsNone(self.io.confirmed_stop_targets())
+
+    def test_post_step_acceptance_without_stable_stop_ack_cannot_confirm(self):
+        self.engine.halt(self.now);self.tick();self.acknowledge()
+        del self.wire.health['hold_acknowledgments']
+        self.assertIsNone(self.io.confirmed_stop_targets())
+        self.engine.tick(self.now)
+        self.assertIsNotNone(self.engine.stopping)
+
+    def test_stable_ack_rejects_wrong_sequence_time_layout_and_nonfinite_position(self):
+        self.engine.halt(self.now);self.tick()
+        for change in ('sequence','old_stamp','future_stamp','layout','nonfinite'):
+            with self.subTest(change=change):
+                self.acknowledge()
+                ack=self.wire.health['hold_acknowledgments']['right_arm']
+                if change=='sequence':ack['sequence']-=1
+                elif change=='old_stamp':ack['stamp']=10.
+                elif change=='future_stamp':ack['stamp']=self.now+.1
+                elif change=='layout':ack['positions'].pop('arm_r_joint_1')
+                else:ack['positions']['arm_r_joint_1']=float('nan')
+                self.assertIsNone(self.io.confirmed_stop_targets())
+
+    def test_recorded_static_bias_confirms_actual_rest_without_relaxing_tolerance(self):
+        self.engine.halt(self.now)
+        self.q['arm_r_joint_1']=-.002126;self.tick()
+        self.acknowledge()
+        self.assertEqual(self.wire.health['hold_positions']['arm_r_joint_1'],0.)
+        self.tick()
+        self.assertIsNone(self.engine.stopping)
+        self.assertFalse(self.engine.stop_fault)
+        self.assertEqual(self.profile.feedback_tolerances['joint_position'],.002)
 
     def test_ack_position_never_chases_measured_drift(self):
         self.engine.halt(self.now);self.q['arm_r_joint_1']=.0077;self.tick();self.acknowledge()

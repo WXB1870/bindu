@@ -43,6 +43,7 @@ def validate_live_config(cfg):
         'max_wall_lag_s':(.02,.2),'command_timeout_s':(.25,.4),
         'gripper_stiffness_nm_rad':(1.,100000.),'gripper_damping_nm_s_rad':(1.,10000.),
         'joint_limit_inset_rad':(.00001,.001)}
+    bounds['stop_settle_s']=(.02,1.)
     for key,(low,high) in bounds.items():
         value=live[key]
         if type(value) not in (int,float) or not math.isfinite(value) or not low<=value<=high:
@@ -138,7 +139,7 @@ def main():
         view.set_world_poses(np.array([[0.,0.,-10.]]),np.array([[1.,0.,0.,0.]]),indices=[2])
         for _ in range(30):world.step(render=False)
         simulator_id=uuid.uuid4().hex
-        core=PhysicsPositionState(profile,simulator_id,initial,live['command_timeout_s'])
+        core=PhysicsPositionState(profile,simulator_id,initial,live['command_timeout_s'],live['stop_settle_s'])
         rclpy.init(args=[],signal_handler_options=SignalHandlerOptions.NO)
         node=rclpy.create_node('snowbot_isaac',namespace='/'+session['namespace'].strip('/'))
         from tools.simulation.snowbot_isaac_io import PhysicsPublisher
@@ -238,6 +239,8 @@ def main():
                     measured=dict(zip(names,map(float,q)));velocity=dict(zip(names,map(float,qd)))
                     seq+=1
                     sample_ready=realtime.ready
+                    if sample_ready:
+                        core.observe_holds(measured,velocity,sampled)
                     msg=SimulationFeedback(stamp=stamp(sampled),simulation_time=sim_t,simulator_id=simulator_id,
                         sequence=seq,profile_hash=profile.digest,ready=sample_ready,code=fault or ('OK' if sample_ready else 'PHYSICS_WARMUP'))
                     msg.joints.header.stamp=msg.stamp;msg.joints.name=ordered
@@ -250,6 +253,7 @@ def main():
                         code=msg.code,rtf=sim_t/max(1e-6,time.monotonic()-start),wall_lag_s=realtime.lag,
                         max_wall_lag_s=realtime.maximum_lag,rejection_codes=dict(rejection_codes),
                         applied_sequences=dict(core.applied_sequences),hold_positions=dict(core.hold_positions),
+                        hold_acknowledgments=dict(core.hold_acknowledgments),
                         reference_progress=core.progress,
                         tool_present=tool_present,grasp_model='contact',diagnostics=trace.status(),
                         timings=dict(timings),timing_max_s=dict(timing_max),publication=publisher.status(),**stats)

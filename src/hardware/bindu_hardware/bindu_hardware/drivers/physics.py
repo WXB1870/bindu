@@ -58,10 +58,13 @@ class PhysicsCommandGate:
 
 
 class PhysicsPositionState:
-    """Targets/one-shot holds for a physics device; acknowledgments follow a step."""
-    def __init__(self, profile, simulator_id, initial, timeout=.25):
+    """Post-step target acceptance and separate measured stable-stop ACKs."""
+    def __init__(self, profile, simulator_id, initial, timeout=.25, settle_time=.1):
         self.gate=PhysicsCommandGate(profile,simulator_id,timeout)
         self.profile=profile
+        if not math.isfinite(settle_time) or not 0 < settle_time < profile.stop_timeout:
+            raise ValueError('PHYSICS_HOLD_SETTLE_TIME')
+        self.settle_time=settle_time
         self.targets=dict(initial)
         self.reference=dict(initial)
         self.speeds={n:profile.speed(n) for n in initial}
@@ -72,6 +75,9 @@ class PhysicsPositionState:
         self.hold_positions={}
         self.pending={}
         self.applied_sequences={}
+        self.hold_requests={}
+        self.hold_candidates={}
+        self.hold_acknowledgments={}
 
     def hold(self, group, measured):
         if group not in self.holding:
@@ -83,8 +89,13 @@ class PhysicsPositionState:
         if command.resource_group not in self.profile.groups:
             raise ValueError('PHYSICS_POSITION_RESOURCE')
         group=self.gate.accept(command,now)
-        if command.operation=='hold':self.hold(group,measured)
+        self.hold_candidates.pop(group,None)
+        self.hold_acknowledgments.pop(group,None)
+        if command.operation=='hold':
+            self.hold(group,measured)
+            self.hold_requests[group]=command.sequence
         else:
+            self.hold_requests.pop(group,None)
             self.holding.discard(group)
             for n,q in zip(command.joint_names,command.positions):
                 self.targets[n]=q;self.hold_positions.pop(n,None)
@@ -98,6 +109,36 @@ class PhysicsPositionState:
     def stepped(self):
         self.applied_sequences.update(self.pending)
         self.pending.clear()
+
+    def observe_holds(self, measured, velocities, stamp):
+        """ACK an explicit hold once its measured physical stop is stable.
+
+        Force drives can rest with a static position bias. The drive target
+        remains fixed; the separate stop ACK describes the actual braking point.
+        Neither timeout fallback holds nor a still-moving sample can ACK a stop.
+        """
+        position_limit=self.profile.feedback_tolerances['joint_position']
+        velocity_limit=self.profile.feedback_tolerances['joint_velocity']
+        for group,sequence in self.hold_requests.items():
+            if group in self.hold_acknowledgments or self.applied_sequences.get(group)!=sequence:
+                continue
+            names=self.profile.groups[group]
+            values=[stamp,*[measured.get(n,float('nan')) for n in names],
+                    *[velocities.get(n,float('nan')) for n in names]]
+            if (not all(math.isfinite(v) for v in values) or
+                    any(abs(velocities[n])>velocity_limit or
+                        not self.profile.limits[n][0]<=measured[n]<=self.profile.limits[n][1] for n in names)):
+                self.hold_candidates.pop(group,None)
+                continue
+            positions={n:measured[n] for n in names}
+            candidate=self.hold_candidates.get(group)
+            if (candidate is None or not 0 < stamp-candidate[1] <= .2 or
+                    any(abs(positions[n]-candidate[2][n])>=position_limit for n in names)):
+                self.hold_candidates[group]=(stamp,stamp,positions)
+            elif stamp-candidate[0]>=self.settle_time:
+                self.hold_acknowledgments[group]=dict(sequence=sequence,stamp=stamp,positions=positions)
+            else:
+                self.hold_candidates[group]=(candidate[0],stamp,candidate[2])
 
     def reference_step(self, dt):
         """Device-owned coupled position/velocity reference, never feedback."""

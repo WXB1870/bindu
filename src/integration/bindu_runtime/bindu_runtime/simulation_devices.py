@@ -131,13 +131,29 @@ class PhysicsPositionIO(SnowbotIO):
             return None
         if any(sequences.get(g) != seq for g,seq in self.hold_sequences.items()):
             return None
-        targets = {n:holds.get(n) for n in self.stop_targets}
+        acknowledgments=h.get('hold_acknowledgments')
+        if not isinstance(acknowledgments,dict):
+            return None
+        targets={}
+        ack_stamps=[]
+        for group,sequence in self.hold_sequences.items():
+            ack=acknowledgments.get(group)
+            if not isinstance(ack,dict):return None
+            positions,ack_at=ack.get('positions'),ack.get('stamp')
+            if (ack.get('sequence')!=sequence or not isinstance(positions,dict) or
+                    set(positions)!=set(self.profile.groups[group]) or
+                    type(ack_at) not in (int,float) or not math.isfinite(ack_at) or
+                    not self.stop_requested_at < ack_at <= at):
+                return None
+            targets.update(positions)
+            ack_stamps.append(ack_at)
+        if set(targets)!=set(self.stop_targets):return None
         if any(type(q) not in (float,int) or not math.isfinite(q) or
                not self.profile.limits[n][0] <= q <= self.profile.limits[n][1]
                for n,q in targets.items()):
             return None
         if self.hold_ack is None:
-            self.hold_ack = (at, targets)
+            self.hold_ack = (max(ack_stamps), targets)
         ack_stamp, acknowledged = self.hold_ack
         if targets != acknowledged or self.last_source_stamp+1e-6 < ack_stamp:
             return None
