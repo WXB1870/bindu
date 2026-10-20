@@ -29,7 +29,7 @@ class PicoFeedback:
 
 class PicoControl:
     def __init__(self, *, initial_load='unknown', max_age=.25, prepare_hold=1., simulation_demo=False,
-                 guided_loading=False, dual_modes=False, initial_mode='independent_arms',
+                 guided_loading=False, dual_modes=False, direct_grippers=False, initial_mode='independent_arms',
                  pose_jump_translation_m=.35, pose_jump_rotation_rad=1.2):
         if initial_load not in ('empty','held','unknown'):
             raise ValueError('PICO_LOAD_STATE')
@@ -59,6 +59,8 @@ class PicoControl:
         self.virtual = False
         self.pending = None
         self.desired = ['closed','closed']
+        self.direct_grippers = direct_grippers
+        self.manual_targets = [None,None]
         self.effects = []
         self.changed_at = float('-inf')
         self.context_at = self.loading_since = float('-inf')
@@ -259,7 +261,8 @@ class PicoControl:
         elif self.phase not in ('standby','tool_standby','preparing') or (self.pending and self.phase!='preparing'):
             self.prepare_blocked=True
         if self.phase in ('preparing','engaging','following','switching') and (presses[3] or presses[7]):
-            self.phase,self.reason='standby','OPEN_REQUIRES_LOADING_AND_SUPPORT'
+            self.phase,self.reason='standby',('GRIPPER_REQUIRES_STOP_AND_RELEASED_SQUEEZE' if self.direct_grippers
+                                            else 'OPEN_REQUIRES_LOADING_AND_SUPPORT')
             self.prepare_blocked=True;self.emit('stop');return
         if self.phase=='locked':
             if presses[5] and self.rest(now) and all(f.grip<.3 for f in pair) and not self.pending:
@@ -268,8 +271,17 @@ class PicoControl:
                 self.armed=[not h for h in states]
                 self.squeeze_released=[True,True]
             return
-        if self.pending and self.pending.operation!='grippers':return
+        if self.phase=='gripper_control' and (any(f.grip>=.3 for f in pair) or any(clutch_changed)):
+            self.phase,self.reason='standby','GRIPPER_REQUIRES_STOP_AND_RELEASED_SQUEEZE'
+            self.manual_targets=[None,None]
+            self.armed[3]=not states[3];self.armed[7]=not states[7]
+            self.squeeze_released=[False,False]
+            self.emit('stop');return
+        if self.pending and self.pending.operation not in ('grippers','manual_grippers'):return
         if self.stamp <= self.changed_at:return
+        if self.phase=='gripper_control':
+            self.manual_grippers(presses,releases,states)
+            return
         if self.phase=='load_check':
             if self.guided_loading and presses[0] and self.rest(now):
                 self.loading_goal='empty' if self.loading_goal=='held' else 'held'
@@ -325,6 +337,15 @@ class PicoControl:
             else:self.phase,self.reason='load_check','CHECK_SUPPORT_THEN_B'
             self.emit('stop');return
         if presses[3] or presses[7]:
+            if self.direct_grippers:
+                if not any(presses[i] and states[i] for i in (3,7)):return
+                if self.phase in ('standby','tool_standby') and self.rest(now) and all(f.grip<.3 for f in pair):
+                    self.manual_targets=[None,None]
+                    self.phase,self.reason='gripper_control','TRIGGERS_CONTROL_INDIVIDUAL_GRIPPERS'
+                    self.manual_grippers(presses,releases,states)
+                else:
+                    self.reason='GRIPPER_REQUIRES_STOP_AND_RELEASED_SQUEEZE'
+                return
             # A work-time open request stops, but is never queued for later opening.
             self.phase,self.reason='standby','OPEN_REQUIRES_LOADING_AND_SUPPORT'
             self.emit('stop');return
@@ -380,6 +401,18 @@ class PicoControl:
                     return
                 self.phase='engaging';self.emit('follow',self.virtual)
 
+    def manual_grippers(self, presses, releases, states):
+        targets=self.manual_targets.copy()
+        for j,i in enumerate((3,7)):
+            if presses[i] and states[i]:targets[j]='open'
+            elif releases[i] and self.armed[i] and targets[j]=='open':targets[j]='closed'
+        if targets==self.manual_targets:return
+        self.manual_targets=targets
+        self.supported=False
+        if 'open' in targets and self.load=='held':
+            self.load,self.load_source='unknown','direct_gripper_open'
+        self.emit('manual_grippers',tuple(targets))
+
     def complete(self, token, success, reason='', now=0., *, rejected=False):
         if not self.pending or self.pending.token!=token:return False
         operation,value=self.pending.operation,self.pending.value
@@ -399,6 +432,11 @@ class PicoControl:
             pass  # Stop does not acknowledge a latched reason or start another action.
         elif operation=='prepare':
             self.phase,self.reason='standby','PREPARED'
+        elif operation=='manual_grippers':
+            if value[1]=='closed':self.virtual=False
+            if all(m in (None,'closed') for m in value):
+                self.phase,self.reason='standby','GRIPPER_CONTROL_COMPLETE'
+                self.squeeze_released=[False,False]
         elif operation=='select_mode':
             self.teleop_mode=value
             self.phase,self.reason='standby','TELEOP_MODE_SELECTED'
@@ -448,6 +486,7 @@ class PicoControl:
                     last_prepare_check=self.last_prepare_check,
                     last_pose_jump=self.last_pose_jump,last_input_timeout=self.last_input_timeout,
                     guided_loading=self.guided_loading,loading_goal=self.loading_goal,
+                    direct_grippers=self.direct_grippers,gripper_targets=list(self.manual_targets),
                     loading_opened=list(self.loading_opened),idle_input_lost=self.idle_input_lost,
                     grasp_requested='right_axial' if (self.pending.value if self.pending and self.pending.operation=='switch_grasp' else self.virtual) else 'rigid',
                     pending=self.pending.operation if self.pending else None)
@@ -471,8 +510,13 @@ def loading_guide(view, modes):
     """One operator instruction shared by the headset and computer view."""
     phase, goal = view['phase'], view.get('loading_goal')
     operation = '装夹' if goal=='held' else '卸载'
+    if phase=='gripper_control':
+        return dict(title='夹爪独立开合',detail='按住对应扳机打开，松开闭合；保持双侧握松开',key='Trigger',step='grippers')
     if phase=='standby':
         reason=view.get('reason','')
+        if reason=='GRIPPER_REQUIRES_STOP_AND_RELEASED_SQUEEZE':
+            return dict(title='停稳、松开双侧握后再操作夹爪',
+                        detail='先松开扳机，再按住打开对应爪，松开闭合',key='Trigger',step='grippers')
         if reason=='PICO_TOOL_HELD_REQUIRES_TOOL_MODE':
             return dict(title='当前已装夹工具',detail='松开双侧握，按 B 切换扫雪模式后接合',key='B',step='mode')
         if reason.startswith(('RuntimeError:','ValueError:')) or reason.startswith('PREPARE_REQUIRES_'):
@@ -486,10 +530,10 @@ def loading_guide(view, modes):
             return dict(title='检查未通过，保持待命',detail=detail,key='握',step='retry')
         if view.get('teleop_mode')=='independent_arms':
             return dict(title='握住哪侧，就控制哪侧手臂',
-                        detail='侧握先松再握；A 回准备位，松握按 B 切扫雪模式',key='握',step='engage')
+                        detail='侧握先松再握；松握后扳机开合，A 准备，B 切模式',key='握',step='engage')
         if view.get('dual_modes'):
             return dict(title='双侧先松握，再同时握住控制工具',
-                        detail='松任一侧暂停；A 回准备位，松握按 B 切普通模式',key='握',step='engage')
+                        detail='松任一侧暂停；松握后扳机开合，A 准备，B 切模式',key='握',step='engage')
         return dict(title='松开双侧握，再同时握住接合',
                     detail='从当前位置建立跟随基准；A 可选回准备位，左摇杆单独装卸',key='握',step='engage')
     if phase=='load_check':

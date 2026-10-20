@@ -7,8 +7,8 @@ from bindu_teleoperation.pico import PicoControl, PicoFeedback, PICO_MAPPING
 
 
 class Rig:
-    def __init__(self,load='empty',guided=False,dual=False):
-        self.core=PicoControl(initial_load=load,guided_loading=guided,dual_modes=dual)
+    def __init__(self,load='empty',guided=False,dual=False,direct=False):
+        self.core=PicoControl(initial_load=load,guided_loading=guided,dual_modes=dual,direct_grippers=direct)
         self.now=1.;self.seq=0;self.source='headset-1'
         self.buttons=[0,0];self.triggers=[0.,0.];self.grips=[0.,0.]
         self.counters=[ButtonCounters(),ButtonCounters()]

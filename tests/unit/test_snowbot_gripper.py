@@ -73,6 +73,41 @@ class GripperTests(unittest.TestCase):
     def setUp(self):
         self.r = Rig()
 
+    def test_direct_endpoints_preserve_unknown_load_and_leave_other_side_untouched(self):
+        for load in ('empty','held','unknown'):
+            for side in SIDES:
+                with self.subTest(load=load,side=side):
+                    r=Rig();r.acquire(groups=(GROUPS[side],))
+                    r.command('authorize_direct',load_state=load)
+                    self.assertFalse(r.sent);self.assertEqual(r.core.load,load)
+                    self.assertFalse(r.core.supported)
+                    self.assertFalse(r.core.snapshot(side)['loading_authorized'])
+                    r.command('open',side);r.step(20)
+                    self.assertTrue(r.core.snapshot(side)['position_reached'])
+                    r.command('close',side);r.step(20)
+                    self.assertTrue(all(s[0]==side for s in r.sent))
+                    self.assertEqual(r.core.snapshot(side)['grasp_state'],'unknown')
+                    self.assertEqual(r.core.load,load)
+
+    def test_direct_authorization_does_not_allow_arbitrary_positions_or_grasp(self):
+        r=self.r;r.acquire();r.command('authorize_direct',load_state='empty')
+        for operation in ('position','virtual','rigid'):
+            with self.assertRaisesRegex(RuntimeError,'ENDPOINTS_ONLY|GRASP_NOT_AUTHORIZED'):
+                r.command(operation,'right',position=-.2)
+        self.assertFalse(r.sent)
+        r.idle=False
+        with self.assertRaisesRegex(RuntimeError,'STOPPED_ARMS'):r.command('open','left')
+        self.assertFalse(r.sent)
+
+    def test_direct_authorization_revoked_on_stop_and_not_reused_for_loading(self):
+        r=self.r;r.acquire();r.command('authorize_direct');r.command('open','left')
+        r.core.stop('TEST',revoke=False)
+        self.assertFalse(r.core.direct_authorized);self.assertFalse(r.core.authorized)
+        r.step(20)
+        with self.assertRaisesRegex(RuntimeError,'NOT_AUTHORIZED'):r.command('open','left')
+        r.authorize('held')
+        with self.assertRaisesRegex(RuntimeError,'REQUIRES_SUPPORT'):r.command('open','left')
+
     def test_virtual_position_is_optional_and_must_be_between_closed_and_open(self):
         for value in (None, True, float('nan'), -.02, 0., .004, .4, .5):
             cfg=copy.deepcopy(self.r.config);cfg['grippers']['right']['virtual']=value

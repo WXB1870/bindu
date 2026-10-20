@@ -18,6 +18,13 @@ class PicoHUDTests(unittest.TestCase):
         return dict(pico=True,mode=mode,reason='FOLLOWING',input_fresh=True,raw_input_valid=True,
             grasp_applied='rigid',grasp_requested='rigid',**values)
 
+    def test_direct_gripper_phase_shows_trigger_guidance(self):
+        from bindu_teleoperation.vr.hud import hud_spec
+        spec=hud_spec(self.view('gripper_control',teleop_mode='independent_arms'))
+        self.assertEqual(spec['status'],'夹爪开合中')
+        self.assertIn('松开闭合',spec['detail'])
+        self.assertIn('双侧握松开',spec['detail'])
+
     def test_mode_banner_uses_confirmed_mode_and_clears_stale_context(self):
         from bindu_teleoperation.vr.hud import hud_spec
         from bindu_teleoperation.vr.display import render

@@ -13,6 +13,95 @@ from bindu_teleoperation.bimanual_session import BimanualSession
 from tests.support.pico import Rig
 
 
+class DirectGripperTests(unittest.TestCase):
+    def rig(self, load='unknown', mode='independent_arms'):
+        r=Rig(load,guided=True,dual=True,direct=True)
+        r.core.teleop_mode=mode
+        return r
+
+    def test_each_trigger_controls_only_its_side_in_both_modes_without_load_declaration(self):
+        for mode in ('independent_arms','bimanual_tool'):
+            for side in (0,1):
+                with self.subTest(mode=mode,side=side):
+                    r=self.rig(mode=mode);r.triggers[side]=1.
+                    intent=r.step()[-1]
+                    target=[None,None];target[side]='open'
+                    self.assertEqual((intent.operation,intent.value),('manual_grippers',tuple(target)))
+                    self.assertEqual(r.core.load,'unknown');self.assertFalse(r.core.supported)
+                    r.modes=tuple('open' if i==side else 'virtual' for i in (0,1))
+                    r.complete();r.step()
+                    self.assertEqual(r.core.phase,'gripper_control')
+                    self.assertFalse(r.click(1,1));self.assertEqual(r.core.phase,'gripper_control')
+                    r.triggers[side]=0.;intent=r.step()[-1]
+                    target[side]='closed';self.assertEqual(intent.value,tuple(target))
+                    r.modes=tuple('closed' if i==side else 'virtual' for i in (0,1))
+                    r.complete();self.assertEqual(r.core.phase,'standby')
+
+    def test_quick_release_replaces_open_and_ignores_stale_completion(self):
+        r=self.rig('held');r.triggers=[1.,0.];opened=r.step()[-1]
+        self.assertEqual(r.core.load,'unknown');self.assertEqual(r.core.load_source,'direct_gripper_open')
+        r.stopped=False;r.triggers=[0.,0.];closed=r.step()[-1]
+        self.assertEqual(closed.value,('closed',None))
+        self.assertFalse(r.core.complete(opened.token,True,now=r.now))
+        self.assertEqual(r.core.pending,closed)
+        r.modes=('closed','closed');r.complete();self.assertEqual(r.core.phase,'standby')
+        self.assertEqual(r.core.load,'unknown')
+
+    def test_two_triggers_update_independently_and_keep_hysteresis(self):
+        r=self.rig();r.triggers=[1.,0.];r.step()
+        r.stopped=False;r.triggers=[1.,1.];self.assertEqual(r.step()[-1].value,('open','open'))
+        r.triggers=[.5,1.];self.assertFalse(r.step())
+        r.triggers=[0.,1.];self.assertEqual(r.step()[-1].value,('closed','open'))
+        r.triggers=[0.,0.];self.assertEqual(r.step()[-1].value,('closed','closed'))
+
+    def test_busy_or_squeezed_request_is_not_queued(self):
+        for busy in (False,True):
+            r=self.rig();r.stopped=not busy;r.grips=[0.,0.] if busy else [.5,0.]
+            r.triggers=[1.,0.];self.assertFalse(r.step())
+            self.assertIn('REQUIRES_STOP',r.core.reason)
+            r.stopped=True;r.grips=[0.,0.];self.assertFalse(r.step())
+            r.triggers=[0.,0.];r.step();r.triggers=[1.,0.]
+            self.assertEqual(r.step()[-1].operation,'manual_grippers')
+
+    def test_trigger_during_follow_only_stops_and_needs_a_new_press(self):
+        r=self.rig();r.core.phase='following';r.grips=[1.,1.];r.triggers=[1.,0.]
+        self.assertEqual(r.step()[-1].operation,'stop');r.complete()
+        r.grips=[0.,0.];self.assertFalse(r.step())
+        r.triggers=[0.,0.];r.step();r.triggers=[1.,0.]
+        self.assertEqual(r.step()[-1].operation,'manual_grippers')
+
+    def test_squeeze_y_and_timeout_stop_without_automatic_close(self):
+        for cause in ('squeeze','Y','timeout'):
+            with self.subTest(cause=cause):
+                r=self.rig();r.triggers=[1.,0.];r.step();r.modes=('open','closed');r.complete();r.step()
+                if cause=='squeeze':r.grips=[1.,0.];effects=r.step()
+                elif cause=='Y':effects=r.click(0,1)
+                else:
+                    r.now+=.3;r.core.update_feedback(PicoFeedback(r.now,True,r.modes),r.now)
+                    r.core.tick(r.now);effects=r.core.drain()
+                self.assertEqual([e.operation for e in effects],['stop']);r.complete()
+                r.grips=[0.,0.];r.triggers=[0.,0.];self.assertFalse(r.step())
+                if cause!='squeeze':r.click(1,1)
+                self.assertFalse(r.step())
+                r.triggers=[1.,0.];self.assertEqual(r.step()[-1].operation,'manual_grippers')
+
+    def test_initially_held_trigger_and_reconnect_do_not_open_or_close(self):
+        r=self.rig();r.core.previous=None;r.core.armed=[False]*8
+        r.triggers=[1.,0.];self.assertFalse(r.step());self.assertFalse(r.step())
+        r.triggers=[0.,0.];self.assertFalse(r.step())
+        r.triggers=[1.,0.];self.assertEqual(r.step()[-1].operation,'manual_grippers')
+        r.source='new-headset';self.assertEqual(r.step()[-1].operation,'stop')
+        r.complete();r.triggers=[0.,0.];self.assertFalse(r.step())
+        r.click(1,1);self.assertFalse(r.step())
+
+    def test_coalesced_squeeze_release_stops_grippers_even_with_released_sample(self):
+        r=self.rig();r.triggers=[1.,0.];r.step()
+        r.now+=.02
+        pair=[replace(f,seq=f.seq+1,stamp=r.now,clutch_seq=f.clutch_seq+2) for f in r.core.frames]
+        r.core.ingest(*pair,r.now)
+        self.assertEqual([e.operation for e in r.core.drain()],['stop'])
+
+
 class GuidedLoadingTests(unittest.TestCase):
     def start_loading(self, rig):
         rig.click(0,2);rig.complete();rig.click(1,1)

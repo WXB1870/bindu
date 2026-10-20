@@ -55,7 +55,7 @@ class GripperController:
         self.groups = ()
         self.expires = self.steady_expires = 0.
         self.authorized = self.supported = False
-        self.grasp_authorized = False
+        self.grasp_authorized = self.direct_authorized = False
         self.load = 'unknown'
         self.feedback_stamp = self.received_at = self.received_steady = 0.
         self.q, self.v, self.current = {}, {}, {}
@@ -142,7 +142,7 @@ class GripperController:
             self.lease_id, self.owner = secrets.token_hex(16), owner
             self.epoch += 1
             self.sequence, self.authorized, self.vr = -1, False, {}
-            self.grasp_authorized = False
+            self.grasp_authorized = self.direct_authorized = False
             self.command_stamp = float('-inf')
             for c in self.channels.values():
                 c['touched'] = False
@@ -163,12 +163,20 @@ class GripperController:
         if (type(sequence) is not int or sequence <= self.sequence or not math.isfinite(stamp)
                 or stamp < self.command_stamp or not math.isfinite(valid_for) or not 0 < valid_for <= .4 or not 0 <= self.now()-stamp < valid_for):
             raise RuntimeError('GRIPPER_STALE_COMMAND')
-        if operation == 'authorize_loading':
+        if operation == 'authorize_direct':
+            # Explicit stopped-arm trigger operation, independent of a load
+            # declaration. It permits only the calibrated open/closed endpoints.
+            if side or load_state not in ('empty','held','unknown') or external_support is not False:
+                raise RuntimeError('GRIPPER_DIRECT_CONTEXT')
+            self.load,self.supported,self.authorized=load_state,False,True
+            self.grasp_authorized,self.direct_authorized=False,True
+            self.vr={}
+        elif operation == 'authorize_loading':
             if (side or load_state not in ('empty', 'held', 'unknown') or type(external_support) is not bool or
                     load_state=='unknown' and not external_support):
                 raise RuntimeError('GRIPPER_LOADING_CONTEXT')
             self.load, self.supported, self.authorized = load_state, external_support, True
-            self.grasp_authorized = False
+            self.grasp_authorized = self.direct_authorized = False
             self.authorized_at = self.now()
             self.trigger_opened = dict.fromkeys(SIDES, False)
             self.vr = {}  # Every new authorization must see a physical trigger release.
@@ -177,6 +185,7 @@ class GripperController:
                 raise RuntimeError('GRIPPER_AXIAL_POSITION_UNAVAILABLE')
             self.require_left_closed()
             self.authorized, self.grasp_authorized, self.vr = False, True, {}
+            self.direct_authorized = False
         elif operation in ('virtual', 'rigid'):
             if side != 'right' or not self.grasp_authorized:
                 raise RuntimeError('GRIPPER_GRASP_NOT_AUTHORIZED')
@@ -185,6 +194,8 @@ class GripperController:
         elif operation == 'hold':
             self.stop('GRIPPER_HOLD_REQUESTED', revoke=False)
         elif operation in ('open', 'close', 'position'):
+            if operation == 'position' and self.direct_authorized:
+                raise RuntimeError('GRIPPER_DIRECT_ENDPOINTS_ONLY')
             if operation == 'position' and self.load != 'empty' and not self.supported:
                 raise RuntimeError('GRIPPER_POSITION_REQUIRES_SUPPORT')
             target = self.cfg['grippers'][side]['open' if operation == 'open' else 'closed'] if side in SIDES else 0.
@@ -216,7 +227,9 @@ class GripperController:
         if not math.isfinite(target) or not lo <= target <= hi:
             raise RuntimeError('GRIPPER_LIMIT')
         closed = self.cfg['grippers'][side]['closed']
-        if not grasp and abs(target-closed) > abs(self.q[joint]-closed)+self.cfg['position_tolerance'] and self.load != 'empty' and not self.supported:
+        if self.direct_authorized and target not in (closed,self.cfg['grippers'][side]['open']):
+            raise RuntimeError('GRIPPER_DIRECT_ENDPOINTS_ONLY')
+        if not grasp and not self.direct_authorized and abs(target-closed) > abs(self.q[joint]-closed)+self.cfg['position_tolerance'] and self.load != 'empty' and not self.supported:
             raise RuntimeError('GRIPPER_OPEN_REQUIRES_SUPPORT')
         c = self.channels[side]
         health = self.require_feedback()
@@ -233,7 +246,7 @@ class GripperController:
     def fail(self, code):
         self.fault = 'GRIPPER_STOP_UNCONFIRMED:'+code
         self.lease_id, self.owner, self.authorized = '', '', False
-        self.grasp_authorized = False
+        self.grasp_authorized = self.direct_authorized = False
         for c in self.channels.values():
             if c['touched']:
                 c.update(state='FAULT', code=self.fault)
@@ -253,7 +266,7 @@ class GripperController:
 
     def stop(self, code, *, revoke):
         self.authorized = False
-        self.grasp_authorized = False
+        self.grasp_authorized = self.direct_authorized = False
         errors = []
         for side in SIDES:
             try:
@@ -323,7 +336,7 @@ class GripperController:
 
     def input(self, frame):
         """Optional trigger control, explicitly bound to a leased VR source id."""
-        if not self.lease_id or self.owner != frame.source_id or frame.side not in SIDES:
+        if not self.lease_id or self.direct_authorized or self.owner != frame.source_id or frame.side not in SIDES:
             return
         if GROUPS[frame.side] not in self.groups:
             return
@@ -364,7 +377,7 @@ class GripperController:
         c = self.channels[side]
         return dict(side=side, joint_name=JOINTS[side], state=c['state'], code=c['code'],
             lease_active=bool(self.lease_id), owner=self.owner, epoch=self.epoch,
-            control_sequence=max(0, self.sequence), loading_authorized=self.authorized,
+            control_sequence=max(0, self.sequence), loading_authorized=self.authorized and not self.direct_authorized,
             trigger_armed=bool(self.authorized and side in self.vr and self.vr[side][2]
                 and 0 <= self.now()-self.vr[side][3] <= .25),
             measured_position=self.q.get(JOINTS[side], 0.), measured_velocity=self.v.get(JOINTS[side], 0.),

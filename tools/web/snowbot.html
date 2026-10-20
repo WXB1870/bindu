@@ -336,7 +336,7 @@ details[open]>summary:after { transform: rotate(225deg); }
         <details class="guide-details"><summary>手柄操作说明</summary><div class="guide"><p class="controller-note">侧握控制跟随；扳机仅表示开爪输入。</p>
           <div class="step" id="guide-prepare"><kbd>A</kbd><span>可选回准备位；停稳且松握时长按，松开即停止。</span></div>
           <div class="step"><kbd>B</kbd><span>待命时切普通／扫雪模式；装卸中确认，锁定后恢复待命。</span></div>
-          <div class="step"><kbd>扳机</kbd><span>装夹中按住打开对应夹爪，松开闭合。</span></div>
+          <div class="step"><kbd>扳机</kbd><span>停稳、松开双侧握后，按住打开对应夹爪，松开闭合。</span></div>
           <div class="step"><kbd>左摇杆</kbd><span>点击请求装夹或卸载，再按屏幕提示操作。</span></div>
           <div class="step" id="guide-clutch"><kbd>侧握</kbd><span>普通模式各管对应臂；扫雪模式需双侧同时握住。</span></div>
           <div class="step" id="guide-axial"><kbd>X</kbd><span>等待虚握能力确认。</span></div>
@@ -373,9 +373,11 @@ details[open]>summary:after { transform: rotate(225deg); }
 'use strict';
 const $=id=>document.getElementById(id);
 const phases={checking:'连接检查',standby:'待命',preparing:'准备中',confirming_tool:'工具检查中',tool_standby:'已暂停',engaging:'正在接合',following:'跟随中',switching:'正在换握',locked:'控制已锁定',loading:'装卸操作中',load_check:'等待装卸确认'};
-Object.assign(phases,{selecting_mode:'模式切换中'});
+Object.assign(phases,{selecting_mode:'模式切换中',gripper_control:'夹爪开合中'});
 const reasons={WAITING_FOR_INPUT_AND_FEEDBACK:'等待有效的双手输入与关节反馈。',READY_FOR_OPERATOR:'控制链已就绪，尚未执行准备。',PREPARED:'已到达装夹准备姿态。',SIMULATED_TOOL_PREFLIGHT:'正在检查工具与跟随条件。',TOOL_GRASP_VERIFIED:'工具控制检查通过，可以接合跟随。',FOLLOWING:'双手位移控制工具，松开任一侧握可暂停。',SQUEEZE_RELEASED:'已松开侧握，工具跟随已暂停。',PICO_Y_STOP:'已收到 Y 停止请求。',PICO_INPUT_TIMEOUT:'手柄数据未及时更新。',PICO_PAIR_INVALID:'双手柄输入未通过有效性检查。',PICO_POSE_INVALID:'手柄位姿无效。',PICO_CONNECTION_CHANGED:'检测到新的 VR 连接，需要重新接管。',RECOVERED_TO_STANDBY:'已恢复待命，等待工具检查。',PICO_POSE_ORIGIN_JUMP:'手柄坐标发生突变，控制已阻断。',PREPARE_RELEASED:'准备操作已中断。',PREPARE_REQUIRES_EMPTY_AND_RELEASED_SQUEEZE:'准备条件未满足：需要空手并松开双侧握。',PICO_FEEDBACK_UNAVAILABLE:'执行反馈不可用，控制已阻断。',PICO_FEEDBACK_STALE:'执行反馈已过期，控制已阻断。',OPEN_REQUIRES_LOADING_AND_SUPPORT:'收到开爪输入，工具跟随已中断。',GRASP_MODE_CONFIRMED:'握持切换已确认。',CONFIRM_GRASP_CHANGE_BEFORE_REENGAGE:'握持方式尚未确认，暂不能接合。'};
 Object.assign(reasons,{
+  GRIPPER_REQUIRES_STOP_AND_RELEASED_SQUEEZE:'夹爪开合需要停稳并松开双侧握，请松开扳机后重新按下。',
+  GRIPPER_CONTROL_COMPLETE:'夹爪已闭合停稳，等待下一步操作。',
   TELEOP_MODE_SELECTED:'模式已切换，仍保持当前位置；重新握合才开始跟随。',
   MODE_SWITCH_REQUIRES_STOP:'切模式前请松开双侧握，并等待停稳后重新按 B。',
   PICO_TOOL_HELD_REQUIRES_TOOL_MODE:'已确认装夹共同工具；请使用扫雪模式，卸载后再切普通模式。',
@@ -385,7 +387,7 @@ Object.assign(reasons,{
   PREPARE_REQUIRES_STOP_AND_RELEASED_SQUEEZE:'请等待停稳并松开双侧握，再重新长按 A。',
   CONFIRM_SUPPORT_THEN_B:'已请求装卸，等待按 B 确认工具有外部支撑。',
   CHECK_SUPPORT_THEN_B:'等待确认外部支撑，松开双侧握后按 B 继续。',
-  TRIGGERS_CONTROL_INDIVIDUAL_GRIPPERS:'已进入装卸：按住扳机开爪，松开闭合，再按 B 确认完成。',
+  TRIGGERS_CONTROL_INDIVIDUAL_GRIPPERS:'左右扳机各管一爪：按住打开，松开闭合。',
   RELEASE_TRIGGERS_BEFORE_LOADING:'请先松开两扳机和双侧握，再按 B 确认支撑。',
   OPEN_BOTH_GRIPPERS_BEFORE_CONFIRM:'尚未完成两侧开爪；按住左右扳机，等待两爪完全打开。',
   CLOSE_BOTH_GRIPPERS_BEFORE_CONFIRM:'两爪尚未闭合停稳；松开两扳机，等待闭合后再按 B。',
@@ -437,7 +439,7 @@ function operatorState(p,online,fresh,pcFresh,tracked){
   if(!pcFresh)return {...result,status:'遥操作状态未知',reason:'关节反馈已收到，PICO 控制状态未更新。',next:'保持松握，检查遥操作节点。',tone:'bad'};
   if(p.phase==='locked')return {...result,status:p.stop_confirmed===true?'已停止（锁定）':'停止未确认',next:p.stop_confirmed===true?'排除原因，松开双侧握后按 B 恢复待命。':'保持双侧握松开，等待停稳确认。',key:p.stop_confirmed===true?'B':'',tone:'bad'};
   if(p.idle_input_lost&&['standby','tool_standby','load_check'].includes(p.phase))return {...result,status:'等待手柄输入',reason:'手柄输入暂停，机器人已停稳，当前操作步骤已保留。',next:'保持松握，等待输入恢复后继续当前步骤。'};
-  if(p.operator_guide?.title&&['standby','loading','load_check'].includes(p.phase))return {...result,status:p.operator_guide.title,reason:p.operator_guide.step==='retry'?explainReason(p.reason):result.reason,next:p.operator_guide.detail,key:p.operator_guide.key};
+  if(p.operator_guide?.title&&['standby','loading','load_check','gripper_control'].includes(p.phase))return {...result,status:p.operator_guide.title,reason:p.operator_guide.step==='retry'?explainReason(p.reason):result.reason,next:p.operator_guide.detail,key:p.operator_guide.key};
   if(p.phase==='selecting_mode')return {...result,status:'正在切换到'+(p.mode_target==='independent_arms'?'普通双臂':'扫雪工具'),reason:'正在检查目标模式条件。',next:'保持松握；切换完成后仍待命，不自动运动。',key:'B'};
   if(p.phase==='following'&&tracked&&p.motion_limit){
     const limit=p.motion_limit,reason=limit.first_rejection||'';
@@ -663,7 +665,7 @@ function render(data,online){
   badge('demo-mode',pcFresh?(p.teleop_mode==='independent_arms'?'普通双臂':p.dual_modes?'扫雪工具':p.simulation_demo?'快捷流程':'标准装夹流程'):'流程待确认');
   text('execution',fresh?(executions[data.execution]||'状态待确认'):'未知');
   const load=pcFresh?p.load_state:null;const loadText=load==='held'?'已装载':load==='empty'?'未装载':'未知';
-  const sources={configured_initial_state:'场景初始配置',simulation_scene:'场景状态',operator_declaration:'操作员声明',operator_empty_confirmation:'B 键确认空手',operator_support_confirmation:'B 键确认外部支撑',operator_load_confirmation:'B 键确认装卸完成',interrupted_loading:'装卸中断，需重新确认',unknown:'未确认'};
+  const sources={configured_initial_state:'场景初始配置',simulation_scene:'场景状态',operator_declaration:'操作员声明',operator_empty_confirmation:'B 键确认空手',operator_support_confirmation:'B 键确认外部支撑',operator_load_confirmation:'B 键确认装卸完成',direct_gripper_open:'直接开爪后待确认',interrupted_loading:'装卸中断，需重新确认',unknown:'未确认'};
   text('load-source',pcFresh?sources[p.load_source]||p.load_source||'未确认':'—');
   text('prepare-checks',pcFresh?(prepareFailures({checks:p.prepare_checks,load_state:p.load_state})||'条件已满足；长按 A 后检查执行'):'—');
   text('load',loadText);

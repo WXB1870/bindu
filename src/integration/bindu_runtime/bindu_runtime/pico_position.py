@@ -108,21 +108,25 @@ class PositionOperations:
         finally:
             self.lease = None
 
-    async def move_grippers(self, intent):
+    async def move_grippers(self, intent, *, direct=False):
         n = self.node
+        targets={s:m for s,m in zip(SIDES,intent.value) if not direct or m is not None}
+        if not targets or any(m not in ('open','closed') for m in targets.values()):
+            raise RuntimeError('PICO_GRIPPER_TARGET_INVALID')
         for side in SIDES:
             self.reading(side)
         lease = await n.wait(self.leases.call_async(Lease.Request(operation='acquire',
-            owner=n.instance_id, resources=[GROUPS[s] for s in SIDES])))
+            owner=n.instance_id, resources=[GROUPS[s] for s in targets])))
         if not lease.ok:
             raise RuntimeError(lease.code)
         self.lease, self.sequence = lease, 0
         try:
             n.current(intent)
-            await self.request('authorize_loading', load_state=n.control.load,
-                               external_support=n.control.supported)
+            await self.request('authorize_direct' if direct else 'authorize_loading', load_state=n.control.load,
+                               external_support=False if direct else n.control.supported)
             expected = {}
-            for side, mode in zip(SIDES, intent.value):
+            for side, mode in targets.items():
+                n.current(intent)
                 if mode not in ('open', 'closed'):
                     raise RuntimeError('PICO_AXIAL_GRASP_UNAVAILABLE')
                 await self.request('open' if mode == 'open' else 'close', side)
@@ -131,7 +135,7 @@ class PositionOperations:
             end, renew_at = time.monotonic()+self.config['motion_timeout']+1., 0.
             while time.monotonic() < end:
                 n.current(intent)
-                states = [self.reading(s) for s in SIDES]
+                states = [self.reading(s) for s in targets]
                 if any(s.state in ('FAILED','FAULT') for s in states):
                     raise RuntimeError('PICO_GRIPPER_OPERATION_FAILED')
                 if all(s.position_reached and s.epoch == lease.epoch and s.control_sequence >= self.sequence and

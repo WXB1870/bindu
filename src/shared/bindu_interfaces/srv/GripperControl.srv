@@ -1,4 +1,6 @@
 # Position control; authorize_loading is an operator declaration, not grasp evidence.
+# authorize_direct permits only calibrated open/close endpoints with stopped arms;
+# it does not declare an empty gripper, external support or a confirmed grasp.
 # authorize_grasp leases only the right axis; virtual/rigid select configured positions.
 # These operations require stationary closed left fingers and do not prove contact/slip.
 string operation

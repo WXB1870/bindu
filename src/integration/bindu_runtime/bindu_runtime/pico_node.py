@@ -97,7 +97,7 @@ class PicoNode(RuntimeNode):
             raise ValueError('PICO_PREPARE_DURATION_INVALID')
         self.control=PicoControl(initial_load=initial_load,simulation_demo=self.simulation_demo,
                                  max_age=float(self.tool_cfg['input_max_age']),guided_loading=self.position_contract,
-                                 dual_modes=self.position_contract,
+                                 dual_modes=self.position_contract,direct_grippers=self.position_contract,
                                  initial_mode=self.cfg.get('initial_teleop_mode','independent_arms'),
                                  pose_jump_translation_m=self.cfg.get('pose_jump_translation_m',.35),
                                  pose_jump_rotation_rad=self.cfg.get('pose_jump_rotation_rad',1.2))
@@ -496,6 +496,11 @@ class PicoNode(RuntimeNode):
                         self.current(intent)
                         target=await self.validate_prepare(intent,allow_recovery=False)
                     await self.move(intent,target,self.cfg['prepare_duration'],fit_duration=self.simulation_demo)
+            elif intent.operation=='manual_grippers':
+                if (not self.position_ops or self.control.phase!='gripper_control' or
+                        not self.control.frames or any(f.grip>=.3 for f in self.control.frames)):
+                    raise RuntimeError('GRIPPER_REQUIRES_STOP_AND_RELEASED_SQUEEZE')
+                await self.position_ops.move_grippers(intent,direct=True)
             elif intent.operation=='grippers':
                 if not self.control.supported or self.control.phase!='loading':raise RuntimeError('PICO_LOADING_REQUIRED')
                 if self.position_ops:

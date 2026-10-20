@@ -155,10 +155,10 @@ ros2 launch bindu_runtime g1_sim.launch.py recording_mode:=normal namespace:=/bi
 | 接口（默认前缀`/bindu_snowbot`） | 用途 |
 |---|---|
 | `gripper/lease`，`bindu_interfaces/srv/Lease` | 独立夹爪控制权，资源为`left_tool_axis`／`right_tool_axis`；acquire／renew／release，2秒租期，lease_id与epoch隔离旧请求 |
-| `gripper/control`，`bindu_interfaces/srv/GripperControl` | `authorize_loading`声明空手／持物及支撑，`open`／`close`／`position`／`hold`；`authorize_grasp`授权仅右爪位置换握，`virtual`／`rigid`选择配置的虚握／闭合位；请求含递增sequence、源stamp及≤0.4秒valid_for；接纳仅返回`REQUEST_ACCEPTED` |
+| `gripper/control`，`bindu_interfaces/srv/GripperControl` | `authorize_direct`授权停稳后的开／闭端点；`authorize_loading`声明空手／持物及支撑，`open`／`close`／`position`／`hold`；`authorize_grasp`授权仅右爪位置换握，`virtual`／`rigid`选择配置的虚握／闭合位；请求含递增sequence、源stamp及≤0.4秒valid_for；接纳仅返回`REQUEST_ACCEPTED` |
 | `gripper/state`，`bindu_interfaces/msg/GripperState` | 分侧发布实测位置／速度／电流、目标、配置指纹、授权与扳机就绪、到位／保持／故障状态；原始反馈保留源时间 |
 
-只有臂会话已停止且释放租约、反馈与PDO健康、受保护接收方及发布者唯一、配置已标定时才允许取得夹爪控制权。夹爪租约、停止中或停止故障会拒绝新的手臂接管。开爪时，持物或状态不明不能绕过支撑条件；任意`position`操作在持物时也要求支撑。装卸声明是操作者输入，不是传感器证明。首版为独立装卸位置接口，普通双臂协调及完整PICO实体装卸状态机仍待接入。
+只有臂会话已停止且释放租约、反馈与PDO健康、受保护接收方及发布者唯一、配置已标定时才允许取得夹爪控制权。夹爪租约、停止中或停止故障会拒绝新的手臂接管。装卸授权下，持物或状态不明开爪仍要求支撑；任意`position`操作在持物时也要求支撑。PICO停稳、双侧松握后的显式扳机操作使用独立`authorize_direct`，仅允许标定的`open`／`close`，不接受任意位置／虚握，不伪造空载、支撑或夹持证明。未操作侧不发送目标，停止撤销授权并保持实测开度。实体标定、握持与防滑效果仍待现场验收，行为边界见[工具操作契约](../../../动作执行契约.md#61-snowbot-工具操作与握持切换)。
 
 **位置虚握。** 按用户确认，先以右爪轻微张开的可调开度接通X换握。修改现场夹爪配置的`grippers.right.virtual`，单位rad，示例暂设`0.02`（约1.15°），闭合位为`grippers.right.closed`；虚握值须位于闭合与完全张开之间，并与两端各相隔超过两倍位置容差。示例仍默认`calibrated=false`，现场调整开合／虚握值并核实后再按原步骤启用写入。普通模式不使用X换握；扫雪跟随中按住X先停稳并释放臂租约，确认左爪闭合停稳，检查右爪完整路径，再仅租用右爪执行虚握位，等底层接纳、实测到位和最终保持后按轴向释放模型捕获当前基准。释放X按同流程回闭合位，再以当前实际转角恢复刚握。切换期间不推进工具目标，双侧握和输入仍有效才恢复跟随；松握、Y或断流保持当前开度，不自动夹紧。这里只确认位置模式，`grasp_state=unknown`与`physical_gripper_confirmed=null`保持，实体承托、可转动及防滑效果由现场验证。
 

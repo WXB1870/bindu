@@ -109,6 +109,9 @@ def hud_spec(view):
         else:
             spec['grip']='工具未放置'
             notice('长按 A 前往准备姿态', '保持双侧握松开，准备完成后放置工具' if view.get('simulation_demo') else '保持双侧握松开；准备后单独装夹并确认工具')
+    elif mode=='gripper_control':
+        spec['status']='夹爪开合中'
+        notice('夹爪独立开合', '按住对应扳机打开，松开闭合；保持双侧握松开')
     elif mode in ('loading','load_check'):
         spec['status']='装夹中' if view.get('loading_goal')=='held' else '卸载中'
         guide=view.get('operator_guide')

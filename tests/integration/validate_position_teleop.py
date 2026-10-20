@@ -251,6 +251,37 @@ def scenario(out, mode, websocket=False, ordinary=False, physics=False, replay=N
         assert views[-1]['capabilities']['axial_grasp'] is True
         checks.append('same feedback contract, no startup commands, configured axial position capability explicit')
         pump(.3)
+        if not collision_recovery and not replay:
+            before=len(accepted);load=views[-1]['load_state']
+            source['trigger']=[1.,0.]
+            phase('gripper_control')
+            assert views[-1]['gripper_modes']==['open','closed'],views[-1]
+            assert len(accepted)==before and views[-1]['load_state']==load and not views[-1]['external_support']
+            assert all(g.grasp_state=='unknown' for g in grippers.values())
+            checks.append('stopped direct left Trigger opens only left without loading, support or arm actuation')
+            source['trigger']=[1.,1.];wait(lambda:views[-1]['gripper_modes']==['open','open'] and not views[-1]['pending'])
+            source['trigger']=[0.,1.];wait(lambda:views[-1]['gripper_modes']==['closed','open'] and not views[-1]['pending'])
+            source['trigger']=[0.,0.];phase('standby')
+            assert views[-1]['gripper_modes']==['closed','closed']
+            checks.append('two Trigger targets update independently; releasing one closes only that gripper')
+            source['trigger']=[1.,0.];pump(.10);source['trigger']=[0.,0.];phase('standby')
+            assert views[-1]['gripper_modes']==['closed','closed']
+            checks.append('early Trigger release supersedes opening and completes measured closed hold')
+            source['trigger']=[0.,1.];phase('gripper_control');source['grip']=1.
+            phase('standby');wait(lambda:views[-1]['stop_confirmed'] is True)
+            assert views[-1]['gripper_modes'][1]=='open' and len(accepted)==before
+            source.update(grip=0.,trigger=[0.,0.]);pump(.3)
+            assert views[-1]['gripper_modes'][1]=='open' and views[-1]['pending'] is None
+            source['trigger']=[0.,1.];phase('gripper_control');source['trigger']=[0.,0.];phase('standby')
+            checks.append('Squeeze during gripper control holds opening, never engages arms or automatically closes')
+            source['trigger']=[1.,0.];phase('gripper_control');source['stream']=False
+            phase('locked');wait(lambda:views[-1]['stop_confirmed'] is True)
+            assert views[-1]['gripper_modes'][0]=='open'
+            source.update(stream=True,trigger=[0.,0.]);pump(.3);click(1,1);phase('standby')
+            assert views[-1]['gripper_modes'][0]=='open'
+            source['trigger']=[1.,0.];phase('gripper_control');source['trigger']=[0.,0.];phase('standby')
+            assert views[-1]['gripper_modes']==['closed','closed'] and len(accepted)==before
+            checks.append('input loss at direct open holds position; B recovers without auto-close; fresh Trigger controls again')
         if collision_recovery:
             source['grip']=1.
             wait(lambda:views[-1]['pending'] is None and 'SELF_COLLISION' in views[-1]['reason'])
