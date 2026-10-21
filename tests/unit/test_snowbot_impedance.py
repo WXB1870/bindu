@@ -75,8 +75,8 @@ class ImpedanceHealthTests(unittest.TestCase):
             self.health.state(layer, S(header=observation().header, layer=layer, instance_id=12,
                 startup_complete=True, feedback_ready=True,
                 control_source='topic' if layer == 'upper' else 'impedance', stop_policy='measured_hold'))
-        self.health.observe(observation(wrench=[0.]*12, sensor_valid_mask=3))
-        self.health.observe(observation(10.001, pdo_sample=2, wrench=[0.]*12, sensor_valid_mask=3))
+        self.health.observe(observation(wrench=[0.]*12, sensor_valid_mask=3, sensor_age=[.001,.001]))
+        self.health.observe(observation(10.001, pdo_sample=2, wrench=[0.]*12, sensor_valid_mask=3, sensor_age=[.001,.001]))
 
     def test_matching_explicit_backend_and_force_sample_are_required(self):
         self.health.require(self.groups)
@@ -85,7 +85,9 @@ class ImpedanceHealthTests(unittest.TestCase):
             self.health.require(self.groups)
         self.health.states['servo'][1].control_source = 'impedance'
         for field, value in (('sensor_valid_mask',1), ('wrench',[0.]*11),
-                             ('wrench',[float('nan')]*12), ('valid_mask',0xc7f7f)):
+                             ('wrench',[float('nan')]*12), ('valid_mask',0xc7f7f),
+                             ('sensor_age',[.021,.001]), ('sensor_age',[-1.,.001]),
+                             ('sensor_age',[float('nan'),.001])):
             obs = self.health.observation
             previous = getattr(obs, field);setattr(obs, field, value)
             with self.assertRaisesRegex(RuntimeError, 'SENSOR_INVALID'): self.health.require(self.groups)

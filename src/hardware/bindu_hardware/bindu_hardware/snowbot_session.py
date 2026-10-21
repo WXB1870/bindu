@@ -139,8 +139,12 @@ class SessionHealth:
         if self.execution_mode == 'impedance':
             # The optional vendor build places force data in this exact PDO sample.
             wrench = getattr(obs, 'wrench', ())
+            age = getattr(obs, 'sensor_age', ())
+            stamp = obs.header.stamp.sec+obs.header.stamp.nanosec*1e-9
             if (getattr(obs, 'sensor_valid_mask', 0) != 3 or len(wrench) != 12 or
-                    obs.valid_mask != 0xfffff or not all(math.isfinite(x) for x in wrench)):
+                    obs.valid_mask != 0xfffff or not all(math.isfinite(x) for x in wrench) or
+                    len(age) != 2 or not all(math.isfinite(a) and 0 <= a and
+                        self.now()-stamp+a <= .02 for a in age)):
                 raise RuntimeError('SNOWBOT_IMPEDANCE_SENSOR_INVALID')
         if obs.session_reason >= 2 and not acquiring:
             raise RuntimeError('SNOWBOT_SESSION_STOPPED:'+str(obs.session_reason))
