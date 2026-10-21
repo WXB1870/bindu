@@ -252,6 +252,10 @@ class ObserverTests(unittest.TestCase):
         with patch('time.time',return_value=10.007),patch('time.monotonic',return_value=1.006):
             callbacks[0][1](msg,S(publisher_gid=[0]*16))
         self.assertEqual(observer.sample(10.008,1.007)['publisher_gid_verification'],'verified')
+        info.endpoint_gid=[2]*24
+        with patch('time.time',return_value=10.009),patch('time.monotonic',return_value=1.008):
+            callbacks[0][1](msg,{'publisher_gid':[2]*24})
+        self.assertEqual(observer.sample(10.01,1.009)['publisher_gid_verification'],'verified')
 
     def test_missing_optional_interface_is_visible_without_starting_ros_or_hardware(self):
         # This interface is optional on the Mac and on an original vendor install.

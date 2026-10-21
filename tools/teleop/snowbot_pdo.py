@@ -1,5 +1,6 @@
 """Read-only PDO diagnostics in the display process; no ROS or device commands."""
 from collections import Counter, deque
+from collections.abc import Mapping
 import copy
 import math
 
@@ -264,11 +265,12 @@ class PdoObserver:
             identity_error = 'PDO_PUBLISHER_UNVERIFIED'
         gid_state = 'unavailable'
         received_gid = None
-        if metadata is not None and hasattr(metadata, 'publisher_gid'):
+        gid = metadata.get('publisher_gid') if isinstance(metadata, Mapping) else getattr(metadata, 'publisher_gid', None)
+        if gid is not None:
             try:
-                received_gid = bytes(metadata.publisher_gid)
+                received_gid = bytes(gid)
                 expected_gid = bytes(infos[0].endpoint_gid) if len(infos) == 1 else b''
-                if len(received_gid) != 16 or received_gid != expected_gid:
+                if not received_gid or received_gid != expected_gid:
                     identity_error, gid_state = 'PDO_PUBLISHER_GID_MISMATCH', 'mismatch'
                 else:
                     gid_state = 'verified'
