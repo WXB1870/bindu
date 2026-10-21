@@ -62,11 +62,13 @@ def observation_payload(msg):
     for name in ('position', 'speed', 'status'):
         value[name] = list(getattr(msg, name))
     # Preserve optional evidence without assigning physical units to an ambiguous field.
-    for name in ('current', 'torque', 'current_valid_mask', 'torque_valid_mask',
+    for name in ('current', 'torque', 'torque_raw', 'current_valid_mask', 'torque_valid_mask',
+                 'torque_raw_valid_mask', 'receive_attempt', 'attempt_age', 'bad_wkc_count',
+                 'receive_overruns', 'period_overruns', 'command_sequence',
                  'session', 'session_reason', 'session_selected'):
         if hasattr(msg, name):
             item = getattr(msg, name)
-            value[name] = list(item) if name in ('current', 'torque') else item
+            value[name] = list(item) if name in ('current', 'torque', 'torque_raw') else item
     return value
 
 

@@ -16,7 +16,7 @@ def generate_launch_description():
                 'description_enabled': 'false', 'tool_display_enabled': 'true',
                 'pico_enabled': 'false', 'pico_simulation_demo': 'false', 'pico_config': str(share/'config/robots/snowbot/pico_snowbot_sim.json'),
                 'single_arm_enabled':'true','recorder_enabled':'true','position_contract':'false',
-                'command_enabled':'false','vendor_namespace':'/snowbot','gripper_config':'','physics_config':'',
+                'command_enabled':'false','vendor_namespace':'/snowbot','position_protocol':'legacy_guard','gripper_config':'','physics_config':'',
                 'arm_receiver_node':'','servo_receiver_node':'','mid_receiver_node':'',
                 'vr_enabled': 'false', 'host': '127.0.0.1', 'port': '8012',
                 'cert_file': '', 'key_file': ''}

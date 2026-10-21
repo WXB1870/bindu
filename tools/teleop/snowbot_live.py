@@ -159,6 +159,7 @@ def observe(args, publish=None, stop=None):
                            len(msg.joints.name) == len(msg.joints.position) and
                            len(set(msg.joints.name)) == len(msg.joints.name)),
                     q=dict(zip(msg.joints.name, msg.joints.position)))
+                data['joint_targets'] = dict(zip(msg.reference.name, msg.reference.position))
                 try:
                     validate_state(data, now, args.run_id, robot.profile.digest, robot.profile.limits,
                                    args.runtime_mode, args.device_backend)

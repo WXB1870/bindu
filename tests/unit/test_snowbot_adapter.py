@@ -61,6 +61,23 @@ class SnowbotAdapterTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'PROFILE_REQUIRED'):
                 SnowbotIO(Profile.load(CONFIG/filename), None, lambda: self.now)
 
+    def test_session_source_binding_changes_only_after_an_accepted_motion(self):
+        self.io.source_motion = None
+        motion = self.command()
+        self.engine.submit(motion, self.now)
+        self.assertIs(self.io.source_motion, motion)
+        with self.assertRaises(Rejected):
+            self.engine.submit(replace(motion, command_id='invalid', positions=(100.,)*7), self.now)
+        self.assertIs(self.io.source_motion, motion)
+
+    def test_arm_control_does_not_require_missing_head_waist_velocity(self):
+        self.io.last_feedback = replace(self.io.last_feedback, joint_velocities={
+            n:v for n,v in self.v.items() if n.startswith('arm_')})
+        motion = self.command()
+        self.engine.submit(motion, self.now)
+        self.tick(observe=False)
+        self.assertTrue(self.sent)
+
     def test_read_only_and_idle_shutdown_publish_nothing(self):
         self.io.command_enabled = False
         with self.assertRaisesRegex(Rejected, 'COMMANDS_DISABLED'):
@@ -563,6 +580,30 @@ class SnowbotAdapterTests(unittest.TestCase):
 
 
 class SnowbotRosBindingTests(unittest.TestCase):
+    def test_session_capture_changes_generation_and_pause_does_not_renew_motion(self):
+        from bindu_runtime.snowbot_position_session import PositionSessionDevices, PositionSessionIO
+        from bindu_hardware.snowbot_session import SourceEnvelope
+        profile=Profile.load(CONFIG/'robots/snowbot/snowbot_vendor_position.json')
+        devices=PositionSessionDevices.__new__(PositionSessionDevices)
+        devices.node=S(now=lambda:10.)
+        devices.envelopes=SourceEnvelope(1,devices.node.now)
+        io=PositionSessionIO(profile,Mock(),devices.node.now,command_enabled=True)
+        io.after_capture=devices.new_session
+        devices.io=io
+        q=dict.fromkeys(profile.limits,0.)
+        q['arm_l_joint_2'],q['arm_r_joint_2']=.2,-.2
+        io.observe(q,dict.fromkeys(q,0.),10.,10.)
+        io.capture(('left_arm','right_arm'))
+        self.assertNotEqual(devices.envelopes.session,1)
+        self.assertTrue(devices.envelopes.takeover)
+        io.write_joints({n:q[n] for n in GROUPS['left_arm']})
+        flags=[]
+        io.check_health=lambda groups:flags.append(io.requesting_pause)
+        io.stop()
+        self.assertTrue(flags)
+        self.assertTrue(all(flags))
+        self.assertFalse(io.requesting_pause)
+
     """Use installed message classes with mocked publishers; never create a node."""
     def test_native_gripper_send_preserves_prefix_and_guards_only_selected_hand(self):
         from bindu_runtime.snowbot_gripper import SnowbotGrippers

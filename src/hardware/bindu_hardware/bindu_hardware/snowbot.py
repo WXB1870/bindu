@@ -194,6 +194,7 @@ class SnowbotIO:
         self.owned_groups = set()
         self.writable_groups = WRITABLE
         self.coupled_group_sets = (frozenset(('left_arm', 'right_arm')),)
+        self.group_feedback = True
         self.last_feedback = Feedback(0., {}, 0., 0., (0., 0.), simulated)
         self.received_at = 0.
         self.invalid = ''

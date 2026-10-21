@@ -71,9 +71,11 @@ class Executor:
             raise Rejected('BUSY')
         if not 0 <= now-self.feedback.stamp <= .2:
             raise Rejected('FEEDBACK_STALE')
-        if any(j not in self.feedback.joint_velocities for j in self.profile.limits):
+        measured_names = (tuple(n for g in groups for n in self.profile.groups.get(g, ()))
+                          if getattr(self.io, 'group_feedback', False) else tuple(self.profile.limits))
+        if any(j not in self.feedback.joint_velocities for j in measured_names):
             raise Rejected('FEEDBACK_VELOCITY_UNAVAILABLE')
-        if (any(not self.joint_at_rest(j) for j in self.profile.limits) or
+        if (any(not self.joint_at_rest(j) for j in measured_names) or
                 any(abs(v) > self.profile.feedback_tolerances.get('base_'+axis+'_velocity', 0.)
                     for axis,v in zip(('linear','angular'),self.feedback.base_velocity))):
             raise Rejected('FEEDBACK_NOT_STATIONARY')
@@ -339,7 +341,8 @@ class Executor:
         if (self.active or self.stopping) and now-self.feedback.stamp > .2:
             self.halt(now, 'FEEDBACK_STALE', revoke=True, emergency=True)
             return
-        if self.active and any(j not in self.feedback.joint_velocities for j in self.profile.limits):
+        measured_names = self.reference_names if getattr(self.io, 'group_feedback', False) else self.profile.limits
+        if self.active and any(j not in self.feedback.joint_velocities for j in measured_names):
             self.halt(now, 'FEEDBACK_VELOCITY_UNAVAILABLE', revoke=True, emergency=True)
             return
         if (self.active or self.stopping) and not self.device_stop_pending and dt > self.profile.max_tick_gap+1e-9:

@@ -95,7 +95,7 @@ def assemble(context):
     if mode=='real' or position_contract:
         execution.update(command_enabled=enabled('command_enabled','false'),
             **{key:value(key,default) for key,default in (
-                ('gripper_config',''),('vendor_namespace','/snowbot'),('arm_receiver_node',''),
+                ('gripper_config',''),('vendor_namespace','/snowbot'),('position_protocol','legacy_guard'),('arm_receiver_node',''),
                 ('servo_receiver_node',''),('mid_receiver_node',''))})
     nodes.append(Node(package='bindu_runtime', executable='snowbot_adapter' if mode=='real' else 'snowbot_position_sim' if position_contract else 'execution', namespace=ns,
                       output='screen', parameters=[execution]))

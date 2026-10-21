@@ -7,6 +7,7 @@
     "namespace": "bindu_snowbot",
     "device_backend": "snowbot_vendor",
     "command_enabled": false,
+    "position_protocol": "session_v1",
     "gripper_config": "@runtime/config/robots/snowbot/snowbot_grippers_real.json",
     "vendor_namespace": "/",
     "side": "left",
@@ -21,7 +22,7 @@
     "recorder_enabled": false,
     "recording_mode": "off",
     "description_enabled": false,
-    "tool_display_enabled": false,
+    "tool_display_enabled": true,
     "position_contract": true,
     "pico_config": "@runtime/config/robots/snowbot/pico_snowbot_position_real.json"
   }

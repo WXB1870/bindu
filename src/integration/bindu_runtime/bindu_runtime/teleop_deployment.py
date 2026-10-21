@@ -13,8 +13,10 @@ EXECUTION = {'runtime_mode', 'namespace', 'profile', 'device_backend', 'run_id',
              'recording_mode', 'command_enabled', 'vendor_namespace', 'arm_receiver_node',
              'servo_receiver_node', 'mid_receiver_node'}
 COMMON.add('gripper_config')
+COMMON.add('position_protocol')
 COMMON.update(('position_contract','physics_config'))
 EXECUTION.add('gripper_config')
+EXECUTION.add('position_protocol')
 PATHS = {'profile', 'bimanual_config', 'robot_config', 'cert_file', 'key_file', 'output', 'pico_config', 'gripper_config', 'physics_config'}
 
 
@@ -34,6 +36,8 @@ def load_deployment(path, share):
     allowed = EXECUTION if execution_only else (COMMON if version == 1 else COMMON-{'profile', 'bimanual_config'} | {'robot_config'})
     if not isinstance(args, dict) or set(args)-allowed:
         raise ValueError('TELEOP_DEPLOYMENT_ARGUMENT')
+    if args.get('position_protocol', 'legacy_guard') not in ('legacy_guard', 'session_v1'):
+        raise ValueError('SNOWBOT_POSITION_PROTOCOL')
     required = {'runtime_mode'} if execution_only else ({'profile', 'bimanual_config'} if version == 1 else {'robot_config'})
     if not required <= set(args):
         raise ValueError('TELEOP_DEPLOYMENT_MODEL_REQUIRED')

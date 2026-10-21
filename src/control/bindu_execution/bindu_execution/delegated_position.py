@@ -39,7 +39,12 @@ class DelegatedPositionExecutor(Executor):
             raise Rejected('VENDOR_REQUIRES_UNTIMED_JOINT_TARGET')
         if motion.stamp > now or motion.valid_for > .4:
             raise Rejected('VENDOR_TARGET_TIME')
-        return super().submit(motion, now)
+        result = super().submit(motion, now)
+        # Devices with a dated session protocol retain the accepted source
+        # identity. Repeated executor ticks must not mint fresh motion packets.
+        if hasattr(self.io, 'source_motion'):
+            self.io.source_motion = motion
+        return result
 
     def prepare_path(self, motion, now):
         return DirectTarget(State.rest(motion.positions))

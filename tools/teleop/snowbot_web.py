@@ -6,6 +6,7 @@ from pathlib import Path
 from tools import ROOT
 import queue
 import time
+import math
 
 
 def meshcat_urdf(source, output):
@@ -62,6 +63,11 @@ def project_state(data, now, identity):
         if not identity.get('instance_id'):
             identity['instance_id'] = data.get('instance_id')
         result['valid'] = True
+        targets = data.get('joint_targets', {})
+        if isinstance(targets, dict):
+            result['joint_comparison'] = [dict(name=name, measured=float(value), target=float(targets[name]),
+                error=float(targets[name])-float(value)) for name, value in data['q'].items()
+                if name in targets and type(targets[name]) in (float, int) and math.isfinite(targets[name])]
         pico = data.get('pico', {})
         if (pico.get('run_id') == identity['run_id'] and
                 pico.get('profile_hash') == identity['profile_hash'] and

@@ -360,6 +360,7 @@ details[open]>summary:after { transform: rotate(225deg); }
       <details id="diagnostics"><summary class="diagnostic-head">诊断详情</summary><div class="diagnostic-body">
         <dl class="diagnostic-list"><dt>操作流程</dt><dd><span class="pill" id="demo-mode">流程待确认</span></dd><dt>事件记录</dt><dd class="event-record muted" id="record-state">诊断未记录</dd><dt>状态代码</dt><dd id="reason-code" class="reason-code mono">WAITING</dd><dt>工具装载</dt><dd id="load">未知</dd><dt>装载状态来源</dt><dd id="load-source">—</dd><dt>准备条件</dt><dd id="prepare-checks">—</dd><dt>控制映射</dt><dd id="mapping-info">—</dd><dt>距最近输入</dt><dd id="input-age">—</dd><dt>模型更新帧数</dt><dd id="frame-count">0</dd><dt>会话标识</dt><dd id="run-id" class="mono">等待会话</dd></dl>
         <dl class="diagnostic-list" id="pdo-diagnostics" hidden><dt>总线采样</dt><dd id="pdo-status">等待补充反馈</dd><dt>驱动故障轴</dt><dd id="pdo-faults">未知</dd></dl>
+        <div id="joint-comparison" hidden><p>上层位置目标与实测（rad）</p><table><thead><tr><th>关节</th><th>目标</th><th>实测</th><th>差值</th></tr></thead><tbody id="joint-comparison-rows"></tbody></table></div>
         <div id="raw-controllers"></div>
         <div class="diagnostic-export"><a href="/export" download>导出诊断<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.25" aria-hidden="true"><path d="M4 12 12 4M4 4h8v8"/></svg></a></div>
       </div></details>
@@ -681,6 +682,15 @@ function render(data,online){
   text('frame-count',data.model?.applied_frames||0);text('run-id',data.run_id||'等待会话');
   const diag=data.diagnostics||{},logFault=!!diag.error||diag.dropped>0;
   const pdo=data.pdo;
+  const comparison=fresh&&Array.isArray(data.joint_comparison)?data.joint_comparison:[];
+  $('joint-comparison').hidden=!comparison.length;
+  $('joint-comparison-rows').replaceChildren(...comparison.map(row=>{
+    const tr=document.createElement('tr');
+    for(const value of [row.name,row.target,row.measured,row.error]){
+      const td=document.createElement('td');td.textContent=typeof value==='number'&&Number.isFinite(value)?value.toFixed(4):String(value);tr.appendChild(td);
+    }
+    return tr;
+  }));
   $('pdo-diagnostics').hidden=!pdo;
   if(pdo){
     const sampled=online&&pdo.pdo_valid===true;

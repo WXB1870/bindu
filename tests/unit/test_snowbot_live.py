@@ -60,6 +60,14 @@ class LiveFeedbackTests(unittest.TestCase):
 
 
 class WebFeedbackTests(unittest.TestCase):
+    def test_joint_targets_stay_separate_from_measured_feedback_and_stale_views(self):
+        data=dict(self.data,joint_targets={'joint':.3})
+        view=self.project(data)
+        self.assertEqual(view['joint_comparison'][0]['measured'],.2)
+        self.assertEqual(view['joint_comparison'][0]['target'],.3)
+        self.assertNotIn('joint_comparison',self.project(data,10.7))
+        self.assertFalse(self.project(dict(data,joint_targets={'joint':float('nan')}))['joint_comparison'])
+
     def test_pdo_faults_are_visible_independently_and_old_views_are_marked_stale(self):
         pdo=dict(available=True,pdo_valid=True,checked_at=10.,fault_mask=1,fault_axes=['L1'],
                  fault_mask_complete=True,reasons=['DRIVE_FAULT'])

@@ -113,7 +113,7 @@ class RuntimeModeTests(unittest.TestCase):
         node.engine=S(feedback=Feedback(10.,{'j':.3},0.,0.,(0.,0.)),tick=lambda now:None,
                       events=deque(),active=None,revision=1,lease_id='',epoch=1,groups=(),reference=None,stopping=None)
         node.robot_io=S(feedback=S(source_stamps={'arm':10.}),reference_positions={},stop_failures=())
-        node.profile=S(digest='hash');node.instance_id='test'
+        node.profile=S(digest='hash',groups={'arm':['j']});node.instance_id='test'
         node.runtime_mode='simulation';node.device_backend='external_simulation'
         node.state_pub=Mock();node.last_event=None
         with patch.object(node,'now',return_value=10.):node.tick()
@@ -131,7 +131,7 @@ class RuntimeModeTests(unittest.TestCase):
         engine=S(feedback=Feedback(10.,{'j':.3},0.,0.,(0.,0.),joint_velocities={'j':0.}),
                  tick=lambda now:None,events=deque(),active=None,revision=1,lease_id='',epoch=0,
                  groups=(),reference=None,stopping=None,stop_fault='')
-        node.profile=S(digest='hash',limits={'j':(-1.,1.)},feedback_tolerances={'joint_velocity':.01})
+        node.profile=S(digest='hash',limits={'j':(-1.,1.)},groups={'arm':['j']},feedback_tolerances={'joint_velocity':.01})
         engine.profile=node.profile;engine.joint_at_rest=lambda n:Executor.joint_at_rest(engine,n)
         node.engine=engine
         node.robot_io=S(feedback=S(source_stamps={'arm':10.}),reference_positions={},stop_failures=())

@@ -40,6 +40,9 @@ def check_runtime(args, robot):
     ]
     if args['runtime_mode'] == 'real':
         modules.append(('snowbot_ctl_msgs.msg', ('JointPositionCommand', 'RetInformation')))
+        if args.get('position_protocol') == 'session_v1':
+            modules.append(('snowbot_ctl_msgs.msg', ('PositionObservation', 'PositionSessionMeta',
+                'PositionSessionCommand', 'PositionSessionUpper', 'PositionSessionServo', 'PositionSessionState')))
     for module, names in modules:
         package = importlib.import_module(module)
         for name in names:
@@ -86,6 +89,18 @@ def vendor_endpoints(args):
     result = []
     def add(name, kind, role, node):
         result.append(dict(topic=topic(name), type=kind, role=role, node=node))
+    if args.get('position_protocol') == 'session_v1':
+        if value != '/':
+            raise ValueError('SNOWBOT_POSITION_SESSION_ROOT_NAMESPACE_REQUIRED')
+        add('bindu/position/observation', 'snowbot_ctl_msgs/msg/PositionObservation', 'publisher', servo)
+        for layer, owner in (('upper', arm), ('middle', middle), ('servo', servo)):
+            add('bindu/position/'+layer+'_state', 'snowbot_ctl_msgs/msg/PositionSessionState', 'publisher', owner)
+        add('bindu/position/command', 'snowbot_ctl_msgs/msg/PositionSessionCommand', 'subscription', arm)
+        for name, kind, sender, receiver in (
+            ('upper', 'PositionSessionUpper', arm, middle), ('servo', 'PositionSessionServo', middle, servo)):
+            add('bindu/position/'+name, 'snowbot_ctl_msgs/msg/'+kind, 'publisher', sender)
+            add('bindu/position/'+name, 'snowbot_ctl_msgs/msg/'+kind, 'subscription', receiver)
+        return result
     add('dualArmCtl_fdback', 'snowbot_ctl_msgs/msg/RetInformation', 'publisher', servo)
     for name, kind, receiver in (
         ('joint_position_cmd', 'snowbot_ctl_msgs/msg/JointPositionCommand', arm),
@@ -123,6 +138,7 @@ def inspect_vendor_endpoints(args, node):
             # A preflight observer never adds a command publisher of its own.
             writers = node.get_publishers_info_by_topic(endpoint['topic'])
             if endpoint['type'] in ('snowbot_ctl_msgs/msg/JointPositionCommand',
+                                    'snowbot_ctl_msgs/msg/PositionSessionCommand',
                                     'std_msgs/msg/Float64MultiArray', 'std_msgs/msg/UInt64MultiArray'):
                 execution = '/'+args['namespace'].strip('/')+'/execution'
                 if any(i.node_namespace.rstrip('/')+'/'+i.node_name != execution for i in writers) or len(writers) > 1:
@@ -172,6 +188,8 @@ def check_robot_interface(args, timeout=2.):
     """Subscribe/read only. Never launch a driver, publish a target or call a service."""
     if not math.isfinite(timeout) or not 0 < timeout <= 30:
         raise ValueError('SNOWBOT_INTERFACE_CHECK_TIMEOUT')
+    if args.get('position_protocol') == 'session_v1':
+        return check_position_session(args, timeout)
     import rclpy
     from rclpy.qos import qos_profile_sensor_data
     from snowbot_ctl_msgs.msg import RetInformation
@@ -197,6 +215,59 @@ def check_robot_interface(args, timeout=2.):
         while time.monotonic() < deadline:
             rclpy.spin_once(node, timeout_sec=min(.05, max(0., deadline-time.monotonic())))
         return assess_robot_interface(args, node, messages, now(), health)
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
+
+
+def check_position_session(args, timeout):
+    """Observe typed metadata and PDO progress; no command publisher is created."""
+    import rclpy
+    from rclpy.qos import qos_profile_sensor_data
+    from snowbot_ctl_msgs.msg import PositionObservation, PositionSessionState
+    from bindu_hardware.snowbot_session import SessionHealth, ARMS, decode_observation
+    from bindu_hardware.snowbot import GROUPS
+    rclpy.init(args=[])
+    node = rclpy.create_node('bindu_position_check_'+uuid.uuid4().hex[:8])
+    health = SessionHealth(lambda: node.get_clock().now().nanoseconds*1e-9)
+    failures = {}
+    def observe(msg):
+        try:
+            health.observe(msg)
+            failures.pop('observation', None)
+        except ValueError as exc:
+            failures['observation'] = str(exc)
+    def state(layer, msg):
+        try:
+            health.state(layer, msg)
+            failures.pop(layer, None)
+        except ValueError as exc:
+            failures[layer] = str(exc)
+    try:
+        node.create_subscription(PositionObservation, '/bindu/position/observation', observe, qos_profile_sensor_data)
+        for layer in ('upper', 'middle', 'servo'):
+            node.create_subscription(PositionSessionState, '/bindu/position/'+layer+'_state',
+                lambda msg, l=layer: state(l, msg), 1)
+        deadline = time.monotonic()+timeout
+        while time.monotonic() < deadline:
+            rclpy.spin_once(node, timeout_sec=min(.01, max(0., deadline-time.monotonic())))
+        errors = inspect_vendor_endpoints(args, node) + list(failures.values())
+        if node.count_publishers('/joint_position_cmd'):
+            errors.append('SNOWBOT_LEGACY_SOURCE_CONFLICT')
+        try:
+            health.require(ARMS, acquiring=True)
+        except (RuntimeError, ValueError) as exc:
+            errors.append(str(exc))
+        q = {}
+        try:
+            q, _, _ = decode_observation(health.observation, health.now())
+        except (ValueError, AttributeError):
+            pass
+        return dict(robot_interface='available' if not errors else 'unavailable',
+            position_protocol='session_v1', feedback_usable=bool(q), errors=errors,
+            missing_feedback_groups=[g for g, names in GROUPS.items() if not set(names) <= q.keys()],
+            required_control_groups=sorted(ARMS), deferred_resources=['grippers', 'head', 'waist'],
+            scope='read-only session endpoints, measured PDO progress and faults; no motion acceptance')
     finally:
         node.destroy_node()
         rclpy.shutdown()

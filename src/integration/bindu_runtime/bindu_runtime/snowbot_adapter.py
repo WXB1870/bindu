@@ -181,7 +181,15 @@ class SnowbotDevices:
 
 
 def assemble_snowbot(node, profile):
-    devices = SnowbotDevices(node, profile)
+    protocol = node.declare_parameter('position_protocol', 'legacy_guard',
+        descriptor=ParameterDescriptor(read_only=True)).value
+    if protocol == 'session_v1':
+        from .snowbot_position_session import PositionSessionDevices
+        devices = PositionSessionDevices(node, profile)
+    elif protocol == 'legacy_guard':
+        devices = SnowbotDevices(node, profile)
+    else:
+        raise ValueError('SNOWBOT_POSITION_PROTOCOL')
     node.snowbot_devices = devices
     return devices.io, {}
 
