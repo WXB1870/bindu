@@ -10,7 +10,10 @@ native = Path('native') if Path.cwd().resolve() == source_root else source_root 
 setup(
     name='bindu_execution', version='0.1.0', packages=find_packages(),
     data_files=[('share/ament_index/resource_index/packages', ['resource/bindu_execution']),
-                ('share/bindu_execution', ['package.xml'])],
+                ('share/bindu_execution', ['package.xml']),
+                ('share/bindu_execution/native', [str(native / name) for name in
+                    ('CMakeLists.txt', 'interpolation.cpp', 'interpolation.hpp',
+                     'adaptive_stream.cpp', 'adaptive_stream.hpp', 'curve_math.hpp')])],
     ext_modules=[Extension('bindu_execution._native',
         sources=[str(native / name) for name in ('python_bindings.cpp', 'interpolation.cpp', 'adaptive_stream.cpp')],
         depends=[str(native / name) for name in ('interpolation.hpp', 'adaptive_stream.hpp', 'curve_math.hpp')],

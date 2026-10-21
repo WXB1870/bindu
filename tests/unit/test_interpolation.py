@@ -9,7 +9,7 @@ import weakref
 from dataclasses import replace
 from bindu_contracts.contracts import Motion
 from bindu_contracts.profile import Profile
-from bindu_execution.interpolation import Curve, State, Timeline, fit_target, fit_stop, fit_online
+from bindu_execution.interpolation import Curve, State, Timeline, PreparedSegment, fit_target, fit_stop, fit_online
 from bindu_execution.executor import Executor, Rejected
 from bindu_hardware.drivers.simulated_joints import SimJointDriver
 from bindu_hardware.drivers.simulated_base import SimBaseDriver
@@ -37,6 +37,88 @@ class Interpolation(unittest.TestCase):
         self.assertLessEqual(abs(state.v[0]), self.p.speed('a')+1e-8)
         self.assertLessEqual(abs(state.a[0]), self.p.acceleration('a')+1e-8)
         self.assertLessEqual(abs(state.j[0]), self.p.jerk('a')+1e-8)
+
+    def test_prepared_joint_retargets_share_the_planned_path_and_stop_reference(self):
+        names=tuple('joint_'+str(i) for i in range(16))
+        p=replace(self.p,groups={'arm':names},limits={n:[-1.,1.] for n in names},
+                  joint_dynamics={n:{'velocity':.25+.01*i,'acceleration':.5,'jerk':4.}
+                                  for i,n in enumerate(names)})
+        seed=State((.1,)*16,(.03,)*16,(.02,)*16)
+        segment=PreparedSegment.target(p,names,seed,(.3,)*16,0.)
+        self.assertEqual(segment.axes,16)
+        self.assertEqual(segment.sample(0.).q,seed.q)
+        for update in range(1,21):
+            now=update*.01
+            previous=segment.sample(now)
+            goal=tuple(.3*math.sin(update*.3+i*.4) for i in range(16))
+            segment=PreparedSegment.target(p,names,previous,goal,now)
+            expected=fit_target(p,names,previous,goal,now)
+            for lhs,rhs in zip((previous.q,previous.v,previous.a),
+                               (segment.sample(now).q,segment.sample(now).v,segment.sample(now).a)):
+                for x,y in zip(lhs,rhs):self.assertAlmostEqual(x,y,places=10)
+            for fraction in (0.,.1,.6,1.):
+                at=now+(segment.end-now)*fraction
+                s=segment.sample(at);reference=expected.sample(at)
+                for lhs,rhs in zip((s.q,s.v,s.a,s.j),(reference.q,reference.v,reference.a,reference.j)):
+                    for x,y in zip(lhs,rhs):self.assertAlmostEqual(x,y,places=9)
+                for i,n in enumerate(names):
+                    self.assertLessEqual(abs(s.v[i]),p.speed(n)+1e-8)
+                    self.assertLessEqual(abs(s.a[i]),p.acceleration(n)+1e-8)
+                    self.assertLessEqual(abs(s.j[i]),p.jerk(n)+1e-8)
+        previous=segment.sample(.205)
+        stop=PreparedSegment.stop(p,names,previous,.205)
+        for lhs,rhs in zip((previous.q,previous.v,previous.a),
+                           (stop.sample(.205).q,stop.sample(.205).v,stop.sample(.205).a)):
+            for x,y in zip(lhs,rhs):self.assertAlmostEqual(x,y,places=10)
+        self.assertEqual(stop.sample(stop.end+1.).v,(0.,)*16)
+        self.assertEqual(stop.sample(stop.end+1.).a,(0.,)*16)
+
+    def test_prepared_buffer_sampling_and_invalid_inputs_are_transactional(self):
+        from array import array
+        segment=PreparedSegment.target(self.p,('a',),State.rest((.2,)),(.6,),10.)
+        out=[array('d',[123.,456.]) for _ in range(4)]
+        segment.sample_into(10.1,*out)
+        reference=segment.sample(10.1)
+        self.assertEqual(tuple(values[0] for values in out),
+                         (reference.q[0],reference.v[0],reference.a[0],reference.j[0]))
+        self.assertTrue(all(values[1]==456. for values in out))
+        saved=[values[:] for values in out]
+        for bad in (float('nan'),float('inf')):
+            with self.assertRaises(ValueError):segment.sample_into(bad,*out)
+            self.assertEqual(out,saved)
+        for invalid in (array('d'),array('f',[0.]),memoryview(bytes(8))):
+            with self.assertRaises(ValueError):segment.sample_into(10.1,out[0],out[1],out[2],invalid)
+            self.assertEqual(out,saved)
+        with self.assertRaisesRegex(ValueError,'OVERLAPPING'):
+            segment.sample_into(10.1,out[0],out[0],out[2],out[3])
+        self.assertEqual(out,saved)
+
+    def test_prepared_wire_roundtrip_preserves_coefficients_and_rejects_tampering(self):
+        segment=PreparedSegment.target(self.p,('a',),State((.1,),(.2,),(.3,)),(.5,),10.)
+        description=segment.describe()
+        restored=PreparedSegment.from_description(self.p,('a',),description)
+        self.assertEqual(restored.describe(),description)
+        for fraction in (0.,.001,.3,.8,1.,2.):
+            at=segment.start+(segment.end-segment.start)*fraction
+            self.assertEqual(restored.sample(at),segment.sample(at))
+        start,duration,source_duration,source_elapsed,controls=description[0]
+        bad_descriptions=((),((start,duration,0.,0.,((100.,)*6,)),),
+                          ((start,-duration,0.,0.,controls),),
+                          ((start,duration,0.,.1,controls),),
+                          ((start,duration,.5*duration,0.,controls),),
+                          ((start,duration,0.,0.,((float('nan'),)*6,)),),
+                          ((start,duration,0.,0.,((.1,.2),)),))
+        for value in bad_descriptions:
+            with self.assertRaises(ValueError):PreparedSegment.from_description(self.p,('a',),value)
+        # Saturated online reference uses the shared cubic stop fallback.
+        brake=PreparedSegment.stop(self.p,('a',),State((.02144333333333334,),(.88,),(20.,)),0.)
+        self.assertGreater(brake.pieces,1)
+        restored=PreparedSegment.from_description(self.p,('a',),brake.describe())
+        self.assertEqual(restored.pieces,brake.pieces)
+        for i in range(101):
+            expected=brake.sample(brake.end*i/100);actual=restored.sample(restored.end*i/100)
+            for x,y in zip((expected.q,expected.v,expected.a,expected.j),(actual.q,actual.v,actual.a,actual.j)):
+                self.assertAlmostEqual(x[0],y[0],places=8)
 
     def test_synchronized_stream_preserves_group_ratio_and_stops_on_timeout(self):
         p=replace(self.p,groups={'left':['a'],'right':['b']},limits={'a':[-1.,1.],'b':[-1.,1.]},

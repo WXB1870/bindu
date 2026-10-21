@@ -144,6 +144,62 @@ def fit_target(profile, names, state, target, start):
                                          profile.max_transition_duration, profile.stop_timeout))
 
 
+@dataclass(frozen=True)
+class PreparedSegment:
+    """Certified joint segment shared with the standalone C++ servo sampler.
+
+    Construct outside the periodic thread. Retarget from the old segment's
+    q/v/a sampled at the agreed switch time; measured seeding belongs only to
+    takeover/recovery. Source TTL and measured stop confirmation remain the
+    caller's responsibility. Python calls retain interpreter overhead.
+    """
+    _handle: object
+    start: float
+    end: float
+    axes: int
+    pieces: int
+
+    @classmethod
+    def _wrap(cls, handle):
+        return cls(handle, *_native.prepared_info(handle))
+
+    @classmethod
+    def target(cls, profile, names, state, target, start):
+        return cls._wrap(_native.prepared_target(_limits(profile, names), _state(state), target,
+                         start, profile.max_transition_duration, profile.stop_timeout))
+
+    @classmethod
+    def stop(cls, profile, names, state, start):
+        return cls._wrap(_native.prepared_stop(_limits(profile, names), _state(state),
+                                             start, profile.stop_timeout))
+
+    def sample(self, now):
+        """Allocating convenience call for planning and tests."""
+        return State(*_native.prepared_sample(self._handle, now))
+
+    def describe(self):
+        """Non-RT wire export: tuples of start/duration/source time/controls.
+
+        Axis position controls are Bernstein degree 3 or 5. The descriptor
+        preserves every piece; caller carries names, source identity and TTL.
+        """
+        return _native.prepared_describe(self._handle)
+
+    @classmethod
+    def from_description(cls, profile, names, description):
+        """Non-RT validated import, without fitting or retiming the path."""
+        return cls._wrap(_native.prepared_from_description(_limits(profile, names), description))
+
+    def sample_into(self, now, q, v, a, j):
+        """Write native float64 writable contiguous buffers of at least axes.
+
+        C++ evaluation does not allocate; Python buffer/interpreter operations
+        still apply. Buffers must not overlap. Invalid buffers/time raise before
+        writing any output. This call does not check or extend command TTL.
+        """
+        _native.prepared_sample_into(self._handle, now, q, v, a, j)
+
+
 def fit_stop(profile, names, state, start):
     return Path._wrap(_native.fit_stop(_limits(profile, names), _state(state), start, profile.stop_timeout))
 

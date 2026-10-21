@@ -1,5 +1,6 @@
 #pragma once
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <vector>
 namespace bindu::execution::detail {
@@ -14,6 +15,15 @@ inline double eval(std::vector<double> p, double u) {
         p.pop_back();
     }
     return p.front();
+}
+// All Curve polynomials are degree <= 5. Scratch space stays on the stack;
+// unlike eval(vector), this overload never copies/allocates a dynamic vector.
+inline double eval_fixed(const std::vector<double>& p,double u) noexcept {
+    std::array<double,6> work{};
+    std::copy(p.begin(),p.end(),work.begin());
+    for(size_t n=p.size();n>1;--n)
+        for(size_t i=1;i<n;++i) work[i-1]=(1-u)*work[i-1]+u*work[i];
+    return work[0];
 }
 inline bool bounded(std::vector<double> p, double lo, double hi, int depth=9) {
     constexpr double eps=1e-9;

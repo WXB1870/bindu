@@ -56,6 +56,7 @@ PICO协调器管理准备、夹爪请求与控制权交接；旧模拟入口使�
 | [interpolation.py](bindu_execution/interpolation.py) | 原生数学内核的 Python 接口 |
 | [delegated_position.py](bindu_execution/delegated_position.py) | 底层位置控制的委托执行路径 |
 | [native/interpolation.cpp](native/interpolation.cpp) | 定时轨迹插值与限制检查 |
+| [native/CMakeLists.txt](native/CMakeLists.txt) | 不依赖ROS／Python的`bindu::execution_native`静态库导出 |
 | [native/adaptive_stream.cpp](native/adaptive_stream.cpp) | 在线自适应位置流 |
 | [setup.py](setup.py) | C++17 扩展构建；运行需要已编译的原生模块 |
 
@@ -95,6 +96,19 @@ ROS_LOCALHOST_ONLY=1 ROS_DOMAIN_ID=209 python3 -m tests.integration.validate_exe
 
 关节参考统一由 [C++ 内核](native/interpolation.hpp)生成；[Python 接口](bindu_execution/interpolation.py)只负责对象/时间轴适配，不再保留第二套曲线数学实现。在线目标用自适应策略，定时 P2P、导数轨迹和动作块用时序策略，共用曲线求值、限幅及制动。ROS 执行器继续管理 revision、控制权和实测到达确认，语义见[动作执行契约](../../../动作执行契约.md#2-输入模式必须显式选择)。原实验目录已合入 `native/`，历史源码仍只读。
 
+`PreparedSegment`为联合轨迹提供预备与周期采样分离的接口：非实时侧调用`PreparedSegment::target(limits, initial, goal, start, horizon, stop_timeout)`或`stop(limits, initial, start, timeout)`，复用`fit_target`／`fit_stop`的共同时间曲线及整段位置、速度、加速度和jerk限制。静止P2P保持共同路径进度；非零初速和非共线换目标从当前生效参考的`q/v/a`接续，允许计划曲线转弯，不通过逐轴截断改变曲线。首次接管／恢复才从新鲜实测播种。此接口不承诺闭链误差或jerk连续，也不改变原有`Online`策略。
+
+周期仅调用`segment.sample_into(now, q, v, a, j, capacity) noexcept`；四个互不重叠的`double`缓冲须预分配且容量不小于`axes()`。失败不写输出；端点后保持最终位置并返回零`v/a/j`。最多256轴、1024片段，以二分选择片段和固定6元素栈上求值，采样不规划、不分配或释放内存。段创建、验证和对象回收留在非实时侧，调用方须保证采样期间对象存活，不能在周期内销毁最后一个引用。`sample()`及Python对象／缓冲接口仍有分配或解释器开销，不能据此宣称硬实时。
+
+`describe()`导出每个真实片段的`(start, duration, source_duration, source_elapsed, controls[axis])`；位置控制点采用Bernstein基，每轴4个（cubic）或6个（quintic）。`source_duration==0`时按`elapsed/duration`求值，否则按`(elapsed+source_elapsed)/source_duration`保留原曲线裁剪区间。`from_description(description, limits)`只在非实时侧重建导数、核验片段时间／`q/v/a`接续、动态限制及最终静止条件，不拟合、重排或重定时。轴序、源身份、原期限、时钟异常和真实停止确认由调用方管理；取样、派生帧和心跳都不能续期。到达采样端点也不能报告机器人实际到达。Python同名类提供`target`／`stop`／`describe`／`from_description`／`sample_into`。
+
+原生消费者可`add_subdirectory(path/to/native)`并链接`bindu::execution_native`；独立安装后也可`find_package(bindu_execution_native CONFIG REQUIRED)`。Python包会将同一份源码与CMake入口安装到`share/bindu_execution/native`，避免servo另写插值器。独立构建不需要ROS、Python或设备SDK：
+
+```bash
+cmake -S src/control/bindu_execution/native -B artifacts/execution-native-build
+cmake --build artifacts/execution-native-build
+```
+
 构建需要 C++17 编译器和与运行环境匹配的 Python 开发头文件。`colcon build` 自动构建原生扩展；模块缺失时直接报导入错误，不静默回退到 Python。更新后须重建并加载工作区，不能复制另一架构或 Python 版本的 `.so`。无 ROS 的本地测试可先构建：
 
 ```bash
@@ -122,6 +136,8 @@ c++ -std=c++17 -O2 -Wall -Wextra -pedantic \
 artifacts/native-test/test_native
 ```
 
+`tests/native/test_prepared_segment.cpp`用同样编译命令替换测试源即可运行，覆盖16轴共同动态限制、静止与非零初速、连续非共线换目标、停止参考接续、wire多片段及source时间往返、非法缓冲和采样零动态分配。1kHz时间戳序列验证数学接口，不代表操作系统调度或真实设备周期验收。
+
 保留历史源码的主工作区可运行以下对照。工具分别测旧 C++、标量自适应、新原生在线/五次曲线策略，输出 CSV/JSON；原生策略耗时包含 Python 绑定开销，七轴项目使用实际在线策略。当前本机离线正弦 RMS 为0.099219 rad，旧内核为0.097335 rad；固定时序策略不会为了降低误差自行改变轨迹时间。测试值不等于机器人定位精度或端到端延迟，内核仍有动态分配，Python/ROS 串行执行壳仍在，不宣称硬实时。
 
 ```bash
@@ -140,4 +156,4 @@ python3 -m tools.analysis.compare_interpolators --legacy-root 历史代码/legs_
 | 当前PhysX设备 | 腰与双臂共用一个限速向量进度，生成一致的位置／速度参考；实际关节由物理驱动跟随，头部与夹爪独立 |
 | 真实设备 | 上层同样委托位置设备负责插值／保持；底层实际使用的曲线、动态限制和同步性能需按现场源码、配置与实测核对 |
 
-原生插值代码仍由通用`Executor`使用。输入滤波已独立接入；实机底层跟随器及同步插值的替换继续作为备选，暂不实施。
+原有插值路径仍由通用`Executor`使用；新增`PreparedSegment`供联合轨迹的非实时准备与原生周期采样复用。具体装配是否替换底层Follower须按实际调用核对，不因本库接口存在就认定真实链路已接入。输入滤波保持独立。

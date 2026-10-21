@@ -42,15 +42,24 @@ Curve::Curve(double begin,double dt,const JointState& initial,const JointState& 
     }
 }
 JointState Curve::sample(double now) const {
-    check(std::isfinite(now),"INVALID_SAMPLE_TIME");
+    JointState s;
+    s.q.resize(axes.size());s.v.resize(axes.size());s.a.resize(axes.size());s.j.resize(axes.size());
+    check(sample_into(now,s.q.data(),s.v.data(),s.a.data(),s.j.data(),axes.size()),"INVALID_SAMPLE_TIME_OR_CURVE");
+    return s;
+}
+bool Curve::sample_into(double now,double* q,double* v,double* a,double* j,size_t capacity) const noexcept {
+    if(!std::isfinite(now)||!q||!v||!a||!j||axes.empty()||axes.size()>PreparedSegment::max_axes||capacity<axes.size()||
+       !std::isfinite(start)||!std::isfinite(duration)||duration<=0.) return false;
+    for(const auto& orders:axes)
+        for(const auto& p:orders) if(p.empty()||p.size()>6) return false;
     const double elapsed=std::clamp(now-start,0.,duration);
     const double u=source_duration_>0.?(elapsed+source_elapsed_)/source_duration_:elapsed/duration;
-    JointState s;
-    for(const auto& orders:axes) {
-        s.q.push_back(detail::eval(orders[0],u));s.v.push_back(detail::eval(orders[1],u));
-        s.a.push_back(detail::eval(orders[2],u));s.j.push_back(detail::eval(orders[3],u));
+    for(size_t i=0;i<axes.size();++i) {
+        const auto& orders=axes[i];
+        q[i]=detail::eval_fixed(orders[0],u);v[i]=detail::eval_fixed(orders[1],u);
+        a[i]=detail::eval_fixed(orders[2],u);j[i]=detail::eval_fixed(orders[3],u);
     }
-    return s;
+    return true;
 }
 Curve::Curve(double begin,const Piece& piece):start(begin),duration(piece.duration) {
     check(std::isfinite(duration)&&duration>0.,"INVALID_PIECE_TIME");
@@ -68,6 +77,26 @@ Curve::Curve(double begin,const Piece& piece):start(begin),duration(piece.durati
         orders[2]={s.a,s.a+j*t};orders[3]={j};
     }
     axes.push_back(std::move(orders));
+}
+Curve::Curve(const CurveDescriptor& d):start(d.start),duration(d.duration),
+    source_duration_(d.source_duration),source_elapsed_(d.source_elapsed) {
+    check(std::isfinite(start)&&std::isfinite(duration)&&duration>0.&&std::isfinite(end())&&end()>start&&
+          std::isfinite(source_duration_)&&std::isfinite(source_elapsed_)&&source_duration_>=0.&&
+          source_elapsed_>=0.,"INVALID_CURVE_DESCRIPTION_TIME");
+    check(source_duration_>0.?(source_elapsed_+duration<=source_duration_+1e-9):source_elapsed_==0.,
+          "INVALID_CURVE_DESCRIPTION_TIME");
+    check(!d.controls.empty()&&d.controls.size()<=PreparedSegment::max_axes,"INVALID_CURVE_DESCRIPTION_AXES");
+    for(const auto& p:d.controls) {
+        check((p.size()==4||p.size()==6)&&finite(p),"INVALID_CURVE_DESCRIPTION_CONTROLS");
+        std::array<std::vector<double>,4> orders;orders[0]=p;
+        for(int k=1;k<4;++k) orders[k]=detail::deriv(orders[k-1],source_duration_>0.?source_duration_:duration);
+        axes.push_back(std::move(orders));
+    }
+}
+CurveDescriptor Curve::describe() const {
+    CurveDescriptor d{start,duration,source_duration_,source_elapsed_,{}};
+    d.controls.reserve(axes.size());for(const auto& orders:axes) d.controls.push_back(orders[0]);
+    return d;
 }
 void Curve::append_axis(const Curve& axis) {
     check(axis.start==start&&axis.duration==duration&&axis.axes.size()==1&&
@@ -199,6 +228,66 @@ Curves fit_timed(const JointLimits& limits,const JointState& initial,const std::
     check(!curves.empty(),"EXPIRED_TRAJECTORY_PREFIX");
     if(chunk) {auto tail=fit_stop(limits,previous,start,stop_timeout);curves.insert(curves.end(),tail.begin(),tail.end());}
     return curves;
+}
+PreparedSegment PreparedSegment::from_curves(const Curves& curves,const JointLimits& limits) {
+    check(!curves.empty()&&curves.size()<=max_pieces&&!limits.empty()&&limits.size()<=max_axes,"INVALID_PREPARED_LAYOUT");
+    PreparedSegment result;result.axes_=limits.size();result.curves_.reserve(curves.size());
+    JointState previous;
+    for(const auto& c:curves) {
+        check(c&&std::isfinite(c->start)&&std::isfinite(c->duration)&&c->duration>0.&&
+              std::isfinite(c->end())&&c->end()>c->start&&c->valid(limits),"INVALID_PREPARED_CURVE");
+        const auto initial=c->sample(c->start);
+        if(!result.curves_.empty()) {
+            check(std::abs(c->start-result.end())<=1e-9&&c->end()>result.end(),"PREPARED_TIME_GAP");
+            for(size_t i=0;i<limits.size();++i)
+                check(std::abs(initial.q[i]-previous.q[i])<=1e-8&&
+                      std::abs(initial.v[i]-previous.v[i])<=1e-8&&
+                      std::abs(initial.a[i]-previous.a[i])<=1e-8,"PREPARED_STATE_GAP");
+        }
+        result.curves_.push_back(std::make_shared<Curve>(*c));
+        previous=c->sample(c->end());
+    }
+    // A prepared target/stop holds after its endpoint. A moving endpoint must
+    // have a certified stop tail before it can be used by this sampler.
+    check(!moving(previous),"PREPARED_ENDPOINT_NOT_AT_REST");
+    return result;
+}
+PreparedSegment PreparedSegment::target(const JointLimits& limits,const JointState& initial,
+        const std::vector<double>& goal,double start,double horizon,double stop_timeout) {
+    return from_curves(fit_target(limits,initial,goal,start,horizon,stop_timeout),limits);
+}
+PreparedSegment PreparedSegment::stop(const JointLimits& limits,const JointState& initial,double start,double timeout) {
+    return from_curves(fit_stop(limits,initial,start,timeout),limits);
+}
+PreparedSegment PreparedSegment::from_description(const std::vector<CurveDescriptor>& description,const JointLimits& limits) {
+    check(!description.empty()&&description.size()<=max_pieces,"INVALID_PREPARED_LAYOUT");
+    Curves curves;curves.reserve(description.size());
+    for(const auto& d:description) curves.push_back(std::make_shared<Curve>(d));
+    return from_curves(curves,limits);
+}
+std::vector<CurveDescriptor> PreparedSegment::describe() const {
+    std::vector<CurveDescriptor> out;out.reserve(curves_.size());
+    for(const auto& c:curves_) out.push_back(c->describe());
+    return out;
+}
+bool PreparedSegment::sample_into(double now,double* q,double* v,double* a,double* j,size_t capacity) const noexcept {
+    if(curves_.empty()||!std::isfinite(now)||!q||!v||!a||!j||capacity<axes_) return false;
+    // At most ceil(log2(max_pieces))+1 comparisons, including out-of-order
+    // preview calls. No lazy generation, mutation, or time-proportional loop.
+    const auto it=std::upper_bound(curves_.begin(),curves_.end(),now,
+        [](double t,const auto& c){return t<c->end();});
+    const auto& c=it==curves_.end()?curves_.back():*it;
+    if(!c->sample_into(now,q,v,a,j,capacity)) return false;
+    if(now>=end()) {
+        // Remove certified endpoint roundoff and hold the final position.
+        std::fill_n(v,axes_,0.);std::fill_n(a,axes_,0.);std::fill_n(j,axes_,0.);
+    }
+    return true;
+}
+JointState PreparedSegment::sample(double now) const {
+    JointState s;s.q.resize(axes_);s.v.resize(axes_);s.a.resize(axes_);s.j.resize(axes_);
+    check(sample_into(now,s.q.data(),s.v.data(),s.a.data(),s.j.data(),axes_),"INVALID_PREPARED_SAMPLE");
+    return s;
 }
 Online::Online(const JointLimits& limits,const JointState& initial,const std::vector<double>& goal,
                double start,double period,double horizon):start_(start),period_(period),horizon_(horizon),goals_(goal),initial_(initial) {

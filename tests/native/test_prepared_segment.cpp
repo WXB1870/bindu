@@ -1,0 +1,183 @@
+// Standalone joint-segment tests. No ROS, device SDK, or hardware process.
+#include "interpolation.hpp"
+#include <array>
+#include <cmath>
+#include <cstdlib>
+#include <iostream>
+#include <limits>
+#include <new>
+#include <stdexcept>
+
+namespace {
+bool count_allocations=false;
+size_t allocations=0,deallocations=0;
+}
+void* operator new(std::size_t n) {
+    if(count_allocations) ++allocations;
+    if(auto p=std::malloc(n?n:1)) return p;
+    throw std::bad_alloc();
+}
+void operator delete(void* p) noexcept {if(count_allocations&&p) ++deallocations;std::free(p);}
+void* operator new[](std::size_t n) {return ::operator new(n);}
+void operator delete[](void* p) noexcept {::operator delete(p);}
+void operator delete(void* p,std::size_t) noexcept {::operator delete(p);}
+void operator delete[](void* p,std::size_t) noexcept {::operator delete(p);}
+
+using namespace bindu::execution;
+namespace {
+void require(bool ok,const char* message) {if(!ok) throw std::runtime_error(message);}
+void close(double a,double b,double eps=1e-8) {require(std::abs(a-b)<=eps,"numeric mismatch");}
+void continuous(const JointState& lhs,const JointState& rhs) {
+    for(size_t i=0;i<lhs.q.size();++i) {
+        close(lhs.q[i],rhs.q[i]);close(lhs.v[i],rhs.v[i]);close(lhs.a[i],rhs.a[i]);
+    }
+}
+void bounded(const JointLimits& limits,const JointState& s) {
+    for(size_t i=0;i<limits.size();++i) {
+        const auto& l=limits[i];
+        require(s.q[i]>=l.lower-1e-8&&s.q[i]<=l.upper+1e-8,"position limit");
+        require(std::abs(s.v[i])<=l.velocity+1e-8,"velocity limit");
+        require(std::abs(s.a[i])<=l.acceleration+1e-8,"acceleration limit");
+        require(std::abs(s.j[i])<=l.jerk+1e-8,"jerk limit");
+    }
+}
+JointState rest(std::vector<double> q) {const auto n=q.size();return {q,std::vector<double>(n),std::vector<double>(n),{}};}
+JointLimits limits(size_t n) {
+    JointLimits out(n);
+    for(size_t i=0;i<n;++i) {out[i].lower=-2.;out[i].upper=2.;out[i].velocity=.25+.01*i;out[i].acceleration=.5;out[i].jerk=4.;}
+    return out;
+}
+void synchronized_and_no_allocations() {
+    constexpr size_t n=16;auto ls=limits(n);
+    auto initial=rest(std::vector<double>(n));std::vector<double> goal(n);
+    for(size_t i=0;i<n;++i) {initial.q[i]=.01*i;goal[i]=initial.q[i]+(i%2?-.3:.2);}
+    auto curves=fit_target(ls,initial,goal,10.,20.,5.);
+    auto p=PreparedSegment::from_curves(curves,ls);
+    require(p.axes()==n&&p.pieces()==1,"joint curve layout");
+    for(int step=0;step<=1000;++step) {
+        const auto t=p.start()+(p.end()-p.start())*step/1000;
+        const auto s=p.sample(t);bounded(ls,s);
+        for(size_t i=1;i<n;++i)
+            close((s.q[i]-initial.q[i])/(goal[i]-initial.q[i]),
+                  (s.q[0]-initial.q[0])/(goal[0]-initial.q[0]));
+        continuous(s,sample(curves,t));
+    }
+    // Preparing snapshots must detach from mutable caller-owned curves.
+    const auto before=p.sample(10.1);curves.front()->axes[0][0][0]=123.;
+    continuous(before,p.sample(10.1));
+    std::array<double,n> q{},v{},a{},j{};
+    bool ok=true;allocations=deallocations=0;count_allocations=true;
+    // 1 kHz timestamp sequence, plus unordered preview queries. This proves
+    // bounded evaluation/no allocations, not real-time scheduling performance.
+    for(int step=0;step<10000;++step) {
+        ok=p.sample_into(10.+step*.001,q.data(),v.data(),a.data(),j.data(),n)&&ok;
+        if(step%17==0) ok=p.sample_into(10.001,q.data(),v.data(),a.data(),j.data(),n)&&ok;
+    }
+    count_allocations=false;
+    require(ok,"sampling failed");require(allocations==0&&deallocations==0,"sampler allocated or freed memory");
+    const auto saved=q;
+    require(!p.sample_into(10.,q.data(),v.data(),a.data(),j.data(),n-1),"short output accepted");
+    require(!p.sample_into(std::nan(""),q.data(),v.data(),a.data(),j.data(),n),"NaN sample accepted");
+    require(!p.sample_into(10.,nullptr,v.data(),a.data(),j.data(),n),"null output accepted");
+    require(q==saved,"invalid sampling changed output");
+    PreparedSegment empty;
+    require(!empty.sample_into(0.,q.data(),v.data(),a.data(),j.data(),n),"empty segment sampled");
+    const auto final=p.sample(p.end()+10.);
+    for(size_t i=0;i<n;++i) {close(final.q[i],goal[i]);close(final.v[i],0.);close(final.a[i],0.);close(final.j[i],0.);}
+}
+void moving_retargets_and_stop() {
+    constexpr size_t n=16;const auto ls=limits(n);
+    auto initial=rest(std::vector<double>(n,.1));
+    for(size_t i=0;i<n;++i) {initial.v[i]=(i%2?-.03:.04);initial.a[i]=.02;}
+    auto p=PreparedSegment::target(ls,initial,std::vector<double>(n,.3),0.,20.,5.);
+    continuous(initial,p.sample(0.));
+    for(int update=1;update<=200;++update) {
+        const double t=update*.01;const auto old=p.sample(t);
+        std::vector<double> goal(n);
+        // Axes turn at different phases: no straight-line ratio claim applies.
+        for(size_t i=0;i<n;++i) goal[i]=.3*std::sin(update*.07+i*.4);
+        auto next=PreparedSegment::target(ls,old,goal,t,20.,5.);
+        continuous(old,next.sample(t));
+        for(int k=0;k<=10;++k) bounded(ls,next.sample(t+k*.001));
+        // The compiled sampler must agree with the exact shared planned path;
+        // independent axis clipping or a second follower would break this.
+        const auto reference=fit_target(ls,old,goal,t,20.,5.);
+        for(int k=0;k<=20;++k) {
+            const double at=t+(next.end()-t)*k/20.;
+            continuous(next.sample(at),sample(reference,at));
+        }
+        p=std::move(next);
+    }
+    const auto at_stop=p.sample(2.005);
+    const auto stop=PreparedSegment::stop(ls,at_stop,2.005,5.);
+    continuous(at_stop,stop.sample(2.005));
+    for(int k=0;k<=1000;++k) bounded(ls,stop.sample(2.005+(stop.end()-2.005)*k/1000.));
+    const auto stopped=stop.sample(stop.end()+.1);
+    for(size_t i=0;i<n;++i) {close(stopped.v[i],0.);close(stopped.a[i],0.);}
+    // A fixed hold seed after an independently confirmed stop stays fixed.
+    auto hold=PreparedSegment::target(ls,stopped,stopped.q,stop.end(),20.,5.);
+    continuous(stopped,hold.sample(hold.end()+1.));
+}
+void stopped_and_rejected_layouts() {
+    const auto ls=limits(2);const auto initial=rest({.4,-.2});
+    const auto p=PreparedSegment::target(ls,initial,initial.q,10.,20.,5.);
+    for(double t:{9.,10.,10.001,11.}) continuous(initial,p.sample(t));
+    const auto gap=std::make_shared<Curve>(11.,1.,initial,initial);
+    const auto first=std::make_shared<Curve>(9.,1.,initial,initial);
+    bool rejected=false;
+    try {PreparedSegment::from_curves({first,gap},ls);}catch(const std::invalid_argument&){rejected=true;}
+    require(rejected,"time gap accepted");
+    rejected=false;auto moving=initial;moving.v[0]=.1;
+    try {PreparedSegment::from_curves({std::make_shared<Curve>(0.,1.,initial,moving)},ls);}
+    catch(const std::invalid_argument&){rejected=true;}
+    require(rejected,"moving endpoint without stop tail accepted");
+    rejected=false;
+    try {PreparedSegment::target(ls,initial,{3.,0.},0.,20.,5.);}
+    catch(const std::invalid_argument&){rejected=true;}
+    require(rejected,"out of range goal accepted");
+}
+void wire_roundtrip_and_source_pieces() {
+    const auto ls=limits(2);const auto seed=rest({.1,-.1});
+    auto p=PreparedSegment::target(ls,seed,{.3,.2},10.,20.,5.);
+    const auto original=p.describe();require(original.size()==1,"test needs single quintic");
+    auto first=original[0],second=first;
+    first.source_duration=first.duration;first.duration*=.4;
+    second.start=first.start+first.duration;second.source_duration=second.duration;
+    second.source_elapsed=first.duration;second.duration-=first.duration;
+    const auto split=PreparedSegment::from_description({first,second},ls);
+    require(split.pieces()==2,"wire lost a piece");
+    const auto roundtrip=PreparedSegment::from_description(split.describe(),ls);
+    for(int k=0;k<=1000;++k) {
+        const double t=p.start()+(p.end()-p.start())*k/1000.;
+        const auto expected=p.sample(t);continuous(expected,split.sample(t));
+        continuous(expected,roundtrip.sample(t));
+        for(size_t i=0;i<2;++i) close(expected.j[i],roundtrip.sample(t).j[i]);
+    }
+    auto bad=first;bad.source_elapsed=bad.source_duration;
+    bool rejected=false;
+    try {PreparedSegment::from_description({bad},ls);}catch(const std::invalid_argument&){rejected=true;}
+    require(rejected,"invalid source mapping accepted");
+
+    // Saturated adaptive states can require the existing multi-phase cubic
+    // brake fallback. Preserve all its pieces and actual polynomial controls.
+    const JointLimits fast(1);
+    const JointState saturated{{.02144333333333334},{.88},{20.},{}};
+    const auto brake=PreparedSegment::stop(fast,saturated,0.,5.);
+    require(brake.pieces()>1,"cubic fallback fixture lost");
+    const auto restored=PreparedSegment::from_description(brake.describe(),fast);
+    require(restored.pieces()==brake.pieces(),"cubic wire pieces lost");
+    for(int k=0;k<=1000;++k) {
+        const double t=brake.end()*k/1000.;
+        const auto expected=brake.sample(t),actual=restored.sample(t);
+        continuous(expected,actual);close(expected.j[0],actual.j[0],1e-6);
+        bounded(fast,actual);
+    }
+}
+}
+int main() {
+    try {
+        synchronized_and_no_allocations();moving_retargets_and_stop();stopped_and_rejected_layouts();
+        wire_roundtrip_and_source_pieces();
+        std::cout<<"prepared segment: synchronized/moving/retarget/stop/buffer tests passed; zero sampling allocations\n";
+    }catch(const std::exception& e) {std::cerr<<e.what()<<'\n';return 1;}
+}
