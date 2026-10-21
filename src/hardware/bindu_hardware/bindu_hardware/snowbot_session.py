@@ -5,6 +5,10 @@ import time
 from .snowbot import GROUPS, SLOT_MASKS
 
 ARMS = frozenset(('left_arm', 'right_arm'))
+CONTROL_GROUPS = ARMS | {'waist'}
+# Independent wire order; QP/resource order is mapped by joint name.
+CONTROL_NAMES = (*GROUPS['left_arm'], *GROUPS['right_arm'], *GROUPS['waist'])
+CONTROL_MASK = sum(SLOT_MASKS[g] for g in CONTROL_GROUPS)
 SLOTS = [*(f'arm_l_joint_{i}' for i in range(1, 9)),
          *(f'arm_r_joint_{i}' for i in range(1, 9)),
          'head_joint_1', 'head_joint_2', 'body_joint_1', 'body_joint_2']
@@ -56,8 +60,8 @@ class SessionHealth:
                 self.progress = self.steady()
             self.boot, self.sample = msg.boot_id, msg.pdo_sample
             self.observation, self.received['observation'] = msg, self.steady()
-            if (msg.valid_mask & 0x7f7f != 0x7f7f or
-                    any(status & 8 for i, status in enumerate(msg.status) if 0x7f7f & (1 << i))):
+            if (msg.valid_mask & CONTROL_MASK != CONTROL_MASK or
+                    any(status & 8 for i, status in enumerate(msg.status) if CONTROL_MASK & (1 << i))):
                 self.advances = 0
             self.invalid = ''
             self.messages['servo'] = dict(operation_enabled_mask=sum(
@@ -81,7 +85,7 @@ class SessionHealth:
         if request is None:
             return None
         try:
-            self.require(ARMS, acquiring=True)
+            self.require(CONTROL_GROUPS, acquiring=True)
         except RuntimeError:
             return None
         obs = self.observation
@@ -92,17 +96,17 @@ class SessionHealth:
                 not baseline <= obs.hold_sample < obs.pdo_sample):
             return None
         values = obs.hold_position
-        if len(values) != 14 or not all(math.isfinite(q) for q in values):
+        if len(values) != len(CONTROL_NAMES) or not all(math.isfinite(q) for q in values):
             return None
-        return dict(zip((*GROUPS['left_arm'], *GROUPS['right_arm']), values))
+        return dict(zip(CONTROL_NAMES, values))
 
     def require(self, groups, *, acquiring=False):
-        if set(groups) != ARMS:
-            raise RuntimeError('SNOWBOT_POSITION_SESSION_ARMS_ONLY')
+        if set(groups) != CONTROL_GROUPS:
+            raise RuntimeError('SNOWBOT_POSITION_SESSION_RESOURCE_LAYOUT')
         if self.invalid:
             raise RuntimeError(self.invalid)
         obs = self.observation
-        if obs is not None and any(status & 8 for i, status in enumerate(obs.status) if 0x7f7f & (1 << i)):
+        if obs is not None and any(status & 8 for i, status in enumerate(obs.status) if CONTROL_MASK & (1 << i)):
             raise RuntimeError('SNOWBOT_DRIVE_FAULT')
         if (obs is None or self.progress is None or self.advances < 2 or
                 not 0 <= self.steady()-self.progress <= .02 or
@@ -114,7 +118,7 @@ class SessionHealth:
             raise RuntimeError(str(exc)) from exc
         mask = sum(SLOT_MASKS[g] for g in groups)
         if obs.valid_mask & mask != mask:
-            raise RuntimeError('SNOWBOT_ARM_FEEDBACK_INVALID')
+            raise RuntimeError('SNOWBOT_POSITION_FEEDBACK_INVALID')
         if any(status & 8 for i, status in enumerate(obs.status) if mask & (1 << i)):
             raise RuntimeError('SNOWBOT_DRIVE_FAULT')
         for layer in ('upper', 'middle', 'servo'):

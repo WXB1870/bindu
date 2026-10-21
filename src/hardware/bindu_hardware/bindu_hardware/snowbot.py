@@ -194,6 +194,7 @@ class SnowbotIO:
         self.owned_groups = set()
         self.writable_groups = WRITABLE
         self.coupled_group_sets = (frozenset(('left_arm', 'right_arm')),)
+        self.stop_group_sets = (('left_arm', 'right_arm'), ('waist',), ('head',))
         self.group_feedback = True
         self.last_feedback = Feedback(0., {}, 0., 0., (0., 0.), simulated)
         self.received_at = 0.
@@ -279,12 +280,13 @@ class SnowbotIO:
 
     def _send(self, target, *, hold=False):
         groups = self._groups(target)
-        if {'left_arm', 'right_arm'} & groups:
-            # First command captures the other owned arm; never assume zero.
-            for g in ('left_arm', 'right_arm'):
-                for n in GROUPS[g]:
-                    target.setdefault(n, self.targets.get(n, self.last_feedback.positions[n]))
-            groups.update(('left_arm', 'right_arm'))
+        for coupled in self.coupled_group_sets:
+            if groups & coupled:
+                # Capture other coupled resources from real feedback once.
+                for g in coupled:
+                    for n in GROUPS[g]:
+                        target.setdefault(n, self.targets.get(n, self.last_feedback.positions[n]))
+                groups.update(coupled)
         if any(not math.isfinite(q) or not self.profile.limits[n][0] <= q <= self.profile.limits[n][1]
                for n, q in target.items()):
             raise RuntimeError('SNOWBOT_JOINT_LIMIT')
@@ -338,7 +340,7 @@ class SnowbotIO:
         failures = set(self.stop_failures)
         # Normal multi-topic writes check the whole batch before sending.
         # Stops instead try every independent endpoint, even if one is lost.
-        for coupled in (('left_arm', 'right_arm'), ('waist',), ('head',)):
+        for coupled in self.stop_group_sets:
             groups = set(coupled) & involved
             if not groups:
                 continue

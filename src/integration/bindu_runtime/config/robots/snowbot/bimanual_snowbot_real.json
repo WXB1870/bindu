@@ -3,6 +3,7 @@
   "collision_scope": "configured_tool_geometry",
   "urdf": "snowbot_control.urdf",
   "resource_groups": [
+    "waist",
     "left_arm",
     "right_arm"
   ],
@@ -165,7 +166,7 @@
   "grasp_rotation_tolerance_rad": 0.02,
   "tool_gain": 10.0,
   "posture_gain": 0.1,
-  "shared_motion_weight": 0.0,
+  "shared_motion_weight": 0.1,
   "pose_filter": {
     "enabled": true,
     "position": {
@@ -199,7 +200,7 @@
   "geometry_step_backtracking": true,
   "posture_policy": {
     "reference": "initial_capture",
-    "position_bounds": {}
+    "position_bounds": {"body_joint_2": [-0.45, 0.45]}
   },
   "reference_kinematics": true,
   "posture_reference_margin_rad": 0.01,

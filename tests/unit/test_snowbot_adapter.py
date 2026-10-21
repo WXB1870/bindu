@@ -583,6 +583,7 @@ class SnowbotRosBindingTests(unittest.TestCase):
     def test_session_capture_changes_generation_and_pause_does_not_renew_motion(self):
         from bindu_runtime.snowbot_position_session import PositionSessionDevices, PositionSessionIO
         from bindu_hardware.snowbot_session import SourceEnvelope
+        from bindu_hardware.snowbot_session import CONTROL_GROUPS
         profile=Profile.load(CONFIG/'robots/snowbot/snowbot_vendor_position.json')
         devices=PositionSessionDevices.__new__(PositionSessionDevices)
         devices.node=S(now=lambda:10.)
@@ -593,7 +594,7 @@ class SnowbotRosBindingTests(unittest.TestCase):
         q=dict.fromkeys(profile.limits,0.)
         q['arm_l_joint_2'],q['arm_r_joint_2']=.2,-.2
         io.observe(q,dict.fromkeys(q,0.),10.,10.)
-        io.capture(('left_arm','right_arm'))
+        io.capture(CONTROL_GROUPS)
         self.assertNotEqual(devices.envelopes.session,1)
         self.assertTrue(devices.envelopes.takeover)
         io.write_joints({n:q[n] for n in GROUPS['left_arm']})

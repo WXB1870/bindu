@@ -101,7 +101,7 @@ Python 调用入口为 [bindu_kinematics/bimanual.py](../bindu_kinematics/bindu_
 
 所有字段必须有限；权重、姿态增益与margin可为零，其余必须为正；两侧margin之和必须小于对应有效关节范围。已有配置对速度和闭合误差设有更严格值，以上不是硬件标定值。可选`shared_targets`为共享组全部关节名到目标位置的映射，须配合正的`shared_target_weight`；未配置时腰部仍参与工具跟踪。Python `set_shared_targets(None)`清除该独立姿态目标。
 
-包含腰部资源的Snowbot仿真配方将`shared_motion_weight`设为0.1，两轴腰部的速度正则二次项因此从0.0011增至0.1011；双臂不变。它是运动分配偏好，腰部仍可参与工具跟踪，普通双臂模式将腰部速度固定为0。真实`bimanual_snowbot_real.json`当前只选双臂14轴，该权重为0；腰部只作为必需的实测运动学上下文，不进入求解变量或执行资源，缺失测量则拒绝求解。配置不改变关节速度上限或握持约束。该字段通过新增的`bq_shared_motion_weight`函数在每次捕获后设置，C结构布局仍为ABI v1；旧库缺此能力时明确要求重建。
+包含腰部资源的Snowbot仿真及真实腰臂配方将`shared_motion_weight`设为0.1，两轴腰部的速度正则二次项因此从0.0011增至0.1011；双臂不变。它是运动分配偏好，腰部仍可参与工具跟踪，普通双臂模式将腰部速度固定为0。真实`bimanual_snowbot_real.json`选腰部2轴及双臂14轴，腰部参与联合工具求解和同一执行会话；共享姿态边界保留，缺失腰部测量则拒绝求解。配置不改变关节速度上限或握持约束。该字段通过新增的`bq_shared_motion_weight`函数在每次捕获后设置，C结构布局仍为ABI v1；旧库缺此能力时明确要求重建。
 
 积分与保护字段：`max_integration_interval`缺省0.1 s且不可超过0.1 s；`max_reference_error`缺省0.15，按各关节位置单位检查参考与实测偏差，超过后要求停止并重新捕获；`sample_period`是离线采样步长，运行节点传入实际候选采样间隔。`solve_timeout_us`按墙钟约束单次候选求解，从输入校验、实测握姿准备到原生调用、限位／几何复核、结果打包和前馈样本准备；现有配置保留30 ms。返回的`solve_us`指标仍仅为QP内部累计计时，不能当作完整调用或指令往返延迟。worker往返另由`worker_timeout`约束，缺省为`solve_timeout_us/1e6 + 0.2`秒，初始化由`worker_startup_timeout`约束（缺省30秒）。这些门限不等于已验证真机延迟。
 

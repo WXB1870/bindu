@@ -2,13 +2,22 @@
 import secrets
 
 from bindu_hardware.snowbot import SnowbotIO, GROUPS
-from bindu_hardware.snowbot_session import ARMS, SessionHealth, SourceEnvelope
+from bindu_hardware.snowbot_session import CONTROL_GROUPS, SessionHealth, SourceEnvelope
 
 
 class PositionSessionIO(SnowbotIO):
     requesting_pause = False
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.writable_groups = CONTROL_GROUPS
+        self.coupled_group_sets = (CONTROL_GROUPS,)
+        # One atomic envelope and one PAUSE identity for waist and both arms.
+        self.stop_group_sets = (('waist', 'left_arm', 'right_arm'),)
+
     def capture(self, groups):
+        if set(groups) != CONTROL_GROUPS:
+            raise RuntimeError('SNOWBOT_POSITION_SESSION_RESOURCE_LAYOUT')
         super().capture(groups)
         self.pause_request = self.pause_targets = None
         self.after_capture()
@@ -64,7 +73,6 @@ class PositionSessionDevices:
         self.io.source_motion = None
         self.io.after_capture = lambda: self.new_session()
         self.io.pause_feedback = self.health.confirmed_hold
-        self.io.writable_groups = ARMS
         self.arm_type, self.array_type = PositionSessionCommand, Float64MultiArray
         self.feedback_topic = '/bindu/position/observation'
         self.command_topics = {'arms': '/bindu/position/command'}
@@ -126,12 +134,12 @@ class PositionSessionDevices:
                 self.identity(name, self.receivers[writer], 'snowbot_ctl_msgs/msg/'+kind)
             elif self.node.count_publishers(name) != 1:
                 raise RuntimeError('SNOWBOT_COMMAND_PUBLISHER_CONFLICT:'+name)
-        if self.node.count_publishers('/joint_position_cmd'):
+        if any(self.node.count_publishers(t) for t in ('/joint_position_cmd', '/body/motor_cmd')):
             raise RuntimeError('SNOWBOT_LEGACY_SOURCE_CONFLICT')
 
     def send(self, groups, target):
-        if set(groups) != ARMS:
-            raise RuntimeError('SNOWBOT_POSITION_SESSION_ARMS_ONLY')
+        if set(groups) != CONTROL_GROUPS:
+            raise RuntimeError('SNOWBOT_POSITION_SESSION_RESOURCE_LAYOUT')
         # Validate before minting an envelope, so rejected requests cannot renew.
         self.check_ready(groups)
         metadata = self.envelopes.command(self.io.source_motion, pause=self.io.sending_hold)
@@ -144,6 +152,7 @@ class PositionSessionDevices:
             setattr(msg.meta, name, value)
         msg.command.l_arm_position = [float(target[n]) for n in GROUPS['left_arm']]
         msg.command.r_arm_position = [float(target[n]) for n in GROUPS['right_arm']]
+        msg.waist_position = [float(target[n]) for n in GROUPS['waist']]
         self.publishers['arms'].publish(msg)
         if self.io.sending_hold:
             self.io.pause_request = (metadata['session'], metadata['sequence'],

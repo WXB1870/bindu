@@ -6,7 +6,7 @@ import unittest
 from unittest.mock import Mock
 
 from bindu_hardware.snowbot import GROUPS
-from bindu_hardware.snowbot_session import ARMS, SLOTS, SessionHealth, SourceEnvelope, decode_observation
+from bindu_hardware.snowbot_session import ARMS, CONTROL_GROUPS, CONTROL_NAMES, CONTROL_MASK, SLOTS, SessionHealth, SourceEnvelope, decode_observation
 
 
 def observation(now=10., **changes):
@@ -15,7 +15,7 @@ def observation(now=10., **changes):
         valid_mask=0xfffff, position=[.2]*20, speed=[0.]*20, current=[0.]*20,
         current_valid_mask=0xffff, torque_raw=[0]*20, torque_raw_valid_mask=0xf0000,
         status=[0x27]*20, session_reason=0, session_selected=False, session=0,
-        command_sequence=0, hold_valid=False, hold_sample=0, hold_position=[0.]*14)
+        command_sequence=0, hold_valid=False, hold_sample=0, hold_position=[0.]*16)
     data.update(changes)
     return S(**data)
 
@@ -70,12 +70,12 @@ class PositionSessionTests(unittest.TestCase):
         self.assertEqual(packet['expires_at_ns']-packet['source_stamp_ns'], 200_000_000)
 
     def test_ros_publication_without_pdo_progress_is_rejected(self):
-        self.health.require(ARMS)
+        self.health.require(CONTROL_GROUPS)
         self.now += .025
         self.steady += .025
         self.health.observe(observation(self.now, pdo_sample=2))
         with self.assertRaisesRegex(RuntimeError, 'NOT_ADVANCING'):
-            self.health.require(ARMS)
+            self.health.require(CONTROL_GROUPS)
 
     def test_wkc_and_fault_have_separate_failures_and_gripper_is_not_owned(self):
         with self.assertRaisesRegex(ValueError, 'WKC'):
@@ -85,22 +85,40 @@ class PositionSessionTests(unittest.TestCase):
         self.health.observe(observation(pdo_sample=3, status=statuses))
         self.health.observe(observation(pdo_sample=4, status=statuses))
         with self.assertRaisesRegex(RuntimeError, 'DRIVE_FAULT'):
-            self.health.require(ARMS)
+            self.health.require(CONTROL_GROUPS)
         statuses[0] = 0x27
         statuses[7] |= 8
         self.health.observe(observation(pdo_sample=5, status=statuses))
         self.health.observe(observation(pdo_sample=6, status=statuses))
-        self.health.require(ARMS)
-        with self.assertRaisesRegex(RuntimeError, 'ARMS_ONLY'):
+        self.health.require(CONTROL_GROUPS)
+        with self.assertRaisesRegex(RuntimeError, 'RESOURCE_LAYOUT'):
             self.health.require(('left_tool_axis',))
 
-    def test_head_waist_absence_never_becomes_zero_measurement(self):
+    def test_missing_waist_never_becomes_zero_or_ready(self):
         msg = observation(pdo_sample=3, valid_mask=0xffff)
         q, _, _ = decode_observation(msg, self.now)
         self.assertNotIn('body_joint_1', q)
         self.assertNotIn('head_joint_1', q)
         self.health.observe(msg)
-        self.health.require(ARMS)
+        with self.assertRaisesRegex(RuntimeError, 'NOT_ADVANCING'):
+            self.health.require(CONTROL_GROUPS)
+
+    def test_waist_fault_invalidity_and_nonfinite_speed_block_coupled_control(self):
+        for slot in (18, 19):
+            status = [0x27]*20; status[slot] |= 8
+            self.health.observe(observation(pdo_sample=self.health.sample+1, status=status))
+            with self.assertRaisesRegex(RuntimeError, 'DRIVE_FAULT'):
+                self.health.require(CONTROL_GROUPS)
+            msg = observation(pdo_sample=self.health.sample+1, valid_mask=0xfffff & ~(1<<slot))
+            self.health.observe(msg)
+            with self.assertRaisesRegex(RuntimeError, 'NOT_ADVANCING'):
+                self.health.require(CONTROL_GROUPS)
+            msg = observation(pdo_sample=self.health.sample+1); msg.speed[slot] = float('nan')
+            with self.assertRaisesRegex(ValueError, 'NONFINITE'): self.health.observe(msg)
+        self.health.observe(observation(pdo_sample=self.health.sample+1))
+        self.health.observe(observation(pdo_sample=self.health.sample+1))
+        self.health.require(CONTROL_GROUPS)
+        with self.assertRaisesRegex(RuntimeError, 'RESOURCE_LAYOUT'): self.health.require(ARMS)
 
     def test_restart_requires_reconnect_and_unconfirmed_policy_stays_blocked(self):
         with self.assertRaisesRegex(ValueError, 'RESTART'):
@@ -110,7 +128,7 @@ class PositionSessionTests(unittest.TestCase):
         _, servo = self.health.states['servo']
         servo.stop_policy = 'unconfirmed'
         with self.assertRaisesRegex(RuntimeError, 'STOP_POLICY'):
-            self.health.require(ARMS)
+            self.health.require(CONTROL_GROUPS)
 
     def test_bad_metadata_does_not_relabel_stale_feedback_as_current(self):
         for changes in (dict(pdo_age=-1), dict(pdo_age=.03), dict(position=[0.]*19)):
@@ -139,6 +157,7 @@ class PauseHandoffTests(unittest.TestCase):
         self.profile = replace(self.profile, stop_timeout=.05)
         self.q = dict.fromkeys(self.profile.limits, 0.)
         self.q['arm_l_joint_2'], self.q['arm_r_joint_2'] = .2, -.2
+        self.q['body_joint_1'], self.q['body_joint_2'] = .12, -.08
         self.devices = d = PositionSessionDevices.__new__(PositionSessionDevices)
         d.node = S(now=lambda: self.now)
         d.health = SessionHealth(lambda: self.now, lambda: self.steady)
@@ -150,11 +169,10 @@ class PauseHandoffTests(unittest.TestCase):
                                          check_ready=d.check_ready, check_health=d.check_health)
         self.io.after_capture = d.new_session
         self.io.pause_feedback = d.health.confirmed_hold
-        self.io.writable_groups = ARMS
         self.update(); self.update()
         self.engine = DelegatedPositionExecutor(self.profile, self.io, steady=lambda: self.steady)
 
-    def update(self, *, hold=None, velocity=0., **changes):
+    def update(self, *, hold=None, velocity=0., waist_velocity=None, **changes):
         self.now += .005; self.steady += .005; self.sample += 1
         d = self.devices
         for layer in ('upper', 'middle', 'servo'):
@@ -163,6 +181,7 @@ class PauseHandoffTests(unittest.TestCase):
                 stop_policy='measured_hold'))
         msg = observation(self.now, pdo_sample=self.sample,
                           position=[self.q[n] for n in SLOTS], speed=[velocity]*20)
+        if waist_velocity is not None: msg.speed[18:] = [waist_velocity]*2
         if hold is not None:
             session, sequence, boot, baseline = self.io.pause_request
             msg.session, msg.command_sequence, msg.boot_id = session, sequence, boot
@@ -174,7 +193,7 @@ class PauseHandoffTests(unittest.TestCase):
 
     def start_stop(self, command_id='move'):
         from bindu_contracts.contracts import Motion
-        lease, epoch = self.engine.acquire('test', tuple(ARMS), 2., self.now)
+        lease, epoch = self.engine.acquire('test', ('waist','left_arm','right_arm'), 2., self.now)
         names = tuple(GROUPS['left_arm'])
         motion = Motion(command_id, lease, epoch, self.profile.digest, 'test', 'pause-test',
             'joint_target', 'left_arm', self.now, .2, names=names,
@@ -183,7 +202,7 @@ class PauseHandoffTests(unittest.TestCase):
         self.now += .001; self.steady += .001
         self.engine.halt(self.now, revoke=True)
         self.assertTrue(self.engine.stopping)
-        return [self.io.stop_targets[n] for n in (*GROUPS['left_arm'], *GROUPS['right_arm'])]
+        return [self.io.stop_targets[n] for n in CONTROL_NAMES]
 
     def test_delayed_pause_ack_still_needs_actual_position_and_velocity(self):
         hold = self.start_stop()
@@ -192,7 +211,7 @@ class PauseHandoffTests(unittest.TestCase):
         hold[0] += .01; self.q['arm_l_joint_1'] = hold[0]
         self.update(hold=hold, velocity=.03); self.engine.tick(self.now)
         self.assertTrue(self.engine.stopping)
-        self.assertAlmostEqual(self.engine.reference.q[0], hold[0])
+        self.assertAlmostEqual(self.engine.reference.q[self.engine.reference_names.index(CONTROL_NAMES[0])], hold[0])
         self.q['arm_l_joint_1'] += .003
         self.update(hold=hold); self.engine.tick(self.now)
         self.assertTrue(self.engine.stopping)  # Original 2 mrad tolerance applies.
@@ -204,8 +223,8 @@ class PauseHandoffTests(unittest.TestCase):
     def test_old_identity_incomplete_or_nonfinite_ack_cannot_finish_stop(self):
         hold = self.start_stop()
         for changes in (dict(session=123), dict(command_sequence=1), dict(hold_valid=False),
-                        dict(hold_sample=0), dict(hold_sample=2**63), dict(hold_position=[0.]*13),
-                        dict(hold_position=[float('nan')]*14)):
+                        dict(hold_sample=0), dict(hold_sample=2**63), dict(hold_position=[0.]*14),
+                        dict(hold_position=[float('nan')]*16)):
             with self.subTest(changes=changes):
                 self.update(hold=hold, **changes); self.engine.tick(self.now)
                 self.assertTrue(self.engine.stopping)
@@ -239,9 +258,27 @@ class PauseHandoffTests(unittest.TestCase):
         self.update(hold=hold); self.engine.tick(self.now)
         self.assertIsNone(self.engine.stopping)
 
+    def test_nonzero_waist_shares_one_pause_and_requires_fixed_point_and_rest(self):
+        hold = self.start_stop()
+        self.assertEqual(len(self.devices.publishers['arms'].publish.call_args_list), 2)
+        packet = self.devices.publishers['arms'].publish.call_args.args[0]
+        self.assertEqual(packet.meta.operation, 2)
+        self.assertEqual(packet.waist_position, [.12, -.08])
+        hold[14] += .015; hold[15] -= .01
+        self.q['body_joint_1'], self.q['body_joint_2'] = hold[14:]
+        self.update(hold=hold, waist_velocity=.03); self.engine.tick(self.now)
+        self.assertTrue(self.engine.stopping)
+        self.q['body_joint_1'] += .003
+        self.update(hold=hold); self.engine.tick(self.now)
+        self.assertTrue(self.engine.stopping)
+        self.q['body_joint_1'] = hold[14]
+        self.update(hold=hold); self.engine.tick(self.now)
+        self.assertIsNone(self.engine.stopping)
+        self.assertEqual(set(self.io.coupled_group_sets[0]), CONTROL_GROUPS)
+
 
 class RealResourceTests(unittest.TestCase):
-    def test_native_real_config_keeps_measured_waist_outside_writable_dofs(self):
+    def test_native_real_config_solves_and_transports_sixteen_controlled_joints(self):
         from tests.support.paths import ROOT
         from bindu_contracts.profile import Profile
         try:
@@ -250,20 +287,36 @@ class RealResourceTests(unittest.TestCase):
             self.skipTest('Optional native QP environment required: '+str(exc))
         base = ROOT/'src/integration/bindu_runtime/config/robots/snowbot'
         cfg = json.loads((base/'bimanual_snowbot_real.json').read_text())
-        self.assertEqual(set(cfg['resource_groups']), ARMS)
-        self.assertFalse(cfg['shared_motion_weight'])
+        self.assertEqual(tuple(cfg['resource_groups']), ('waist','left_arm','right_arm'))
+        self.assertEqual(cfg['shared_motion_weight'], .1)
         cfg['urdf'] = str(ROOT/'src/hardware/bindu_description/urdf/snowbot_control.urdf')
         profile = Profile.load(base/'snowbot_vendor_position.json')
         solver = BimanualQP(cfg, profile); self.addCleanup(solver.close)
-        self.assertEqual(solver.names, (*GROUPS['left_arm'], *GROUPS['right_arm']))
+        self.assertEqual(solver.names, (*GROUPS['waist'], *GROUPS['left_arm'], *GROUPS['right_arm']))
         self.assertEqual(len(solver.model_names), 20)
         # Existing synthetic grasp fixture is measured input to this offline test.
         q = json.loads((base/'bimanual_snowbot_shovel.json').read_text())['demo']['initial_positions_rad']
         tool = solver.capture(q)
-        output, _ = solver.solve(q, tool, reference=[q[n] for n in solver.names], dt=.01, target_stamp=10.)
-        self.assertEqual(len(output), 14)
+        target=tool.copy();target[0,3]+=.001
+        output, _ = solver.solve(q, target, reference=[q[n] for n in solver.names], dt=.01, target_stamp=10.)
+        self.assertEqual(len(output), 16)
+        self.assertTrue(any(abs(output[i]-q[n])>1e-8 for i,n in enumerate(solver.names) if n in GROUPS['waist']))
+        self.assertEqual(len(CONTROL_NAMES),16)
+        self.assertEqual(CONTROL_MASK,0xc7f7f)
+        from bindu_contracts.contracts import Motion
+        rig = PauseHandoffTests(); rig.setUp(); rig.q.update(q); rig.update()
+        lease, epoch = rig.engine.acquire('qp', tuple(cfg['resource_groups']), 2., rig.now)
+        command = Motion('qp16', lease, epoch, profile.digest, 'qp', 'qp16', 'joint_target', '',
+            rig.now, .2, names=solver.names, positions=tuple(output), runtime_mode='real',
+            schema_version=2, resource_groups=tuple(cfg['resource_groups']))
+        rig.engine.submit(command, rig.now); rig.engine.tick(rig.now)
+        packet = rig.devices.publishers['arms'].publish.call_args.args[0]
+        self.assertEqual(packet.waist_position, list(output[:2]))
+        self.assertEqual(packet.command.l_arm_position, list(output[2:9]))
+        self.assertEqual(packet.command.r_arm_position, list(output[9:]))
+        self.assertEqual(packet.meta.session, rig.devices.envelopes.session)
         for name in GROUPS['waist']:
-            self.assertNotIn(name, solver.names)
+            self.assertIn(name, solver.names)
             self.assertEqual(solver._q(q)[solver.model_names.index(name)], q[name])
             missing = dict(q); missing.pop(name)
             with self.assertRaisesRegex(ValueError, 'FEEDBACK_LAYOUT'): solver.capture(missing)

@@ -284,7 +284,7 @@ def check_position_session(args, timeout):
     from rclpy.qos import qos_profile_sensor_data
     from snowbot_ctl_msgs.msg import (PositionObservation, PositionSessionState,
         PositionSessionCommand, PositionSessionUpper, PositionSessionServo)
-    from bindu_hardware.snowbot_session import SessionHealth, ARMS, decode_observation
+    from bindu_hardware.snowbot_session import SessionHealth, CONTROL_GROUPS, decode_observation
     from bindu_hardware.snowbot import GROUPS
     rclpy.init(args=[])
     node = rclpy.create_node('bindu_position_check_'+uuid.uuid4().hex[:8])
@@ -316,10 +316,10 @@ def check_position_session(args, timeout):
         while time.monotonic() < deadline:
             rclpy.spin_once(node, timeout_sec=min(.01, max(0., deadline-time.monotonic())))
         errors = inspect_vendor_endpoints(args, node) + inspect_position_routes(args, node) + list(failures.values())
-        if node.count_publishers('/joint_position_cmd'):
+        if any(node.count_publishers(t) for t in ('/joint_position_cmd', '/body/motor_cmd')):
             errors.append('SNOWBOT_LEGACY_SOURCE_CONFLICT')
         try:
-            health.require(ARMS, acquiring=True)
+            health.require(CONTROL_GROUPS, acquiring=True)
         except (RuntimeError, ValueError) as exc:
             errors.append(str(exc))
         q = {}
@@ -330,7 +330,7 @@ def check_position_session(args, timeout):
         return dict(robot_interface='available' if not errors else 'unavailable',
             position_protocol='session_v1', feedback_usable=bool(q), errors=errors,
             missing_feedback_groups=[g for g, names in GROUPS.items() if not set(names) <= q.keys()],
-            required_control_groups=sorted(ARMS), deferred_resources=['grippers', 'head', 'waist'],
+            required_control_groups=sorted(CONTROL_GROUPS), deferred_resources=['grippers', 'head'],
             scope='read-only session endpoints, measured PDO progress and faults; no motion acceptance')
     finally:
         node.destroy_node()
