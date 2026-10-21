@@ -40,15 +40,23 @@ def check_runtime(args, robot):
     ]
     if args['runtime_mode'] == 'real':
         modules.append(('snowbot_ctl_msgs.msg', ('JointPositionCommand', 'RetInformation')))
-        if args.get('position_protocol') == 'session_v1':
+        if args.get('position_protocol') in ('session_v1','session_v2'):
             modules.append(('snowbot_ctl_msgs.msg', ('PositionObservation', 'PositionSessionMeta',
                 'PositionSessionCommand', 'PositionSessionUpper', 'PositionSessionServo', 'PositionSessionState')))
+            if args.get('position_protocol') == 'session_v2':
+                modules.append(('snowbot_ctl_msgs.msg', ('PositionTrajectory',)))
     for module, names in modules:
         package = importlib.import_module(module)
         for name in names:
             check_for_type_support(getattr(package, name))
     for module in ('pinocchio', 'casadi', 'vuer', 'bindu_execution.interpolation'):
         importlib.import_module(module)
+    if args.get('position_protocol') == 'session_v2':
+        native = getattr(importlib.import_module('bindu_execution.interpolation'), '_native', None)
+        if not all(callable(getattr(native, name, None)) for name in (
+                'prepared_target', 'prepared_stop', 'prepared_describe',
+                'prepared_from_description', 'prepared_sample_into')):
+            raise ValueError('SNOWBOT_TRAJECTORY_NATIVE_REQUIRED')
     tool = json.loads(robot.tool_config.read_text())
     from bindu_runtime.teleop_deployment import apply_execution_tracking
     tool = apply_execution_tracking(tool, args.get('execution_mode','position'),
@@ -93,7 +101,7 @@ def vendor_endpoints(args):
     result = []
     def add(name, kind, role, node):
         result.append(dict(topic=topic(name), type=kind, role=role, node=node))
-    if args.get('position_protocol') == 'session_v1':
+    if args.get('position_protocol') in ('session_v1','session_v2'):
         if value != '/':
             raise ValueError('SNOWBOT_POSITION_SESSION_ROOT_NAMESPACE_REQUIRED')
         add('bindu/position/observation', 'snowbot_ctl_msgs/msg/PositionObservation', 'publisher', servo)
@@ -250,7 +258,7 @@ def check_robot_interface(args, timeout=2.):
     """Subscribe/read only. Never launch a driver, publish a target or call a service."""
     if not math.isfinite(timeout) or not 0 < timeout <= 30:
         raise ValueError('SNOWBOT_INTERFACE_CHECK_TIMEOUT')
-    if args.get('position_protocol') == 'session_v1':
+    if args.get('position_protocol') in ('session_v1','session_v2'):
         return check_position_session(args, timeout)
     import rclpy
     from rclpy.qos import qos_profile_sensor_data
@@ -293,7 +301,8 @@ def check_position_session(args, timeout):
     rclpy.init(args=[])
     node = rclpy.create_node('bindu_position_check_'+uuid.uuid4().hex[:8])
     health = SessionHealth(lambda: node.get_clock().now().nanoseconds*1e-9,
-                           execution_mode=args.get('execution_mode','position'))
+                           execution_mode=args.get('execution_mode','position'),
+                           reference_mode=int(args.get('position_protocol') == 'session_v2'))
     failures = {}
     def observe(msg):
         try:
@@ -333,7 +342,7 @@ def check_position_session(args, timeout):
         except (ValueError, AttributeError):
             pass
         return dict(robot_interface='available' if not errors else 'unavailable',
-            position_protocol='session_v1', feedback_usable=bool(q), errors=errors,
+            position_protocol=args.get('position_protocol','session_v1'), feedback_usable=bool(q), errors=errors,
             missing_feedback_groups=[g for g, names in GROUPS.items() if not set(names) <= q.keys()],
             required_control_groups=sorted(CONTROL_GROUPS), deferred_resources=['grippers', 'head'],
             scope='read-only session endpoints, measured PDO progress and faults; no motion acceptance')

@@ -33,6 +33,9 @@ class BimanualToolNode(RuntimeNode):
         self.declare_parameter('position_contract',False)
         position_contract=self.get_parameter('position_contract').value
         self.declare_parameter('execution_mode','position',descriptor=ParameterDescriptor(read_only=True))
+        self.declare_parameter('position_protocol','legacy_guard',descriptor=ParameterDescriptor(read_only=True))
+        self.trajectory_reference = (not self.simulation and position_contract and
+                                    self.get_parameter('position_protocol').value == 'session_v2')
         from .teleop_deployment import apply_execution_tracking
         self.cfg=apply_execution_tracking(self.cfg,self.get_parameter('execution_mode').value,
                                           real=not self.simulation,position_contract=position_contract)
@@ -340,6 +343,8 @@ class BimanualToolNode(RuntimeNode):
         work_gap=None
         work_feedback=work_reference=None
         pending_reference=None
+        trajectory_bootstrap=True
+        trajectory_reference_deadline=None
         last_mode='idle'
         last_grasp_generation=0
         self.worker_result=None
@@ -388,7 +393,11 @@ class BimanualToolNode(RuntimeNode):
                     if pending.done():
                         reply=pending.result()
                         if not reply.accepted: raise RuntimeError(reply.code)
-                        reference.accept(*pending_reference)
+                        if not self.trajectory_reference:
+                            reference.accept(*pending_reference)
+                        else:
+                            trajectory_bootstrap=False
+                            trajectory_reference_deadline=time.monotonic()+reference.max_sample_gap
                         self.event('BIMANUAL_SUBMIT_TIMING',json.dumps({
                             'input_seq':work_seq,'reference_sampled_at':reference.sampled_at,
                             'acknowledged_at':self.now(),'submit_round_trip_s':now-pending_at,
@@ -511,6 +520,8 @@ class BimanualToolNode(RuntimeNode):
                             # No motion was submitted while capturing. Start the
                             # integration clock here; capture latency is not dt.
                             reference.capture(work_positions,self.now())
+                            trajectory_bootstrap=True
+                            trajectory_reference_deadline=None
                             self.event('BIMANUAL_CAPTURED',json.dumps({'tool_pose':value.tolist(),
                                 'feedback':work_feedback,
                                 'input_stamp':session.stamp,'input_seq':session.seq,'grasp_mode':session.grasp_mode,
@@ -551,7 +562,7 @@ class BimanualToolNode(RuntimeNode):
                                     'timing':geometry.get('timing') if geometry else None,
                                     'geometry_step':geometry if geometry and geometry['scale']<1. else None,
                                     'relative_error':None if isinstance(session,IndependentArmsSession) else metrics[1],
-                                    'relative_error_source':('accepted_reference' if self.cfg.get('reference_kinematics') else 'measured'),
+                                    'relative_error_source':(('servo_reference' if self.trajectory_reference else 'accepted_reference') if self.cfg.get('reference_kinematics') else 'measured'),
                                     'geometry_step_scale':geometry['scale'] if geometry else 1.,
                                     'teleop_mode':mode.mode,'recovery_scale':metrics[2],
                                     'input_stamp':work_stamp,'input_seq':work_seq,'integration_dt':work_dt,
@@ -589,6 +600,24 @@ class BimanualToolNode(RuntimeNode):
                             'input_stamp':session.stamp,'input_age_s':sampled_at-session.stamp,
                             'feedback_stamp':seconds(s.feedback_stamp),'feedback_age_s':sampled_at-seconds(s.feedback_stamp),
                             'will_reject':gap>reference.max_sample_gap}),goal.request.task_id)
+                    if operation=='solve' and self.trajectory_reference and not trajectory_bootstrap:
+                        from .snowbot_position_session import sampled_nominal_reference
+                        if trajectory_reference_deadline is None:
+                            trajectory_reference_deadline=time.monotonic()+reference.max_sample_gap
+                        sample=sampled_nominal_reference(s,self.names,lease.epoch,sampled_at,
+                            min(.1,self.cfg['feedback_max_age']),wait_until=trajectory_reference_deadline,
+                            steady_now=time.monotonic())
+                        if sample is None:
+                            await self.pause()
+                            continue
+                        actual,actual_stamp=sample
+                        if actual_stamp<=reference.sampled_at or actual_stamp>=sampled_at:
+                            if time.monotonic()>=trajectory_reference_deadline:
+                                raise RuntimeError('SNOWBOT_TRAJECTORY_REFERENCE_NOT_ADVANCING')
+                            await self.pause()
+                            continue
+                        reference.accept(actual,actual_stamp)
+                        trajectory_reference_deadline=None
                     baseline,dt=reference.step(sampled_at) if operation=='solve' else (None,None)
                     if self.worker.submit(operation,worker_token,measured,session.target,
                                           reference=baseline,dt=dt,grasp_mode=session.grasp_mode,

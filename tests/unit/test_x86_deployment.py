@@ -298,6 +298,24 @@ class RuntimeCheckTests(unittest.TestCase):
                     with self.assertRaises((ImportError, ValueError)):
                         runtime_check.check_runtime(dict(runtime_mode='real', robot_config='robot.json'), robot)
 
+    def test_trajectory_session_requires_wire_type_and_loaded_native_symbols(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            robot, package, _, support, modules = self.native_fixture(Path(tmp))
+            for name in ('PositionObservation','PositionSessionMeta','PositionSessionCommand',
+                         'PositionSessionUpper','PositionSessionServo','PositionSessionState'):
+                setattr(package, name, object())
+            args = dict(runtime_mode='real', robot_config='robot.json', position_protocol='session_v2')
+            with patch.dict('sys.modules', modules), patch.object(runtime_check, 'check_installed_configs'), \
+                    patch.object(runtime_check.importlib, 'import_module', return_value=package):
+                with self.assertRaises(AttributeError): runtime_check.check_runtime(args, robot)
+                package.PositionTrajectory = object()
+                with self.assertRaisesRegex(ValueError,'TRAJECTORY_NATIVE_REQUIRED'):
+                    runtime_check.check_runtime(args, robot)
+                package._native = NS(**{name: Mock() for name in ('prepared_target','prepared_stop',
+                    'prepared_describe','prepared_from_description','prepared_sample_into')})
+                self.assertEqual(runtime_check.check_runtime(args, robot)['software_dependencies'], 'passed')
+            self.assertIn(package.PositionTrajectory, [call.args[0] for call in support.call_args_list])
+
 
 class VendorInterfaceTests(unittest.TestCase):
     def setUp(self):
@@ -424,6 +442,17 @@ class PositionSessionPreflightTests(unittest.TestCase):
         self.assertEqual(self.inspect(), [])
         self.node.create_publisher.assert_not_called()
         self.node.create_client.assert_not_called()
+
+    def test_trajectory_session_keeps_typed_readonly_routes(self):
+        v1 = runtime_check.vendor_endpoints(self.args)
+        self.args['position_protocol'] = 'session_v2'
+        self.assertEqual(runtime_check.vendor_endpoints(self.args), v1)
+        self.local_readers()
+        self.assertEqual(self.inspect(), [])
+        with patch.object(runtime_check, 'check_position_session', return_value='typed') as probe:
+            self.assertEqual(runtime_check.check_robot_interface(self.args, 1.), 'typed')
+        probe.assert_called_once_with(self.args, 1.)
+        self.node.create_publisher.assert_not_called(); self.node.create_client.assert_not_called()
 
     def test_same_type_name_with_different_hash_rejects_every_route(self):
         self.local_readers()

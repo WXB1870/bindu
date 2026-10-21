@@ -26,7 +26,7 @@ def assemble(context):
     execution_mode=value('execution_mode','position')
     if execution_mode not in ('position','impedance'):
         raise ValueError('SNOWBOT_EXECUTION_MODE')
-    if execution_mode=='impedance' and (mode!='real' or value('position_protocol')!='session_v1' or not position_contract):
+    if execution_mode=='impedance' and (mode!='real' or value('position_protocol') not in ('session_v1','session_v2') or not position_contract):
         raise ValueError('IMPEDANCE_REQUIRES_REAL_SESSION')
     if position_contract and value('device_backend') not in ('kinematic','snowbot_vendor','external_simulation'):
         raise ValueError('POSITION_CONTRACT_BACKEND')
@@ -133,6 +133,7 @@ def assemble(context):
                           'simulation_demo':pico_demo,
                           'position_contract':position_contract,
                           'execution_mode':execution_mode,
+                          'position_protocol':value('position_protocol','legacy_guard'),
                           'gripper_config':value('gripper_config') if position_contract else '',
                           'tool_ground_policy':'report_only' if pico_demo else 'configured'}]))
     nodes.append(Node(package='bindu_runtime', executable='teleop_display', namespace=ns,

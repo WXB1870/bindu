@@ -160,8 +160,10 @@ class ExecutionNode(RuntimeNode):
         msg.joints.position = list(fb.positions.values())
         msg.missing_feedback_groups = [g for g, names in self.profile.groups.items()
             if any(n not in fb.positions or n not in fb.joint_velocities for n in names)]
-        msg.reference.header.stamp = stamp(now)
-        reference = self.robot_io.reference_positions
+        read_reference = getattr(self.robot_io, 'sampled_reference', None)
+        sampled_reference = read_reference() if read_reference is not None else None
+        msg.reference.header.stamp = stamp(sampled_reference[0] if sampled_reference is not None else now)
+        reference = sampled_reference[1] if sampled_reference is not None else self.robot_io.reference_positions
         msg.reference.name = list(reference)
         msg.reference.position = list(reference.values())
         # An empty JointState velocity vector explicitly means unavailable.
@@ -173,7 +175,11 @@ class ExecutionNode(RuntimeNode):
         msg.lease_active = bool(self.engine.lease_id)
         msg.lease_epoch = self.engine.epoch
         msg.lease_resources = list(self.engine.groups) if self.engine.lease_id else []
-        if self.engine.reference:
+        if sampled_reference is not None:
+            msg.reference.velocity = [sampled_reference[2][j] for j in msg.reference.name]
+            msg.reference_accelerations = [sampled_reference[3][j] for j in msg.reference.name]
+            msg.reference_jerks = []  # Supplemental servo message does not export jerk.
+        elif self.engine.reference:
             values = dict(zip(self.engine.reference_names, zip(self.engine.reference.v,
                           self.engine.reference.a, self.engine.reference.j)))
             msg.reference.velocity = [values.get(j, (0., 0., 0.))[0] for j in msg.reference.name]

@@ -37,10 +37,13 @@ def decode_observation(msg, now):
 
 
 class SessionHealth:
-    def __init__(self, now, steady=time.monotonic, *, execution_mode="position"):
+    def __init__(self, now, steady=time.monotonic, *, execution_mode="position", reference_mode=0):
         if execution_mode not in ("position", "impedance"):
             raise ValueError("SNOWBOT_EXECUTION_MODE")
         self.execution_mode = execution_mode
+        if reference_mode not in (0, 1):
+            raise ValueError('SNOWBOT_REFERENCE_MODE')
+        self.reference_mode = reference_mode
         self.now, self.steady = now, steady
         self.states, self.received = {}, {}
         self.observation = None
@@ -84,7 +87,11 @@ class SessionHealth:
         self.received[layer] = self.steady()
 
     def confirmed_hold(self, request):
-        """Return the RT hold request, never an acknowledgement of physical rest."""
+        """Return the adopted fixed reference, never physical-stop confirmation.
+
+        A trajectory impedance PAUSE adopts a fixed nominal reference and keeps
+        its controller. Executor still requires measured position and rest.
+        """
         if request is None:
             return None
         try:
@@ -97,6 +104,12 @@ class SessionHealth:
                 obs.command_sequence != sequence or obs.session_reason not in (1, 2) or
                 not getattr(obs, 'hold_valid', False) or
                 not baseline <= obs.hold_sample < obs.pdo_sample):
+            return None
+        if self.reference_mode and (getattr(obs, 'reference_mode', 0) != 1 or
+                getattr(obs, 'segment_id', 0) != sequence or
+                obs.session_reason == 1 and (getattr(obs, 'trajectory_phase', 0) != 4 or
+                    getattr(obs, 'hold_basis', -1) != int(self.execution_mode == 'impedance')) or
+                obs.session_reason == 2 and getattr(obs, 'hold_basis', -1) != 0):
             return None
         values = obs.hold_position
         if len(values) != len(CONTROL_NAMES) or not all(math.isfinite(q) for q in values):
@@ -136,6 +149,9 @@ class SessionHealth:
                 raise RuntimeError('SNOWBOT_STOP_POLICY_UNCONFIRMED')
             if layer == 'servo' and state.control_source != self.execution_mode:
                 raise RuntimeError('SNOWBOT_EXECUTION_MODE_CONFLICT:'+self.execution_mode)
+            if self.reference_mode and (getattr(state, 'wire_version', 0) != 2 or
+                    layer == 'servo' and getattr(state, 'reference_mode', 0) != self.reference_mode):
+                raise RuntimeError('SNOWBOT_TRAJECTORY_PROTOCOL_CONFLICT:'+layer)
         if self.execution_mode == 'impedance':
             # The optional vendor build places force data in this exact PDO sample.
             wrench = getattr(obs, 'wrench', ())

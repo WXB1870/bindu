@@ -36,12 +36,12 @@ def load_deployment(path, share):
     allowed = EXECUTION if execution_only else (COMMON if version == 1 else COMMON-{'profile', 'bimanual_config'} | {'robot_config'})
     if not isinstance(args, dict) or set(args)-allowed:
         raise ValueError('TELEOP_DEPLOYMENT_ARGUMENT')
-    if args.get('position_protocol', 'legacy_guard') not in ('legacy_guard', 'session_v1'):
+    if args.get('position_protocol', 'legacy_guard') not in ('legacy_guard', 'session_v1', 'session_v2'):
         raise ValueError('SNOWBOT_POSITION_PROTOCOL')
     execution_mode = args.get('execution_mode', 'position')
     if execution_mode not in ('position', 'impedance'):
         raise ValueError('SNOWBOT_EXECUTION_MODE')
-    if execution_mode == 'impedance' and (args.get('runtime_mode') != 'real' or args.get('position_protocol') != 'session_v1'):
+    if execution_mode == 'impedance' and (args.get('runtime_mode') != 'real' or args.get('position_protocol') not in ('session_v1','session_v2')):
         raise ValueError('IMPEDANCE_REQUIRES_REAL_SESSION')
     required = {'runtime_mode'} if execution_only else ({'profile', 'bimanual_config'} if version == 1 else {'robot_config'})
     if not required <= set(args):
