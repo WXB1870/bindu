@@ -1,6 +1,8 @@
 """PDO evidence, source freshness and bounded fault capture; no ROS/devices."""
 import copy
+from array import array
 import json
+import math
 from pathlib import Path
 from types import SimpleNamespace as S
 import tempfile
@@ -132,6 +134,50 @@ class PdoTests(unittest.TestCase):
         self.assertEqual(payload['current'][16],900.)
         self.assertNotIn('current_unit',payload)
 
+    def test_payload_preserves_optional_hold_and_force_sample_identity_without_filling_missing_fields(self):
+        raw = frame()
+        raw.pop('stamp')
+        msg = S(header=S(stamp=S(sec=10,nanosec=0)), session=8, command_sequence=12,
+                hold_valid=False, hold_sample=23, hold_position=array('d', [.3]*16),
+                wrench=array('f', [float('nan')]+[1.]*11), sensor_valid_mask=1,
+                sensor_data_no=array('H', [65535, 7]), sensor_age=array('d', [.002, .5]), **raw)
+        payload = observation_payload(msg)
+        msg.hold_position[0] = 9.
+        msg.sensor_data_no[0] = 0
+        msg.sensor_age[0] = 0.
+        self.assertEqual((payload['boot_id'], payload['pdo_sample'], payload['session'],
+                          payload['command_sequence']), (123, 1, 8, 12))
+        self.assertFalse(payload['hold_valid'])
+        self.assertEqual(payload['hold_sample'], 23)
+        self.assertEqual(payload['hold_position'], [.3]*16)
+        self.assertEqual(payload['sensor_data_no'], [65535, 7])
+        self.assertEqual(payload['sensor_age'], [.002, .5])
+        self.assertEqual(payload['sensor_valid_mask'], 1)
+        self.assertTrue(math.isnan(payload['wrench'][0]))
+        del msg.wrench, msg.sensor_data_no, msg.sensor_age, msg.sensor_valid_mask
+        missing = observation_payload(msg)
+        self.assertTrue(all(name not in missing for name in ('wrench', 'sensor_data_no', 'sensor_age', 'sensor_valid_mask')))
+
+    def test_optional_servo_reference_and_output_are_copied_without_reinterpreting_or_replacing_them(self):
+        raw = frame()
+        raw.pop('stamp')
+        arrays = ('reference_position', 'reference_speed', 'reference_acceleration',
+                  'output_position', 'output_speed', 'output_torque', 'output_kp', 'output_kd')
+        msg = S(header=S(stamp=S(sec=10,nanosec=0)), reference_mode=1, segment_id=91,
+                sample_time_ns=2**53+7, output_valid=False,
+                **{name:array('d', [float(i+1)]*16) for i, name in enumerate(arrays)}, **raw)
+        payload = observation_payload(msg)
+        for i, name in enumerate(arrays):
+            getattr(msg, name)[0] = 99.
+            self.assertEqual(payload[name], [float(i+1)]*16)
+        self.assertEqual((payload['reference_mode'], payload['segment_id'], payload['sample_time_ns']),
+                         (1, 91, 2**53+7))
+        self.assertFalse(payload['output_valid'])
+        self.assertEqual(payload['position'], [.2]*20)
+        self.assertNotIn('q_goal', payload)
+        self.assertNotIn('command_id', payload)
+        self.assertNotIn('expires_at_ns', payload)
+
 
 class FaultWindowTests(unittest.TestCase):
     def setUp(self):
@@ -225,6 +271,42 @@ class FaultWindowTests(unittest.TestCase):
 
 
 class ObserverTests(unittest.TestCase):
+    def test_fault_window_keeps_hold_force_and_receive_times_in_the_same_observation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            writer = DiagnosticWriter(Path(directory)/'diagnostics.jsonl')
+            node = S(create_subscription=lambda *args:None,
+                     get_publishers_info_by_topic=lambda topic:[S(node_namespace='/',node_name='servo_node',
+                         topic_type='snowbot_ctl_msgs/msg/PositionObservation')])
+            with patch.dict('sys.modules', {'snowbot_ctl_msgs':S(),
+                'snowbot_ctl_msgs.msg':S(PositionObservation=object),
+                'rclpy.qos':S(qos_profile_sensor_data=object())}):
+                observer = PdoObserver(node, writer)
+            raw = frame(status=[0x218]*20)
+            raw.pop('stamp')
+            msg = S(header=S(stamp=S(sec=10,nanosec=0)), session=8, command_sequence=12,
+                    hold_valid=True, hold_sample=1, hold_position=array('d', [.3]*16),
+                    wrench=array('f', [float('nan')]+[1.]*11), sensor_valid_mask=1,
+                    sensor_data_no=array('H', [10, 20]), sensor_age=array('d', [.002, .5]), **raw)
+            with patch('time.time',return_value=10.003),patch('time.monotonic',return_value=1.):
+                observer.receive(msg)
+            observer.close(1.01)
+            writer.close()
+            row = json.loads((Path(directory)/'pdo-observation.jsonl').read_text())
+            observed, payload = row['data']['data'], row['data']['data']['observation']
+            self.assertEqual((observed['received_ros'], observed['received_monotonic']), (10.003, 1.))
+            self.assertEqual((payload['stamp'], payload['pdo_age'], payload['boot_id'], payload['pdo_sample']),
+                             (10., .001, 123, 1))
+            self.assertEqual((payload['session'], payload['command_sequence'], payload['hold_sample']), (8, 12, 1))
+            self.assertEqual(payload['hold_position'], [.3]*16)
+            self.assertEqual(payload['sensor_data_no'], [10, 20])
+            self.assertEqual(payload['sensor_age'], [.002, .5])
+            self.assertEqual(payload['wrench'][0], 'nan')
+            self.assertNotIn('reference_position', payload)
+            self.assertNotIn('output_position', payload)
+            self.assertNotIn('output_valid', payload)
+            self.assertEqual(writer.status()['dropped'], 0)
+            self.assertEqual(writer.status()['error'], '')
+
     def test_observer_only_subscribes_and_reports_unverified_publishers(self):
         callbacks = []
         info = S(node_namespace='/',node_name='servo_node',topic_type='snowbot_ctl_msgs/msg/PositionObservation')

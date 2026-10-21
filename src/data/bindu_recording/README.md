@@ -36,6 +36,14 @@ ros2 run bindu_runtime recorder --ros-args -r __ns:=/bindu_sim \
 - 覆盖范围是记录器实际收到的消息，不能用“丢弃为零”推断上游从未丢数据。
 - 当前不是完整训练数据处理、质检或回放系统；模式一致性检查由 ROS 记录节点完成。
 
+腰臂轨迹沿用现有记录链路：`execution/accepted`完整保存`MotionCommand`的目标、关节顺序、原时间和有效期；`execution/state`完整保存执行参考、实测、来源时间及命令／任务身份；`events`完整保存`RuntimeEvent`。节点按消息字段自动序列化，无需为轨迹或可选阻抗重复定义一套日志消息。`ExecutionState.reference`表示该执行层发布的参考，不能据此认定为servo当前生效参考或最终硬件输出。
+
+Snowbot补充PDO观察由非实时显示进程中的`PdoObserver`接收，经已有`FaultWindow`与`DiagnosticWriter`保存故障前后窗口。窗口保留同一消息的`boot_id`／`pdo_sample`、会话／命令序号、实测、固定保持回执，以及可选的`wrench`／`sensor_valid_mask`／`sensor_data_no`／`sensor_age`；缺失字段保持缺失，数值不由日志端补齐或推算。`received_ros`／`received_monotonic`是观察进程的接收时间，消息`header.stamp`（保存为`stamp`）是发布时刻，`pdo_age`及各臂`sensor_age`保留源端报告的采样年龄。窗口落盘外层的接收时间可以晚于原接收时间，不能将它当成设备采样时间。PDO号推进、接收帧率及写入无丢弃均不能证明力样本完整或现场标定正确。
+
+观察端还可按原值复制消息存在时的`reference_mode`／`segment_id`／`sample_time_ns`、`reference_position/speed/acceleration[16]`及`output_position/speed/torque/kp/kd[16]`／`output_valid`，仅随上述选中窗口落盘。数组顺序、单位、源时钟和“最终输出”的实际含义以servo消息及写入点为准；未生成对应消息字段或未完成servo接入时，这些数据不会出现，不能用上层参考或实测替代。`q_goal`由原接纳命令记录；接入侧须另在现有接纳事件或段元数据中建立`command_id`与`session/command_sequence/segment_id`、租约／epoch和原期限的映射，观察端不按时间接近推断对应关系。
+
+这些队列只供ROS回调和非实时观察侧使用；Python的`put_nowait`仍包含锁，不能从PDO实时线程调用。servo只旁路复制固定大小快照，发布和日志在非实时侧完成；不因1000 Hz轨迹采样默认开启全程1000 Hz JSON记录。
+
 ## 源码导航
 
 | 入口 | 内容 |
