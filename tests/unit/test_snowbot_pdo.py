@@ -360,7 +360,7 @@ class ObserverTests(unittest.TestCase):
 
     def test_missing_optional_interface_is_visible_without_starting_ros_or_hardware(self):
         # This interface is optional on the Mac and on an original vendor install.
-        with patch.dict('sys.modules',{'snowbot_ctl_msgs':None}):
+        with patch.dict('sys.modules',{'snowbot_ctl_msgs':None,'snowbot_ctl_msgs.msg':None}):
             observer=PdoObserver(S())
         state=observer.sample(10.,1.)
         self.assertFalse(state['available'])

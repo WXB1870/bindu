@@ -60,7 +60,9 @@ def observation_payload(msg):
     for name in ('boot_id', 'pdo_sample', 'pdo_age', 'wkc', 'expected_wkc', 'valid_mask'):
         value[name] = getattr(msg, name)
     for name in ('position', 'speed', 'status'):
-        value[name] = list(getattr(msg, name))
+        item = getattr(msg, name)
+        # ROS fixed arrays may be NumPy arrays; list() keeps their scalar types.
+        value[name] = item.tolist() if hasattr(item, 'tolist') else list(item)
     # Preserve optional evidence without assigning physical units to an ambiguous field.
     arrays = ('current', 'torque', 'torque_raw', 'hold_position', 'wrench', 'sensor_data_no', 'sensor_age',
               'reference_position', 'reference_speed', 'reference_acceleration',
@@ -73,7 +75,7 @@ def observation_payload(msg):
                  'execution_mode', 'trajectory_phase', 'reference_valid', 'hold_basis'):
         if hasattr(msg, name):
             item = getattr(msg, name)
-            value[name] = list(item) if name in arrays else item
+            value[name] = (item.tolist() if hasattr(item, 'tolist') else list(item)) if name in arrays else item
     return value
 
 

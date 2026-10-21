@@ -655,11 +655,12 @@ function render(data,online){
   const state=operatorState(p,online,fresh,pcFresh,tracked);
   badge('system-health',!online?'状态服务断连':!fresh?'反馈不可用':!pcFresh?'PICO 状态过期':p.phase==='locked'?'控制已锁定':tracked?'反馈在线':'等待手柄',!online||!fresh||!pcFresh?'bad':p.phase==='locked'?'warn':tracked?'good':'warn');
   const modelLive=viewer&&meshConnected&&fresh&&modelMeshes>0&&data.model&&finite(data.model.updated_at)&&Math.max(0,data.server_time-data.model.updated_at)<=2;
-  badge('model-health',modelLive?'模型实时更新':meshConnected&&!modelMeshes?'场景加载中':meshConnected?'模型保持末帧':'模型未连接',modelLive?'good':'warn');
+  const modelPreview=data.model?.pose_source==='model_preview';
+  badge('model-health',modelLive?'模型实时更新':meshConnected&&!modelMeshes?'场景加载中':meshConnected&&modelPreview?'静态模型预览':meshConnected?'模型保持末帧':'模型未连接',modelLive?'good':'warn');
   const toolSource=$('tool-source');toolSource.hidden=!(modelLive&&data.model.tool_visible);
   toolSource.textContent=data.model?.tool_source==='measured'?'工具反馈':'工具预览，随左握点';
   const overlay=$('stale');overlay.hidden=!!modelLive;
-  if(viewer)overlay.textContent=!online?'状态服务断连，模型可能保留最后一帧。':!fresh?'关节反馈已过期，当前显示为最后一帧。':!meshConnected?'模型服务连接中，正在重试…':!modelMeshes?'正在载入机器人模型…':'模型尚未确认更新，当前显示可能保留末帧。';
+  if(viewer)overlay.textContent=!online?'状态服务断连，模型可能保留最后一帧。':modelPreview?'静态模型预览，尚未收到有效关节反馈；不代表机器人当前姿态。':!fresh?'关节反馈已过期，当前显示为最后一帧。':!meshConnected?'模型服务连接中，正在重试…':!modelMeshes?'正在载入机器人模型…':'模型尚未确认更新，当前显示可能保留末帧。';
   text('phase',state.status);$('phase').className='phase '+state.tone;$('control-panel').dataset.tone=state.tone;
   text('reason',state.reason);text('next-step',state.next);text('action-key',state.key);$('action-key').hidden=!state.key;
   text('reason-code',pcFresh?p.reason||'—':data.code||'STATE_UNAVAILABLE');

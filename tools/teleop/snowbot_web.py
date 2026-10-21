@@ -370,6 +370,9 @@ def serve(args, read_state=None, stop=None):
         vis = MeshcatVisualizer(model, collision, visual)
         vis.initViewer(viewer=viewer, open=False)
         vis.loadViewerModel(rootNodeName='snowbot')
+        # Meshes need an initial FK update even before the first device sample.
+        # This only assembles a static model preview; it never fills feedback.
+        vis.display(pin.neutral(model))
         viewer['/Background'].set_property('top_color',[19,28,41])
         viewer['/Background'].set_property('bottom_color',[31,41,54])
         viewer['/Axes'].set_property('visible',False)
@@ -404,6 +407,7 @@ def serve(args, read_state=None, stop=None):
             except queue.Empty:
                 pass
             status='WAITING';tool_source='unavailable';tool_visible=False
+            pose_source='last_measured' if count else 'model_preview'
             try:
                 value=read_state()
                 q=validate_state(value,time.time(),args.run_id,data['profile_hash'],names,
@@ -422,6 +426,7 @@ def serve(args, read_state=None, stop=None):
                         pose=vis.data.oMf[model.getFrameId(config[side+'_frame'])].homogeneous
                         viewer[side+'_tip'].set_transform(pose)
                     last_stamp=value['feedback_stamp'];count+=1
+                pose_source='measured'
                 pico=value.get('pico',{})
                 left_pose=vis.data.oMf[model.getFrameId(config['left_frame'])].homogeneous
                 tool_pose,tool_source=tool_display_pose(value,left_pose,mount,time.time())
@@ -435,6 +440,7 @@ def serve(args, read_state=None, stop=None):
             if time.monotonic()-last_save>=1.:
                 model_status.publish(dict(updated_at=time.time(),
                     url=web_url,applied_frames=count,status=status,robot_commands_published=0,
+                    pose_source=pose_source,
                     tool_source=tool_source,tool_visible=tool_visible))
                 last_save=time.monotonic()
             time.sleep(.033)
