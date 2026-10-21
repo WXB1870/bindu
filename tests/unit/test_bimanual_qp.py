@@ -18,6 +18,17 @@ from types import SimpleNamespace as S
 from bindu_kinematics.bimanual_worker import BimanualWorker
 
 
+class TrackingFeedbackConfigTests(unittest.TestCase):
+    def test_unknown_feedback_source_is_rejected_before_loading_native_code(self):
+        for source in ('actual', '', None, True, []):
+            with self.subTest(source=source), self.assertRaisesRegex(ValueError, 'TRACKING_FEEDBACK_CONFIG'):
+                BimanualQP(dict(tracking_feedback=source), None)
+
+    def test_reference_tracking_requires_reference_kinematics(self):
+        with self.assertRaisesRegex(ValueError, 'REFERENCE_TRACKING_REQUIRES_REFERENCE_KINEMATICS'):
+            BimanualQP(dict(tracking_feedback='reference'), None)
+
+
 class InitialCollisionRecoveryTests(unittest.TestCase):
     def policy(self):
         from bindu_kinematics.tool_geometry import InitialSelfCollisionRecovery
@@ -578,6 +589,67 @@ class NativeBimanual(unittest.TestCase):
         actual=np.empty((4,4))
         self.assertTrue(solver.lib.bq_tool_pose(solver.handle,solver._ptr(q),solver.nq,solver._ptr(actual)))
         self.assertGreater(float((actual[:3,3]-target[:3,3]) @ (target[:3,3]-home[:3,3])),1e-12)
+
+    def test_nominal_tool_target_does_not_advance_to_compensate_measured_lag(self):
+        solver=BimanualQP(dict(self.config,reference_kinematics=True,
+            tracking_feedback='reference',posture_gain=0.),self.profile)
+        self.addCleanup(solver.close)
+        home=solver.capture(self.feedback);target=home.copy();target[0,3]+=.01
+        reference,_=propose(solver,self.feedback,target)
+        q=solver._q(self.feedback)
+        for name,value in zip(solver.names,reference):q[solver.model_names.index(name)]=value
+        nominal=np.empty((4,4))
+        self.assertTrue(solver.lib.bq_tool_pose(solver.handle,solver._ptr(q),solver.nq,solver._ptr(nominal)))
+        self.assertGreater(np.linalg.norm(nominal[:3,3]-home[:3,3]),1e-6)
+        # The nominal goal has arrived; actual feedback deliberately stays put.
+        initial=np.array(reference)
+        for _ in range(50):
+            reached=dict(self.feedback);reached.update(zip(solver.names,reference))
+            expected,_=propose(solver,reached,nominal,reference=reference)
+            reference,_=propose(solver,self.feedback,nominal,reference=reference)
+            np.testing.assert_allclose(reference,expected,atol=1e-8)
+        # Tiny closure residuals may still settle, independent of measured lag.
+        np.testing.assert_allclose(reference,initial,atol=1e-6)
+        # A new operator goal must still move the nominal reference.
+        moved=nominal.copy();moved[0,3]+=.005
+        advanced,_=propose(solver,self.feedback,moved,reference=reference)
+        self.assertGreater(np.linalg.norm(np.array(advanced)-reference),1e-6)
+
+    def test_nominal_tool_tracking_validates_observation_without_chasing_sag(self):
+        solver=BimanualQP(dict(self.config,reference_kinematics=True,tracking_feedback='reference',
+            max_tool_feedback_translation_m=.05,max_tool_feedback_rotation_rad=.1),self.profile)
+        self.addCleanup(solver.close)
+        target=solver.capture(self.feedback);observed=target.copy();observed[2,3]-=.01
+        reference=[self.feedback[n] for n in solver.names]
+        out,_=solver.solve(self.feedback,target,reference=reference,dt=.01,tool_feedback=observed)
+        np.testing.assert_allclose(out,reference,atol=1e-10)
+        observed[2,3]-=.05
+        with self.assertRaisesRegex(ValueError,'TOOL_FEEDBACK_DISAGREEMENT'):
+            solver.solve(self.feedback,target,reference=reference,dt=.01,tool_feedback=observed)
+        self.assertFalse(solver.captured)
+
+    def test_nominal_tracking_keeps_actual_joint_grasp_and_reference_guards(self):
+        for fault in ('joint','grasp','reference'):
+            with self.subTest(fault=fault):
+                solver=BimanualQP(dict(self.config,reference_kinematics=True,
+                    tracking_feedback='reference'),self.profile)
+                self.addCleanup(solver.close)
+                target=solver.capture(self.feedback)
+                feedback=dict(self.feedback);reference=np.array([feedback[n] for n in solver.names])
+                if fault=='joint':
+                    name=solver.names[0];feedback[name]=self.profile.limits[name][1]+.001
+                    reference[0]=feedback[name]-.002
+                    reason='MEASURED_POSITION_LIMIT'
+                elif fault=='grasp':
+                    feedback[solver.names[-2]]+=.2
+                    reference=np.array([feedback[n] for n in solver.names])
+                    reason='MEASURED_GRASP_ERROR'
+                else:
+                    reference[0]+=solver.max_reference_error+.001
+                    reason='REFERENCE_TRACKING_ERROR'
+                with self.assertRaisesRegex(ValueError,reason):
+                    propose(solver,feedback,target,reference=reference)
+                self.assertFalse(solver.captured)
 
     def test_position_reference_respects_profile_and_relative_constraint(self):
         tool=self.qp.capture(self.feedback)

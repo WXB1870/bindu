@@ -40,7 +40,7 @@ PY
 
 [雪铲配置](../../integration/bindu_runtime/config/robots/snowbot/bimanual_snowbot_shovel.json) 选择 `waist + left_arm + right_arm`，对应两轴腰部与双臂各七轴。控制链为工具目标 → `BimanualQP` 候选关节位置 → 共享执行器接纳；头部和两侧第八轴保留为上下文，不随工具目标自动控制。
 
-- `reference_kinematics=true` 时，在已接纳参考处计算受控关节的 FK／Jacobian；工具跟踪误差使用实测关节推得的工具位姿，保护仍检查实际姿态。参考只在执行器接纳后推进。
+- `reference_kinematics=true` 时，在已接纳参考处计算受控关节的 FK／Jacobian；`tracking_feedback`缺省使用实测跟踪，可显式选择`reference`生成名义运动，将保护范围内的受力偏移留给下层处理，配置语义见[QP参数](../bindu_bimanual_qp/README.md#双臂qp参数与abi)。保护仍检查实际姿态，参考只在执行器接纳后推进。
 - 工具速度前馈只使用已处理输入；换握／重捕获清空历史。姿态参考余量由 `posture_reference_margin_rad` 配置，实际姿态边界仍独立检查。
 - 在线几何检查覆盖配置内的机器人、工具、地面与箱体，并沿候选关节段离散采样；它用于拒绝危险候选，不提供主动绕障或连续碰撞保证。
 

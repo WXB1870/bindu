@@ -37,6 +37,11 @@ class BimanualQP:
         self.reference_kinematics = config.get('reference_kinematics', False)
         if type(self.reference_kinematics) is not bool:
             raise ValueError('BIMANUAL_REFERENCE_KINEMATICS_CONFIG')
+        self.tracking_feedback = config.get('tracking_feedback', 'measured')
+        if not isinstance(self.tracking_feedback, str) or self.tracking_feedback not in ('measured', 'reference'):
+            raise ValueError('BIMANUAL_TRACKING_FEEDBACK_CONFIG')
+        if self.tracking_feedback == 'reference' and not self.reference_kinematics:
+            raise ValueError('BIMANUAL_REFERENCE_TRACKING_REQUIRES_REFERENCE_KINEMATICS')
         self.feedforward = config.get('tool_velocity_feedforward', False)
         if type(self.feedforward) is not bool:
             raise ValueError('BIMANUAL_FEEDFORWARD_CONFIG')
@@ -515,6 +520,17 @@ class BimanualQP:
         if self.shared_motion_weight > 0 and not self.lib.bq_shared_motion_weight(self.handle,self.shared_motion_weight):
             raise ValueError('BIMANUAL_SHARED_MOTION_WEIGHT:'+self._error())
 
+    def _check_measured_limits(self, measured):
+        # Reference-based tasks must not hide actual joint/posture violations
+        # when native kinematics are evaluated at the nominal configuration.
+        for name, value in zip(self.names, measured):
+            lo, hi = self.limits[name]
+            if not lo-1e-9 <= value <= hi+1e-9:
+                raise ValueError('BIMANUAL_MEASURED_POSITION_LIMIT:'+name)
+        if self.posture_policy is not None and (np.any(measured < self.posture_lower-1e-9) or
+                                                np.any(measured > self.posture_upper+1e-9)):
+            raise ValueError('BIMANUAL_MEASURED_POSTURE_ERROR')
+
     def capture_independent(self, feedback):
         self.captured=False;self.independent_abi()
         q=self._q(feedback);poses=np.empty((2,4,4),dtype=np.float64)
@@ -545,6 +561,10 @@ class BimanualQP:
                 raise ValueError('BIMANUAL_REFERENCE_LAYOUT')
             if np.max(np.abs(reference-measured))>self.max_reference_error:
                 raise ValueError('BIMANUAL_REFERENCE_TRACKING_ERROR')
+            if self.tracking_feedback == 'reference':
+                self._check_measured_limits(measured)
+                q = q.copy()
+                q[[self.model_names.index(n) for n in self.names]] = reference
             poses=np.asarray(targets,dtype=float)
             if poses.shape!=(2,4,4):raise ValueError('INDEPENDENT_ARMS_TARGET_LAYOUT')
             left,right=(self._transform(pose) for pose in poses)
@@ -586,8 +606,10 @@ class BimanualQP:
         accepted reference; measured feedback still gates grasp, tracking and
         collision safety. dt is explicit, not inferred from VR frequency. A large tracking error requires hold and a fresh capture;
         silently realigning a moving reference would introduce a position jump.
-        An optional calibrated tool observation replaces only the tool tracking
-        error. Joint/grasp/limit/collision guards still use measured joints.
+        tracking_feedback='reference' generates nominal motion without chasing
+        measured compliance offsets. Measured joints/observations retain their
+        safety checks; an optional tool observation replaces the tracking error
+        only in the default 'measured' mode.
         Freshness and frame alignment are the caller's responsibility; explicit
         correction bounds are required and excessive disagreement rejects.
         """
@@ -616,6 +638,8 @@ class BimanualQP:
             raise ValueError('BIMANUAL_MEASURED_POSTURE_ERROR')
         if np.max(np.abs(reference-measured)) > self.max_reference_error:
             raise ValueError('BIMANUAL_REFERENCE_TRACKING_ERROR')
+        if self.tracking_feedback == 'reference':
+            self._check_measured_limits(measured)
         measured_tool = None
         if self.reference_kinematics:
             measured_tool = np.empty((4,4), dtype=np.float64)
@@ -678,8 +702,9 @@ class BimanualQP:
                             previous[:3,3]-previous[:3,:3]@self.tracking_point)/gap
                         velocity[3:] = pin.log3(target[:3,:3] @ previous[:3,:3].T)/gap
             native_started = time.perf_counter()
+            tracking_tool = measured_tool if self.tracking_feedback == 'measured' else None
             ok = self.lib.bq_solve_tracking(*args, self._ptr(velocity),
-                None if measured_tool is None else self._ptr(measured_tool), dt, self._ptr(out), self._ptr(metrics))
+                None if tracking_tool is None else self._ptr(tracking_tool), dt, self._ptr(out), self._ptr(metrics))
         else:
             native_started = time.perf_counter()
             ok = self.lib.bq_solve(*args, dt, self._ptr(out), self._ptr(metrics))

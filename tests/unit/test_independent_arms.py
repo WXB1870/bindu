@@ -148,6 +148,39 @@ class IndependentNativeTests(unittest.TestCase):
             if mask!=3:
                 np.testing.assert_allclose(out[nshared+(1-side)*nleft:nshared+(2-side)*nleft],0.,atol=1e-12)
 
+    def test_nominal_tracking_holds_reference_despite_measured_arm_lag(self):
+        profile=Profile.load(ROOT/'src/integration/bindu_runtime/config/robots/snowbot/snowbot_real_position.json')
+        solver=BimanualQP(dict(self.cfg,tracking_feedback='reference',posture_gain=0.),profile)
+        self.addCleanup(solver.close)
+        solver.empty_collision_check=self.solver.empty_collision_check
+        targets=solver.capture_independent(self.feedback);targets[0,2,3]+=.01
+        reference,_=solver.solve_independent(self.feedback,targets,active_mask=1,
+            reference=[0.]*len(solver.names),dt=.01)
+        self.assertGreater(np.max(np.abs(reference)),1e-7)
+        q=solver._q(self.feedback)
+        for name,value in zip(solver.names,reference):q[solver.model_names.index(name)]=value
+        nominal=np.empty((2,4,4))
+        self.assertTrue(solver.lib.bq_flange_poses(solver.handle,solver._ptr(q),solver.nq,
+            solver._ptr(nominal[0]),solver._ptr(nominal[1])))
+        initial=np.array(reference)
+        for _ in range(10):
+            reached=dict(self.feedback);reached.update(zip(solver.names,reference))
+            expected,_=solver.solve_independent(reached,nominal,active_mask=1,
+                reference=reference,dt=.01)
+            reference,_=solver.solve_independent(self.feedback,nominal,active_mask=1,
+                reference=reference,dt=.01)
+            np.testing.assert_allclose(reference,expected,atol=1e-8)
+        np.testing.assert_allclose(reference,initial,atol=1e-8)
+        nshared=len(solver.shared_names);nleft=len(profile.groups['left_arm'])
+        np.testing.assert_allclose(reference[:nshared],0.,atol=1e-12)
+        np.testing.assert_allclose(reference[nshared+nleft:],0.,atol=1e-12)
+        invalid=dict(self.feedback);name=solver.names[0]
+        invalid[name]=profile.limits[name][1]+.001
+        reference=np.array([invalid[n] for n in solver.names]);reference[0]-=.002
+        with self.assertRaisesRegex(ValueError,'MEASURED_POSITION_LIMIT'):
+            solver.solve_independent(invalid,nominal,active_mask=1,reference=reference,dt=.01)
+        self.assertFalse(solver.captured)
+
     def test_tracking_timestep_collision_and_limits_are_enforced(self):
         poses=self.solver.capture_independent(self.feedback)
         with self.assertRaisesRegex(ValueError,'INTEGRATION_INTERVAL'):

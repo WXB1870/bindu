@@ -105,6 +105,10 @@ Python 调用入口为 [bindu_kinematics/bimanual.py](../bindu_kinematics/bindu_
 
 积分与保护字段：`max_integration_interval`缺省0.1 s且不可超过0.1 s；`max_reference_error`缺省0.15，按各关节位置单位检查参考与实测偏差，超过后要求停止并重新捕获；`sample_period`是离线采样步长，运行节点传入实际候选采样间隔。`solve_timeout_us`按墙钟约束单次候选求解，从输入校验、实测握姿准备到原生调用、限位／几何复核、结果打包和前馈样本准备；现有配置保留30 ms。返回的`solve_us`指标仍仅为QP内部累计计时，不能当作完整调用或指令往返延迟。worker往返另由`worker_timeout`约束，缺省为`solve_timeout_us/1e6 + 0.2`秒，初始化由`worker_startup_timeout`约束（缺省30秒）。这些门限不等于已验证真机延迟。
 
+Python封装的`tracking_feedback`显式选择跟踪误差来源，适用于持工具与普通双臂；缺省`measured`保持现有位置跟踪，实测工具偏差会继续产生速度并推进已接纳关节参考。设置`"tracking_feedback": "reference"`时必须同时设置`"reference_kinematics": true`：受控关节的FK／Jacobian和任务误差都由已接纳参考计算，未控制关节仍使用实测上下文。目标固定且名义位姿已到达时，不因实测受力偏移继续追偿；尚未完成的名义运动及姿态偏好仍可推进，候选仍只在执行器接纳后提交。可选`tool_feedback`继续校验标定／差异边界，但在该模式不用于任务追踪。
+
+名义模式保留实测关节／姿态限位、参考偏差、握持、路径碰撞和超时保护，以及整组参考领先量限制；允许的柔顺偏移仍受这些门槛约束，不自动放宽或重新捕获。现有纯位置配方保留缺省`measured`；选择名义模式不代表已接通阻抗执行，真实后端仍需统一名义参考、坐标与控制权／停止契约并由现场验收。
+
 超时诊断为`BIMANUAL_QP_TIMEOUT:native|validation:wall_us=…:cpu_us=…:native_us=…:qp_us=…:geometry_us=…`：`native`检查覆盖输入准备至原生返回，`validation`检查覆盖后续复核、输出与前馈样本准备。`last_timing`保留同一阶段的墙钟、当前线程CPU及分段时间；墙钟明显高于线程CPU提示等待／调度，同线程GC则也消耗CPU，仍须结合GC或线程探针确认。超时使捕获失效，迟到候选不会返回成功或推进前馈样本；检查是调用返回后的拒绝门槛，不能抢占正在执行的原生函数，父进程另以worker期限处理卡住的子进程。
 
 2026-10-14专项在保留原生函数与几何方法的对照中复现一次64.5 ms调用，其中同线程二代GC占62.1 ms；另一分段对照确认停顿发生在几何复核，QP内部仅12.3 µs。NumPy `ctypes.data_as()`转换留下的循环引用会促发扫描；现改为直接地址转换并显式保持数组生命周期。独立spawn的QP worker在初始化期限内先收集再冻结常驻模型／导入图，后续GC保持开启，父进程GC不变，正常退出显式释放原生句柄。完整测试中的旧超时没有分段探针，不能据此证明该次历史异常的唯一原因。对照、回归与失败日志见`artifacts/qp-timeout-2026-10-14/verification.json`；普通系统负载、GIL竞争与Orin长期延时仍需实测，这些改动不构成硬实时保证。
