@@ -72,9 +72,45 @@ class PositionSessionTests(unittest.TestCase):
 
     def test_ros_publication_without_pdo_progress_is_rejected(self):
         self.health.require(CONTROL_GROUPS)
-        self.now += .025
-        self.steady += .025
+        self.now += .041
+        self.steady += .041
         self.health.observe(observation(self.now, pdo_sample=2))
+        with self.assertRaisesRegex(RuntimeError, 'NOT_ADVANCING'):
+            self.health.require(CONTROL_GROUPS)
+
+    def test_ros_feedback_budget_is_40ms_with_independent_20ms_pdo_limit(self):
+        for age in (.021, .039):
+            with self.subTest(ros_age=age):
+                decode_observation(observation(pdo_age=0.), 10.+age)
+        decode_observation(observation(0., pdo_age=0.), .040)
+        with self.assertRaisesRegex(ValueError, 'PDO_STALE'):
+            decode_observation(observation(pdo_age=0.), 10.041)
+        with self.assertRaisesRegex(ValueError, 'PDO_STALE'):
+            decode_observation(observation(pdo_age=.021), 10.)
+        decode_observation(observation(pdo_age=.020), 10.)
+        decode_observation(observation(pdo_age=.010), 10.029)
+        with self.assertRaisesRegex(ValueError, 'PDO_STALE'):
+            decode_observation(observation(pdo_age=.010), 10.031)
+
+    def test_ros_progress_tolerates_39ms_but_repeated_samples_still_expire(self):
+        self.now += .039
+        self.steady += .039
+        self.health.observe(observation(self.now, pdo_sample=3))
+        self.assertEqual(self.health.advances, 2)
+        self.health.require(CONTROL_GROUPS)
+        self.now += .041
+        self.steady += .041
+        self.health.observe(observation(self.now, pdo_sample=3))
+        with self.assertRaisesRegex(RuntimeError, 'NOT_ADVANCING'):
+            self.health.require(CONTROL_GROUPS)
+
+    def test_cached_ros_feedback_expires_after_40ms_without_new_observations(self):
+        self.health.observation.pdo_age = 0.
+        self.now += .039
+        self.steady += .039
+        self.health.require(CONTROL_GROUPS)
+        self.now += .002
+        self.steady += .002
         with self.assertRaisesRegex(RuntimeError, 'NOT_ADVANCING'):
             self.health.require(CONTROL_GROUPS)
 

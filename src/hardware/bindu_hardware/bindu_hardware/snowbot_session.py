@@ -9,6 +9,9 @@ CONTROL_GROUPS = ARMS | {'waist'}
 # Independent wire order; QP/resource order is mapped by joint name.
 CONTROL_NAMES = (*GROUPS['left_arm'], *GROUPS['right_arm'], *GROUPS['waist'])
 CONTROL_MASK = sum(SLOT_MASKS[g] for g in CONTROL_GROUPS)
+# ROS delivery can lag the local PDO sampler. Keep these budgets independent.
+ROS_FEEDBACK_TIMEOUT_S = .04
+PDO_MAX_AGE_S = .02
 SLOTS = [*(f'arm_l_joint_{i}' for i in range(1, 9)),
          *(f'arm_r_joint_{i}' for i in range(1, 9)),
          'head_joint_1', 'head_joint_2', 'body_joint_1', 'body_joint_2']
@@ -20,8 +23,9 @@ def decode_observation(msg, now):
     stamp = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
     if (not msg.boot_id or not msg.pdo_sample or
             not all(math.isfinite(x) for x in (stamp, msg.pdo_age, now)) or
-            not 0 <= now-stamp <= .02 or not 0 <= msg.pdo_age <= .02 or
-            now-stamp+msg.pdo_age > .02):
+            not 0 <= now-stamp <= ROS_FEEDBACK_TIMEOUT_S or
+            not 0 <= msg.pdo_age <= PDO_MAX_AGE_S or
+            now-stamp+msg.pdo_age > ROS_FEEDBACK_TIMEOUT_S):
         raise ValueError('SNOWBOT_PDO_STALE')
     if msg.expected_wkc <= 0 or msg.wkc != msg.expected_wkc:
         raise ValueError('SNOWBOT_PDO_WKC')
@@ -62,7 +66,7 @@ class SessionHealth:
                 raise ValueError('SNOWBOT_PDO_SEQUENCE')
             if msg.pdo_sample > self.sample:
                 self.advances = (min(2, self.advances+1) if self.progress is not None and
-                    0 <= self.steady()-self.progress <= .02 else 1)
+                    0 <= self.steady()-self.progress <= ROS_FEEDBACK_TIMEOUT_S else 1)
                 self.progress = self.steady()
             self.boot, self.sample = msg.boot_id, msg.pdo_sample
             self.observation, self.received['observation'] = msg, self.steady()
@@ -125,8 +129,8 @@ class SessionHealth:
         if obs is not None and any(status & 8 for i, status in enumerate(obs.status) if CONTROL_MASK & (1 << i)):
             raise RuntimeError('SNOWBOT_DRIVE_FAULT')
         if (obs is None or self.progress is None or self.advances < 2 or
-                not 0 <= self.steady()-self.progress <= .02 or
-                not 0 <= self.steady()-self.received['observation'] <= .02):
+                not 0 <= self.steady()-self.progress <= ROS_FEEDBACK_TIMEOUT_S or
+                not 0 <= self.steady()-self.received['observation'] <= ROS_FEEDBACK_TIMEOUT_S):
             raise RuntimeError('SNOWBOT_PDO_NOT_ADVANCING')
         try:
             decode_observation(obs, self.now())
