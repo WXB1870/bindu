@@ -80,8 +80,8 @@ def observe(args, publish=None, stop=None):
         args.trace_file.parent.mkdir(parents=True, exist_ok=True)
     from tools.teleop.snowbot_diagnostics import DiagnosticWriter
     real_vendor = args.runtime_mode == 'real' and args.device_backend == 'snowbot_vendor'
-    # A 10 s / 1 kHz prehistory flush must fit without blocking the observer.
-    diagnostics=DiagnosticWriter(args.trace_file, capacity=32768 if real_vendor else 8192) if args.trace_file else None
+    # PDO prehistory is capped at 100 Hz; the monitor still checks every frame.
+    diagnostics=DiagnosticWriter(args.trace_file) if args.trace_file else None
     pdo_observer = None
     if real_vendor:
         from tools.teleop.snowbot_pdo import PdoObserver
@@ -375,7 +375,7 @@ def main():
                         help='Operator load/support declaration through PicoContext')
     parser.add_argument('--external-support', action='store_true')
     parser.add_argument('--state-file', type=Path)
-    parser.add_argument('--trace-file', type=Path, help='Async diagnostics: snapshots up to 10 Hz plus received ROS inputs, feedback and events')
+    parser.add_argument('--trace-file', type=Path, help='Sampled async diagnostics: 10 Hz states/inputs, 1 Hz health, plus transitions and command events')
     parser.add_argument('--run-id', required=True)
     parser.add_argument('--namespace', default='bindu_vr_sim')
     parser.add_argument('--robot-config', default=str(ROOT/'src/integration/bindu_runtime/config/robots/snowbot/robot_snowbot.json'))

@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import tempfile
 import threading
+from types import SimpleNamespace as S
 import unittest
 from unittest.mock import patch
 
@@ -16,7 +17,7 @@ spec.loader.exec_module(diagnostics)
 class DiagnosticTests(unittest.TestCase):
     def test_rotation_retains_order_and_shutdown_drains_all_streams(self):
         with tempfile.TemporaryDirectory() as directory:
-            root=Path(directory);writer=diagnostics.DiagnosticWriter(root/'diagnostics.jsonl',chunk_bytes=180)
+            root=Path(directory);writer=diagnostics.DiagnosticWriter(root/'diagnostics.jsonl',chunk_bytes=180,sampling=False)
             for i in range(50):
                 writer.record('vr-raw',dict(seq=i,pose=[1.,float('nan')]))
                 writer.record('execution-state',dict(seq=i))
@@ -80,3 +81,72 @@ class DiagnosticTests(unittest.TestCase):
             saved=json.loads(path.read_text())['data']['observation']
             self.assertEqual(saved['boot_id'],2**64-1)
             self.assertEqual(saved['status'],[0x40]*20)
+
+
+class SamplingTests(unittest.TestCase):
+    def test_regular_input_is_capped_per_hand_before_ros_serialization(self):
+        sampler=diagnostics.DiagnosticSampler()
+        messages={side:S(side=side,source_id='vr',valid=True,button_edges=[0]*8,
+                         grip=.8,trigger=0.) for side in ('left','right')}
+        kept={side:0 for side in messages}
+        for tick in range(1000):
+            for side,msg in messages.items():
+                msg.seq=tick
+                kept[side]+=sampler.keep('vr-raw',msg,tick*.001)
+        self.assertTrue(all(9 <= count <= 10 for count in kept.values()),kept)
+        self.assertEqual(sampler.sampled_out,2000-sum(kept.values()))
+
+    def test_edges_release_reconnect_invalid_and_clock_reversal_are_kept(self):
+        sampler=diagnostics.DiagnosticSampler()
+        msg=S(side='left',source_id='vr',valid=True,button_edges=[0]*8,grip=.8,trigger=0.)
+        self.assertTrue(sampler.keep('vr-raw',msg,1.))
+        self.assertFalse(sampler.keep('vr-raw',msg,1.001))
+        for tick,change in enumerate((dict(button_edges=[1]+[0]*7),dict(grip=.2),
+                dict(valid=False),dict(source_id='reconnected'),dict(trigger=.9))):
+            msg.__dict__.update(change)
+            self.assertTrue(sampler.keep('vr-raw',msg,1.002+tick*.001))
+        self.assertTrue(sampler.keep('vr-raw',msg,.1))
+        for i in range(1000):
+            msg.source_id=str(i);sampler.keep('vr-raw',msg,2.+i*.001)
+        self.assertEqual(len(sampler.last),1)
+
+    def test_health_is_one_hz_with_immediate_fault_and_recovery(self):
+        sampler=diagnostics.DiagnosticSampler()
+        value=dict(valid=True,reasons=[],fault_mask=0)
+        self.assertTrue(sampler.keep('pdo-health',value,0.))
+        self.assertFalse(sampler.keep('pdo-health',value,.5))
+        self.assertTrue(sampler.keep('pdo-health',dict(value,fault_mask=1),.501))
+        self.assertTrue(sampler.keep('pdo-health',value,.502))
+        self.assertFalse(sampler.keep('pdo-health',value,1.))
+        self.assertTrue(sampler.keep('pdo-health',value,1.503))
+
+    def test_feedback_command_ids_do_not_bypass_rate_and_stop_changes_are_kept(self):
+        sampler=diagnostics.DiagnosticSampler()
+        value=dict(instance_id='execution',state='RUNNING',code='OK',stop_failures=[])
+        self.assertTrue(sampler.keep('execution-state',value,1.))
+        self.assertFalse(sampler.keep('execution-state',dict(value,command_id='new',revision=20),1.001))
+        self.assertTrue(sampler.keep('execution-state',dict(value,stop_failures=['STOP_UNCONFIRMED']),1.002))
+
+    def test_continuous_qp_diagnostics_are_sampled_but_command_mapping_is_full(self):
+        sampler=diagnostics.DiagnosticSampler()
+        value=S(state='BIMANUAL_QP_RESULT',code='{"code":"OK","elapsed":0.01}')
+        self.assertTrue(sampler.keep('runtime-events',value,1.))
+        value.code='{"code":"OK","elapsed":0.02}'
+        self.assertFalse(sampler.keep('runtime-events',value,1.001))
+        value.code='{"code":"FAILED"}'
+        self.assertTrue(sampler.keep('runtime-events',value,1.002))
+        value.state='SNOWBOT_SEGMENT'
+        self.assertTrue(all(sampler.keep('runtime-events',value,1.003) for _ in range(100)))
+        self.assertTrue(all(sampler.keep('accepted-commands',{},1.003) for _ in range(100)))
+
+    def test_writer_exposes_intentional_sampling_separately_from_queue_loss(self):
+        with tempfile.TemporaryDirectory() as directory:
+            writer=diagnostics.DiagnosticWriter(Path(directory)/'diagnostics.jsonl')
+            with patch.object(diagnostics.time,'monotonic',return_value=1.):
+                for i in range(100):writer.record('vr-raw',dict(side='left',seq=i))
+            writer.close()
+            self.assertEqual(writer.status()['sampled_out'],99)
+            self.assertEqual(writer.status()['written'],1)
+            self.assertEqual(writer.status()['dropped'],0)
+            health=json.loads((Path(directory)/'diagnostics-health.json').read_text())
+            self.assertEqual(health['sampled_out'],99)

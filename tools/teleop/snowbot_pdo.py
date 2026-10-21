@@ -178,8 +178,8 @@ class FaultWindow:
     Repeated faults cannot extend a window forever. The observer, not the RT
     thread, calls this class. Queue loss remains visible in DiagnosticWriter.
     """
-    def __init__(self, writer, *, before=10., after=30., capacity=12000):
-        if (not all(number(x) and x > 0 for x in (before, after)) or
+    def __init__(self, writer, *, before=10., after=30., capacity=1200, sample_hz=100.):
+        if (not all(number(x) and x > 0 for x in (before, after, sample_hz)) or
                 not integer(capacity, 1, 100000)):
             raise ValueError('PDO_WINDOW_BOUNDS')
         self.writer, self.before, self.after, self.capacity = writer, before, after, capacity
@@ -190,13 +190,17 @@ class FaultWindow:
         self.event = self.frames = self.evicted = 0
         self.last_time = None
         self.last_payload = None
+        self.last_retained = None
+        self.payload_signature = None
+        self.sample_hz, self.sampled_out = sample_hz, 0
 
     def _finish(self, now, complete):
         if self.until is not None:
             self.writer.record('pdo-events', dict(kind='window_end', event=self.event, complete_time_window=complete,
                 elapsed_since_trigger_s=max(0., min(self.after, now-self.triggered_at)),
                 last_payload_age_s=now-self.last_payload if self.last_payload is not None else None,
-                frames=self.frames, writer=self.writer.status()))
+                frames=self.frames, sample_hz=self.sample_hz, sampled_out=self.sampled_out,
+                writer=self.writer.status()))
             self.until = self.triggered_at = None
 
     def update(self, health, now, payload=None):
@@ -206,21 +210,37 @@ class FaultWindow:
             self._finish(self.last_time, False)
             self.ring.clear()
             self.signature = None
+            self.last_retained = None
+            self.payload_signature = None
         self.last_time = now
         if self.until is not None and now > self.until:
             self._finish(self.until, True)
         while self.ring and self.ring[0][0] < now-self.before:
             self.ring.popleft()
+        signature = (tuple(health['reasons']), health.get('boot_id'), health.get('wkc'),
+                     health.get('expected_wkc'), health.get('valid_mask'), health.get('fault_mask'),
+                     health.get('operation_enabled_mask'))
+        changed = signature != self.signature
+        self.signature = signature
+        retain = False
         if payload is not None:
             self.last_payload = now
+            observation = payload.get('observation', payload)
+            payload_signature = tuple(observation.get(name) for name in
+                ('reference_mode', 'execution_mode', 'trajectory_phase', 'reference_valid',
+                 'output_valid', 'hold_valid', 'hold_basis'))
+            payload_changed = payload_signature != self.payload_signature
+            self.payload_signature = payload_signature
+            retain = (changed or payload_changed or self.last_retained is None or
+                      now-self.last_retained+1e-12 >= 1/self.sample_hz)
+        if retain:
+            self.last_retained = now
             if len(self.ring) == self.capacity:
                 self.ring.popleft()
                 self.evicted += 1
             self.ring.append((now, copy.deepcopy(payload)))
-        signature = (tuple(health['reasons']), health.get('boot_id'), health.get('wkc'),
-                     health.get('expected_wkc'), health.get('valid_mask'), health.get('fault_mask'))
-        changed = signature != self.signature
-        self.signature = signature
+        elif payload is not None:
+            self.sampled_out += 1
         if changed and health['reasons']:
             starting = self.until is None
             if starting:
@@ -230,13 +250,14 @@ class FaultWindow:
             self.writer.record('pdo-events', dict(kind='fault_transition', event=self.event, health=health,
                 requested_before_s=self.before, requested_after_s=self.after,
                 available_before_s=now-self.ring[0][0] if self.ring else 0.,
-                history_evicted_at_capacity=self.evicted, stored_pre_samples=len(self.ring)))
+                history_evicted_at_capacity=self.evicted, stored_pre_samples=len(self.ring),
+                sample_hz=self.sample_hz, sampled_out=self.sampled_out))
             if starting:
                 for stamp, frame in self.ring:
                     self.writer.record('pdo-observation', dict(event=self.event, observed_monotonic=stamp, data=frame))
                     self.frames += 1
                 return
-        if self.until is not None and payload is not None:
+        if self.until is not None and retain:
             self.writer.record('pdo-observation', dict(event=self.event, observed_monotonic=now, data=self.ring[-1][1]))
             self.frames += 1
 
@@ -305,6 +326,8 @@ class PdoObserver:
             result.update(available=False, pdo_valid=False, reasons=[self.unavailable])
         if self.window and result.get('available'):
             self.window.update(result, steady)
+        if self.window:
+            result.update(log_sample_hz=self.window.sample_hz, log_sampled_out=self.window.sampled_out)
         if self.writer and (self.last_summary is None or steady-self.last_summary >= 1.):
             self.writer.record('pdo-health', result)
             self.last_summary = steady

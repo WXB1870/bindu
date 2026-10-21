@@ -235,7 +235,8 @@ class FaultWindowTests(unittest.TestCase):
         self.assertEqual(event['history_evicted_at_capacity'],1)
         self.assertEqual(event['available_before_s'],1.)
         self.assertEqual([r['data']['seq'] for r in self.records('pdo-observation')],[2,3])
-        for kwargs in (dict(capacity=0),dict(capacity=True),dict(before=float('nan')),dict(after=0.)):
+        for kwargs in (dict(capacity=0),dict(capacity=True),dict(before=float('nan')),dict(after=0.),
+                       dict(sample_hz=0.),dict(sample_hz=float('nan'))):
             with self.assertRaises(ValueError):FaultWindow(self.writer,**kwargs)
 
     def test_missing_input_triggers_history_capture_without_synthetic_samples(self):
@@ -269,7 +270,7 @@ class FaultWindowTests(unittest.TestCase):
             self.assertEqual(writer.status()['dropped'],0)
             self.assertEqual(writer.status()['error'],'')
 
-    def test_ten_second_1khz_prehistory_fits_the_async_queue(self):
+    def test_ten_second_1khz_input_keeps_100hz_history_and_subperiod_fault_frame(self):
         with tempfile.TemporaryDirectory() as directory:
             writer=DiagnosticWriter(Path(directory)/'diagnostics.jsonl',capacity=32768)
             window=FaultWindow(writer)
@@ -279,9 +280,32 @@ class FaultWindowTests(unittest.TestCase):
             window.close(10.002)
             writer.close()
             rows=[json.loads(s)['data'] for s in (Path(directory)/'pdo-observation.jsonl').read_text().splitlines()]
-            self.assertEqual([r['data']['seq'] for r in rows],list(range(1,10002)))
+            samples=[r['data']['seq'] for r in rows]
+            self.assertEqual(samples,list(range(10,10001,10))+[10001])
+            self.assertEqual(window.sampled_out,9000)
             self.assertEqual(writer.status()['dropped'],0)
             self.assertEqual(writer.status()['error'],'')
+
+    def test_downsampling_never_hides_short_fault_or_recovery_from_the_monitor(self):
+        monitor=PdoMonitor();window=FaultWindow(self.writer)
+        for tick in range(100):
+            packet=frame(sample=tick+1,stamp=10.+tick*.001)
+            if tick==1:packet['wkc']=1
+            health=monitor.receive(packet,packet['stamp'],tick*.001)
+            window.update(health,tick*.001,dict(seq=tick))
+        self.assertEqual(monitor.result['pdo_sample'],100)
+        observed=[r['data']['seq'] for r in self.records('pdo-observation')]
+        self.assertIn(1,observed)
+        self.assertIn(2,observed)
+        self.assertLess(len(window.ring),15)
+        self.assertGreater(window.sampled_out,80)
+
+    def test_output_validity_and_trajectory_phase_changes_bypass_window_sampling(self):
+        window=FaultWindow(self.writer)
+        for tick,fields in enumerate((dict(output_valid=True,trajectory_phase=1),
+                dict(output_valid=False,trajectory_phase=1),dict(output_valid=False,trajectory_phase=2))):
+            window.update(self.good,tick*.001,dict(seq=tick,observation=fields))
+        self.assertEqual([frame['seq'] for _,frame in window.ring],[0,1,2])
 
 
 class ObserverTests(unittest.TestCase):
