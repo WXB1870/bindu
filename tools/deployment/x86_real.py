@@ -119,7 +119,8 @@ def source_digest():
 
 def require_current_build(workspace):
     build_info = json.loads((workspace/'build.json').read_text())
-    if not build_info.get('ready') or build_info.get('source_sha256') != source_digest():
+    if (not build_info.get('ready') or not build_info.get('native_process_exit_success') or
+            build_info.get('source_sha256') != source_digest()):
         raise ValueError('构建未完成或源码/依赖清单已变更，请重新 build')
 
 
@@ -162,6 +163,19 @@ def prepare(options):
     print(f'已准备 {workspace}；现场配方 {site} 默认只读。下一步执行 build。')
 
 
+def numeric_cmake_arguments(workspace):
+    profile = json.loads((workspace/'deployment.json').read_text())
+    version = '.'.join(map(str, profile['python']))
+    prefix = workspace/f'venv/lib/python{version}/site-packages/cmeel.prefix'
+    arguments = []
+    for package in ('pinocchio', 'coal'):
+        directory = prefix/'lib/cmake'/package
+        if not (directory/(package+'Config.cmake')).is_file():
+            raise ValueError('数值依赖缺失，请重新 prepare：'+str(directory))
+        arguments.append('-D'+package+'_DIR='+str(directory))
+    return arguments
+
+
 def build(workspace):
     before = source_digest()
     info = dict(ready=False, source_sha256=before)
@@ -169,25 +183,43 @@ def build(workspace):
     command = ['python3', '/usr/bin/colcon', '--log-base', workspace/'log', 'build',
         '--base-paths', ROOT/'src', '--packages-up-to', 'bindu_runtime', 'bindu_bimanual_qp',
         '--build-base', workspace/'build', '--install-base', workspace/'install',
-        '--executor', 'sequential', '--cmake-args', '-DCMAKE_BUILD_TYPE=Release',
+        '--executor', 'sequential', '--cmake-clean-cache', '--cmake-args', '-DCMAKE_BUILD_TYPE=Release',
         '-DPython3_EXECUTABLE='+str(workspace/'venv/bin/python3'),
-        '-DPYTHON_EXECUTABLE='+str(workspace/'venv/bin/python3')]
+        '-DPYTHON_EXECUTABLE='+str(workspace/'venv/bin/python3'), *numeric_cmake_arguments(workspace)]
     in_environment(workspace, command)
     # Actual loaded modules/paths plus the resolved pip set are useful on a second machine.
     in_environment(workspace, ['python3', '-c', '''
-import importlib, json, os, platform, subprocess, sys
+import ctypes, importlib, json, os, platform, subprocess, sys
 from pathlib import Path
 from ament_index_python.packages import get_package_prefix
 modules={}
 for name in ('numpy','scipy','pinocchio','casadi','rclpy','bindu_execution._native'):
     module=importlib.import_module(name)
     modules[name]={'version':getattr(module,'__version__',None),'file':module.__file__}
+library=Path(get_package_prefix('bindu_bimanual_qp'))/'lib/libbindu_bimanual_qp.so'
+native=ctypes.CDLL(str(library))
+native.bq_abi_version.restype=ctypes.c_uint32
+if native.bq_abi_version()!=1:
+    raise ValueError('BIMANUAL_ABI_MISMATCH')
+# Exercise native-library teardown in this child before the parent marks ready.
+# An empty loopback ROS node creates no device or command publishers.
+os.environ.update(ROS_LOCALHOST_ONLY='1',ROS_DOMAIN_ID='225',
+                  ROS_AUTOMATIC_DISCOVERY_RANGE='LOCALHOST')
+import rclpy
+rclpy.init()
+try:
+    node=rclpy.create_node('bindu_native_build_check',enable_rosout=False,start_parameter_services=False)
+    node.destroy_node()
+finally:
+    rclpy.shutdown()
 data={'python':sys.executable,'architecture':platform.machine(),'ros':os.environ['ROS_DISTRO'],
       'commit':subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(),
       'dirty':bool(subprocess.check_output(['git','status','--porcelain'],text=True)),
       'prefixes':{name:get_package_prefix(name) for name in
                   ('bindu_runtime','bindu_interfaces','bindu_bimanual_qp','snowbot_ctl_msgs')},
-      'modules':modules}
+      'modules':modules,
+      'numeric_libraries':sorted(set(line.split()[-1] for line in Path('/proc/self/maps').read_text().splitlines()
+          if any(name in line for name in ('libpinocchio','libcoal','liboctomap','liboctomath'))))}
 out=Path(sys.argv[1])
 (out/'environment.json').write_text(json.dumps(data,indent=2)+'\\n')
 (out/'requirements-resolved.txt').write_text(subprocess.check_output(
@@ -195,6 +227,7 @@ out=Path(sys.argv[1])
 ''', workspace])
     if source_digest() != before:
         raise ValueError('构建期间源码发生变化，请重新 build')
+    info['native_process_exit_success'] = True
     info['ready'] = True
     (workspace/'build.json').write_text(json.dumps(info, indent=2)+'\n')
 

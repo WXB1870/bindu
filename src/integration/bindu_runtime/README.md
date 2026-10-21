@@ -29,6 +29,8 @@ export PYTHONPATH="$(python3 -c 'import sysconfig; print(sysconfig.get_path("std
 export OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1
 ```
 
+Pinocchio、Coal及其Octomap依赖须来自同一数值环境。切换环境时仅修改`CMAKE_PREFIX_PATH`不会替换旧的`coal_DIR`缓存；wheel与ROS的两套Octomap混入同一进程可在退出时重复释放。使用wheel手动构建时，应加`--cmake-clean-cache`，并在`--cmake-args`后显式指定`-Dpinocchio_DIR="$BINDU_TELEOP_DEPS/cmeel.prefix/lib/cmake/pinocchio" -Dcoal_DIR="$BINDU_TELEOP_DEPS/cmeel.prefix/lib/cmake/coal"`。不要通过改SONAME、库软链接或跳过退出处理规避错误。
+
 安装只需在首次准备或依赖变更时执行；每个新终端仍需加载 ROS、上述依赖路径和对应工作区。不要直接复用其他机器的 `.so` 或本地 `artifacts/vr/env.sh`。Conda／独立构建目录的配置见 [兼容性说明](../../../运行与验证.md#conda-兼容性)。
 
 ### 构建与模拟启动
@@ -77,6 +79,8 @@ ros2 topic echo /bindu_sim/execution/state --once
 | 更新后构建 | `python3 -m tools.deployment.x86_real build` | `src/`源码或包内配置变更后；仅文档／工具脚本更新无须重建 |
 
 日常复用现有环境、证书和现场配方，无须重新`prepare`、安装依赖、填参数或逐项`source`。ROS域／RMW沿用终端设置并与底层一致；需指定域时加`--domain-id <实际域号>`。非默认部署目录统一加`--workspace /实际部署目录`。
+
+`build`会清理CMake缓存，将Pinocchio／Coal固定到该部署的wheel前缀，并在独立进程加载QP和完成空ROS节点的创建／销毁；该检查仅使用回环域225，不发布控制目标。子进程正常退出后才将构建标记为就绪；未带此退出检查的旧构建需重新`build`，无需重新安装依赖。`environment.json`保留实际数值库路径，测试体通过不能代替进程退出成功。
 
 仅现场配方变更时，在本机修改并同步后预检；证书到期或访问地址变化时更新TLS。依赖清单变化时重新`prepare/build`，保留现有配方；系统／Python／ROS、源码根目录或底层安装位置变化时新建部署环境。手动监测终端仍需加载一次`env.sh`；原五终端驱动测试不属于每日重新配置。
 

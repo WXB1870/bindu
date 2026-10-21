@@ -158,12 +158,54 @@ class X86DeploymentTests(unittest.TestCase):
             workspace = Path(tmp)
             with patch.object(x86_real, 'source_digest', return_value='current'):
                 for info in (dict(ready=False, source_sha256='current'),
-                             dict(ready=True, source_sha256='old')):
+                             dict(ready=True, source_sha256='old'),
+                             dict(ready=True, source_sha256='current')):
                     (workspace/'build.json').write_text(json.dumps(info))
                     with self.assertRaisesRegex(ValueError, '重新 build'):
                         x86_real.require_current_build(workspace)
-                (workspace/'build.json').write_text(json.dumps(dict(ready=True, source_sha256='current')))
+                (workspace/'build.json').write_text(json.dumps(dict(
+                    ready=True, native_process_exit_success=True, source_sha256='current')))
                 x86_real.require_current_build(workspace)
+
+    def test_build_selects_one_numeric_prefix_and_requires_clean_child_exit(self):
+        with tempfile.TemporaryDirectory(prefix="bindu ' $ ") as tmp:
+            workspace = Path(tmp)
+            (workspace/'deployment.json').write_text(json.dumps(dict(python=[3, 12])))
+            prefix = workspace/'venv/lib/python3.12/site-packages/cmeel.prefix'
+            for name in ('pinocchio', 'coal'):
+                directory = prefix/'lib/cmake'/name
+                directory.mkdir(parents=True)
+                (directory/(name+'Config.cmake')).touch()
+            with patch.object(x86_real, 'source_digest', return_value='same'), \
+                    patch.object(x86_real, 'in_environment') as execute:
+                x86_real.build(workspace)
+                command = execute.call_args_list[0].args[1]
+                self.assertIn('--cmake-clean-cache', command)
+                for name in ('pinocchio', 'coal'):
+                    self.assertIn('-D'+name+'_DIR='+str(prefix/'lib/cmake'/name), command)
+                self.assertTrue(json.loads((workspace/'build.json').read_text())['native_process_exit_success'])
+                # A child may finish its test body and still fail in native exit handlers.
+                execute.reset_mock()
+                execute.side_effect = [None, subprocess.CalledProcessError(-6, 'native-lifecycle')]
+                with self.assertRaises(subprocess.CalledProcessError):
+                    x86_real.build(workspace)
+                info = json.loads((workspace/'build.json').read_text())
+                self.assertFalse(info['ready'])
+                self.assertFalse(info.get('native_process_exit_success', False))
+
+    def test_missing_numeric_config_cannot_fall_back_to_ros(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            (workspace/'deployment.json').write_text(json.dumps(dict(python=[3, 10])))
+            directory = workspace/'venv/lib/python3.10/site-packages/cmeel.prefix/lib/cmake/pinocchio'
+            directory.mkdir(parents=True)
+            (directory/'pinocchioConfig.cmake').touch()
+            with patch.object(x86_real, 'source_digest', return_value='same'), \
+                    patch.object(x86_real, 'in_environment') as execute:
+                with self.assertRaisesRegex(ValueError, '数值依赖缺失'):
+                    x86_real.build(workspace)
+                execute.assert_not_called()
+                self.assertFalse(json.loads((workspace/'build.json').read_text())['ready'])
 
     def test_prepare_retry_preserves_site_and_marks_failed_dependency_update(self):
         with tempfile.TemporaryDirectory() as tmp:
