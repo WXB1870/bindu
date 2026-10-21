@@ -519,6 +519,12 @@
     }
   ],
   "recorded_config": {
+    "resource_groups": ["waist", "left_arm", "right_arm"],
+    "shared_motion_weight": 0.1,
+    "posture_policy": {
+      "reference": "initial_capture",
+      "position_bounds": {"body_joint_2": [-0.45, 0.45]}
+    },
     "tool_gain": 6.0,
     "relative_gain": 6.0,
     "damper_gain": 2.0,

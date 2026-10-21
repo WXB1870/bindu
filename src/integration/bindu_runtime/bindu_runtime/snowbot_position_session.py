@@ -1,7 +1,6 @@
 """Typed three-layer position sessions, using the independent PDO observation."""
 import secrets
 
-from rcl_interfaces.msg import ParameterDescriptor
 from bindu_hardware.snowbot import SnowbotIO, GROUPS
 from bindu_hardware.snowbot_session import ARMS, SessionHealth, SourceEnvelope
 
@@ -11,7 +10,21 @@ class PositionSessionIO(SnowbotIO):
 
     def capture(self, groups):
         super().capture(groups)
+        self.pause_request = self.pause_targets = None
         self.after_capture()
+
+    def confirmed_stop_targets(self):
+        targets = self.pause_feedback(getattr(self, 'pause_request', None))
+        if targets is None:
+            return None
+        if any(not self.profile.limits[n][0] <= q <= self.profile.limits[n][1]
+               for n, q in targets.items()):
+            return {}  # Executor rejects an invalid ACK without changing its budget.
+        if self.pause_targets is None:
+            self.pause_targets = targets
+        # A hold point is fixed for this PAUSE. Reject a changed acknowledgement;
+        # measured drift must never move the expected stopping point.
+        return self.pause_targets if targets == self.pause_targets else {}
 
     def stop(self):
         # A healthy measured pause is still possible after a target expires.
@@ -25,6 +38,7 @@ class PositionSessionIO(SnowbotIO):
 
 class PositionSessionDevices:
     def __init__(self, node, profile):
+        from rcl_interfaces.msg import ParameterDescriptor
         from snowbot_ctl_msgs.msg import PositionObservation, PositionSessionCommand, PositionSessionState
         from std_msgs.msg import Float64MultiArray
         from rclpy.qos import qos_profile_sensor_data
@@ -49,6 +63,7 @@ class PositionSessionDevices:
                             simulated=False, check_ready=self.check_ready, check_health=self.check_health)
         self.io.source_motion = None
         self.io.after_capture = lambda: self.new_session()
+        self.io.pause_feedback = self.health.confirmed_hold
         self.io.writable_groups = ARMS
         self.arm_type, self.array_type = PositionSessionCommand, Float64MultiArray
         self.feedback_topic = '/bindu/position/observation'
@@ -90,7 +105,9 @@ class PositionSessionDevices:
         obs = self.health.observation
         if obs.session_selected and obs.session != self.envelopes.session:
             # A paused/expired session can be explicitly replaced after capture.
-            if not acquiring or obs.session_reason < 1:
+            # During a pending stop, ignore its delayed observation and wait for
+            # the exact new PAUSE identity; it cannot confirm this stop.
+            if not (acquiring or self.io.requesting_pause or self.io.stop_targets) or obs.session_reason < 1:
                 raise RuntimeError('SNOWBOT_SESSION_OWNER_CONFLICT')
 
     def new_session(self):
@@ -128,6 +145,10 @@ class PositionSessionDevices:
         msg.command.l_arm_position = [float(target[n]) for n in GROUPS['left_arm']]
         msg.command.r_arm_position = [float(target[n]) for n in GROUPS['right_arm']]
         self.publishers['arms'].publish(msg)
+        if self.io.sending_hold:
+            self.io.pause_request = (metadata['session'], metadata['sequence'],
+                                     self.health.boot, self.health.sample)
+            self.io.pause_targets = None
 
     def guarded_array(self, values, hold=False):
         raise RuntimeError('GRIPPER_INDEPENDENT_CALIBRATION_AND_PROTOCOL_REQUIRED')

@@ -76,6 +76,26 @@ class SessionHealth:
         self.states[layer] = stamp, msg
         self.received[layer] = self.steady()
 
+    def confirmed_hold(self, request):
+        """Return the RT hold request, never an acknowledgement of physical rest."""
+        if request is None:
+            return None
+        try:
+            self.require(ARMS, acquiring=True)
+        except RuntimeError:
+            return None
+        obs = self.observation
+        session, sequence, boot, baseline = request
+        if (obs.boot_id != boot or not obs.session_selected or obs.session != session or
+                obs.command_sequence != sequence or obs.session_reason not in (1, 2) or
+                not getattr(obs, 'hold_valid', False) or
+                not baseline <= obs.hold_sample < obs.pdo_sample):
+            return None
+        values = obs.hold_position
+        if len(values) != 14 or not all(math.isfinite(q) for q in values):
+            return None
+        return dict(zip((*GROUPS['left_arm'], *GROUPS['right_arm']), values))
+
     def require(self, groups, *, acquiring=False):
         if set(groups) != ARMS:
             raise RuntimeError('SNOWBOT_POSITION_SESSION_ARMS_ONLY')
