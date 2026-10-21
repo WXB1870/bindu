@@ -227,6 +227,9 @@ class SnowbotAdapter(ExecutionNode):
         return super().lease(request, reply)
 
     def tick(self):
+        advance = getattr(getattr(self, 'snowbot_devices', None), 'advance_session', None)
+        if advance is not None:
+            advance()
         super().tick()
         if getattr(self, 'grippers', None) and self.grippers.core:
             self.grippers.tick()

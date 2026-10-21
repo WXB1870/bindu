@@ -3,8 +3,9 @@ from types import SimpleNamespace as S
 from dataclasses import replace
 import json
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
+from bindu_runtime.snowbot_position_session import TrajectoryFault
 from bindu_hardware.snowbot import GROUPS
 from bindu_hardware.snowbot_session import ARMS, CONTROL_GROUPS, CONTROL_NAMES, CONTROL_MASK, SLOTS, SessionHealth, SourceEnvelope, decode_observation
 
@@ -200,6 +201,7 @@ class PauseHandoffTests(unittest.TestCase):
             positions=tuple(self.q[n]+(.01 if n.endswith('_1') else 0) for n in names), runtime_mode='real')
         self.engine.submit(motion, self.now); self.engine.tick(self.now)
         self.now += .001; self.steady += .001
+        self.devices.advance_session()
         self.engine.halt(self.now, revoke=True)
         self.assertTrue(self.engine.stopping)
         return [self.io.stop_targets[n] for n in CONTROL_NAMES]
@@ -323,6 +325,168 @@ class RealResourceTests(unittest.TestCase):
 
 
 class TrajectoryWireTests(unittest.TestCase):
+    def binding(self):
+        from bindu_runtime.snowbot_position_session import SessionTrajectory
+        rig = PauseHandoffTests(); rig.setUp(); d = rig.devices
+        d.health.reference_mode = 1
+        for _, state in d.health.states.values(): state.wire_version = 2
+        d.health.states['servo'][1].reference_mode = 1
+        d.arm_type = lambda: S(meta=S(), command=S(), trajectory=S())
+        d.node.event = Mock()
+        d.trajectory = SessionTrajectory(rig.profile)
+        d.pending_trajectory, d.trajectory_instance = None, None
+        d.trajectory_fault_kind, d.trajectory_fault_reason = TrajectoryFault.NONE, ''
+        d.io.trajectory_reference = True
+        d.io.wait_for_acceptance = lambda: d.pending_trajectory is not None
+        return rig
+
+    def send_source(self, rig, command_id='source'):
+        d = rig.devices
+        d.io.source_motion = S(command_id=command_id, stamp=rig.now, valid_for=.2, lease_id='lease', epoch=1)
+        d.send(CONTROL_GROUPS, {n: rig.q[n] for n in CONTROL_NAMES})
+        return d.publishers['arms'].publish.call_args.args[0]
+
+    def acknowledge(self, rig, msg):
+        servo = rig.devices.health.states['servo'][1]
+        servo.session, servo.sequence = msg.meta.session, msg.meta.sequence
+
+    def test_health_and_send_never_settle_or_dispatch_deferred_pause(self):
+        rig = self.binding(); d = rig.devices
+        first = self.send_source(rig); self.acknowledge(rig, first)
+        pending = d.pending_trajectory
+        d.io.deferred_pause = True
+        d.node.event.reset_mock()
+        with patch.object(d.io, 'stop') as stop, patch.object(d.trajectory, 'commit', wraps=d.trajectory.commit) as commit:
+            for _ in range(3): d.check_health(CONTROL_GROUPS)
+            self.send_source(rig, 'waiting')
+            self.assertIs(d.pending_trajectory, pending)
+            self.assertIsNone(d.trajectory.segment)
+            self.assertTrue(d.io.deferred_pause)
+            self.assertEqual(d.envelopes.sequence, 1)
+            self.assertEqual(d.publishers['arms'].publish.call_count, 1)
+            commit.assert_not_called(); stop.assert_not_called(); d.node.event.assert_not_called()
+            d.advance_session(); d.advance_session()
+            commit.assert_called_once(); stop.assert_called_once()
+            self.assertEqual(d.node.event.call_count, 1)
+            self.assertEqual(d.node.event.call_args.args[0], 'SEGMENT_ACCEPTED')
+            self.assertFalse(d.io.deferred_pause)
+
+    def test_fault_category_controls_pause_even_when_reason_text_is_misleading(self):
+        rig = self.binding(); d = rig.devices
+        d.trajectory.segment = object()
+        d.io.stop_targets = {n: rig.q[n] for n in CONTROL_NAMES}
+        for kind, reason, allowed in (
+                (TrajectoryFault.REJECTED_WITH_REFERENCE, 'SNOWBOT_TRAJECTORY_INSTANCE_CHANGED_RECONNECT_REQUIRED', True),
+                (TrajectoryFault.RECONNECT_REQUIRED, 'SNOWBOT_TRAJECTORY_REJECTED:looks_recoverable', False)):
+            with self.subTest(kind=kind):
+                d.trajectory_fault_kind, d.trajectory_fault_reason = kind, reason
+                d.io.requesting_pause = True
+                if allowed: d.check_health(CONTROL_GROUPS)
+                else:
+                    with self.assertRaisesRegex(RuntimeError, reason): d.check_health(CONTROL_GROUPS)
+                d.io.requesting_pause = False
+                with self.assertRaisesRegex(RuntimeError, reason): self.send_source(rig, 'forbidden-target')
+                d.io.deferred_pause = True
+                with patch.object(d.io, 'stop') as stop:
+                    d.advance_session()
+                    self.assertEqual(stop.call_count, int(allowed))
+                self.assertIs(d.trajectory_fault_kind, kind)
+
+    def test_stale_ack_cannot_commit_and_late_ack_latches_without_health_side_effects(self):
+        rig = self.binding(); d = rig.devices
+        first = self.send_source(rig); self.acknowledge(rig, first)
+        pending = d.pending_trajectory
+        rig.now += .03; rig.steady += .03
+        d.advance_session()
+        self.assertIs(d.pending_trajectory, pending)
+        self.assertIsNone(d.trajectory.segment)
+        with self.assertRaisesRegex(RuntimeError, 'NOT_ADVANCING'): d.check_health(CONTROL_GROUPS)
+        self.assertIs(d.trajectory_fault_kind, TrajectoryFault.NONE)
+        rig.now += .18; rig.steady += .18
+        d.advance_session()
+        self.assertIsNone(d.pending_trajectory)
+        self.assertIsNone(d.trajectory.segment)
+        self.assertIs(d.trajectory_fault_kind, TrajectoryFault.RECONNECT_REQUIRED)
+        self.assertIn('ACCEPTANCE_UNCONFIRMED', d.trajectory_fault_reason)
+        self.assertEqual([call.args[0] for call in d.node.event.call_args_list], ['SEGMENT_SENT'])
+
+    def test_explicit_rejection_allows_one_deferred_pause_from_last_accepted_reference(self):
+        rig = self.binding(); d = rig.devices
+        first = self.send_source(rig); self.acknowledge(rig, first); d.advance_session()
+        accepted = d.trajectory.segment
+        middle = self.send_source(rig, 'rejected')
+        d.io.targets = {n: rig.q[n] for n in CONTROL_NAMES}
+        d.io.stop()
+        self.assertTrue(d.io.deferred_pause)
+        servo = d.health.states['servo'][1]
+        servo.rejected_session, servo.rejected_sequence = middle.meta.session, middle.meta.sequence
+        servo.reason = 'rejected_segment'
+        d.advance_session()
+        pause = d.publishers['arms'].publish.call_args.args[0]
+        self.assertEqual(pause.meta.operation, 2)
+        self.assertEqual(d.publishers['arms'].publish.call_count, 3)
+        self.assertIs(d.trajectory.segment, accepted)
+        self.assertIs(d.trajectory_fault_kind, TrajectoryFault.REJECTED_WITH_REFERENCE)
+        self.assertFalse(d.io.deferred_pause)
+        self.assertFalse(d.io.stop_failures)
+        d.check_health(CONTROL_GROUPS)  # STOPPING can await this permitted PAUSE.
+        d.advance_session()
+        self.assertEqual(d.publishers['arms'].publish.call_count, 3)
+        self.acknowledge(rig, pause); d.advance_session(); d.advance_session()
+        self.assertIs(d.trajectory_fault_kind, TrajectoryFault.NONE)
+        self.assertEqual(d.publishers['arms'].publish.call_count, 3)
+        self.assertTrue(d.io.stop_targets)  # Software ACK still does not confirm physical rest.
+
+    def test_pending_send_keeps_full_endpoint_checks_without_minting_source(self):
+        rig = self.binding(); d = rig.devices
+        del d.check_ready
+        d.receivers = dict(arms='/robot_upperMonitor', middle='/dual_arm_control_node', head='/servo_node')
+        routes = dict(command=('PositionSessionCommand', None, 'arms'),
+                      upper=('PositionSessionUpper', 'arms', 'middle'),
+                      servo=('PositionSessionServo', 'middle', 'head'))
+        queries = []
+        def infos(topic, subscription):
+            queries.append(topic)
+            kind, writer, reader = routes[topic.rsplit('/', 1)[1]]
+            return [S(node_namespace='/', node_name=d.receivers[reader if subscription else writer][1:],
+                      topic_type='snowbot_ctl_msgs/msg/'+kind)]
+        def count(topic):
+            queries.append(topic)
+            return int(topic == '/bindu/position/command')
+        d.node.get_publishers_info_by_topic = lambda t: infos(t, False)
+        d.node.get_subscriptions_info_by_topic = lambda t: infos(t, True)
+        d.node.count_publishers = count
+        self.send_source(rig)
+        for _ in range(3):
+            queries.clear(); self.send_source(rig, 'waiting')
+            self.assertEqual(len(queries), 8)
+        d.node.count_publishers = lambda t: 2 if t == '/bindu/position/command' else 0
+        with self.assertRaisesRegex(RuntimeError, 'COMMAND_PUBLISHER_CONFLICT'): self.send_source(rig, 'conflict')
+        self.assertEqual(d.envelopes.sequence, 1)
+        self.assertEqual(d.publishers['arms'].publish.call_count, 1)
+
+    def test_deferred_pause_failure_stays_inside_original_stop_budgets(self):
+        from bindu_contracts.contracts import Motion
+        rig = self.binding(); d = rig.devices
+        groups = ('left_arm', 'right_arm', 'waist')
+        lease, epoch = rig.engine.acquire('test', groups, 2., rig.now)
+        motion = Motion('inflight', lease, epoch, rig.profile.digest, 'test', '', 'joint_target', '', rig.now, .2,
+            names=tuple(CONTROL_NAMES), positions=tuple(rig.q[n] for n in CONTROL_NAMES), runtime_mode='real',
+            schema_version=2, resource_groups=groups)
+        rig.engine.submit(motion, rig.now); rig.engine.tick(rig.now)
+        first = d.publishers['arms'].publish.call_args.args[0]
+        rig.engine.halt(rig.now, revoke=True)
+        budgets = rig.engine.stop_deadline, rig.engine.stop_steady_deadline
+        self.acknowledge(rig, first)
+        with patch.object(d.io, 'stop', side_effect=RuntimeError('deferred_pause_failed')):
+            d.advance_session()  # Must return so the original engine tick still runs.
+            rig.engine.tick(rig.now)
+        self.assertIs(d.trajectory_fault_kind, TrajectoryFault.RECONNECT_REQUIRED)
+        self.assertEqual(d.trajectory_fault_reason, 'deferred_pause_failed')
+        self.assertIn('vendor_hold', d.io.stop_failures)
+        self.assertTrue(rig.engine.stop_fault.startswith('STOP_UNCONFIRMED'))
+        self.assertEqual((rig.engine.stop_deadline, rig.engine.stop_steady_deadline), budgets)
+
     def setUp(self):
         from tests.support.paths import ROOT
         from bindu_contracts.profile import Profile
@@ -413,7 +577,8 @@ class TrajectoryWireTests(unittest.TestCase):
         devices.health.states['servo'][1].reference_mode = 1
         devices.arm_type = lambda: S(meta=S(), command=S(), trajectory=S())
         devices.node.event = Mock()
-        devices.pending_trajectory, devices.trajectory_fault, devices.trajectory_instance = None, '', None
+        devices.pending_trajectory, devices.trajectory_instance = None, None
+        devices.trajectory_fault_kind, devices.trajectory_fault_reason = TrajectoryFault.NONE, ''
         def acknowledge(msg):
             servo = devices.health.states['servo'][1]
             servo.session, servo.sequence = msg.meta.session, msg.meta.sequence
@@ -453,7 +618,8 @@ class TrajectoryWireTests(unittest.TestCase):
                 servo = devices.health.states['servo'][1]; servo.reference_mode = 1
                 devices.node.event = Mock(); devices.arm_type = lambda: S(meta=S(), command=S(), trajectory=S())
                 devices.trajectory = SessionTrajectory(rig.profile)
-                devices.pending_trajectory, devices.trajectory_fault, devices.trajectory_instance = None, '', None
+                devices.pending_trajectory, devices.trajectory_instance = None, None
+                devices.trajectory_fault_kind, devices.trajectory_fault_reason = TrajectoryFault.NONE, ''
                 target = {n: rig.q[n] for n in CONTROL_NAMES}
                 def send(command):
                     devices.io.source_motion = S(command_id=command, stamp=rig.now, valid_for=.2, lease_id='lease', epoch=1)
@@ -462,7 +628,7 @@ class TrajectoryWireTests(unittest.TestCase):
                 self.assertIsNone(devices.trajectory.segment)  # Publishing is not acceptance.
                 first = devices.publishers['arms'].publish.call_args.args[0]
                 servo.session, servo.sequence = first.meta.session, first.meta.sequence
-                devices.settle_trajectory()
+                devices.advance_session()
                 confirmed = devices.trajectory.segment
                 send('middle')  # This segment is lost/rejected before servo adoption.
                 middle = devices.publishers['arms'].publish.call_args.args[0]
@@ -478,9 +644,10 @@ class TrajectoryWireTests(unittest.TestCase):
                     servo.instance_id += 1; expected = 'INSTANCE_CHANGED_RECONNECT_REQUIRED'
                 else:
                     rig.now += .201; expected = 'ACCEPTANCE_UNCONFIRMED'
-                with self.assertRaisesRegex(RuntimeError, expected): devices.settle_trajectory()
+                devices.advance_session()
+                self.assertIn(expected, devices.trajectory_fault_reason)
                 self.assertIs(devices.trajectory.segment, confirmed)
-                self.assertTrue(devices.trajectory_fault)
+                self.assertIsNot(devices.trajectory_fault_kind, TrajectoryFault.NONE)
                 with self.assertRaises(RuntimeError): send('dependent')
                 self.assertEqual(devices.publishers['arms'].publish.call_count, 2)
 
@@ -519,7 +686,8 @@ class TrajectoryWireTests(unittest.TestCase):
         from bindu_contracts.contracts import Motion
         rig = PauseHandoffTests(); rig.setUp(); d = rig.devices
         d.health.reference_mode = 1; d.io.trajectory_reference = True
-        d.pending_trajectory, d.trajectory_fault, d.trajectory_instance = None, '', None
+        d.pending_trajectory, d.trajectory_instance = None, None
+        d.trajectory_fault_kind, d.trajectory_fault_reason = TrajectoryFault.NONE, ''
         d.io.wait_for_acceptance = lambda: d.pending_trajectory is not None
         for _, state in d.health.states.values(): state.wire_version = 2
         d.health.states['servo'][1].reference_mode = 1
@@ -537,7 +705,7 @@ class TrajectoryWireTests(unittest.TestCase):
         self.assertTrue(rig.io.deferred_pause);self.assertTrue(rig.engine.stopping)
         self.assertFalse(rig.io.stop_failures);self.assertEqual(d.publishers['arms'].publish.call_count,1)
         servo = d.health.states['servo'][1];servo.session,servo.sequence = first.meta.session,first.meta.sequence
-        d.settle_trajectory()
+        d.advance_session(); d.advance_session()
         self.assertFalse(rig.io.deferred_pause)
         self.assertEqual(d.publishers['arms'].publish.call_count,2)
         pause = d.publishers['arms'].publish.call_args.args[0]

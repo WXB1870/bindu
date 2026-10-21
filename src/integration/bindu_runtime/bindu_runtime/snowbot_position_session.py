@@ -3,6 +3,7 @@ import secrets
 import json
 import math
 from dataclasses import dataclass, replace
+from enum import Enum
 
 from bindu_hardware.snowbot import SnowbotIO, GROUPS
 from bindu_hardware.snowbot_session import CONTROL_GROUPS, CONTROL_NAMES, SLOTS, SessionHealth, SourceEnvelope
@@ -161,6 +162,12 @@ class PositionSessionIO(SnowbotIO):
             self.requesting_pause = previous
 
 
+class TrajectoryFault(Enum):
+    NONE = 0
+    REJECTED_WITH_REFERENCE = 1
+    RECONNECT_REQUIRED = 2
+
+
 class PositionSessionDevices:
     def __init__(self, node, profile):
         from rcl_interfaces.msg import ParameterDescriptor
@@ -185,7 +192,8 @@ class PositionSessionDevices:
                                    reference_mode=getattr(node, 'snowbot_reference_mode', 0))
         self.envelopes = SourceEnvelope(secrets.randbits(64) or 1, node.now)
         self.trajectory = SessionTrajectory(profile) if self.health.reference_mode else None
-        self.pending_trajectory, self.trajectory_fault = None, ''
+        self.pending_trajectory = None
+        self.trajectory_fault_kind, self.trajectory_fault_reason = TrajectoryFault.NONE, ''
         self.trajectory_instance = None
         self.io = PositionSessionIO(profile, self.send, node.now,
                             command_enabled=node.get_parameter('command_enabled').value,
@@ -241,10 +249,8 @@ class PositionSessionDevices:
             self.io.invalid = str(exc)
             self.node.get_logger().warn(str(exc), throttle_duration_sec=1.)
 
-    def check_health(self, groups, *, acquiring=False):
+    def _check_session_health(self, groups, *, acquiring=False):
         self.health.require(groups, acquiring=(acquiring or self.io.requesting_pause or bool(self.io.stop_targets)))
-        if self.health.reference_mode:
-            self.settle_trajectory(allow_rejected=self.io.requesting_pause or self.io.sending_hold)
         obs = self.health.observation
         if obs.session_selected and obs.session != self.envelopes.session:
             # A paused/expired session can be explicitly replaced after capture.
@@ -253,35 +259,55 @@ class PositionSessionDevices:
             if not (acquiring or self.io.requesting_pause or self.io.stop_targets) or obs.session_reason < 1:
                 raise RuntimeError('SNOWBOT_SESSION_OWNER_CONFLICT')
 
+    def _require_trajectory(self, *, allow_rejected=False):
+        if self.trajectory_fault_kind is TrajectoryFault.NONE:
+            return
+        if (allow_rejected and self.trajectory.segment is not None and
+                self.trajectory_fault_kind is TrajectoryFault.REJECTED_WITH_REFERENCE):
+            return
+        raise RuntimeError(self.trajectory_fault_reason)
+
+    def check_health(self, groups, *, acquiring=False):
+        self._check_session_health(groups, acquiring=acquiring)
+        if self.health.reference_mode:
+            self._require_trajectory(allow_rejected=(self.io.requesting_pause or self.io.sending_hold or
+                                                   bool(self.io.stop_targets)))
+
     def new_session(self):
         self.envelopes = SourceEnvelope(secrets.randbits(64) or 1, self.node.now)
         self.io.source_motion = None
         if getattr(getattr(self, 'health', None), 'reference_mode', 0):
             self.trajectory = SessionTrajectory(self.io.profile)
-            self.pending_trajectory, self.trajectory_fault = None, ''
+            self.pending_trajectory = None
+            self.trajectory_fault_kind, self.trajectory_fault_reason = TrajectoryFault.NONE, ''
             self.trajectory_instance = None
 
-    def settle_trajectory(self, *, allow_rejected=False):
+    def _settle_trajectory(self, *, ready):
         # Unknown adoption or a changed servo instance is latched for reconnect.
         # Do not bypass the existing executor's unconfirmed-stop barrier here.
         pending = self.pending_trajectory
         _, servo = self.health.states.get('servo', (0., None))
         if (self.trajectory_instance is not None and servo is not None and
                 servo.instance_id != self.trajectory_instance):
-            self.trajectory_fault = 'SNOWBOT_TRAJECTORY_INSTANCE_CHANGED_RECONNECT_REQUIRED'
+            self.trajectory_fault_kind = TrajectoryFault.RECONNECT_REQUIRED
+            self.trajectory_fault_reason = 'SNOWBOT_TRAJECTORY_INSTANCE_CHANGED_RECONNECT_REQUIRED'
             self.pending_trajectory = pending = None
         if pending:
             metadata, proposal, instance, command_id, sent_at = pending
             if self.node.now()*1e9 >= metadata['expires_at_ns']:
-                self.trajectory_fault = 'SNOWBOT_TRAJECTORY_ACCEPTANCE_UNCONFIRMED_RECONNECT_REQUIRED'
+                self.trajectory_fault_kind = TrajectoryFault.RECONNECT_REQUIRED
+                self.trajectory_fault_reason = 'SNOWBOT_TRAJECTORY_ACCEPTANCE_UNCONFIRMED_RECONNECT_REQUIRED'
                 self.pending_trajectory = None
-            elif (servo is not None and servo.instance_id == instance and
+            elif (ready and servo is not None and servo.instance_id == instance and
                     getattr(servo, 'rejected_session', 0) == metadata['session'] and
                     getattr(servo, 'rejected_sequence', 0) == metadata['sequence']):
-                self.trajectory_fault = ('SNOWBOT_TRAJECTORY_REJECTED:' if self.trajectory.segment is not None else
+                known_reference = self.trajectory.segment is not None
+                self.trajectory_fault_kind = (TrajectoryFault.REJECTED_WITH_REFERENCE if known_reference else
+                                              TrajectoryFault.RECONNECT_REQUIRED)
+                self.trajectory_fault_reason = ('SNOWBOT_TRAJECTORY_REJECTED:' if known_reference else
                     'SNOWBOT_TRAJECTORY_REJECTED_RECONNECT_REQUIRED:')+servo.reason
                 self.pending_trajectory = None
-            elif (servo is not None and servo.instance_id == instance and servo.feedback_ready and
+            elif (ready and servo is not None and servo.instance_id == instance and servo.feedback_ready and
                     servo.startup_complete and servo.reference_mode == 1 and
                     getattr(servo, 'session', 0) == metadata['session'] and
                     getattr(servo, 'sequence', 0) == metadata['sequence'] and
@@ -289,18 +315,33 @@ class PositionSessionDevices:
                 self.trajectory.commit(proposal)
                 self.pending_trajectory = None
                 if metadata['operation'] == 2:
-                    self.trajectory_fault = ''
+                    self.trajectory_fault_kind, self.trajectory_fault_reason = TrajectoryFault.NONE, ''
                 self.node.event('SEGMENT_ACCEPTED', 'SNOWBOT_SEGMENT:'+json.dumps(dict(
                     session=metadata['session'], sequence=metadata['sequence'], segment_id=proposal.wire['segment_id'],
                     source_stamp_ns=metadata['source_stamp_ns'], expires_at_ns=metadata['expires_at_ns']),
                     separators=(',', ':')), command_id=command_id)
-        if (self.io.deferred_pause and self.pending_trajectory is None and
-                (not self.trajectory_fault or self.trajectory_fault.startswith('SNOWBOT_TRAJECTORY_REJECTED:'))):
-            self.io.deferred_pause = False
-            self.io.stop()
-        if self.trajectory_fault and not (allow_rejected and self.trajectory.segment is not None and
-                self.trajectory_fault.startswith('SNOWBOT_TRAJECTORY_REJECTED:')):
-            raise RuntimeError(self.trajectory_fault)
+
+    def advance_session(self):
+        """Advance once from the existing execution loop, never from health reads."""
+        if not self.health.reference_mode:
+            return
+        ready = True
+        try:
+            self._check_session_health(CONTROL_GROUPS)
+        except (RuntimeError, ValueError):
+            ready = False  # Expiry still latches; stale feedback cannot acknowledge adoption.
+        try:
+            self._settle_trajectory(ready=ready)
+            if (ready and self.io.deferred_pause and self.pending_trajectory is None and
+                    self.trajectory_fault_kind in (TrajectoryFault.NONE, TrajectoryFault.REJECTED_WITH_REFERENCE)):
+                self.io.deferred_pause = False
+                self.io.stop()
+        except (RuntimeError, ValueError) as exc:
+            # Keep the engine tick running so its original stop deadlines and
+            # STOP_UNCONFIRMED barrier still decide the outcome.
+            self.trajectory_fault_kind = TrajectoryFault.RECONNECT_REQUIRED
+            self.trajectory_fault_reason = str(exc)
+            self.io.stop_failures = tuple(sorted(set(self.io.stop_failures) | {'vendor_hold'}))
 
     def check_ready(self, groups):
         self.check_health(groups, acquiring=True)
@@ -323,7 +364,7 @@ class PositionSessionDevices:
         # Validate before minting an envelope, so rejected requests cannot renew.
         self.check_ready(groups)
         if self.health.reference_mode:
-            self.settle_trajectory(allow_rejected=self.io.sending_hold)
+            self._require_trajectory(allow_rejected=self.io.sending_hold)
             if self.pending_trajectory:
                 if self.io.sending_hold:
                     raise RuntimeError('SNOWBOT_TRAJECTORY_ACCEPTANCE_UNCONFIRMED_RECONNECT_REQUIRED')

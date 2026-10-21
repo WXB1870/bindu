@@ -1,12 +1,14 @@
 """Position interface and delegated stop semantics; never touches hardware."""
 from tests.support.paths import ROOT
 import copy
+import importlib.util
 import json
+import sys
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace as S
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from bindu_contracts.contracts import Motion
 from bindu_contracts.profile import Profile
@@ -580,6 +582,29 @@ class SnowbotAdapterTests(unittest.TestCase):
 
 
 class SnowbotRosBindingTests(unittest.TestCase):
+    def test_existing_adapter_tick_advances_session_before_engine_including_shutdown(self):
+        # Load the production adapter with only its ROS base replaced; no node
+        # or generated ROS messages are needed to verify the existing tick order.
+        calls = []
+        class Base:
+            def tick(self): calls.append('engine')
+        spec = importlib.util.spec_from_file_location('bindu_runtime._offline_tick_adapter',
+            ROOT/'src/integration/bindu_runtime/bindu_runtime/snowbot_adapter.py')
+        module = importlib.util.module_from_spec(spec)
+        with patch.dict(sys.modules, {'rcl_interfaces': S(), 'rcl_interfaces.msg': S(ParameterDescriptor=object),
+                'bindu_runtime.execution_node': S(ExecutionNode=Base, run_execution=lambda _:None)}):
+            spec.loader.exec_module(module)
+        node = module.SnowbotAdapter.__new__(module.SnowbotAdapter)
+        node.snowbot_devices = S(advance_session=lambda: calls.append('advance'))
+        node.grippers = S(core=True, tick=lambda: calls.append('gripper'))
+        for closing in (False, True):
+            node.closing = closing
+            calls.clear(); node.tick()
+            self.assertEqual(calls, ['advance', 'engine', 'gripper'])
+        node.snowbot_devices = S()  # legacy_guard retains its original tick.
+        calls.clear(); node.tick()
+        self.assertEqual(calls, ['engine', 'gripper'])
+
     def test_session_capture_changes_generation_and_pause_does_not_renew_motion(self):
         from bindu_runtime.snowbot_position_session import PositionSessionDevices, PositionSessionIO
         from bindu_hardware.snowbot_session import SourceEnvelope
