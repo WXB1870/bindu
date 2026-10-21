@@ -65,7 +65,7 @@ class PositionSessionDevices:
             ('arms', 'arm_receiver_node', '/robot_upperMonitor'),
             ('middle', 'mid_receiver_node', '/dual_arm_control_node'),
             ('head', 'servo_receiver_node', '/servo_node'))}
-        self.health = SessionHealth(node.now)
+        self.health = SessionHealth(node.now, execution_mode=node.snowbot_execution_mode)
         self.envelopes = SourceEnvelope(secrets.randbits(64) or 1, node.now)
         self.io = PositionSessionIO(profile, self.send, node.now,
                             command_enabled=node.get_parameter('command_enabled').value,

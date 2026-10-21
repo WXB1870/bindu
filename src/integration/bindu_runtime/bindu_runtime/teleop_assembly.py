@@ -23,6 +23,11 @@ def assemble(context):
         raise ValueError('RECORDER_DISABLED_REQUIRES_OFF')
     mode = resolve_mode(value('runtime_mode', 'simulation'))
     position_contract=enabled('position_contract','false')
+    execution_mode=value('execution_mode','position')
+    if execution_mode not in ('position','impedance'):
+        raise ValueError('SNOWBOT_EXECUTION_MODE')
+    if execution_mode=='impedance' and (mode!='real' or value('position_protocol')!='session_v1' or not position_contract):
+        raise ValueError('IMPEDANCE_REQUIRES_REAL_SESSION')
     if position_contract and value('device_backend') not in ('kinematic','snowbot_vendor','external_simulation'):
         raise ValueError('POSITION_CONTRACT_BACKEND')
     if value('gripper_config') and mode != 'real' and not position_contract:
@@ -95,7 +100,7 @@ def assemble(context):
     if mode=='real' or position_contract:
         execution.update(command_enabled=enabled('command_enabled','false'),
             **{key:value(key,default) for key,default in (
-                ('gripper_config',''),('vendor_namespace','/snowbot'),('position_protocol','legacy_guard'),('arm_receiver_node',''),
+                ('execution_mode','position'),('gripper_config',''),('vendor_namespace','/snowbot'),('position_protocol','legacy_guard'),('arm_receiver_node',''),
                 ('servo_receiver_node',''),('mid_receiver_node',''))})
     nodes.append(Node(package='bindu_runtime', executable='snowbot_adapter' if mode=='real' else 'snowbot_position_sim' if position_contract else 'execution', namespace=ns,
                       output='screen', parameters=[execution]))
@@ -127,6 +132,7 @@ def assemble(context):
                       output='screen', parameters=[{**common, **model, **tool,'require_recording':recorder_enabled,
                           'simulation_demo':pico_demo,
                           'position_contract':position_contract,
+                          'execution_mode':execution_mode,
                           'gripper_config':value('gripper_config') if position_contract else '',
                           'tool_ground_policy':'report_only' if pico_demo else 'configured'}]))
     nodes.append(Node(package='bindu_runtime', executable='teleop_display', namespace=ns,

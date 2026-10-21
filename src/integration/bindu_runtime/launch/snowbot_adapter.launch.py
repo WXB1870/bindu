@@ -36,7 +36,7 @@ def assemble(context):
     parameters = {**common}
     if mode == 'real':
         parameters.update(command_enabled=enabled == 'true', vendor_namespace=value('vendor_namespace', '/snowbot'),
-            position_protocol=value('position_protocol', 'legacy_guard'),
+            position_protocol=value('position_protocol', 'legacy_guard'), execution_mode=value('execution_mode', 'position'),
             **{key: value(key) for key in ('arm_receiver_node', 'servo_receiver_node', 'mid_receiver_node', 'gripper_config')})
     else:
         parameters['device_backend'] = backend
@@ -51,6 +51,6 @@ def generate_launch_description():
     defaults = {'runtime_mode': '', 'simulation': '', 'device_backend': '', 'profile': '',
                 'namespace': 'bindu_snowbot', 'run_id': uuid.uuid4().hex, 'vendor_namespace': '/snowbot',
                 'arm_receiver_node': '', 'servo_receiver_node': '', 'mid_receiver_node': '',
-                'command_enabled': 'false', 'recording_mode': 'off', 'output': '/tmp/bindu-runs', 'gripper_config': '', 'position_protocol': 'legacy_guard'}
+                'command_enabled': 'false', 'recording_mode': 'off', 'output': '/tmp/bindu-runs', 'gripper_config': '', 'position_protocol': 'legacy_guard', 'execution_mode': 'position'}
     return LaunchDescription([DeclareLaunchArgument(k, default_value=v) for k, v in defaults.items()]
                              + [OpaqueFunction(function=assemble)])

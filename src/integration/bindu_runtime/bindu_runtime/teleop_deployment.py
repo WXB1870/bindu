@@ -13,10 +13,10 @@ EXECUTION = {'runtime_mode', 'namespace', 'profile', 'device_backend', 'run_id',
              'recording_mode', 'command_enabled', 'vendor_namespace', 'arm_receiver_node',
              'servo_receiver_node', 'mid_receiver_node'}
 COMMON.add('gripper_config')
-COMMON.add('position_protocol')
+COMMON.update(('position_protocol','execution_mode'))
 COMMON.update(('position_contract','physics_config'))
 EXECUTION.add('gripper_config')
-EXECUTION.add('position_protocol')
+EXECUTION.update(('position_protocol','execution_mode'))
 PATHS = {'profile', 'bimanual_config', 'robot_config', 'cert_file', 'key_file', 'output', 'pico_config', 'gripper_config', 'physics_config'}
 
 
@@ -38,6 +38,11 @@ def load_deployment(path, share):
         raise ValueError('TELEOP_DEPLOYMENT_ARGUMENT')
     if args.get('position_protocol', 'legacy_guard') not in ('legacy_guard', 'session_v1'):
         raise ValueError('SNOWBOT_POSITION_PROTOCOL')
+    execution_mode = args.get('execution_mode', 'position')
+    if execution_mode not in ('position', 'impedance'):
+        raise ValueError('SNOWBOT_EXECUTION_MODE')
+    if execution_mode == 'impedance' and (args.get('runtime_mode') != 'real' or args.get('position_protocol') != 'session_v1'):
+        raise ValueError('IMPEDANCE_REQUIRES_REAL_SESSION')
     required = {'runtime_mode'} if execution_only else ({'profile', 'bimanual_config'} if version == 1 else {'robot_config'})
     if not required <= set(args):
         raise ValueError('TELEOP_DEPLOYMENT_MODEL_REQUIRED')
@@ -94,3 +99,14 @@ def load_deployment(path, share):
                 raise ValueError('TELEOP_DEPLOYMENT_MISSING:'+key)
         result[key] = str(value).lower() if type(value) is bool else str(value)
     return launch, result
+
+
+def apply_execution_tracking(config, mode='position', *, real, position_contract):
+    """Select nominal planning for the explicit impedance backend; keep guards."""
+    if mode not in ('position', 'impedance'):
+        raise ValueError('SNOWBOT_EXECUTION_MODE')
+    if mode == 'position':
+        return config
+    if not real or not position_contract or config.get('reference_kinematics') is not True:
+        raise ValueError('IMPEDANCE_REQUIRES_REAL_NOMINAL_KINEMATICS')
+    return {**config, 'tracking_feedback': 'reference'}

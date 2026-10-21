@@ -37,7 +37,10 @@ def decode_observation(msg, now):
 
 
 class SessionHealth:
-    def __init__(self, now, steady=time.monotonic):
+    def __init__(self, now, steady=time.monotonic, *, execution_mode="position"):
+        if execution_mode not in ("position", "impedance"):
+            raise ValueError("SNOWBOT_EXECUTION_MODE")
+        self.execution_mode = execution_mode
         self.now, self.steady = now, steady
         self.states, self.received = {}, {}
         self.observation = None
@@ -131,8 +134,14 @@ class SessionHealth:
                 raise RuntimeError('SNOWBOT_CONTROL_SOURCE_NOT_TOPIC')
             if layer == 'servo' and state.stop_policy not in ('disable_no_load', 'measured_hold'):
                 raise RuntimeError('SNOWBOT_STOP_POLICY_UNCONFIRMED')
-            if layer == 'servo' and state.control_source != 'position':
-                raise RuntimeError('SNOWBOT_POSITION_MODE_CONFLICT')
+            if layer == 'servo' and state.control_source != self.execution_mode:
+                raise RuntimeError('SNOWBOT_EXECUTION_MODE_CONFLICT:'+self.execution_mode)
+        if self.execution_mode == 'impedance':
+            # The optional vendor build places force data in this exact PDO sample.
+            wrench = getattr(obs, 'wrench', ())
+            if (getattr(obs, 'sensor_valid_mask', 0) != 3 or len(wrench) != 12 or
+                    obs.valid_mask != 0xfffff or not all(math.isfinite(x) for x in wrench)):
+                raise RuntimeError('SNOWBOT_IMPEDANCE_SENSOR_INVALID')
         if obs.session_reason >= 2 and not acquiring:
             raise RuntimeError('SNOWBOT_SESSION_STOPPED:'+str(obs.session_reason))
 

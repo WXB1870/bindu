@@ -32,6 +32,10 @@ class BimanualToolNode(RuntimeNode):
         self.cfg=json.loads(Path(self.get_parameter('tool_config').value).read_text())
         self.declare_parameter('position_contract',False)
         position_contract=self.get_parameter('position_contract').value
+        self.declare_parameter('execution_mode','position',descriptor=ParameterDescriptor(read_only=True))
+        from .teleop_deployment import apply_execution_tracking
+        self.cfg=apply_execution_tracking(self.cfg,self.get_parameter('execution_mode').value,
+                                          real=not self.simulation,position_contract=position_contract)
         self.declare_parameter('gripper_config','',descriptor=ParameterDescriptor(read_only=True))
         gripper_path=self.get_parameter('gripper_config').value
         self.gripper_cfg=validate_config(json.loads(Path(gripper_path).read_text()),self.profile) if position_contract and gripper_path else None

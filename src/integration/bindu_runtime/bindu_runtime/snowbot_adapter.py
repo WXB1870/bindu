@@ -183,6 +183,13 @@ class SnowbotDevices:
 def assemble_snowbot(node, profile):
     protocol = node.declare_parameter('position_protocol', 'legacy_guard',
         descriptor=ParameterDescriptor(read_only=True)).value
+    mode = node.declare_parameter('execution_mode', 'position',
+        descriptor=ParameterDescriptor(read_only=True)).value
+    if mode not in ('position', 'impedance'):
+        raise ValueError('SNOWBOT_EXECUTION_MODE')
+    if mode == 'impedance' and protocol != 'session_v1':
+        raise ValueError('IMPEDANCE_REQUIRES_REAL_SESSION')
+    node.snowbot_execution_mode = mode
     if protocol == 'session_v1':
         from .snowbot_position_session import PositionSessionDevices
         devices = PositionSessionDevices(node, profile)

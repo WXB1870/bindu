@@ -8,6 +8,7 @@
     "device_backend": "snowbot_vendor",
     "command_enabled": false,
     "position_protocol": "session_v1",
+    "execution_mode": "position",
     "gripper_config": "@runtime/config/robots/snowbot/snowbot_grippers_real.json",
     "vendor_namespace": "/",
     "side": "left",

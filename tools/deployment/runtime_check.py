@@ -50,6 +50,10 @@ def check_runtime(args, robot):
     for module in ('pinocchio', 'casadi', 'vuer', 'bindu_execution.interpolation'):
         importlib.import_module(module)
     tool = json.loads(robot.tool_config.read_text())
+    from bindu_runtime.teleop_deployment import apply_execution_tracking
+    tool = apply_execution_tracking(tool, args.get('execution_mode','position'),
+                                    real=args['runtime_mode']=='real',
+                                    position_contract=args.get('position_contract') in (True,'true'))
     tool['urdf'] = str(robot.urdf)
     solver = BimanualQP(tool, robot.profile)
     solver.close()
@@ -288,7 +292,8 @@ def check_position_session(args, timeout):
     from bindu_hardware.snowbot import GROUPS
     rclpy.init(args=[])
     node = rclpy.create_node('bindu_position_check_'+uuid.uuid4().hex[:8])
-    health = SessionHealth(lambda: node.get_clock().now().nanoseconds*1e-9)
+    health = SessionHealth(lambda: node.get_clock().now().nanoseconds*1e-9,
+                           execution_mode=args.get('execution_mode','position'))
     failures = {}
     def observe(msg):
         try:
