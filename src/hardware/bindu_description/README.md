@@ -71,6 +71,25 @@ python3 -c "from xml.etree import ElementTree as ET; print(ET.parse('src/hardwar
 
 Snowbot 的三份 URDF 是同一机器人针对不同用途的生成结果。31 个 STL 仅保存一份，完整模型与显示模型通过 `package://bindu_description/meshes/snowbot/…` 引用；`bindu_description` 的安装规则一起安装 `urdf/` 与 `meshes/`。文件存在不等于几何可用于碰撞：源资产中的 `head_link_1.STL` 为空网格，相关检查边界见[雪铲几何验证](#单杆雪铲的握姿与工作空间2026-10-08)。
 
+**118 现场模型差异与限位依据（2026-10-21）。** 用户确认118现场模型更准确；当前位置限位以118的 `/home/cc/snowbot_ws/src/dual_arm/urdf/snowbot.urdf` 为约束依据。Bindu的规划、遥操作及执行所用有效关节区间必须包含于118对应区间内，允许进一步收窄，不能因Bindu导入模型的范围更宽而放宽现场限位。
+
+本次对照使用本机留存的118同源快照：两版共有的20个活动关节，其名称、父子关系、安装变换和轴向一致，但整份URDF不同。Bindu增加底盘、车轮和传感器结构，重写网格路径，头部相机固定坐标系的旋转也不同；三份Bindu派生模型均有以下12轴位置限位差异（单位rad，左右同范围的关节合并列出）：
+
+| 关节 | 118现场URDF | Bindu导入URDF |
+|---|---|---|
+| `body_joint_1` | [−1.17, 1.17] | [−3.14, 3.14] |
+| `body_joint_2` | [−0.79, 0.55] | [−0.79, 1.83] |
+| `head_joint_1` | [−0.791, 0.791] | [−3.14, 3.14] |
+| `head_joint_2` | [−0.791, 0.791] | [−0.79, 0.79] |
+| `arm_l_joint_3` | [−2.61, 0.58] | [−3.14, 3.14] |
+| `arm_r_joint_3` | [−0.58, 2.61] | [−3.14, 3.14] |
+| 左右臂J6 | [−1.309, 1.274] | [−1.57, 1.57] |
+| 左右臂J7 | [−1.274, 1.449] | [−1.57, 1.57] |
+| `arm_l_joint_8` | [−1.484, 0.524] | [−1.57, 0.94] |
+| `arm_r_joint_8` | [−0.524, 1.484] | [−0.94, 1.57] |
+
+当前[真机位置profile](../../integration/bindu_runtime/config/robots/snowbot/snowbot_real_position.json)的20轴位置范围均未超过118：除头J2取两模型交集±0.79 rad，其余19轴与118一致。本次仅记录差异和约束依据，未修改生成URDF或运行配置。
+
 Snowbot 来源及压缩包 SHA256 在 [`SNOWBOT_ASSETS_NOTICE`](SNOWBOT_ASSETS_NOTICE) 中维护；[`prepare_snowbot_description.py`](../../../tools/models/prepare_snowbot_description.py) 校验该指纹并一次生成三份 URDF 和共享网格。原 ZIP 由用户提供，不随仓库分发。重新生成命令：
 
 ```bash

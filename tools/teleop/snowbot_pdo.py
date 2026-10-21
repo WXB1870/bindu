@@ -83,7 +83,7 @@ class PdoMonitor:
         self.max_age = max_age
         self.boot = self.sample = None
         self.progress = self.received = None
-        self.value = None
+        self.measurement_time = None
         self.frames = self.repeats = self.unobserved = self.regressions = self.restarts = 0
         self.result = dict(available=False, pdo_valid=False, reasons=['WAITING_FOR_PDO'])
 
@@ -137,10 +137,10 @@ class PdoMonitor:
                 reasons.append('PDO_AXIS_UNAVAILABLE')
             if decoded['fault_mask']:
                 reasons.append('DRIVE_FAULT')
-            self.value = copy.deepcopy(value)
+            self.measurement_time = (value['stamp'], value['pdo_age'])
         except (KeyError, TypeError, ValueError) as exc:
             reasons.append(str(exc))
-            self.value = None
+            self.measurement_time = None
         self.received = steady_now
         self.result = result
         return self.poll(ros_now, steady_now)
@@ -154,17 +154,18 @@ class PdoMonitor:
                 reasons.append('PDO_OBSERVER_STALE')
             if self.progress is None or not 0 <= steady_now-self.progress <= self.max_age:
                 reasons.append('PDO_NOT_ADVANCING')
-            if self.value is not None:
-                age = ros_now-self.value['stamp'] + self.value['pdo_age']
+            if self.measurement_time is not None:
+                stamp, pdo_age = self.measurement_time
+                age = ros_now-stamp + pdo_age
                 result['measurement_age_s'] = age
-                if (not 0 <= self.value['pdo_age'] <= self.max_age or
-                        not 0 <= ros_now-self.value['stamp'] <= self.max_age or
+                if (not 0 <= pdo_age <= self.max_age or
+                        not 0 <= ros_now-stamp <= self.max_age or
                         not 0 <= age <= self.max_age):
                     reasons.append('PDO_MEASUREMENT_STALE')
         result['reasons'] = list(dict.fromkeys(reasons))
         # Drive faults do not invalidate an otherwise fresh, complete PDO receive.
         bus_reasons = set(result['reasons']) - {'DRIVE_FAULT', 'SERVO_RESTART'}
-        result['pdo_valid'] = bool(self.value is not None and not bus_reasons)
+        result['pdo_valid'] = bool(self.measurement_time is not None and not bus_reasons)
         result['checked_at'] = ros_now
         return result
 
@@ -188,16 +189,12 @@ class FaultWindow:
         self.last_time = None
         self.last_payload = None
 
-    def _emit(self, stream, value):
-        if self.writer is not None:
-            self.writer.record(stream, value)
-
     def _finish(self, now, complete):
         if self.until is not None:
-            self._emit('pdo-events', dict(kind='window_end', event=self.event, complete_time_window=complete,
+            self.writer.record('pdo-events', dict(kind='window_end', event=self.event, complete_time_window=complete,
                 elapsed_since_trigger_s=max(0., min(self.after, now-self.triggered_at)),
                 last_payload_age_s=now-self.last_payload if self.last_payload is not None else None,
-                frames=self.frames, writer=self.writer.status() if self.writer else {}))
+                frames=self.frames, writer=self.writer.status()))
             self.until = self.triggered_at = None
 
     def update(self, health, now, payload=None):
@@ -228,17 +225,17 @@ class FaultWindow:
                 self.event += 1
                 self.frames = 0
                 self.triggered_at, self.until = now, now+self.after
-            self._emit('pdo-events', dict(kind='fault_transition', event=self.event, health=health,
+            self.writer.record('pdo-events', dict(kind='fault_transition', event=self.event, health=health,
                 requested_before_s=self.before, requested_after_s=self.after,
                 available_before_s=now-self.ring[0][0] if self.ring else 0.,
                 history_evicted_at_capacity=self.evicted, stored_pre_samples=len(self.ring)))
             if starting:
                 for stamp, frame in self.ring:
-                    self._emit('pdo-observation', dict(event=self.event, observed_monotonic=stamp, data=frame))
+                    self.writer.record('pdo-observation', dict(event=self.event, observed_monotonic=stamp, data=frame))
                     self.frames += 1
                 return
         if self.until is not None and payload is not None:
-            self._emit('pdo-observation', dict(event=self.event, observed_monotonic=now, data=self.ring[-1][1]))
+            self.writer.record('pdo-observation', dict(event=self.event, observed_monotonic=now, data=self.ring[-1][1]))
             self.frames += 1
 
     def close(self, now):
@@ -252,6 +249,7 @@ class PdoObserver:
         self.monitor = PdoMonitor()
         self.window = FaultWindow(writer) if writer else None
         self.last_summary = None
+        self.publishers, self.graph_checked = (), None
         self.unavailable = ''
         try:
             from snowbot_ctl_msgs.msg import PositionObservation
@@ -266,7 +264,11 @@ class PdoObserver:
         import time
         now, steady = time.time(), time.monotonic()
         identity_error = ''
-        infos = self.node.get_publishers_info_by_topic('/bindu/position/observation')
+        # Discovery is diagnostic only; cache for 200 ms, but compare GID on every frame.
+        if self.graph_checked is None or not 0 <= steady-self.graph_checked < .2:
+            self.publishers = tuple(self.node.get_publishers_info_by_topic('/bindu/position/observation'))
+            self.graph_checked = steady
+        infos = self.publishers
         if (len(infos) != 1 or infos[0].node_namespace.rstrip('/')+'/'+infos[0].node_name != '/servo_node' or
                 infos[0].topic_type != 'snowbot_ctl_msgs/msg/PositionObservation'):
             identity_error = 'PDO_PUBLISHER_UNVERIFIED'

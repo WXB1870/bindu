@@ -90,7 +90,10 @@ class PdoTests(unittest.TestCase):
         monitor = PdoMonitor()
         result = monitor.receive(frame(stamp=10.,pdo_age=.015),10.01,1.)
         self.assertIn('PDO_MEASUREMENT_STALE',result['reasons'])
-        monitor.receive(frame(2,10.1),10.101,1.1)
+        value = frame(2,10.1)
+        monitor.receive(value,10.101,1.1)
+        value['stamp'] = value['pdo_age'] = -100.
+        self.assertTrue(monitor.poll(10.102,1.101)['pdo_valid'])
         result = monitor.poll(10.14,1.14)
         self.assertIn('PDO_OBSERVER_STALE',result['reasons'])
         self.assertIn('PDO_NOT_ADVANCING',result['reasons'])
@@ -320,9 +323,14 @@ class ObserverTests(unittest.TestCase):
 
     def test_observer_only_subscribes_and_reports_unverified_publishers(self):
         callbacks = []
+        queries = []
         info = S(node_namespace='/',node_name='servo_node',topic_type='snowbot_ctl_msgs/msg/PositionObservation')
+        infos = [info]
+        def publishers(topic):
+            queries.append(topic)
+            return infos
         node = S(create_subscription=lambda kind, topic, cb, qos:callbacks.append((topic,cb)),
-                 get_publishers_info_by_topic=lambda topic:[info])
+                 get_publishers_info_by_topic=publishers)
         with patch.dict('sys.modules',{'snowbot_ctl_msgs':S(),
             'snowbot_ctl_msgs.msg':S(PositionObservation=object),
             'rclpy.qos':S(qos_profile_sensor_data=object())}):
@@ -330,25 +338,25 @@ class ObserverTests(unittest.TestCase):
         self.assertEqual([topic for topic, _ in callbacks],['/bindu/position/observation'])
         raw=frame();raw.pop('stamp')
         msg=S(header=S(stamp=S(sec=10,nanosec=0)),**raw)
-        with patch('time.time',return_value=10.001),patch('time.monotonic',return_value=1.):
-            callbacks[0][1](msg)
-        self.assertTrue(observer.sample(10.002,1.001)['pdo_valid'])
-        node.get_publishers_info_by_topic=lambda topic:[info,info]
-        with patch('time.time',return_value=10.003),patch('time.monotonic',return_value=1.002):
-            callbacks[0][1](msg)
-        self.assertIn('PDO_PUBLISHER_UNVERIFIED',observer.sample(10.004,1.003)['reasons'])
-        node.get_publishers_info_by_topic=lambda topic:[info]
+        def receive(steady, metadata=None):
+            msg.header.stamp.nanosec = round((steady-1.)*1e9)
+            msg.pdo_sample += 1
+            with patch('time.time',return_value=steady+9.001),patch('time.monotonic',return_value=steady):
+                callbacks[0][1](msg,metadata)
+            return observer.sample(steady+9.002,steady+.001)
+        self.assertTrue(receive(1.)['pdo_valid'])
+        self.assertTrue(receive(1.002)['pdo_valid'])
+        self.assertEqual(len(queries),1)  # Discovery is not queried per frame.
+        infos = [info,info]
+        self.assertIn('PDO_PUBLISHER_UNVERIFIED',receive(1.204)['reasons'])
+        infos = [info]
         info.endpoint_gid=[0]*16
-        with patch('time.time',return_value=10.005),patch('time.monotonic',return_value=1.004):
-            callbacks[0][1](msg,S(publisher_gid=[1]*16))
-        self.assertIn('PDO_PUBLISHER_GID_MISMATCH',observer.sample(10.006,1.005)['reasons'])
-        with patch('time.time',return_value=10.007),patch('time.monotonic',return_value=1.006):
-            callbacks[0][1](msg,S(publisher_gid=[0]*16))
-        self.assertEqual(observer.sample(10.008,1.007)['publisher_gid_verification'],'verified')
-        info.endpoint_gid=[2]*24
-        with patch('time.time',return_value=10.009),patch('time.monotonic',return_value=1.008):
-            callbacks[0][1](msg,{'publisher_gid':[2]*24})
-        self.assertEqual(observer.sample(10.01,1.009)['publisher_gid_verification'],'verified')
+        self.assertIn('PDO_PUBLISHER_GID_MISMATCH',receive(1.408,S(publisher_gid=[1]*16))['reasons'])
+        self.assertEqual(receive(1.410,S(publisher_gid=[0]*16))['publisher_gid_verification'],'verified')
+        self.assertIn('PDO_PUBLISHER_GID_MISMATCH',receive(1.412,S(publisher_gid=[1]*16))['reasons'])
+        self.assertEqual(len(queries),3)  # Cached graph still checks each callback GID.
+        infos = [S(**dict(vars(info),endpoint_gid=[2]*24))]
+        self.assertEqual(receive(1.612,{'publisher_gid':[2]*24})['publisher_gid_verification'],'verified')
 
     def test_missing_optional_interface_is_visible_without_starting_ros_or_hardware(self):
         # This interface is optional on the Mac and on an original vendor install.

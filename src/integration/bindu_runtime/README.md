@@ -10,7 +10,7 @@
 
 ### 依赖准备
 
-**Orin仅导航**使用[导航专用入口](../../capabilities/bindu_navigation/README.md#orin-导航专用部署与新手操作)，设置`BINDU_NAVIGATION_ONLY=1`收敛为七包（LIO另加一包）；不使用本节完整能力环境。该配置只供导航launch，不启动取物、VR或IK。
+**导航专用的Orin环境**使用[导航专用入口](../../capabilities/bindu_navigation/README.md#orin-导航专用部署与新手操作)，设置`BINDU_NAVIGATION_ONLY=1`收敛为七包（LIO另加一包）。该配置只供导航launch，不包含VR／IK；Snowbot位置遥操作同样以Orin为目标，需要按完整遥操作依赖另行构建，ARM64链路尚未验证。
 
 默认完整装配依赖运动学及原生 QP，即使只启动任务示例，首次构建也要准备 C++17、Python 开发头文件、Eigen3、SIMDe，以及匹配的 Pinocchio／ProxSuite。已有可用数值环境可直接加载；若使用仓库固定版本的 wheel，先在新的终端准备隔离目录：
 
@@ -60,9 +60,11 @@ ros2 topic echo /bindu_sim/execution/state --once
 
 - PICO 与浏览器操作台：按 [遥操作模块命令](../../capabilities/bindu_teleoperation/README.md#编译与运行) 加载查看器依赖与 TLS，再用 `bash tools/run_vr.sh --config src/integration/bindu_runtime/config/deployments/snowbot_vr_sim.json`。
 - 三维建图／定位：按 [LIO 模块命令](../../capabilities/bindu_lio/README.md#编译与运行) 构建可选包并提供点云、IMU及标定配置。
-- 真实 Snowbot：优先使用 [x86 独立部署](#x86-真机部署已有适配底层)；底层联调沿用 [现场部署顺序](#snowbot-真机最小遥操作)，准备厂商消息、现场配方与反馈，默认只读；构建和启动上层不等于底层使能或真机验收。
+- 真实 Snowbot：目标为Orin ARM64，平台确认及验收缺口见[Snowbot运行记录](../../../../../snowbot/运行与验证.md)。下节[x86部署](#x86-真机部署已有适配底层)保留供x86环境复现；底层接口检查见[现场部署顺序](#snowbot-真机最小遥操作)。构建和启动上层不等于底层使能或真机验收。
 
 ## x86 真机部署（已有适配底层）
+
+本节仅适用于x86_64；`x86_real.py`会拒绝ARM64，不能作为Orin部署入口。Orin须核对实际系统／ROS／Python版本并原生重建厂商消息、驱动依赖及QP扩展，不能搬用x86的`install/`或二进制；Orin部署尚未验收。
 
 底层流程与接口差异见[真机驱动](../../../运行与验证.md#snowbot-真机驱动与双臂扫雪部署)。遵守[项目约束](../../../AGENTS.md#3-机器人软件工程约束)：本机改码后[同步版本](../../../运行与验证.md#开发同步)，机器人端不编辑源码或控制配置；代理禁止触发硬件运动，本节运动命令仅供人工查阅。
 
@@ -247,6 +249,10 @@ ros2 topic echo /bindu/servo_health
 `runtime.launch.py` 的默认 [runtime_deployment.json](config/deployments/runtime_deployment.json) 选择位置适配入口的仿真模式。运行扫雪工具会话从 `teleop_only.launch.py` 进入；部署时选择完整的`snowbot_vr_real.json`或底层联调配方`snowbot_real_teleop.json`，不能只切换`runtime_mode`。
 
 统一PICO入口为[`tools/run_vr.sh`](../../../tools/run_vr.sh)，选择`snowbot_vr_sim.json`或`snowbot_vr_real.json`。两者使用`position_contract=true`、同一真实位置profile／工具几何和协调器；只在设备IO、初始测量状态及现场标定处区分。状态统一到`teleop/state`，夹爪由同一执行节点提供服务。旧四节点配方保留底层联调用途；具体启动与操作见[统一入口](../../../运行与验证.md#vr-统一部署与启动)。
+
+真实腰臂联合轨迹通过`position_protocol=session_v2`显式选择，须与servo只读参数`position_reference_mode=trajectory`配对，消息及全部使用方成套重建。适配器复用`PreparedSegment`准备16轴曲线，servo后台导入后在原控制循环采样，替换该分支的Follower；原身份与期限随片段透传，重发和采样不续期，收到实际接纳回执才推进接续。`ExecutionState.reference`来自有效servo采样的q／dq／ddq及采样时刻，缺失时为空，等待目标和实测分别保留。
+
+新分支逐轴取profile与`0.25 rad/s、0.5 rad/s²、162 rad/s³`的较小界，servo默认校验帽一致；PAUSE无法在原剩余期限内完成则拒绝／保持未确认。可选`execution_mode=impedance`还须配套含阻抗代码的底层及相同模式，复用原控制器，名义保持不代表实测停稳。仓库真实配方模板仍为`session_v1`、`position`、`command_enabled=false`，底层默认`follower`／`unconfirmed`；118现场覆盖配方已显式选择v2／trajectory，当前部署记录由Snowbot维护。接口的Ubuntu x86离线验证已完成；Orin、真实手柄、实机1 ms调度与持载停止仍待验收，场景版本和证据见[Snowbot修改目标](../../../../../snowbot/位置遥操作修改目标.md)。
 
 ### 配套配置与流程
 
