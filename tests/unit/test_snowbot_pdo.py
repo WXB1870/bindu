@@ -164,7 +164,8 @@ class PdoTests(unittest.TestCase):
         arrays = ('reference_position', 'reference_speed', 'reference_acceleration',
                   'output_position', 'output_speed', 'output_torque', 'output_kp', 'output_kd')
         msg = S(header=S(stamp=S(sec=10,nanosec=0)), reference_mode=1, segment_id=91,
-                sample_time_ns=2**53+7, output_valid=False,
+                sample_time_ns=2**53+7, output_valid=False, execution_mode=1,
+                trajectory_phase=4, reference_valid=True, hold_basis=1,
                 **{name:array('d', [float(i+1)]*16) for i, name in enumerate(arrays)}, **raw)
         payload = observation_payload(msg)
         for i, name in enumerate(arrays):
@@ -173,6 +174,16 @@ class PdoTests(unittest.TestCase):
         self.assertEqual((payload['reference_mode'], payload['segment_id'], payload['sample_time_ns']),
                          (1, 91, 2**53+7))
         self.assertFalse(payload['output_valid'])
+        self.assertTrue(payload['reference_valid'])
+        self.assertEqual((payload['execution_mode'], payload['trajectory_phase'], payload['hold_basis']), (1, 4, 1))
+        msg.reference_valid, msg.output_valid = False, True
+        payload = observation_payload(msg)
+        self.assertFalse(payload['reference_valid'])
+        self.assertTrue(payload['output_valid'])
+        del msg.execution_mode, msg.trajectory_phase, msg.reference_valid, msg.hold_basis
+        missing = observation_payload(msg)
+        self.assertTrue(all(name not in missing for name in
+                            ('execution_mode', 'trajectory_phase', 'reference_valid', 'hold_basis')))
         self.assertEqual(payload['position'], [.2]*20)
         self.assertNotIn('q_goal', payload)
         self.assertNotIn('command_id', payload)

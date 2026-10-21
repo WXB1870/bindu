@@ -69,7 +69,8 @@ def observation_payload(msg):
                  'torque_raw_valid_mask', 'receive_attempt', 'attempt_age', 'bad_wkc_count',
                  'receive_overruns', 'period_overruns', 'command_sequence',
                  'session', 'session_reason', 'session_selected', 'hold_valid', 'hold_sample',
-                 'sensor_valid_mask', 'reference_mode', 'segment_id', 'sample_time_ns', 'output_valid'):
+                 'sensor_valid_mask', 'reference_mode', 'segment_id', 'sample_time_ns', 'output_valid',
+                 'execution_mode', 'trajectory_phase', 'reference_valid', 'hold_basis'):
         if hasattr(msg, name):
             item = getattr(msg, name)
             value[name] = list(item) if name in arrays else item
