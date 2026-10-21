@@ -146,6 +146,64 @@ def inspect_vendor_endpoints(args, node):
     return errors
 
 
+
+def inspect_position_routes(args, node):
+    """Compare local generated schemas and offered/requested QoS, without publishing."""
+    from rclpy.qos import QoSCompatibility, qos_check_compatible
+    endpoints = vendor_endpoints(args)
+    own = node.get_namespace().rstrip('/')+'/'+node.get_name()
+    errors, graph = [], {}
+
+    def infos(topic, role):
+        key = topic, role
+        if key not in graph:
+            read = node.get_publishers_info_by_topic if role == 'publisher' else node.get_subscriptions_info_by_topic
+            graph[key] = read(topic)
+        return graph[key]
+
+    def find(topic, role, name):
+        found = [i for i in infos(topic, role) if i.node_namespace.rstrip('/')+'/'+i.node_name == name]
+        return found[0] if len(found) == 1 else None
+
+    def schema(info):
+        value = getattr(info, 'topic_type_hash', None)
+        version, digest = getattr(value, 'version', 0), getattr(value, 'value', b'')
+        if isinstance(version, int) and version > 0 and isinstance(digest, bytes) and len(digest) == 32 and any(digest):
+            return version, digest
+        return None
+
+    for endpoint in endpoints:
+        topic, role = endpoint['topic'], endpoint['role']
+        local, peer = find(topic, 'subscription', own), find(topic, role, endpoint['node'])
+        if local is None or peer is None:
+            errors.append('SNOWBOT_SESSION_ROUTE_UNVERIFIED:'+topic)
+            continue
+        local_hash, peer_hash = schema(local), schema(peer)
+        if local_hash is None or peer_hash is None:
+            errors.append('SNOWBOT_ENDPOINT_TYPE_HASH_UNAVAILABLE:'+topic)
+        elif local_hash != peer_hash:
+            errors.append('SNOWBOT_ENDPOINT_TYPE_HASH_MISMATCH:'+topic)
+        # Relays compare their actual publisher and receiver. The passive local
+        # reader supplies only the local schema on those command topics.
+        publisher = next((e for e in endpoints if e['topic'] == topic and e['role'] == 'publisher'), None)
+        receiver = next((e for e in endpoints if e['topic'] == topic and e['role'] == 'subscription'), None)
+        if role == 'publisher' and receiver:
+            continue
+        offered = find(topic, 'publisher', publisher['node']) if publisher else local
+        requested = peer if role == 'subscription' else local
+        if offered is None:
+            errors.append('SNOWBOT_SESSION_ROUTE_UNVERIFIED:'+topic)
+            continue
+        try:
+            compatibility, _ = qos_check_compatible(offered.qos_profile, requested.qos_profile)
+        except (AttributeError, TypeError, ValueError):
+            compatibility = QoSCompatibility.WARNING
+        if compatibility != QoSCompatibility.OK:
+            label = 'INCOMPATIBLE' if compatibility == QoSCompatibility.ERROR else 'UNVERIFIED'
+            errors.append('SNOWBOT_ENDPOINT_QOS_'+label+':'+topic)
+    return list(dict.fromkeys(errors))
+
+
 def assess_robot_interface(args, node, messages, now, health):
     """Combine endpoint identity, actual measured fields and advancing PDO health."""
     from bindu_hardware.snowbot import GROUPS, decode_feedback
@@ -224,7 +282,8 @@ def check_position_session(args, timeout):
     """Observe typed metadata and PDO progress; no command publisher is created."""
     import rclpy
     from rclpy.qos import qos_profile_sensor_data
-    from snowbot_ctl_msgs.msg import PositionObservation, PositionSessionState
+    from snowbot_ctl_msgs.msg import (PositionObservation, PositionSessionState,
+        PositionSessionCommand, PositionSessionUpper, PositionSessionServo)
     from bindu_hardware.snowbot_session import SessionHealth, ARMS, decode_observation
     from bindu_hardware.snowbot import GROUPS
     rclpy.init(args=[])
@@ -248,10 +307,15 @@ def check_position_session(args, timeout):
         for layer in ('upper', 'middle', 'servo'):
             node.create_subscription(PositionSessionState, '/bindu/position/'+layer+'_state',
                 lambda msg, l=layer: state(l, msg), 1)
+        # Passive readers expose this process's generated type hashes. Their
+        # default QoS also describes the future command publisher's QoS.
+        for topic, kind in (('command', PositionSessionCommand), ('upper', PositionSessionUpper),
+                            ('servo', PositionSessionServo)):
+            node.create_subscription(kind, '/bindu/position/'+topic, lambda msg: None, 1)
         deadline = time.monotonic()+timeout
         while time.monotonic() < deadline:
             rclpy.spin_once(node, timeout_sec=min(.01, max(0., deadline-time.monotonic())))
-        errors = inspect_vendor_endpoints(args, node) + list(failures.values())
+        errors = inspect_vendor_endpoints(args, node) + inspect_position_routes(args, node) + list(failures.values())
         if node.count_publishers('/joint_position_cmd'):
             errors.append('SNOWBOT_LEGACY_SOURCE_CONFLICT')
         try:

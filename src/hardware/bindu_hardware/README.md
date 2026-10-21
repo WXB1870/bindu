@@ -218,7 +218,9 @@ ROS_LOCALHOST_ONLY=1 ROS_DOMAIN_ID=226 python3 -m tests.integration.validate_sno
 
 `session_v1`使用独立位置会话与`PositionObservation`，真实场景只租用并求解双臂14轴；腰部等其余模型关节必须来自同次新鲜实测，作为运动学上下文，缺失即拒绝求解。暂停回传实时层固定保持点、采样号及会话／PAUSE序号；执行器等待匹配回执后，仍以更新的实测位置和速度按原容差确认停稳，回执本身不表示物理停止。新字段仅扩展独立消息，全部使用方须统一构建。期限当前要求控制链同机部署；停止策略及现场边界见[修改目标](../../../../../snowbot/位置遥操作修改目标.md#暂停确认资源与异常停止策略)。
 
-以下为`guarded_legacy`接口：在目标ROS环境构建／加载原包的`snowbot_ctl_msgs`，然后构建并加载Bindu。启用写入时，现场底层控制版本必须应用补丁、上层启动为`control_source:=topic`、伺服节点启动为`bindu_guard:=true`；后者默认false，保留原有控制入口。未补丁的底层节点仍可用于只读观察，适配器拒绝取得控制权。底层全包的硬编码依赖路径和ARM64构建仍需现场验证，准备成功不代表已构建／部署。
+`session_v1`只读预检同时比较本机生成消息与各层端点的类型哈希，并按实际发布／订阅方向核对QoS；缺失／未知元数据或不兼容均不报告可用。探测仅增加被动订阅，不创建运动发布者或调用控制服务。ROS元数据语义见[端点信息](https://github.com/ros2/rclpy/blob/jazzy/rclpy/rclpy/topic_endpoint_info.py)及[QoS检查](https://github.com/ros2/rclpy/blob/jazzy/rclpy/rclpy/qos.py)。
+
+以下为`legacy_guard`接口：在目标ROS环境构建／加载原包的`snowbot_ctl_msgs`，然后构建并加载Bindu。启用写入时，现场底层控制版本必须应用补丁、上层启动为`control_source:=topic`、伺服节点启动为`bindu_guard:=true`；后者默认false，保留原有控制入口。未补丁的底层节点仍可用于只读观察，适配器拒绝取得控制权。底层全包的硬编码依赖路径和ARM64构建仍需现场验证，准备成功不代表已构建／部署。
 
 ```bash
 # <控制源码>指原包解压路径；此命令只构建消息，不启动运控。
