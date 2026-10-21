@@ -72,7 +72,7 @@ ros2 topic echo /bindu_sim/execution/state --once
 |---|---|---|
 | `tools/deployment/x86_real.py`、`tools/run_vr.sh`、输入诊断、浏览器页面、依赖清单 | 是 | 克隆／拉取选定提交，无须另找启动脚本 |
 | `src/` 中的消息、QP、执行器、Snowbot URDF／网格与配方样例 | 是 | 从当前源码重新构建；模型不依赖历史参考目录 |
-| `prepare_snowbot_vendor.py`、`snowbot_vendor/bindu_guard.patch` 和 `bindu_watchdog.h`（均在 `tools/deployment/`） | 是 | 可从已核对原包生成适配工作副本 |
+| Snowbot底层准备工具与专属补丁 | 否，独立场景资产 | 在文稿/snowbot维护，按其运行说明准备后提供厂商安装入口 |
 | 底层原始 `src.zip`、已适配的独立底层工作区 | 否 | 单独携带源码并核对补丁版本；本机原包在 `/home/wxb/Downloads/src.zip` |
 | `artifacts/vr/env.sh`、`artifacts/vr/default.json`、其他历史环境脚本和构建结果 | 否，属于生成／本机文件 | 用下面的 `prepare/build` 生成新机环境与 `site.json`，不搬历史覆盖层 |
 | 现场标定文件、实际话题／节点、TLS 证书与私钥 | 不由通用配方提供 | 携带已核实参数或现场标定；按新机 IP 准备证书，私钥不入库 |
@@ -115,10 +115,7 @@ export BINDU_VENDOR_WS=/绝对路径/vendor_ws
 
 不要对已适配工作区重复套补丁或启动控制器。若只有已核对的**原始** `src.zip`，以下补丁准备仅在本机副本执行；校验、打包后同步到机器人新目录，再将`BINDU_VENDOR_WS`指向该目录构建消息。生成器核对原包SHA256，拒绝其他版本和已有输出：
 
-```bash
-python3 -m tools.deployment.prepare_snowbot_vendor /绝对路径/src.zip \
-  --output /绝对路径/vendor_ws
-```
+底层原包准备及版本检查由[Snowbot工作区](../../../../../snowbot/运行与验证.md#本机底层源码准备与离线验证)维护，完成后提供选定的厂商工作区及安装入口。
 
 历史 `artifacts/*/vendor*` 有不同补丁版本，不能按目录名里的 `final` 选取。已有底层源码须与当前补丁核对；构建消息成功不证明完整底层驱动已可运行。
 
@@ -161,7 +158,7 @@ python3 -m tools.teleop.vr_connectivity \
 
 `@runtime/` 指向本次安装包；其他配置路径相对 `site.json`，跨目录可用绝对路径。`prepare`保留已经存在的现场配方，更新源码模板不会自动迁移旧`site.json`；118已有的`/snowbot`副本应在本机改为`/`后同步，保留TLS路径、端口和只读状态。现场副本可从 `src/integration/bindu_runtime/config/robots/snowbot/` 的 `pico_snowbot_position_real.json`、`snowbot_grippers_real.json` 复制，未标定时保留原状态，不套模拟值。普通双臂从当前实测末端接合，不依赖 A 准备位；夹爪与持工具操作按各自标定和确认条件开放。源码或依赖清单变更后重新 `build`；检查入口会按构建时的源码指纹拒绝旧产物。
 
-**118反馈传输。** x86部署入口在加载现有环境前默认设置`FASTDDS_BUILTIN_TRANSPORTS=UDPv4`，新生成的`env.sh`也采用该默认值；显式传输选择、ROS域和RMW设置保留。更新入口脚本即可覆盖旧`env.sh`未设置传输的情况，不必为此重新`prepare`。该设置用于处理root驱动与cc观察端之间已确认的默认传输收包问题，证据及边界见[底层D118-13](../../../底层驱动问题记录.md#已确认接口与问题)，不修改驱动或共享内存权限。接收帧率、ROS发布时间与成功PDO采样分别核验，收到16轴消息不能解除头腰测量和保护门槛。
+**118反馈传输。** x86部署入口在加载现有环境前默认设置`FASTDDS_BUILTIN_TRANSPORTS=UDPv4`，新生成的`env.sh`也采用该默认值；显式传输选择、ROS域和RMW设置保留。更新入口脚本即可覆盖旧`env.sh`未设置传输的情况，不必为此重新`prepare`。该设置用于处理root驱动与cc观察端之间已确认的默认传输收包问题，证据及边界见[底层D118-13](../../../../../snowbot/底层驱动问题记录.md#已确认接口与问题)，不修改驱动或共享内存权限。接收帧率、ROS发布时间与成功PDO采样分别核验，收到16轴消息不能解除头腰测量和保护门槛。
 
 ```bash
 ROS_DOMAIN_ID=42 python3 -m tools.deployment.x86_real check
@@ -401,15 +398,14 @@ test -f /opt/ros/humble/setup.bash
 source /opt/ros/humble/setup.bash
 export BINDU_ROS_DISTRO=humble
 export BINDU_TELEOP_WORKSPACE="$PWD/artifacts/real-teleop"
-# 将路径换为现场带来的原包；输出已存在时核对原目录，不覆盖重建。
-python3 -m tools.deployment.prepare_snowbot_vendor /绝对路径/src.zip \
-  --output artifacts/snowbot-vendor-workspace
-colcon --log-base artifacts/snowbot-vendor-workspace/log build \
-  --base-paths artifacts/snowbot-vendor-workspace/src/ctl_msgs \
+# 底层源码先由独立Snowbot工作区在本机准备并同步；此处只构建选定版本。
+export BINDU_VENDOR_WS=/绝对路径/vendor_ws
+colcon --log-base "$BINDU_VENDOR_WS/log" build \
+  --base-paths "$BINDU_VENDOR_WS/src/ctl_msgs" \
   --packages-select snowbot_ctl_msgs --executor sequential \
-  --build-base "$PWD/artifacts/snowbot-vendor-workspace/build" \
-  --install-base "$PWD/artifacts/snowbot-vendor-workspace/install"
-export BINDU_VENDOR_SETUP="$PWD/artifacts/snowbot-vendor-workspace/install/local_setup.bash"
+  --build-base "$BINDU_VENDOR_WS/build" \
+  --install-base "$BINDU_VENDOR_WS/install"
+export BINDU_VENDOR_SETUP="$BINDU_VENDOR_WS/install/local_setup.bash"
 
 # 新建与目标ROS的Python匹配、继承系统包的venv；已有环境先核对再复用。
 python3 -m venv --system-site-packages "$BINDU_TELEOP_WORKSPACE/venv"

@@ -44,7 +44,7 @@ ros2 launch bindu_runtime snowbot_adapter.launch.py \
 
 [snowbot.py](bindu_hardware/snowbot.py) 接收现场双臂及夹爪的16轴实测反馈，也兼容扩展头腰反馈；缺失轴不补零、不引用目标值或保留旧测量冒充新帧。`execution/state.missing_feedback_groups`明确列出缺失组，`joints`与反馈源时间仅含实际收到的数据。20轴profile继续保留，完整本体状态与腰臂协调不因16轴接收成功而视为已验收。底盘未接入。
 
-独立[snowbot_gripper.py](bindu_hardware/snowbot_gripper.py)提供夹爪位置闭环、装卸授权、到位与保持确认，默认标定门槛禁止夹爪写入。通过健康、路由和控制权检查后才允许写位置；现有底层缺口与当前适配边界集中见[底层驱动问题记录](../../../底层驱动问题记录.md)。
+独立[snowbot_gripper.py](bindu_hardware/snowbot_gripper.py)提供夹爪位置闭环、装卸授权、到位与保持确认，默认标定门槛禁止夹爪写入。通过健康、路由和控制权检查后才允许写位置；现有底层缺口与当前适配边界集中见[底层驱动问题记录](../../../../../snowbot/底层驱动问题记录.md)。
 
 该位置入口默认只读，已供[真机最小遥操作](../../integration/bindu_runtime/README.md#snowbot-真机最小遥操作)复用；独立夹爪开合见[真实夹爪位置闭环](#snowbot真实夹爪位置闭环)，实体夹持及虚握确认仍待接入。底层已有柔顺；六维力传感器的坐标、去皮和接口仍需接入与标定。Isaac 空铲实验的载荷通路由仓库级工具单独实现，不能把本包外部仿真驱动视为现成的 Snowbot 六维传感器接口。接入状态和运行步骤见[Snowbot 位置控制适配层](#snowbot-位置控制适配层)。
 
@@ -212,21 +212,9 @@ ROS_LOCALHOST_ONLY=1 ROS_DOMAIN_ID=226 python3 -m tests.integration.validate_sno
 
 ### Snowbot 位置控制适配层
 
-2026-10-13按用户提供的`src.zip`增加独立`snowbot_adapter`入口；原控制包的消息、J1～J7顺序、rad单位和URDF限位作为本次依据。`snowbot_vendor_position.json`单独维护20轴反馈及源限位，不覆盖既有Snowbot仿真profile、G1或二代轮式配置。原始控制源码不迁入公共模块；控制侧修改维护为`tools/deployment/snowbot_vendor/bindu_guard.patch`及独立看门狗头文件，由准备工具对已核对的ZIP生成工作副本。
+2026-10-13按用户提供的`src.zip`增加独立`snowbot_adapter`入口；原控制包的消息、J1～J7顺序、rad单位和URDF限位作为本次依据。`snowbot_vendor_position.json`单独维护20轴反馈及源限位，不覆盖既有Snowbot仿真profile、G1或二代轮式配置。原始控制源码不迁入公共模块；控制侧专属补丁、源码准备工具及离线验证在[Snowbot工作区](../../../../../snowbot/运行与验证.md#本机底层源码准备与离线验证)维护，本模块只保留可复用设备适配接口。
 
-**118原生位置补丁。** `position_118.patch`单独修复接管起点、臂命令隐式使能夹爪及重复计时；不包含历史自定义夹爪／保护补丁。先将118厂商源码只读复制到本机，再运行以下命令生成独立工作副本；工具核对12份执行源码的SHA256，拒绝原地修改、覆盖或符号链接，记录补丁／头文件指纹，不构建或启动设备。夹爪标定暂缓，原生保护、完整ROS构建和现场验收边界见[底层问题记录](../../../底层驱动问题记录.md)。
-
-```bash
-python3 -m tools.deployment.prepare_snowbot_vendor /本机/118厂商源码/src \
-  --site-118 --output artifacts/snowbot-118-position
-```
-
-**历史ZIP准备与构建。** 不带`--site-118`时仅接受原ZIP的SHA256，拒绝覆盖已有输出，校验压缩路径后应用历史保护补丁并记录来源／补丁指纹；不启动节点或设备。控制侧补丁修正插补计时重复相加，插补间隔采用单调时钟；臂部窗口按真实1 ms周期计算，腰头／夹爪不再把20 ms误计为40 ms。原ZIP和参考展开目录保持不变。普通Bindu构建不编译底层驱动，其他机器人无需安装底层消息或应用补丁。以下保护参数说明属于该历史ZIP路径，不能作为118原生位置补丁已具备保护能力的依据。
-
-```bash
-python3 -m tools.deployment.prepare_snowbot_vendor /home/wxb/Downloads/src.zip \
-  --output artifacts/snowbot-vendor-workspace
-```
+底层原包与118补丁的准备、版本指纹及适用边界见[Snowbot运行与验证](../../../../../snowbot/运行与验证.md#本机底层源码准备与离线验证)。
 
 在目标ROS环境构建／加载原包的`snowbot_ctl_msgs`，然后构建并加载Bindu。启用写入时，现场底层控制版本必须应用补丁、上层启动为`control_source:=topic`、伺服节点启动为`bindu_guard:=true`；后者默认false，保留原有控制入口。未补丁的底层节点仍可用于只读观察，适配器拒绝取得控制权。底层全包的硬编码依赖路径和ARM64构建仍需现场验证，准备成功不代表已构建／部署。
 
@@ -277,12 +265,7 @@ ROS_DOMAIN_ID=191 ROS_LOCALHOST_ONLY=1 python3 -m tests.integration.validate_sno
 
 本轮完善的证据保存于`artifacts/snowbot-guard-2026-10-13/`：Jazzy与Ubuntu22.04/Humble各84项相关模块／分层检查、14项合成ROS检查；假PDO测试执行补丁驱动的实际循环，覆盖断流、乱序、实例冲突、位置冻结、J8隔离和无效WKC不推进。三个修改的底层ROS/C++源文件通过两平台编译检查；并发假PDO／健康发布检查覆盖样本年龄非负，修正读取时间与RT更新之间的竞争。源码准备及检查可复现如下（先加载ROS和底层消息安装）：
 
-```bash
-python3 -m tests.integration.validate_snowbot_vendor \
-  --source artifacts/snowbot-vendor-workspace/src \
-  --output artifacts/snowbot-vendor-cpp-check \
-  --ros-prefix /opt/ros/jazzy --messages-prefix /tmp/snowbot-msg-install/snowbot_ctl_msgs
-```
+底层假PDO验证已移至[Snowbot离线验证](../../../../../snowbot/运行与验证.md#本机底层源码准备与离线验证)，从该工作区运行。
 
 上述检查未链接／构建完整底层运控程序，未启动SOEM主站、使能电机或运行回位；原有硬编码依赖、ARM64、真实总线断流、带载保持、夹持和机械停稳仍未验收。默认只读保护和其他本体执行策略保持不变。
 
