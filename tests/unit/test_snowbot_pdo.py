@@ -1,0 +1,267 @@
+"""PDO evidence, source freshness and bounded fault capture; no ROS/devices."""
+import copy
+import json
+from pathlib import Path
+from types import SimpleNamespace as S
+import tempfile
+import unittest
+from unittest.mock import patch
+
+from tools.teleop.snowbot_diagnostics import DiagnosticWriter
+from tools.teleop.snowbot_pdo import (MASK, FaultWindow, PdoMonitor, PdoObserver,
+                                       axis_status, observation_payload, statusword)
+
+
+def frame(sample=1, stamp=10., **changes):
+    return dict(dict(boot_id=123, pdo_sample=sample, stamp=stamp, pdo_age=.001,
+                     wkc=67, expected_wkc=67, valid_mask=MASK,
+                     position=[.2]*20, speed=[0.]*20, status=[0x231]*20), **changes)
+
+
+class Writer:
+    def __init__(self):
+        self.records = []
+
+    def record(self, stream, value):
+        self.records.append((stream, copy.deepcopy(value)))
+
+    def status(self):
+        return dict(dropped=0, error='')
+
+
+class PdoTests(unittest.TestCase):
+    def test_historical_fault_masks_and_basic_state_decode(self):
+        words = [0x231,0x218,0x218,0x231,0x218,0x231,0x218,0x218,
+                 0x231,0x218,0x218,0x231,0x218,0x218,0x218,0x231,
+                 0x1218,0x1218,0x1231,0x1231]
+        result = axis_status(words, MASK)
+        self.assertEqual(result['fault_mask'], 0x376d6)
+        self.assertEqual(result['operation_enabled_mask'], 0)
+        self.assertEqual(result['fault_axes'], ['L2','L3','L5','L7','L8','R2','R3','R5','R6','R7','head1','head2'])
+        self.assertEqual(result['state_counts'], {'READY_TO_SWITCH_ON':8,'FAULT':12})
+        words[1], words[13], words[15], words[16] = 0x231,0x231,0x218,0x1231
+        self.assertEqual(axis_status(words,MASK)['fault_mask'], 0x2d6d4)
+
+    def test_invalid_zero_status_is_unknown_and_fault_is_not_operation_enabled(self):
+        result = axis_status([0]*20, 0)
+        self.assertEqual(result['state_counts'], {'UNAVAILABLE':20})
+        self.assertFalse(result['fault_mask_complete'])
+        self.assertEqual(result['unavailable_mask'], MASK)
+        result = axis_status([0x1f]*20, MASK)  # bit2 alone is insufficient.
+        self.assertEqual(result['state_counts'], {'FAULT_REACTION_ACTIVE':20})
+        self.assertEqual(result['operation_enabled_mask'], 0)
+        self.assertEqual(axis_status([0x27]*20,MASK)['operation_enabled_mask'],MASK)
+        self.assertEqual(statusword(0x1218),statusword(0x218))
+        for value in (True, -1, 65536, '0x218'):
+            with self.assertRaises(ValueError):statusword(value)
+
+    def test_full_wkc_and_drive_fault_are_distinct(self):
+        monitor = PdoMonitor()
+        result = monitor.receive(frame(status=[0x218]*20),10.001,1.)
+        self.assertTrue(result['pdo_valid'])
+        self.assertEqual(result['reasons'], ['DRIVE_FAULT'])
+        self.assertEqual(result['fault_mask'], MASK)
+        self.assertFalse(result['specific_error_code_available'])
+        self.assertFalse(result['effort_units_verified'])
+
+    def test_repeated_sample_cannot_renew_pdo_progress(self):
+        monitor = PdoMonitor()
+        self.assertTrue(monitor.receive(frame(),10.001,1.)['pdo_valid'])
+        self.assertTrue(monitor.receive(frame(stamp=10.01),10.011,1.01)['pdo_valid'])
+        frozen = monitor.receive(frame(stamp=10.03),10.031,1.03)
+        self.assertFalse(frozen['pdo_valid'])
+        self.assertIn('PDO_NOT_ADVANCING',frozen['reasons'])
+        self.assertTrue(monitor.receive(frame(2,10.04),10.041,1.04)['pdo_valid'])
+
+    def test_partial_wkc_invalid_mask_and_old_measurement_cannot_look_healthy(self):
+        monitor = PdoMonitor()
+        failed = frame(wkc=55, valid_mask=0, pdo_age=1500., position=[float('nan')]*20,
+                       speed=[float('nan')]*20, status=[0]*20)
+        result = monitor.receive(failed,10.001,1.)
+        self.assertFalse(result['pdo_valid'])
+        self.assertIn('PDO_WKC_MISMATCH',result['reasons'])
+        self.assertIn('PDO_AXIS_UNAVAILABLE',result['reasons'])
+        self.assertIn('PDO_MEASUREMENT_STALE',result['reasons'])
+        self.assertFalse(result['fault_mask_complete'])
+
+    def test_combined_age_and_absent_messages_become_stale(self):
+        monitor = PdoMonitor()
+        result = monitor.receive(frame(stamp=10.,pdo_age=.015),10.01,1.)
+        self.assertIn('PDO_MEASUREMENT_STALE',result['reasons'])
+        monitor.receive(frame(2,10.1),10.101,1.1)
+        result = monitor.poll(10.14,1.14)
+        self.assertIn('PDO_OBSERVER_STALE',result['reasons'])
+        self.assertIn('PDO_NOT_ADVANCING',result['reasons'])
+        self.assertFalse(result['pdo_valid'])
+
+    def test_regression_restart_and_unverified_publisher_are_visible(self):
+        monitor = PdoMonitor()
+        monitor.receive(frame(20),10.001,1.)
+        self.assertIn('PDO_SEQUENCE_REVERSED',monitor.receive(frame(19,10.01),10.011,1.01)['reasons'])
+        restarted = monitor.receive(frame(1,10.02,boot_id=456),10.021,1.02)
+        self.assertIn('SERVO_RESTART',restarted['reasons'])
+        self.assertTrue(restarted['pdo_valid'])
+        bad = monitor.receive(frame(2,10.03),10.031,1.03,identity_error='PDO_PUBLISHER_UNVERIFIED')
+        self.assertFalse(bad['pdo_valid'])
+        self.assertEqual(monitor.boot,456)
+        self.assertEqual(monitor.sample,1)
+
+    def test_observer_gaps_count_unobserved_successful_samples_without_claiming_packet_loss(self):
+        monitor = PdoMonitor()
+        monitor.receive(frame(10),10.001,1.)
+        monitor.receive(frame(10,10.002),10.003,1.002)
+        result=monitor.receive(frame(15,10.004),10.005,1.004)
+        self.assertEqual(result['successful_samples_not_individually_observed'],4)
+        self.assertEqual(result['repeated_samples'],1)
+        self.assertEqual(result['observed_frames'],3)
+
+    def test_malformed_fields_and_nonfinite_valid_axes_are_not_accepted(self):
+        for changes in (dict(boot_id=True),dict(pdo_sample=0),dict(wkc=True),
+                        dict(expected_wkc=0),dict(valid_mask=1<<20),dict(status=[0x231]*19),
+                        dict(position=[float('nan')]*20),dict(speed=[True]*20),dict(stamp=float('nan'))):
+            with self.subTest(changes=changes):
+                self.assertFalse(PdoMonitor().receive(frame(**changes),10.001,1.)['pdo_valid'])
+
+    def test_payload_is_detached_and_ambiguous_effort_stays_uninterpreted(self):
+        raw = frame()
+        raw.pop('stamp')
+        msg = S(header=S(stamp=S(sec=10,nanosec=0)), current=[900.]*20, **raw)
+        payload = observation_payload(msg)
+        msg.position[0] = 7.
+        self.assertEqual(payload['position'][0],.2)
+        self.assertEqual(payload['current'][16],900.)
+        self.assertNotIn('current_unit',payload)
+
+
+class FaultWindowTests(unittest.TestCase):
+    def setUp(self):
+        self.writer = Writer()
+        self.window = FaultWindow(self.writer,before=2.,after=3.,capacity=4)
+        self.good = dict(reasons=[],boot_id=1,wkc=67,expected_wkc=67,valid_mask=MASK,fault_mask=0)
+        self.bad = dict(self.good,reasons=['DRIVE_FAULT'],fault_mask=1)
+
+    def records(self,stream):
+        return [value for key,value in self.writer.records if key==stream]
+
+    def test_pre_and_post_window_no_duplicates_or_unbounded_fault_extension(self):
+        for t in (0.,1.,2.):self.window.update(self.good,t,dict(seq=t))
+        self.window.update(self.bad,3.,dict(seq=3.))
+        for t in (4.,5.,6.):self.window.update(self.bad,t,dict(seq=t))
+        self.window.update(self.bad,6.1,dict(seq=6.1))
+        self.assertEqual([r['data']['seq'] for r in self.records('pdo-observation')],[1.,2.,3.,4.,5.,6.])
+        events=self.records('pdo-events')
+        self.assertEqual(events[0]['available_before_s'],2.)
+        self.assertTrue(events[-1]['complete_time_window'])
+        self.assertEqual(events[-1]['frames'],6)
+        self.assertIsNone(self.window.until)
+
+    def test_insufficient_history_and_early_exit_are_reported(self):
+        self.window.update(self.bad,1.,dict(seq=1))
+        self.window.close(2.)
+        events=self.records('pdo-events')
+        self.assertEqual(events[0]['available_before_s'],0.)
+        self.assertFalse(events[-1]['complete_time_window'])
+        self.assertEqual(events[-1]['elapsed_since_trigger_s'],1.)
+
+    def test_capacity_and_mutation_cannot_expand_or_corrupt_history(self):
+        window=FaultWindow(self.writer,before=10.,capacity=2)
+        payload={'seq':1,'q':[.2]}
+        window.update(self.good,1.,payload)
+        payload['q'][0]=99.
+        window.update(self.good,2.,dict(seq=2))
+        window.update(self.bad,3.,dict(seq=3))
+        self.assertEqual(len(window.ring),2)
+        event=self.records('pdo-events')[0]
+        self.assertEqual(event['history_evicted_at_capacity'],1)
+        self.assertEqual(event['available_before_s'],1.)
+        self.assertEqual([r['data']['seq'] for r in self.records('pdo-observation')],[2,3])
+        for kwargs in (dict(capacity=0),dict(capacity=True),dict(before=float('nan')),dict(after=0.)):
+            with self.assertRaises(ValueError):FaultWindow(self.writer,**kwargs)
+
+    def test_missing_input_triggers_history_capture_without_synthetic_samples(self):
+        self.window.update(self.good,1.,dict(seq=1))
+        self.window.update(dict(self.good,reasons=['PDO_OBSERVER_STALE']),1.1)
+        self.assertEqual([r['data']['seq'] for r in self.records('pdo-observation')],[1])
+        self.window.close(1.5)
+        self.assertAlmostEqual(self.records('pdo-events')[-1]['last_payload_age_s'],.5)
+
+    def test_monotonic_reversal_closes_incomplete_window_and_discards_old_history(self):
+        self.window.update(self.bad,5.,dict(seq=5))
+        self.window.update(self.bad,1.,dict(seq=1))
+        self.assertFalse(self.records('pdo-events')[1]['complete_time_window'])
+        self.assertEqual(len(self.window.ring),1)
+        self.assertEqual(self.window.event,2)
+
+    def test_async_writer_drains_pre_and_post_data_and_keeps_original_payloads(self):
+        with tempfile.TemporaryDirectory() as directory:
+            writer=DiagnosticWriter(Path(directory)/'diagnostics.jsonl',capacity=32768)
+            window=FaultWindow(writer,before=.02,after=.03)
+            payload={'seq':0,'q':[float('nan')]}
+            window.update(self.good,0.,payload)
+            payload['q'][0]=99.
+            window.update(self.bad,.01,dict(seq=1))
+            window.update(self.bad,.02,dict(seq=2))
+            window.close(.04)
+            writer.close()
+            rows=[json.loads(s)['data'] for s in (Path(directory)/'pdo-observation.jsonl').read_text().splitlines()]
+            self.assertEqual([r['data']['seq'] for r in rows],[0,1,2])
+            self.assertEqual(rows[0]['data']['q'],['nan'])
+            self.assertEqual(writer.status()['dropped'],0)
+            self.assertEqual(writer.status()['error'],'')
+
+    def test_ten_second_1khz_prehistory_fits_the_async_queue(self):
+        with tempfile.TemporaryDirectory() as directory:
+            writer=DiagnosticWriter(Path(directory)/'diagnostics.jsonl',capacity=32768)
+            window=FaultWindow(writer)
+            for sample in range(10001):
+                window.update(self.good,sample*.001,dict(seq=sample))
+            window.update(self.bad,10.001,dict(seq=10001))
+            window.close(10.002)
+            writer.close()
+            rows=[json.loads(s)['data'] for s in (Path(directory)/'pdo-observation.jsonl').read_text().splitlines()]
+            self.assertEqual([r['data']['seq'] for r in rows],list(range(1,10002)))
+            self.assertEqual(writer.status()['dropped'],0)
+            self.assertEqual(writer.status()['error'],'')
+
+
+class ObserverTests(unittest.TestCase):
+    def test_observer_only_subscribes_and_reports_unverified_publishers(self):
+        callbacks = []
+        info = S(node_namespace='/',node_name='servo_node',topic_type='snowbot_ctl_msgs/msg/PositionObservation')
+        node = S(create_subscription=lambda kind, topic, cb, qos:callbacks.append((topic,cb)),
+                 get_publishers_info_by_topic=lambda topic:[info])
+        with patch.dict('sys.modules',{'snowbot_ctl_msgs':S(),
+            'snowbot_ctl_msgs.msg':S(PositionObservation=object),
+            'rclpy.qos':S(qos_profile_sensor_data=object())}):
+            observer = PdoObserver(node)
+        self.assertEqual([topic for topic, _ in callbacks],['/bindu/position/observation'])
+        raw=frame();raw.pop('stamp')
+        msg=S(header=S(stamp=S(sec=10,nanosec=0)),**raw)
+        with patch('time.time',return_value=10.001),patch('time.monotonic',return_value=1.):
+            callbacks[0][1](msg)
+        self.assertTrue(observer.sample(10.002,1.001)['pdo_valid'])
+        node.get_publishers_info_by_topic=lambda topic:[info,info]
+        with patch('time.time',return_value=10.003),patch('time.monotonic',return_value=1.002):
+            callbacks[0][1](msg)
+        self.assertIn('PDO_PUBLISHER_UNVERIFIED',observer.sample(10.004,1.003)['reasons'])
+        node.get_publishers_info_by_topic=lambda topic:[info]
+        info.endpoint_gid=[0]*16
+        with patch('time.time',return_value=10.005),patch('time.monotonic',return_value=1.004):
+            callbacks[0][1](msg,S(publisher_gid=[1]*16))
+        self.assertIn('PDO_PUBLISHER_GID_MISMATCH',observer.sample(10.006,1.005)['reasons'])
+        with patch('time.time',return_value=10.007),patch('time.monotonic',return_value=1.006):
+            callbacks[0][1](msg,S(publisher_gid=[0]*16))
+        self.assertEqual(observer.sample(10.008,1.007)['publisher_gid_verification'],'verified')
+
+    def test_missing_optional_interface_is_visible_without_starting_ros_or_hardware(self):
+        # This interface is optional on the Mac and on an original vendor install.
+        with patch.dict('sys.modules',{'snowbot_ctl_msgs':None}):
+            observer=PdoObserver(S())
+        state=observer.sample(10.,1.)
+        self.assertFalse(state['available'])
+        self.assertEqual(state['reasons'],['PDO_OBSERVATION_TYPE_UNAVAILABLE'])
+        observer.close(1.)
+
+
+if __name__ == '__main__':
+    unittest.main()

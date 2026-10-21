@@ -11,7 +11,7 @@ SUITES={
     'pico':PICO_TESTS,
     'vr':PICO_TESTS+('test_independent_arms','test_vr_timing','test_one_euro','test_teleoperation','test_teleop_modes',
           'test_snowbot_adapter','test_snowbot_gripper','test_snowbot_physics','test_snowbot_isaac_io',
-          'test_snowbot_live','test_snowbot_errors','test_snowbot_diagnostics','test_teleop_deployment'),
+          'test_snowbot_live','test_snowbot_errors','test_snowbot_diagnostics','test_snowbot_pdo','test_teleop_deployment'),
 }
 
 

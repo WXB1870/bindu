@@ -359,6 +359,7 @@ details[open]>summary:after { transform: rotate(225deg); }
       <section class="panel diagnostics-panel">
       <details id="diagnostics"><summary class="diagnostic-head">诊断详情</summary><div class="diagnostic-body">
         <dl class="diagnostic-list"><dt>操作流程</dt><dd><span class="pill" id="demo-mode">流程待确认</span></dd><dt>事件记录</dt><dd class="event-record muted" id="record-state">诊断未记录</dd><dt>状态代码</dt><dd id="reason-code" class="reason-code mono">WAITING</dd><dt>工具装载</dt><dd id="load">未知</dd><dt>装载状态来源</dt><dd id="load-source">—</dd><dt>准备条件</dt><dd id="prepare-checks">—</dd><dt>控制映射</dt><dd id="mapping-info">—</dd><dt>距最近输入</dt><dd id="input-age">—</dd><dt>模型更新帧数</dt><dd id="frame-count">0</dd><dt>会话标识</dt><dd id="run-id" class="mono">等待会话</dd></dl>
+        <dl class="diagnostic-list" id="pdo-diagnostics" hidden><dt>总线采样</dt><dd id="pdo-status">等待补充反馈</dd><dt>驱动故障轴</dt><dd id="pdo-faults">未知</dd></dl>
         <div id="raw-controllers"></div>
         <div class="diagnostic-export"><a href="/export" download>导出诊断<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.25" aria-hidden="true"><path d="M4 12 12 4M4 4h8v8"/></svg></a></div>
       </div></details>
@@ -679,6 +680,15 @@ function render(data,online){
   text('input-age',vrFresh?ms(rawAge):'数据未更新');text('feedback-age',fresh?ms(data.server_time-data.feedback_stamp)+' 前更新':'未更新');
   text('frame-count',data.model?.applied_frames||0);text('run-id',data.run_id||'等待会话');
   const diag=data.diagnostics||{},logFault=!!diag.error||diag.dropped>0;
+  const pdo=data.pdo;
+  $('pdo-diagnostics').hidden=!pdo;
+  if(pdo){
+    const sampled=online&&pdo.pdo_valid===true;
+    text('pdo-status',`${sampled?'采样有效':'采样未确认'} · WKC ${pdo.wkc??'—'}/${pdo.expected_wkc??'—'} · PDO ${pdo.pdo_sample??'—'}${pdo.reasons?.length?' · '+pdo.reasons.join(', '):''}`);
+    $('pdo-status').className=sampled?'good':'bad';
+    text('pdo-faults',pdo.fault_axes?.length?pdo.fault_axes.join('、')+'（状态字Fault位，具体码待采集）':pdo.fault_mask_complete?'本次有效快照未见Fault位':'反馈不完整，无法确认');
+    $('pdo-faults').className=pdo.fault_axes?.length?'bad':'muted';
+  }
   text('record-state',!online?'记录状态未知':diag.error?'记录失败：'+diag.error:data.recording?`记录中，队列丢弃 ${diag.dropped||0} 条`:'诊断未记录');$('record-state').className=logFault?'event-record bad':online&&data.recording?'event-record good':'event-record muted';
   text('guide-note',!pcFresh?'当前流程尚未确认，等待控制状态。':p.guided_loading?'按照上方当前步骤操作；B 是支撑和装卸完成的人工确认，夹爪位置不作为夹稳检测。':!p.simulation_demo?'当前为标准装夹流程；夹爪位置反馈不代表已夹稳，装载状态与支撑需操作员声明。':'准备完成后自动检查工具，等待就绪后接合。');
   for(const side of ['left','right']){

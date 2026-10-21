@@ -60,6 +60,19 @@ class LiveFeedbackTests(unittest.TestCase):
 
 
 class WebFeedbackTests(unittest.TestCase):
+    def test_pdo_faults_are_visible_independently_and_old_views_are_marked_stale(self):
+        pdo=dict(available=True,pdo_valid=True,checked_at=10.,fault_mask=1,fault_axes=['L1'],
+                 fault_mask_complete=True,reasons=['DRIVE_FAULT'])
+        data=dict(self.data,runtime_mode='real',device_backend='snowbot_vendor',pdo=pdo)
+        view=web.project_state(data,10.1,dict(data))
+        self.assertTrue(view['pdo']['pdo_valid'])
+        self.assertEqual(view['pdo']['fault_axes'],['L1'])
+        stale=web.project_state(data,10.3,dict(data))
+        self.assertFalse(stale['pdo']['pdo_valid'])
+        self.assertIn('PDO_VIEW_STALE',stale['pdo']['reasons'])
+        self.assertEqual(data['pdo']['reasons'],['DRIVE_FAULT'])
+        self.assertNotIn('pdo',self.project(dict(self.data,pdo=pdo)))
+
     def test_fresh_measured_pose_keeps_execution_fault_visible(self):
         p=dict(self.data['pico'],phase='locked',reason='PICO_STOP_UNCONFIRMED:vendor_hold',
                motion_stopped=False,stop_confirmed=False)

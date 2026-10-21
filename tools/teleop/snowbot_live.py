@@ -79,7 +79,13 @@ def observe(args, publish=None, stop=None):
     if args.trace_file:
         args.trace_file.parent.mkdir(parents=True, exist_ok=True)
     from tools.teleop.snowbot_diagnostics import DiagnosticWriter
-    diagnostics=DiagnosticWriter(args.trace_file) if args.trace_file else None
+    real_vendor = args.runtime_mode == 'real' and args.device_backend == 'snowbot_vendor'
+    # A 10 s / 1 kHz prehistory flush must fit without blocking the observer.
+    diagnostics=DiagnosticWriter(args.trace_file, capacity=32768 if real_vendor else 8192) if args.trace_file else None
+    pdo_observer = None
+    if real_vendor:
+        from tools.teleop.snowbot_pdo import PdoObserver
+        pdo_observer = PdoObserver(node, diagnostics)
     ns = '/'+args.namespace.strip('/')
     def execution(msg):
         latest.update(state=msg)
@@ -142,6 +148,8 @@ def observe(args, publish=None, stop=None):
             now = time.time()
             data = dict(meta, written_at=now, valid=False, q={}, feedback_stamp=0.,
                         execution='WAITING', pico={})
+            if pdo_observer:
+                data['pdo'] = pdo_observer.sample(now, time.monotonic())
             if msg is not None:
                 data.update(runtime_mode=msg.runtime_mode, device_backend=msg.device_backend,
                     feedback_stamp=msg.feedback_stamp.sec+msg.feedback_stamp.nanosec*1e-9,
@@ -176,6 +184,7 @@ def observe(args, publish=None, stop=None):
         pass
     finally:
         try:
+            if pdo_observer:pdo_observer.close(time.monotonic())
             node.destroy_node()
             rclpy.try_shutdown()
         finally:

@@ -43,6 +43,12 @@ def project_state(data, now, identity):
     result = {k:data.get(k) for k in ('run_id','written_at','feedback_stamp','execution','code')}
     result.update(valid=False, pico_fresh=False, pico={}, server_time=now)
     result['diagnostics']=data.get('diagnostics',{})
+    if identity.get('runtime_mode') == 'real' and identity.get('device_backend') == 'snowbot_vendor':
+        pdo = json.loads(json.dumps(data.get('pdo', {})))
+        stamp = pdo.get('checked_at')
+        if type(stamp) not in (float, int) or not 0 <= now-stamp <= .2:
+            pdo.update(pdo_valid=False, reasons=[*pdo.get('reasons', []), 'PDO_VIEW_STALE'])
+        result['pdo'] = pdo
     physics=data.get('physics',{})
     if (identity.get('runtime_mode')=='simulation' and identity.get('device_backend')=='external_simulation' and
             physics.get('run_id')==identity['run_id'] and physics.get('profile_hash')==identity['profile_hash'] and
