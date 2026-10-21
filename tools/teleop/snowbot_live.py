@@ -83,9 +83,13 @@ def observe(args, publish=None, stop=None):
     # PDO prehistory is capped at 100 Hz; the monitor still checks every frame.
     diagnostics=DiagnosticWriter(args.trace_file) if args.trace_file else None
     pdo_observer = None
+    ros_logs = None
     if real_vendor:
         from tools.teleop.snowbot_pdo import PdoObserver
         pdo_observer = PdoObserver(node, diagnostics)
+        if diagnostics:
+            from tools.teleop.snowbot_diagnostics import RosLogObserver
+            ros_logs = RosLogObserver(node, diagnostics, args.run_id)
     ns = '/'+args.namespace.strip('/')
     def execution(msg):
         latest.update(state=msg)
@@ -172,6 +176,7 @@ def observe(args, publish=None, stop=None):
             data['end_effector_errors'] = errors.sample(data, now)
             if 0 <= now-latest['physics'].get('stamp',0) <= .2:data['physics']=latest['physics']
             if diagnostics:data['diagnostics']=diagnostics.status()
+            if ros_logs:data['log_capture']=ros_logs.status()
             if publish:
                 publish(data)
             elif args.state_file:

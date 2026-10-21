@@ -2,6 +2,7 @@
 from tests.support.paths import ROOT
 import copy
 import importlib.util
+from io import StringIO
 import json
 from pathlib import Path
 import sys
@@ -9,6 +10,7 @@ import tempfile
 import unittest
 import subprocess
 import signal
+from types import SimpleNamespace as S
 from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location('snowbot_live', ROOT/'tools/teleop/snowbot_live.py')
@@ -143,6 +145,27 @@ class WebFeedbackTests(unittest.TestCase):
             log.sample(s);log.sample(s)
             self.assertEqual(len(log.events)-before,2)
             self.assertEqual([e['message'] for e in log.events[-2:]],['左 X 按下','左 X 松开'])
+            log.close()
+            saved=[json.loads(line) for line in log.path.read_text().splitlines()]
+            self.assertEqual(saved,log.events)
+
+    def test_web_events_queue_without_disk_wait_and_keep_the_existing_jsonl_format(self):
+        from tools.teleop import snowbot_diagnostics as diagnostics
+        import threading
+        gate=threading.Event();original=diagnostics.DiagnosticWriter.run
+        def delayed(writer):gate.wait(2.);original(writer)
+        with tempfile.TemporaryDirectory() as directory,patch.object(diagnostics.DiagnosticWriter,'run',delayed):
+            log=web.EventLog(Path(directory)/'events.jsonl')
+            try:
+                for i in range(10):
+                    s=self.project(self.data);s['pico']['reason']=str(i);log.sample(s)
+                self.assertEqual(log.writer.status()['written'],0)
+                self.assertGreater(log.writer.status()['queued'],0)
+            finally:gate.set();log.close()
+            saved=[json.loads(line) for line in log.path.read_text().splitlines()]
+            self.assertEqual(saved,log.events)
+            self.assertEqual(log.writer.status()['dropped'],0)
+            self.assertFalse(json.loads((log.path.parent/'web-log-health.json').read_text())['active'])
 
     def test_empty_cad_mesh_is_omitted_without_removing_its_link(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -297,6 +320,22 @@ class SimulationEntryTests(unittest.TestCase):
                 with self.assertRaisesRegex(OSError, 'display could not start'):
                     entry.run(args)
                 stop.assert_called_once_with(control)
+
+    def test_partial_start_failure_drains_and_closes_the_shared_process_log_writer(self):
+        with tempfile.TemporaryDirectory() as directory:
+            args=entry.parse_args(['--output',str(Path(directory)/'run'),
+                                   '--namespace','test_'+Path(directory).name])
+            child=S(stdout=StringIO('[WARN] [10.0] [servo_node]: observed warning\n'))
+            with patch.object(entry,'check'),patch.object(entry.subprocess,'Popen',
+                    side_effect=[child,OSError('display could not start')]), \
+                    patch.object(entry,'stop_group',return_value=True) as stop:
+                with self.assertRaisesRegex(OSError,'display could not start'):entry.run(args)
+                stop.assert_called_once_with(child)
+            health=json.loads((args.output/'process-log-health.json').read_text())
+            self.assertFalse(health['active'])
+            self.assertEqual(health['error'],'')
+            self.assertTrue(child.stdout.closed)
+            self.assertIn('observed warning',(args.output/'control.log').read_text())
 
     def test_shared_identity_and_fixed_simulation_flags(self):
         args = entry.parse_args(['--run-id', 'test', '--namespace', '/test_ns/'])

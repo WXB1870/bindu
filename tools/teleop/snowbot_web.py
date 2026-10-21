@@ -119,6 +119,11 @@ class EventLog:
     """Small local diagnostic stream, independent of control and training recording."""
     def __init__(self, path=None):
         self.path, self.events, self.previous, self.sequence = Path(path) if path else None, [], None, 0
+        from tools.teleop.snowbot_diagnostics import DiagnosticWriter
+        self.writer=DiagnosticWriter(self.path,health_filename='web-log-health.json') if self.path else None
+
+    def close(self):
+        if self.writer:self.writer.close()
 
     def sample(self, state):
         p = state.get('pico', {})
@@ -134,9 +139,7 @@ class EventLog:
                          level='warning' if warning else 'info')
             self.events.append(event)
             del self.events[:-300]
-            if self.path:
-                with self.path.open('a') as stream:
-                    stream.write(json.dumps(event, ensure_ascii=False)+'\n')
+            if self.writer:self.writer.write_json_line(self.path.stem,event)
         if prior is None or connection != prior[0]:
             add('connection', '反馈'+('有效' if state['valid'] else '失效')+' · VR '+
                 ('追踪有效' if state['pico_fresh'] and p.get('raw_input_valid') and p.get('input_fresh') else '未就绪'),
@@ -184,6 +187,7 @@ def _server(read_state, trace_file, output, port, ready, views, identity, stop, 
         latest.update(events=log.events[-40:], recording=False)
         if trace_file:
             latest['recording'] = bool(latest.get('diagnostics',{}).get('active'))
+            latest['event_log']=log.writer.status()
         model = model_status.read()
         if 0 <= time.time()-model.get('updated_at', 0.) <= 2.:
             latest['model'] = model
@@ -293,14 +297,17 @@ def _server(read_state, trace_file, output, port, ready, views, identity, stop, 
             pass
         raise
     finally:
-        timer.stop()
-        for server in http_servers:
-            server.stop()
-        if bridge:
-            for socket in list(bridge.websocket_pool):
-                socket.close()
-            bridge.zmq_stream.close(linger=0)
-        loop.close(all_fds=True)
+        try:
+            timer.stop()
+            for server in http_servers:
+                server.stop()
+            if bridge:
+                for socket in list(bridge.websocket_pool):
+                    socket.close()
+                bridge.zmq_stream.close(linger=0)
+        finally:
+            try:loop.close(all_fds=True)
+            finally:log.close()
 
 
 def serve(args, read_state=None, stop=None):

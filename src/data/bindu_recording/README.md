@@ -46,6 +46,10 @@ Snowbot补充PDO观察由非实时显示进程中的`PdoObserver`接收，经已
 
 操作台诊断在入队／ROS序列化前采样：VR原始／投影输入按流和左右手分别最多10 Hz，执行／遥操／夹爪／模式状态及连续IK／QP诊断最多10 Hz，健康摘要1 Hz；按键边沿、接合／释放阈值、有效性及状态变化额外保留，已接纳命令与会话映射事件完整保留。PDO故障窗口默认100 Hz（状态变化额外保留），前10秒／后30秒、前窗容量1200帧；监视仍逐帧检查，抽样不会改变控制或健康判定。后台约每秒刷新，`sampled_out`与意外`dropped`分开报告，PDO抽样计数另见`log_sampled_out`。这些采样日志用于日常排查，不保证完整原始VR回放或逐周期分析；本节策略独立于`recording_mode`。
 
+真实Snowbot观察器还只读接收`/rosout`中`servo_node`／`dual_arm_control_node`／`robot_upperMonitor`及其子logger的WARN以上记录，保存到`rosout-log-events.jsonl`。订阅使用100深度、best-effort／volatile，不请求历史、不作为保护输入；只保证记录实际收到的消息，不能证明上游完整。相同logger／级别／调用点／原文首次立即入队，重复每5秒汇总观测次数与首末时间；不同电机、错误码及原文数值不合并，128键有界缓存，退出前结算，日志静默不判定故障恢复。独立终端的普通`printf`／`std::cerr`仍须另行保存，既往未保存内容无法补录。
+
+统一入口默认开启`--diagnostics`，显式`--no-diagnostics`才关闭，与示教采集开关独立。`control.log`／`display.log`／可选`physics.log`沿用文本格式，由同一有界后台写入器缓冲、约每秒刷新，并按128MiB分卷。管道读取持续进行，已识别的ROS WARN以上重复行按上述策略合并为`[LOG_REPEAT]`摘要，异常栈及其他文本原样保留；`process-log-health.json`分别报告合并数、队列丢弃与写入错误，不与观察器的`diagnostics-health.json`混用。网页`events.jsonl`保持原格式，也使用有界异步写入，状态见`web-log-health.json`及API的`event_log`字段；关闭诊断时只保留内存近期事件。聚合只减少本记录侧开销，不减少驱动自身打印／ROS发布或原日志落盘；突然终止可能损失缓冲内容。
+
 ## 源码导航
 
 | 入口 | 内容 |

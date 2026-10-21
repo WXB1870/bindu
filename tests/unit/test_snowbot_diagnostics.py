@@ -1,6 +1,7 @@
 """Diagnostic capture must preserve payloads, drain on exit and expose loss."""
 from tests.support.paths import ROOT
 import importlib.util
+from io import StringIO
 import json
 from pathlib import Path
 import tempfile
@@ -150,3 +151,155 @@ class SamplingTests(unittest.TestCase):
             self.assertEqual(writer.status()['dropped'],0)
             health=json.loads((Path(directory)/'diagnostics-health.json').read_text())
             self.assertEqual(health['sampled_out'],99)
+
+
+class RepeatedLogTests(unittest.TestCase):
+    def setUp(self):
+        self.events=[]
+        self.repeat=diagnostics.RepeatedLogs(lambda stream,value,text:self.events.append((stream,value,text)))
+        self.value=dict(name='servo_node',level=40,message='Motor 2 fault 0x001D',file='driver.cpp',line=20)
+
+    def add(self,value=None,now=0.):
+        self.repeat.add('rosout-log-events',self.value if value is None else value,now=now,wall=100.+now)
+
+    def test_first_and_periodic_summary_count_all_observed_duplicates(self):
+        for i in range(1001):self.add(now=i*.001)
+        self.assertEqual(len(self.events),1)
+        self.repeat.flush(5.)
+        first,summary=[x[1] for x in self.events]
+        self.assertEqual(first['kind'],'first')
+        self.assertEqual(summary['suppressed_repeats'],1000)
+        self.assertEqual(summary['observed_count'],1001)
+        self.assertEqual((summary['first_observed_at'],summary['last_observed_at']),(100.,101.))
+        self.assertEqual(self.repeat.coalesced,1000)
+        self.repeat.flush(10.)
+        self.assertEqual(len(self.events),2)
+
+    def test_motor_code_level_source_and_callsite_are_never_merged(self):
+        self.add()
+        for change in (dict(message='Motor 3 fault 0x001D'),dict(message='Motor 2 fault 0x001E'),
+                       dict(name='dual_arm_control_node'),dict(level=50),dict(line=21)):
+            self.add(dict(self.value,**change),.001)
+        self.assertEqual(len(self.events),6)
+
+    def test_close_and_capacity_eviction_flush_counts_without_claiming_recovery(self):
+        self.repeat.capacity=2
+        self.add();self.add(now=.01)
+        self.add(dict(self.value,message='other'),.02)
+        self.add(dict(self.value,message='third'),.03)
+        self.assertEqual(self.repeat.evicted,1)
+        self.assertEqual(len(self.repeat.entries),2)
+        self.assertEqual(self.events[2][1]['summary_reason'],'capacity_eviction')
+        self.add(dict(self.value,message='third'),.04)
+        self.repeat.flush(.05,final=True)
+        self.assertEqual(self.events[-1][1]['summary_reason'],'close')
+        self.assertTrue(all(x[1]['kind'] in ('first','repeat_summary') for x in self.events))
+        self.assertEqual(len(self.repeat.entries),0)
+
+    def test_console_time_and_ansi_are_ignored_but_error_numbers_are_not(self):
+        a=diagnostics.console_log('\x1b[31m[node-1] [WARN] [10.1] [servo_node]: WKC 61/67\x1b[0m\n','control')
+        b=diagnostics.console_log('[node-1] [WARN] [10.2] [servo_node]: WKC 61/67\n','control')
+        c=diagnostics.console_log('[WARN] [10.3] [servo_node]: WKC 55/67\n','control')
+        self.add(a);self.add(b,.01);self.add(c,.02)
+        self.repeat.flush(final=True)
+        self.assertEqual([event[1]['kind'] for event in self.events],['first','first','repeat_summary'])
+        self.assertEqual(a['message'],'WKC 61/67')
+        self.assertEqual(a['name'],'servo_node')
+        self.assertIsNone(diagnostics.console_log('  File "[ERROR]", line 2\n','display'))
+
+    def test_console_copy_preserves_tracebacks_and_coalesces_repeated_warning_lines(self):
+        from tools.teleop.run_vr import copy_output
+        stack='Traceback (most recent call last):\n  File "a.py", line 2\nValueError: invalid target\n'
+        lines=''.join(f'[WARN] [{10+i*.001:.3f}] [servo_node]: pdo_stale\n' for i in range(1000))+stack
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            writer=diagnostics.DiagnosticWriter(root/'process-output.jsonl',health_filename='process-log-health.json')
+            child=S(stdout=StringIO(lines))
+            copy_output(child,root/'display.log',writer)
+            self.assertTrue(child.stdout.closed)
+            writer.close()
+            saved=(root/'display.log').read_text()
+            self.assertIn(stack,saved)
+            self.assertEqual(saved.count('[WARN]'),1)
+            self.assertIn('"suppressed_repeats": 999',saved)
+            health=json.loads((root/'process-log-health.json').read_text())
+            self.assertEqual(health['coalesced'],999)
+            self.assertEqual(health['dropped'],0)
+
+    def test_slow_disk_cannot_block_pipe_drain_and_loss_is_exposed(self):
+        from tools.teleop.run_vr import copy_output
+        gate=threading.Event();original=diagnostics.DiagnosticWriter.run
+        def delayed(writer):gate.wait(2.);original(writer)
+        with tempfile.TemporaryDirectory() as directory,patch.object(diagnostics.DiagnosticWriter,'run',delayed):
+            root=Path(directory);writer=diagnostics.DiagnosticWriter(root/'process-output.jsonl',capacity=1)
+            child=S(stdout=StringIO('ordinary output\n'*1000))
+            reader=threading.Thread(target=copy_output,args=(child,root/'control.log',writer))
+            try:
+                reader.start();reader.join(timeout=1.)
+                self.assertFalse(reader.is_alive())
+                self.assertTrue(child.stdout.closed)
+                self.assertEqual(writer.status()['dropped'],999)
+            finally:gate.set();reader.join();writer.close()
+
+    def test_rotated_text_keeps_its_log_extension_and_health_file_is_independent(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            writer=diagnostics.DiagnosticWriter(root/'process-output.jsonl',chunk_bytes=10,
+                                               health_filename='process-log-health.json')
+            for i in range(20):writer.write_text('control',str(i)+'\n')
+            writer.close()
+            files=[root/'control.log',*sorted(root.glob('control-*.log'))]
+            self.assertEqual([int(row) for path in files for row in path.read_text().splitlines()],list(range(20)))
+            self.assertTrue((root/'process-log-health.json').is_file())
+            self.assertFalse((root/'diagnostics-health.json').exists())
+
+    def test_two_pipe_readers_share_a_writer_without_losing_duplicate_counts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);writer=diagnostics.DiagnosticWriter(root/'process-output.jsonl')
+            def produce(stream):
+                for _ in range(1000):writer.record_log(stream,self.value)
+            workers=[threading.Thread(target=produce,args=(stream,)) for stream in ('control','display')]
+            for worker in workers:worker.start()
+            for worker in workers:worker.join()
+            writer.close()
+            for stream in ('control','display'):
+                rows=[json.loads(line)['data'] for line in (root/(stream+'.jsonl')).read_text().splitlines()]
+                self.assertEqual(rows[-1]['observed_count'],1000)
+            self.assertEqual(writer.status()['coalesced'],1998)
+            self.assertEqual(writer.status()['dropped'],0)
+
+    def test_rosout_filters_non_vendor_and_info_without_creating_control_publishers(self):
+        records=[]
+        writer=S(record=lambda stream,value:records.append((stream,value)),
+                 record_log=lambda stream,value:records.append((stream,value)))
+        subscriptions=[]
+        node=S(create_subscription=lambda *args:subscriptions.append(args))
+        with patch.dict('sys.modules',{'rcl_interfaces':S(),'rcl_interfaces.msg':S(Log=S(WARN=30)),
+                                      'rclpy.qos':S(QoSProfile=lambda **kw:kw,
+                                          ReliabilityPolicy=S(BEST_EFFORT='best_effort'),
+                                          DurabilityPolicy=S(VOLATILE='volatile'))}):
+            observer=diagnostics.RosLogObserver(node,writer,'run')
+        self.assertEqual(subscriptions[0][1],'/rosout')
+        self.assertEqual(subscriptions[0][3],dict(depth=100,reliability='best_effort',durability='volatile'))
+        fields=dict(level=40,name='servo_node',msg='PDO stale',stamp=S(sec=10,nanosec=1),
+                    file='driver.cpp',function='poll',line=7)
+        observer.receive(S(**dict(fields,level=20)))
+        observer.receive(S(**dict(fields,name='unrelated')))
+        for name in observer.LOGGERS:observer.receive(S(**dict(fields,name=name)))
+        self.assertEqual(observer.status()['received'],3)
+        self.assertEqual(len(records),4)
+        self.assertEqual(records[-1][1]['source_stamp_ns'],10000000001)
+        self.assertTrue(records[-1][1]['source_stamp_before_capture'])
+        self.assertFalse(observer.status()['plain_stdio_captured'])
+
+    def test_real_ros_log_qos_and_payload_are_supported_with_a_subscription_only_node(self):
+        from rcl_interfaces.msg import Log
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);writer=diagnostics.DiagnosticWriter(root/'diagnostics.jsonl')
+            observer=diagnostics.RosLogObserver(S(create_subscription=lambda *args:object()),writer,'test')
+            for _ in range(3):observer.receive(Log(level=Log.ERROR,name='servo_node',msg='Error 0x001D'))
+            writer.close()
+            rows=[json.loads(line)['data'] for line in (root/'rosout-log-events.jsonl').read_text().splitlines()]
+            self.assertEqual([row['kind'] for row in rows],['capture_started','first','repeat_summary'])
+            self.assertEqual(rows[-1]['observed_count'],3)
+            self.assertEqual(rows[-1]['suppressed_repeats'],2)

@@ -158,6 +158,7 @@ def run(args):
         stop = threading.Event()
         handlers = {s: signal.signal(s, lambda *_: stop.set()) for s in (signal.SIGINT, signal.SIGTERM)}
         children, readers, result = [], [], 0
+        process_logs = None
         try:
             resolved_commands=commands(args)
             configs={}
@@ -185,15 +186,20 @@ def run(args):
                 client_timing_probe=dict(path=str(probe),sha256=hashlib.sha256(probe.read_bytes()).hexdigest(),
                     clock_semantics='browser monotonic send time; never used as control freshness or one-way latency'),
                 diagnostic_format='JSONL: received_at, received_monotonic_ns, data; ROS fields retained',
-                diagnostic_chunk_bytes=128*1024*1024)
+                diagnostic_chunk_bytes=128*1024*1024, process_log_repeat_interval_s=5.,
+                process_log_health='process-log-health.json')
             (args.output/'session.json').write_text(json.dumps(manifest,ensure_ascii=False,indent=2))
+            if args.diagnostics:
+                from tools.teleop.snowbot_diagnostics import DiagnosticWriter
+                process_logs=DiagnosticWriter(args.output/'process-output.jsonl',
+                    health_filename='process-log-health.json',echo=True)
             names=('physics','control','display') if len(resolved_commands)==3 else ('control','display')
             for name,command in zip(names,resolved_commands):
                 options=dict(stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True,errors='replace') if args.diagnostics else {}
                 child=subprocess.Popen(command,cwd=ROOT,env=env,start_new_session=True,**options)
                 children.append(child)
                 if args.diagnostics:
-                    reader=threading.Thread(target=copy_output,args=(child,args.output/(name+'.log')),daemon=True)
+                    reader=threading.Thread(target=copy_output,args=(child,args.output/(name+'.log'),process_logs),daemon=True)
                     reader.start();readers.append(reader)
                 if name=='physics':
                     deadline=time.monotonic()+max(180.,args.startup_timeout)
@@ -222,18 +228,28 @@ def run(args):
                     print(f'进程组 {child.pid} 超过正常退出期限；已升级终止，不能视为停稳确认。', file=sys.stderr)
                     result = 1
             for reader in readers:reader.join(timeout=2.)
-            for sig, handler in handlers.items():
-                signal.signal(sig, handler)
+            try:
+                if process_logs:process_logs.close()
+            finally:
+                for sig, handler in handlers.items():
+                    signal.signal(sig, handler)
         return result
 
 
-def copy_output(child, path):
-    # Drain child output outside control threads; preserve stderr in the same log.
-    with path.open('a',buffering=1) as output:
+def copy_output(child, path, writer=None):
+    # Always drain the pipe; disk and terminal writes belong to the bounded worker.
+    from tools.teleop.snowbot_diagnostics import DiagnosticWriter, console_log
+    owns_writer=writer is None
+    if owns_writer:
+        writer=DiagnosticWriter(path.with_suffix('.jsonl'),health_filename=path.stem+'-log-health.json',echo=True)
+    try:
         for line in child.stdout:
-            output.write(line)
-            print(line,end='',flush=True)
-    child.stdout.close()
+            value=console_log(line,path.stem)
+            if value is None:writer.write_text(path.stem,line)
+            else:writer.record_log(path.stem,value,text=True)
+    finally:
+        child.stdout.close()
+        if owns_writer:writer.close()
 
 
 def parse_args(argv=None):
@@ -242,7 +258,7 @@ def parse_args(argv=None):
                         default=os.environ.get('BINDU_VR_CONFIG') or ROOT/'src/integration/bindu_runtime/config/deployments/snowbot_vr_sim.json',
                         help='部署配方；默认使用 BINDU_VR_CONFIG 或仓库仿真配方')
     parser.add_argument('--diagnostics', action=argparse.BooleanOptionalAction, default=True,
-                        help='当前调试阶段默认记录完整输入、反馈和事件；--no-diagnostics 关闭')
+                        help='默认异步记录采样输入、反馈、事件与进程输出；--no-diagnostics 关闭')
     parser.add_argument('--check', action='store_true', help='仅检查环境、证书和端口')
     parser.add_argument('--check-robot', action='store_true', help='配合 --check，只读核对机器人端点、实测反馈和保护状态')
     parser.add_argument('--robot-check-timeout', type=float, default=2., help='只读机器人检查时长，秒，最多30秒')
