@@ -66,6 +66,22 @@ ros2 topic echo /bindu_sim/execution/state --once
 
 目标机使用与本机相同的已适配厂商 `src`，支持 Ubuntu 22.04／ROS 2 Humble／Python 3.10，或 Ubuntu 24.04／Jazzy／Python 3.12。真机保留浏览器运动学显示，不需要 Isaac。新机重新编译，不复制本机 `install/`、`.so`、venv 或串联历史实验目录的 `artifacts/vr/env.sh`。
 
+### 日常使用
+
+首次部署完成后，在仓库根目录使用现有入口；自动加载ROS、底层消息、venv、Bindu安装和`artifacts/x86-real/site.json`：
+
+| 操作 | 命令 | 频率 |
+|---|---|---|
+| 仅预检 | `python3 -m tools.deployment.x86_real check` | 检查配置、依赖、证书、端口及重复节点 |
+| 现场人员启动 | `python3 -m tools.deployment.x86_real start` | 每次使用；已包含预检，代理禁止执行 |
+| 更新后构建 | `python3 -m tools.deployment.x86_real build` | `src/`源码或包内配置变更后；仅文档／工具脚本更新无须重建 |
+
+日常复用现有环境、证书和现场配方，无须重新`prepare`、安装依赖、填参数或逐项`source`。ROS域／RMW沿用终端设置并与底层一致；需指定域时加`--domain-id <实际域号>`。非默认部署目录统一加`--workspace /实际部署目录`。
+
+仅现场配方变更时，在本机修改并同步后预检；证书到期或访问地址变化时更新TLS。依赖清单变化时重新`prepare/build`，保留现有配方；系统／Python／ROS、源码根目录或底层安装位置变化时新建部署环境。手动监测终端仍需加载一次`env.sh`；原五终端驱动测试不属于每日重新配置。
+
+### 首次部署
+
 **0．确认 Git 版本与需要单独准备的材料。** 新机普通双臂／持工具遥操均使用本节的 `tools.deployment.x86_real` 与统一 PICO 入口；后文 `snowbot_teleop.sh` 的旧四节点流程用于专项接口检查，按键和会话操作不混用。
 
 | 材料 | 是否随 Git 分发 | 新机处理 |
