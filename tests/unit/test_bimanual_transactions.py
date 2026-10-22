@@ -1,0 +1,329 @@
+"""Run the production execute coroutine with actual sessions/reference/executor.
+
+Only ROS messages/services, callback scheduling and validated solver candidates
+are replaced by in-memory transport. This does not validate QP math, DDS or a
+physical device. No ROS module is imported or publisher constructed.
+"""
+import ast
+import asyncio
+import json
+from pathlib import Path
+from types import SimpleNamespace as S
+import unittest
+from unittest.mock import Mock
+
+import numpy as np
+from bindu_contracts.contracts import Motion
+from bindu_contracts.profile import Profile
+from bindu_contracts.teleoperation import VRFrame
+from bindu_execution.executor import Executor, Rejected
+from bindu_contracts.runtime_mode import command_mode
+from bindu_hardware.drivers.simulated_joints import SimJointDriver
+from bindu_hardware.drivers.simulated_base import SimBaseDriver
+from bindu_hardware.robot_io.system import RobotIO
+from bindu_teleoperation.bimanual_session import AcceptedReference, BimanualSession, ToolPoseSession, ToolPause
+from bindu_teleoperation.independent_session import IndependentArmsSession
+
+
+SOURCE = Path(__file__).resolve().parents[2]/'src/integration/bindu_runtime/bindu_runtime/bimanual_tool_node.py'
+
+
+class Rig:
+    def __init__(self, *, ack_delay=.02, reject=False, drop=False, input_gap=False,
+                 transition=None, delivery_gap=None, send_failure=False, state_delay=0.,
+                 duplicate_window=0.):
+        self.clock = 10.
+        self.step = 0
+        self.ack_delay, self.reject, self.drop = ack_delay, reject, drop
+        self.input_gap, self.transition = input_gap, transition
+        self.delivery_gap=delivery_gap
+        self.send_failure=send_failure
+        self.state_delay,self.state_history=state_delay,[]
+        self.duplicate_window,self.frozen_frames=duplicate_window,None
+        self.futures=[]
+        self.transitioned = False
+        self.receipts, self.commands, self.references, self.events = [], [], [], []
+        self.releases = 0
+        self.profile = Profile('memory', {'waist':['w'],'left_arm':['l'],'right_arm':['r']},
+            {n:(-1.,1.) for n in ('w','l','r')}, .5, ('joint_position',), 'memory',stop_timeout=.3)
+        drivers = {g:SimJointDriver(names,.5) for g,names in self.profile.groups.items()}
+        self.io = RobotIO(self.profile,drivers,SimBaseDriver())
+        self.engine = Executor(self.profile,self.io,steady=lambda:self.clock)
+        # Use the actual service handlers as well as the actual executor.
+        source=Path(__file__).resolve().parents[2]/'src/integration/bindu_runtime/bindu_runtime/execution_node.py'
+        definition=next(n for n in ast.parse(source.read_text()).body
+                        if isinstance(n,ast.ClassDef) and n.name=='ExecutionNode')
+        handlers=[n for n in definition.body if getattr(n,'name','') in ('lease','control','accept','submit')]
+        service_namespace=dict(Motion=Motion,Rejected=Rejected,command_mode=command_mode,
+                               seconds=lambda x:x,stamp=lambda x:x)
+        module=ast.Module(body=[ast.ClassDef(name='Services',bases=[],keywords=[],
+                         body=handlers,decorator_list=[])],type_ignores=[])
+        exec(compile(ast.fix_missing_locations(module),str(source),'exec'),service_namespace)
+        self.services=services=service_namespace['Services']()
+        services.engine,services.robot_io,services.profile=self.engine,self.io,self.profile
+        services.now=lambda:self.clock
+        services.runtime_mode,services.closing='simulation',False
+        services.accepted_pub=S(publish=Mock())
+        services.event=lambda *args:None
+        rig = self
+        class Reference(AcceptedReference):
+            def __init__(self,*args,**kwargs):
+                super().__init__(*args,**kwargs)
+                self.commits = []
+                self.captures = []
+                rig.references.append(self)
+            def capture(self,*args):
+                super().capture(*args)
+                self.captures.append((self.positions,self.sampled_at))
+            def accept(self,*args):
+                super().accept(*args)
+                self.commits.append((rig.clock,self.positions,self.sampled_at))
+        tree = ast.parse(SOURCE.read_text())
+        node = next(n for n in tree.body if isinstance(n,ast.ClassDef) and n.name=='BimanualToolNode')
+        names = {'execute','check','wait','begin_stop','stop','stop_pending','execution_revision'}
+        methods = [n for n in node.body if getattr(n,'name','') in names]
+        namespace = dict(time=S(monotonic=lambda:self.clock),json=json,math=__import__('math'),
+            seconds=lambda x:x,stamp=lambda x:x,MODE_STATE_MAX_AGE=.5,
+            AcceptedReference=Reference,BimanualSession=BimanualSession,
+            ToolPoseSession=ToolPoseSession,IndependentArmsSession=IndependentArmsSession,
+            TeleopAction=S(Result=lambda **kw:S(**kw),Feedback=lambda **kw:S(**kw)),
+            MotionCommand=self.motion_command,SubmitMotion=S(Request=lambda **kw:S(**kw)),
+            Lease=S(Request=lambda **kw:S(**kw)),ControlExecution=S(Request=lambda **kw:S(**kw)),
+            joints_at_rest=lambda joints,names,tol:all(abs(v)<=tol for v in joints.velocity))
+        module = ast.Module(body=[ast.ClassDef(name='Production',bases=[],keywords=[],
+            body=methods,decorator_list=[])],type_ignores=[])
+        exec(compile(ast.fix_missing_locations(module),str(SOURCE),'exec'),namespace)
+        self.node = node = namespace['Production']()
+        node.profile,node.simulation,node.runtime_mode=self.profile,True,'simulation'
+        node.groups,node.names=tuple(self.profile.groups),('w','l','r')
+        node.cfg=dict(input_max_age=.25,feedback_max_age=.2,command_max_age=.2,
+            engage_seconds=.02,position_scale=1.,operator_yaw_rad=0.,max_integration_interval=.1,
+            integration_max_sample_gap=.25,collision_scope='configured_tool_geometry',
+            left_frame='left',left_to_tool=np.eye(4).ravel().tolist())
+        node.input_source,node.require_recording='vr',False
+        node.independent_enabled=True
+        node.trajectory_reference=False
+        node.worker_error=''
+        node.worker=S(ready=True,busy=False,diagnostic=None,submit=self.solve)
+        node.frames={}
+        node.mode_state=S(mode='bimanual_tool',phase='READY',generation=1,
+            stamp=self.clock,changed_at=9.,profile_hash=self.profile.digest)
+        node.grasp_continuation=None
+        node.pause_control=ToolPause()
+        node.busy=True
+        node.event=lambda *args:self.events.append(args)
+        node.now=lambda:self.clock
+        node.pause=self.pause
+        node.lease_client=S(call_async=self.lease)
+        node.control_client=S(call_async=self.hold)
+        node.submit_client=S(call_async=self.submit)
+        self.goal=S(is_cancel_requested=False,request=S(task_id='transaction',duration=.9,
+            resource_group='bimanual_tool'),publish_feedback=Mock(),succeed=Mock(),canceled=Mock(),abort=Mock())
+        self.update()
+
+    def frame(self,seq,grip,*,source='headset',stamp=None,clutch=0):
+        poses=[np.eye(4),np.eye(4)];poses[1][1,3]=.4
+        return {side:VRFrame(source,seq,self.clock if stamp is None else stamp,side,
+            tuple(poses[i].ravel()),grip,clutch_seq=clutch)
+            for i,side in enumerate(('left','right'))}
+
+    def update(self):
+        self.engine.tick(self.clock)
+        fb=self.engine.feedback
+        event=self.engine.events[-1] if self.engine.events else S(state='IDLE',code='',command_id='')
+        state=S(instance_id='executor',profile_hash=self.profile.digest,simulated=True,
+            feedback_stamp=fb.stamp,lease_epoch=self.engine.epoch,lease_active=bool(self.engine.lease_id),
+            revision=self.engine.revision,state=event.state,code=event.code,command_id=event.command_id,
+            reference=S(name=list(self.engine.reference_names)),stop_failures=list(self.io.stop_failures),
+            joints=S(name=list(fb.positions),position=list(fb.positions.values()),
+                     velocity=[fb.joint_velocities[n] for n in fb.positions]))
+        self.state_history.append((self.clock,state))
+        self.node.state=next((s for t,s in reversed(self.state_history)
+                              if t<=self.clock-self.state_delay),state)
+        self.node.mode_state.stamp=self.clock
+        if not (self.input_gap and self.commands):
+            self.node.frames=(self.frozen_frames if self.frozen_frames and
+                              self.clock<=self.commands[0].stamp+self.duplicate_window
+                              else self.frame(self.step,0. if self.step<2 else 1.))
+
+    def done(self,value):
+        future=asyncio.get_running_loop().create_future();future.set_result(value)
+        return future
+
+    @staticmethod
+    def motion_command(**kw):
+        defaults=dict(velocity=S(linear=S(x=0.,y=0.,z=0.),angular=S(x=0.,y=0.,z=0.)),
+                      points=[],duration=0.)
+        defaults.update(kw)
+        return S(**defaults)
+
+    def lease(self,request):
+        if request.operation=='release':self.releases+=1
+        reply=self.services.lease(request,S())
+        self.update()
+        return self.done(reply)
+
+    def hold(self,request):
+        reply=self.services.control(request,S())
+        self.update()
+        return self.done(reply)
+
+    def solve(self,operation,token,feedback,target,**kwargs):
+        if operation=='capture':
+            value=np.eye(4)
+        else:
+            # Deterministic already-validated candidate. Reference and execution
+            # integration below are actual production code, not solver models.
+            value=(tuple(q+.001 for q in kwargs['reference']),(1.,0.,1.))
+        self.node.worker_result=('result',token,value)
+        return True
+
+    def submit(self,request):
+        c=request.command
+        self.commands.append(c)
+        if self.frozen_frames is None:self.frozen_frames=dict(self.node.frames)
+        if self.send_failure:raise RuntimeError('INJECTED_TRANSPORT_FAILURE')
+        reply=(S(accepted=False,code='INJECTED_REJECTION',revision=self.engine.revision)
+               if self.reject else self.services.submit(request,S()))
+        future=asyncio.get_running_loop().create_future()
+        self.futures.append(future)
+        if not self.drop:
+            self.receipts.append((self.clock+self.ack_delay,future,reply))
+        return future
+
+    async def pause(self):
+        self.clock=round(self.clock+.02,9);self.step+=1
+        if self.commands and self.delivery_gap is not None:
+            self.clock+=self.delivery_gap
+            self.delivery_gap=None
+        self.update()
+        for at,future,reply in list(self.receipts):
+            if self.clock>=at and not future.done():future.set_result(reply)
+        if self.commands and self.transition and not self.transitioned:
+            first_at=self.commands[0].stamp
+            if self.clock>=first_at+self.ack_delay:
+                self.transitioned=True
+                if self.transition=='reconnect':self.node.frames=self.frame(self.step,1.,source='new-headset')
+                elif self.transition=='release':self.node.frames=self.frame(self.step,0.,clutch=1)
+                elif self.transition=='restart':self.node.state.instance_id='restarted-executor'
+                elif self.transition=='unordered':self.node.frames=self.frame(self.step,1.,stamp=first_at-.01)
+                elif self.transition=='cancel':self.goal.is_cancel_requested=True
+        await asyncio.sleep(0)
+
+    async def run(self):
+        return await self.node.execute(self.goal)
+
+
+class BimanualTransactions(unittest.IsolatedAsyncioTestCase):
+    def test_original_recorded_packets_keep_source_time_and_reject_stale_replay(self):
+        fixture=json.loads((Path(__file__).resolve().parents[2]/'tests/config/teleoperation/snowbot_input_gap.json').read_text())
+        pairs=fixture['pairs']
+        origin=pairs[0]['left']['received_at']
+        def received(pair):return 10.+pair['left']['received_at']-origin
+        def frames(pair):
+            result=[]
+            for side in ('left','right'):
+                d=pair[side]['data'];stamp=d['stamp']['sec']+d['stamp']['nanosec']*1e-9
+                result.append(VRFrame(d['source_id'],d['seq'],10.+stamp-origin,side,
+                    tuple(d['pose']),d['grip'],d['trigger'],d['init'],d['stop'],d['valid'],
+                    d['clutch_seq'],d['mapping']))
+            return result
+        session=BimanualSession(dict(input_max_age=.25,engage_seconds=.1,
+            position_scale=1.,operator_yaw_rad=0.),1,0.)
+        index=max(range(len(pairs)-1),key=lambda i:received(pairs[i+1])-received(pairs[i]))
+        before,after=pairs[index:index+2]
+        self.assertTrue(session.ingest(*frames(before),received(before)))
+        previous=session.seq
+        self.assertFalse(session.ingest(*frames(before),received(before)+.001))
+        with self.assertRaisesRegex(ValueError,'VR_PAIR_INVALID'):
+            session.ingest(*frames(before),received(after))
+        self.assertEqual(session.seq,previous)
+        self.assertTrue(session.ingest(*frames(after),received(after)))
+
+    async def test_normal_software_acceptance_advances_once_per_unique_command(self):
+        rig=Rig()
+        result=await rig.run()
+        commits=rig.references[0].commits
+        self.assertTrue(result.success,result.code)
+        self.assertGreater(len(commits),2)
+        # End-of-duration settles the last receipt for accounting, without
+        # advancing a reference that is no longer used for motion.
+        self.assertLessEqual(len(rig.commands)-len(commits),1)
+        self.assertEqual(result.accepted_commands,len(rig.commands))
+        self.assertEqual(len(set(c.command_id for c in rig.commands)),len(rig.commands))
+        self.assertEqual([round(q[1][0],6) for q in commits],
+                         [round((i+1)*.001,6) for i in range(len(commits))])
+
+    async def test_rejection_and_unknown_acceptance_do_not_advance_or_retry(self):
+        for changes in (dict(reject=True),dict(drop=True),dict(send_failure=True)):
+            with self.subTest(changes=changes):
+                rig=Rig(**changes)
+                result=await rig.run()
+                self.assertFalse(result.success)
+                self.assertEqual(rig.references[0].commits,[])
+                self.assertEqual(len(rig.commands),1)
+                self.assertEqual(rig.releases,1)
+
+    async def test_old_confirmation_cannot_commit_across_reconnect_unordered_release_or_restart(self):
+        for transition in ('reconnect','unordered','release','restart','cancel'):
+            with self.subTest(transition=transition):
+                rig=Rig(transition=transition)
+                result=await rig.run()
+                self.assertGreaterEqual(len(rig.commands),1)
+                self.assertEqual(rig.references[0].commits,[],result.code)
+                self.assertEqual(rig.releases,1)
+
+    async def test_source_expired_confirmation_never_advances_reference(self):
+        rig=Rig(ack_delay=.18,state_delay=.04)
+        result=await rig.run()
+        self.assertFalse(result.success)
+        self.assertTrue(result.code.startswith('BIMANUAL_SUBMIT_EXPIRED'),result.code)
+        self.assertEqual(rig.references[0].commits,[],result.code)
+
+    async def test_recorded_input_delivery_gap_stops_and_does_not_replay_intent(self):
+        fixture=json.loads((Path(__file__).resolve().parents[2]/'tests/config/teleoperation/snowbot_input_gap.json').read_text())
+        rig=Rig(drop=True,input_gap=True,delivery_gap=fixture['gap_s'])
+        rig.goal.request.duration=3.
+        result=await rig.run()
+        self.assertFalse(result.success)
+        self.assertEqual(rig.references[0].commits,[])
+        self.assertEqual(len(rig.commands),1)
+        self.assertFalse(rig.engine.lease_id)
+        # Receiving new input alone does not re-enter the completed coroutine.
+        rig.node.frames=rig.frame(1000,1.)
+        await rig.pause()
+        self.assertEqual(len(rig.commands),1)
+
+    async def test_duplicate_frames_do_not_resubmit_or_integrate_again(self):
+        rig=Rig(duplicate_window=.1)
+        result=await rig.run()
+        self.assertTrue(result.success,result.code)
+        seqs=[json.loads(e[1])['input_seq'] for e in rig.events if e[0]=='BIMANUAL_SUBMIT_TIMING']
+        self.assertGreater(len(seqs),2)
+        self.assertEqual(len(seqs),len(set(seqs)))
+        self.assertEqual(len(rig.references[0].commits),len(seqs))
+
+    async def test_explicit_reentry_recaptures_measured_state_and_ignores_old_ack(self):
+        rig=Rig(drop=True)
+        result=await rig.run()
+        self.assertFalse(result.success)
+        first=rig.commands[0]
+        self.assertEqual(rig.references[0].commits,[])
+        rig.futures[0].set_result(S(accepted=True,revision=1))
+        rig.drop=False;rig.step=0
+        rig.node.pause_control=ToolPause();rig.node.busy=True
+        rig.node.mode_state.generation+=1
+        rig.node.mode_state.changed_at=rig.clock-.01
+        rig.update()
+        measured=tuple(rig.engine.feedback.positions[n] for n in rig.node.names)
+        rig.goal.request.duration=.4
+        result=await rig.run()
+        self.assertTrue(result.success,result.code)
+        self.assertEqual(rig.references[1].captures[0][0],measured)
+        self.assertEqual(rig.references[0].commits,[])
+        self.assertTrue(all(c.command_id.rsplit('_',1)[0]!=first.command_id.rsplit('_',1)[0]
+                            for c in rig.commands[1:]))
+
+
+if __name__=='__main__':
+    unittest.main()

@@ -443,6 +443,7 @@ class BimanualToolNode(RuntimeNode):
                     if time.monotonic()>=startup_deadline: raise
                     await self.pause()
             submit_revision=await self.execution_revision(lease)
+            execution_instance_id=self.state.instance_id
             self.event('BIMANUAL_STARTED',json.dumps({'session_id':session.identity,
                 'teleop_mode':mode.mode,
                 'mode_generation':session.generation,'resource_groups':self.groups,
@@ -469,23 +470,15 @@ class BimanualToolNode(RuntimeNode):
                 self.check(require_input=self.pause_control.phase=='follow')
                 if self.mode_state.generation != session.generation:
                     raise RuntimeError('BIMANUAL_MODE_GENERATION_CHANGED')
-                if pending is not None and self.pause_control.phase!='pausing':
-                    if pending.done():
-                        reply=pending.result()
-                        if not reply.accepted: raise RuntimeError(reply.code)
-                        submit_revision=max(submit_revision,reply.revision)
-                        reference.accept(*pending_reference)
-                        if self.trajectory_reference:
-                            trajectory_bootstrap=False
-                            trajectory_reference_deadline=time.monotonic()+reference.max_sample_gap
-                        self.event('BIMANUAL_SUBMIT_TIMING',json.dumps({
-                            'input_seq':work_seq,'reference_sampled_at':reference.sampled_at,
-                            'acknowledged_at':self.now(),'submit_round_trip_s':now-pending_at,
-                            'server_monotonic_s':now}),goal.request.task_id)
-                        pending_reference=None
-                        accepted+=1
-                        pending=None
-                    elif now-pending_at>.7: raise RuntimeError('BIMANUAL_SUBMIT_TIMEOUT')
+                s=self.state
+                if s.command_id.startswith(session.identity+'_') and s.state=='FAILED':
+                    raise RuntimeError(s.code)
+                if (s.instance_id!=execution_instance_id or not s.lease_active or
+                        s.lease_epoch!=lease.epoch):
+                    raise RuntimeError('BIMANUAL_EXECUTION_AUTHORITY_CHANGED')
+                if (pending is not None and self.pause_control.phase!='pausing' and
+                        now-pending_at>.7):
+                    raise RuntimeError('BIMANUAL_SUBMIT_TIMEOUT')
                 if renewal is not None:
                     if renewal.done():
                         if not renewal.result().ok: raise RuntimeError('LEASE_RENEW_FAILED')
@@ -569,6 +562,30 @@ class BimanualToolNode(RuntimeNode):
                         pending_reference=None
                     last_mode=session.mode
                     self.event('BIMANUAL_CLUTCH',session.mode,goal.request.task_id)
+                # Validate source/clutch/grasp transitions before a receipt can
+                # advance local integration. A submitted command may already
+                # have executed; stop/settle it without reviving its reference.
+                if pending is not None and self.pause_control.phase!='pausing':
+                    if pending.done():
+                        reply=pending.result()
+                        if not reply.accepted: raise RuntimeError(reply.code)
+                        if not work_stamp<=self.now()<work_stamp+self.cfg['command_max_age']:
+                            raise RuntimeError('BIMANUAL_SUBMIT_EXPIRED')
+                        reference.accept(*pending_reference)
+                        submit_revision=max(submit_revision,reply.revision)
+                        if self.trajectory_reference:
+                            trajectory_bootstrap=False
+                            trajectory_reference_deadline=time.monotonic()+reference.max_sample_gap
+                        self.event('BIMANUAL_SUBMIT_TIMING',json.dumps({
+                            'input_seq':work_seq,'reference_sampled_at':reference.sampled_at,
+                            'acceptance_scope':'software_execution_service',
+                            'executor_instance_id':execution_instance_id,'lease_epoch':lease.epoch,
+                            'source_stamp':work_stamp,'source_valid_for_s':self.cfg['command_max_age'],
+                            'acknowledged_at':self.now(),'submit_round_trip_s':now-pending_at,
+                            'server_monotonic_s':now}),goal.request.task_id)
+                        pending_reference=None
+                        accepted+=1
+                        pending=None
                 s=self.state
                 if (s.command_id.startswith(session.identity+'_') and s.state=='FAILED'):
                     raise RuntimeError(s.code)

@@ -1,0 +1,530 @@
+{
+  "source_path": "/Users/xavier/Documents/galbot/bindu/artifacts/118-target-stream-20261022/gripper-speed/vr_ce97e5935a45/vr-raw.jsonl",
+  "source_sha256": "ca2008623807f2a77cb7ade00ff26e37b8df39a48abeea960b103dd672a82d61",
+  "recorded_session": "vr_ce97e5935a45",
+  "recorded_runtime": "fad8585",
+  "gap_s": 1.0152537822723389,
+  "pairs": [
+    {
+      "left": {
+        "received_at": 1792698310.551153,
+        "received_monotonic_ns": 23767593742455,
+        "data": {
+          "stamp": {
+            "sec": 1792698310,
+            "nanosec": 547012352
+          },
+          "source_id": "f8bfc85a5f974f66a0818f3a38109273",
+          "runtime_mode": "real",
+          "seq": 326,
+          "side": "left",
+          "pose": [
+            0.9597946746500295,
+            -0.03425482400459736,
+            0.2786050781049364,
+            0.055002592504024506,
+            0.025428560287378554,
+            0.9990555429587251,
+            0.03523365443944865,
+            1.0319565534591675,
+            -0.27954887020904734,
+            -0.026732547874481045,
+            0.9597592406687129,
+            -1.2090296745300293,
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "grip": 0.0,
+          "trigger": 0.0,
+          "init": false,
+          "stop": false,
+          "valid": true,
+          "clutch_seq": 0,
+          "mapping": "pico_snowbot_v1",
+          "buttons": 0,
+          "button_edges": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "virtual_grip": false
+        }
+      },
+      "right": {
+        "received_at": 1792698310.5518034,
+        "received_monotonic_ns": 23767594392840,
+        "data": {
+          "stamp": {
+            "sec": 1792698310,
+            "nanosec": 547012352
+          },
+          "source_id": "f8bfc85a5f974f66a0818f3a38109273",
+          "runtime_mode": "real",
+          "seq": 326,
+          "side": "right",
+          "pose": [
+            0.8360614326651208,
+            0.029640600297953092,
+            0.5478345695772788,
+            0.2993335425853729,
+            -0.05385354308620192,
+            0.9981510761545324,
+            0.028181999017308283,
+            1.0504568815231323,
+            -0.5459863338097465,
+            -0.05306471507061837,
+            0.8361118700912373,
+            -1.3273508548736572,
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "grip": 0.0,
+          "trigger": 0.0,
+          "init": false,
+          "stop": false,
+          "valid": true,
+          "clutch_seq": 0,
+          "mapping": "pico_snowbot_v1",
+          "buttons": 0,
+          "button_edges": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "virtual_grip": false
+        }
+      }
+    },
+    {
+      "left": {
+        "received_at": 1792698310.661742,
+        "received_monotonic_ns": 23767704331671,
+        "data": {
+          "stamp": {
+            "sec": 1792698310,
+            "nanosec": 659660800
+          },
+          "source_id": "f8bfc85a5f974f66a0818f3a38109273",
+          "runtime_mode": "real",
+          "seq": 333,
+          "side": "left",
+          "pose": [
+            0.9591825512105805,
+            -0.030937229258106325,
+            0.2810902369328991,
+            0.054885171353816986,
+            0.02500521771974422,
+            0.9993829559034616,
+            0.024666709072093233,
+            1.0338751077651978,
+            -0.2816799114952114,
+            -0.01663115436433786,
+            0.959364285433098,
+            -1.20760178565979,
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "grip": 0.0,
+          "trigger": 0.0,
+          "init": false,
+          "stop": false,
+          "valid": true,
+          "clutch_seq": 0,
+          "mapping": "pico_snowbot_v1",
+          "buttons": 0,
+          "button_edges": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "virtual_grip": false
+        }
+      },
+      "right": {
+        "received_at": 1792698310.6630425,
+        "received_monotonic_ns": 23767705631994,
+        "data": {
+          "stamp": {
+            "sec": 1792698310,
+            "nanosec": 659660800
+          },
+          "source_id": "f8bfc85a5f974f66a0818f3a38109273",
+          "runtime_mode": "real",
+          "seq": 333,
+          "side": "right",
+          "pose": [
+            0.8349275204709633,
+            0.04161145006458425,
+            0.5487845868678635,
+            0.2997209429740906,
+            -0.06650065767515194,
+            0.9974593864583526,
+            0.025542805149364255,
+            1.0521601438522339,
+            -0.5463274641540378,
+            -0.05782092691793127,
+            0.8355734811022725,
+            -1.32655930519104,
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "grip": 0.0,
+          "trigger": 0.0,
+          "init": false,
+          "stop": false,
+          "valid": true,
+          "clutch_seq": 0,
+          "mapping": "pico_snowbot_v1",
+          "buttons": 0,
+          "button_edges": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "virtual_grip": false
+        }
+      }
+    },
+    {
+      "left": {
+        "received_at": 1792698310.7709577,
+        "received_monotonic_ns": 23767813547333,
+        "data": {
+          "stamp": {
+            "sec": 1792698310,
+            "nanosec": 769042944
+          },
+          "source_id": "f8bfc85a5f974f66a0818f3a38109273",
+          "runtime_mode": "real",
+          "seq": 340,
+          "side": "left",
+          "pose": [
+            0.9584256209653736,
+            -0.028840880461362874,
+            0.2838811946771945,
+            0.05419270321726799,
+            0.021914595950365694,
+            0.9993803206381978,
+            0.02754496697085654,
+            1.0345561504364014,
+            -0.28449970045936773,
+            -0.020178660394256174,
+            0.9584637406304023,
+            -1.2066792249679565,
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "grip": 0.0,
+          "trigger": 0.0,
+          "init": false,
+          "stop": false,
+          "valid": true,
+          "clutch_seq": 0,
+          "mapping": "pico_snowbot_v1",
+          "buttons": 0,
+          "button_edges": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "virtual_grip": false
+        }
+      },
+      "right": {
+        "received_at": 1792698310.7720044,
+        "received_monotonic_ns": 23767814593851,
+        "data": {
+          "stamp": {
+            "sec": 1792698310,
+            "nanosec": 769042944
+          },
+          "source_id": "f8bfc85a5f974f66a0818f3a38109273",
+          "runtime_mode": "real",
+          "seq": 340,
+          "side": "right",
+          "pose": [
+            0.8315006743240267,
+            0.04567167704672345,
+            0.5536431400409731,
+            0.29781728982925415,
+            -0.07030479290068023,
+            0.9972528781884582,
+            0.023322372092666813,
+            1.0533206462860107,
+            -0.5510570430489764,
+            -0.05831633442335114,
+            0.832427378481476,
+            -1.3257973194122314,
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "grip": 0.0,
+          "trigger": 0.0,
+          "init": false,
+          "stop": false,
+          "valid": true,
+          "clutch_seq": 0,
+          "mapping": "pico_snowbot_v1",
+          "buttons": 0,
+          "button_edges": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "virtual_grip": false
+        }
+      }
+    },
+    {
+      "left": {
+        "received_at": 1792698311.7862115,
+        "received_monotonic_ns": 23768828801215,
+        "data": {
+          "stamp": {
+            "sec": 1792698311,
+            "nanosec": 780550144
+          },
+          "source_id": "f8bfc85a5f974f66a0818f3a38109273",
+          "runtime_mode": "real",
+          "seq": 403,
+          "side": "left",
+          "pose": [
+            0.9430195173832638,
+            0.025466282844995008,
+            0.33176144783909967,
+            0.034128349274396896,
+            -0.0295939541088896,
+            0.999534650588333,
+            0.007394602995468533,
+            1.039592981338501,
+            -0.33141874979312497,
+            -0.01679138801047613,
+            0.9433343318114972,
+            -1.2068467140197754,
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "grip": 0.9176470637321472,
+          "trigger": 0.0,
+          "init": false,
+          "stop": false,
+          "valid": true,
+          "clutch_seq": 0,
+          "mapping": "pico_snowbot_v1",
+          "buttons": 0,
+          "button_edges": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "virtual_grip": false
+        }
+      },
+      "right": {
+        "received_at": 1792698311.7876067,
+        "received_monotonic_ns": 23768830196204,
+        "data": {
+          "stamp": {
+            "sec": 1792698311,
+            "nanosec": 780550144
+          },
+          "source_id": "f8bfc85a5f974f66a0818f3a38109273",
+          "runtime_mode": "real",
+          "seq": 403,
+          "side": "right",
+          "pose": [
+            0.8322850338917998,
+            0.09904665327675438,
+            0.5454277063318287,
+            0.29358723759651184,
+            -0.14404632779791113,
+            0.9887519210499599,
+            0.04025287651771066,
+            1.0381252765655518,
+            -0.5353057797256278,
+            -0.11206872487312262,
+            0.8371907328068376,
+            -1.3282794952392578,
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "grip": 0.0,
+          "trigger": 0.0,
+          "init": false,
+          "stop": false,
+          "valid": true,
+          "clutch_seq": 0,
+          "mapping": "pico_snowbot_v1",
+          "buttons": 0,
+          "button_edges": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "virtual_grip": false
+        }
+      }
+    },
+    {
+      "left": {
+        "received_at": 1792698317.6422534,
+        "received_monotonic_ns": 23774684842841,
+        "data": {
+          "stamp": {
+            "sec": 1792698317,
+            "nanosec": 634632448
+          },
+          "source_id": "f8bfc85a5f974f66a0818f3a38109273",
+          "runtime_mode": "real",
+          "seq": 769,
+          "side": "left",
+          "pose": [
+            0.9485003909911379,
+            0.05037977996293391,
+            0.31274412234372156,
+            0.03430624678730965,
+            -0.04756591037989218,
+            0.9987297331486891,
+            -0.016625411107100124,
+            1.0480397939682007,
+            -0.31318443840553506,
+            0.0008932500402333497,
+            0.9496919024846824,
+            -1.2112504243850708,
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "grip": 1.0,
+          "trigger": 0.0,
+          "init": false,
+          "stop": false,
+          "valid": true,
+          "clutch_seq": 0,
+          "mapping": "pico_snowbot_v1",
+          "buttons": 0,
+          "button_edges": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "virtual_grip": false
+        }
+      },
+      "right": {
+        "received_at": 1792698317.6428893,
+        "received_monotonic_ns": 23774685478630,
+        "data": {
+          "stamp": {
+            "sec": 1792698317,
+            "nanosec": 634632448
+          },
+          "source_id": "f8bfc85a5f974f66a0818f3a38109273",
+          "runtime_mode": "real",
+          "seq": 769,
+          "side": "right",
+          "pose": [
+            0.8430488501941517,
+            0.10757922878183585,
+            0.5269680689766923,
+            0.3065025210380554,
+            -0.13362806767503435,
+            0.9909651005023227,
+            0.011476459203863374,
+            1.0540390014648438,
+            -0.5209723368047053,
+            -0.08009294051991658,
+            0.8498075930251022,
+            -1.324671983718872,
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "grip": 0.0,
+          "trigger": 0.0,
+          "init": false,
+          "stop": false,
+          "valid": true,
+          "clutch_seq": 0,
+          "mapping": "pico_snowbot_v1",
+          "buttons": 0,
+          "button_edges": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "virtual_grip": false
+        }
+      }
+    }
+  ],
+  "scope": "Replay uses original reception gap with synthetic engaged frames. Original packets retained for separate source/time validation. Does not replay physical pose or drive response."
+}
