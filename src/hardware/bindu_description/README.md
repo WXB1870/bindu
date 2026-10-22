@@ -90,6 +90,10 @@ Snowbot 的三份 URDF 是同一机器人针对不同用途的生成结果。31 
 
 当前[真机位置profile](../../integration/bindu_runtime/config/robots/snowbot/snowbot_real_position.json)的20轴位置范围均未超过118：除头J2取两模型交集±0.79 rad，其余19轴与118一致。本次仅记录差异和约束依据，未修改生成URDF或运行配置。
 
+**静态复核结论（2026-10-21）**：以118安装模型快照为基准（SHA256前缀`9b406b17`，与当日部署清单一致，未重新读取在线文件），三份Bindu模型共有20轴的关节类型、父子关系、`origin`和`axis`全部一致；20轴profile位置限位均未越界，QP实际采用profile与URDF区间的交集。可将“共有轴运动学结构与位置限位静态核对”记为通过。
+
+**仍需单列确认**：Bindu新增的`car_base_link → body_base_link`平移为`[0.296, 0, 0.326] m`，两侧`arm_*_link_7 → arm_*_ft_sensor`为沿局部X轴平移`0.076 m`；这些变换及真实工具/TCP不由118原URDF共同轴的一致性证明。实物零点、物理轴绑定与工具安装标定仍未据此验收。
+
 Snowbot 来源及压缩包 SHA256 在 [`SNOWBOT_ASSETS_NOTICE`](SNOWBOT_ASSETS_NOTICE) 中维护；[`prepare_snowbot_description.py`](../../../tools/models/prepare_snowbot_description.py) 校验该指纹并一次生成三份 URDF 和共享网格。原 ZIP 由用户提供，不随仓库分发。重新生成命令：
 
 ```bash
