@@ -653,6 +653,15 @@ class SnowbotStopDiagnosticTests(unittest.TestCase):
         self.engine.stop_steady_deadline=self.steady
         self.assertEqual(self.diagnose(self.health,self.engine,self.now)['reason'],'STOP_BUDGET_EXPIRED')
 
+    def test_pause_reports_tracking_error_without_treating_it_as_motion(self):
+        self.io.stop_requires_arrival=False
+        self.engine.feedback.positions[self.names[0]]=.038
+        result=self.diagnose(self.health,self.engine,self.now)
+        self.assertEqual(result['reason'],'WAIT_REST_WINDOW')
+        self.assertFalse(result['reference_arrived'])
+        self.assertFalse(result['arrival_required'])
+        self.assertEqual(result['max_position_error_rad'],.038)
+
     def test_missing_request_fault_and_lost_progress_stay_visible_without_authorizing_a_stop(self):
         request=self.io.pause_request
         self.io.pause_request=None
@@ -714,12 +723,15 @@ class SnowbotRosBindingTests(unittest.TestCase):
                 'bindu_runtime.execution_node': S(ExecutionNode=Base, run_execution=lambda _:None)}):
             spec.loader.exec_module(module)
         node = module.SnowbotAdapter.__new__(module.SnowbotAdapter)
-        node.snowbot_devices = S(advance_session=lambda: calls.append('advance'))
+        node.engine = object()
+        node.snowbot_devices = S(advance_session=lambda: calls.append('advance'),
+            advance_startup_hold=lambda engine: calls.append('startup'),
+            brake_before_source_expiry=lambda engine: calls.append('source_expiry'))
         node.grippers = S(core=True, tick=lambda: calls.append('gripper'))
         for closing in (False, True):
             node.closing = closing
             calls.clear(); node.tick()
-            self.assertEqual(calls, ['advance', 'engine', 'gripper'])
+            self.assertEqual(calls, ['advance', *([] if closing else ['startup','source_expiry']), 'engine', 'gripper'])
         node.snowbot_devices = S()  # legacy_guard retains its original tick.
         calls.clear(); node.tick()
         self.assertEqual(calls, ['engine', 'gripper'])

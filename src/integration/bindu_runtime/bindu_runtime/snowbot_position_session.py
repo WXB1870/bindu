@@ -117,6 +117,9 @@ class PositionSessionDevices:
         self.io.trajectory_reference = bool(self.health.reference_mode)
         self.io.stop_confirmation_window = .1 if self.health.reference_mode == 2 else 0.
         self.io.stop_confirmation_max_gap = ROS_FEEDBACK_TIMEOUT_S
+        self.io.stop_requires_arrival = self.health.reference_mode != 2
+        self.startup_hold_state = ('waiting' if self.io.command_enabled and
+                                   self.health.reference_mode == 2 else 'disabled')
         self.io.after_capture = lambda: self.new_session()
         self.io.pause_feedback = self.health.confirmed_hold
         self.arm_type, self.array_type = PositionSessionCommand, Float64MultiArray
@@ -285,6 +288,66 @@ class PositionSessionDevices:
                 raise RuntimeError('SNOWBOT_COMMAND_PUBLISHER_CONFLICT:'+name)
         if any(self.node.count_publishers(t) for t in ('/joint_position_cmd', '/body/motor_cmd')):
             raise RuntimeError('SNOWBOT_LEGACY_SOURCE_CONFLICT')
+
+    def advance_startup_hold(self, engine):
+        """One write-enabled startup, using the normal lease/command/ACK path.
+
+        Never retry a granted lease or failed enable. Subsequent squeeze actions
+        acquire following sessions; they do not initiate this startup action.
+        """
+        from bindu_contracts.contracts import Motion
+        from bindu_execution.executor import Rejected
+        state = self.startup_hold_state
+        if state in ('disabled', 'ready', 'failed') or self.node.closing:
+            return
+        now = self.node.now()
+        if engine.stop_fault or self.io.stop_failures:
+            self.startup_hold_state = 'failed'
+            self.node.event('STARTUP_HOLD_FAILED', engine.stop_fault or 'STOP_UNCONFIRMED')
+            return
+        if state == 'waiting':
+            try:
+                lease, epoch = engine.acquire('snowbot_startup_hold',
+                    ('waist', 'left_arm', 'right_arm'), 2., now)
+            except (Rejected, RuntimeError):
+                return  # Discovery/fresh measured feedback may not yet be ready.
+            self.startup_hold_state = 'takeover'
+            names = tuple(n for group in ('waist', 'left_arm', 'right_arm') for n in GROUPS[group])
+            motion = Motion('startup_hold_'+lease, lease, epoch, self.io.profile.digest,
+                'startup_hold', '', 'joint_target', '', now, .2, names=names,
+                positions=tuple(engine.feedback.positions[n] for n in names),
+                schema_version=2, resource_groups=('waist', 'left_arm', 'right_arm'), runtime_mode='real')
+            try:
+                engine.submit(motion, now)
+                engine.tick(now)
+            except (Rejected, RuntimeError) as exc:
+                engine.halt(now, 'STARTUP_HOLD_FAILED', revoke=True)
+                self.startup_hold_state = 'failed'
+                self.node.event('STARTUP_HOLD_FAILED', str(exc))
+                return
+            self.node.event('STARTUP_HOLD_REQUESTED', 'MEASURED_POSITION', command_id=motion.command_id)
+        elif state == 'takeover':
+            if engine.stopping or self.target_fault or engine.active is None:
+                self.startup_hold_state = 'failed'
+                self.node.event('STARTUP_HOLD_FAILED', self.target_fault or 'TAKEOVER_NOT_CONFIRMED')
+            elif self.takeover_pending is None and self.applied_sequence:
+                engine.halt(now, revoke=True)
+                self.startup_hold_state = 'stopping'
+        elif state == 'stopping' and not engine.stopping:
+            self.startup_hold_state = 'ready'
+            self.node.event('STARTUP_HOLD_READY', 'POWERED_HOLD')
+            self.node.get_logger().info('SNOWBOT_STARTUP_HOLD_READY: powered hold; squeeze controls following')
+
+    def brake_before_source_expiry(self, engine):
+        """Request PAUSE before a lost target producer's original TTL expires."""
+        if self.health.reference_mode != 2 or not engine.active or engine.stopping:
+            return
+        sent = self.sent.get(self.envelopes.sequence)
+        if sent and sent[0]['operation'] != 2:
+            # 60 ms covers two executor ticks plus the 10 ms local preparation.
+            # A stalled controller still falls under the native watchdog.
+            if round(self.node.now()*1e9) >= sent[0]['expires_at_ns']-60_000_000:
+                engine.halt(self.node.now(), 'COMMAND_TIMEOUT', revoke=True)
 
     def send(self, groups, target):
         if set(groups) != CONTROL_GROUPS:

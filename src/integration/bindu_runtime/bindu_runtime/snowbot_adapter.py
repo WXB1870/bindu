@@ -222,6 +222,10 @@ class SnowbotAdapter(ExecutionNode):
         super().begin_shutdown()
 
     def lease(self, request, reply):
+        startup = getattr(self.snowbot_devices, 'startup_hold_state', 'disabled')
+        if request.operation == 'acquire' and startup not in ('ready', 'disabled'):
+            reply.ok, reply.code, reply.profile_hash = False, 'STARTUP_HOLD_'+startup.upper(), self.profile.digest
+            return reply
         if request.operation == 'acquire' and getattr(self, 'grippers', None) and self.grippers.core and self.grippers.core.busy:
             reply.ok, reply.code, reply.profile_hash = False, 'GRIPPERS_BUSY_OR_FAULT', self.profile.digest
             return reply
@@ -231,6 +235,9 @@ class SnowbotAdapter(ExecutionNode):
         advance = getattr(getattr(self, 'snowbot_devices', None), 'advance_session', None)
         if advance is not None:
             advance()
+            if not self.closing:
+                self.snowbot_devices.advance_startup_hold(self.engine)
+                self.snowbot_devices.brake_before_source_expiry(self.engine)
         super().tick()
         self.record_stop_check()
         if getattr(self, 'grippers', None) and self.grippers.core:

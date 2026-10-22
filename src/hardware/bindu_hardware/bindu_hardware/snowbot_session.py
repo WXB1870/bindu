@@ -96,7 +96,7 @@ class SessionHealth:
         """Return the adopted fixed reference, never physical-stop confirmation.
 
         A trajectory impedance PAUSE adopts a fixed nominal reference and keeps
-        its controller. Executor still requires measured position and rest.
+        its controller. Executor confirms measured rest separately from arrival.
         """
         if self.hold_failure(request):
             return None
@@ -219,7 +219,7 @@ def stop_diagnostic(health, engine, now):
             reason = 'STOP_FEEDBACK_NOT_FRESH'
         elif len(errors) != len(names) or len(speeds) != len(names):
             reason = 'STOP_FEEDBACK_INCOMPLETE'
-        elif position_error >= position_tolerance:
+        elif getattr(io, 'stop_requires_arrival', True) and position_error >= position_tolerance:
             reason = 'STOP_POSITION_ERROR'
         elif max_speed > velocity_tolerance:
             reason = 'STOP_SPEED_NOT_ZERO'
@@ -243,6 +243,8 @@ def stop_diagnostic(health, engine, now):
         remaining_steady_s=engine.stop_steady_deadline-steady,
         max_position_error_rad=position_error, max_speed_rad_s=max_speed,
         position_error_basis='observed_hold_position',
+        arrival_required=getattr(io, 'stop_requires_arrival', True),
+        reference_arrived=(len(errors)==len(names) and position_error < position_tolerance),
         worst_position_joint=max(errors, key=errors.get) if errors else None,
         position_tolerance_rad=position_tolerance, velocity_tolerance_rad_s=velocity_tolerance,
         rest_window_required_s=getattr(io, 'stop_confirmation_window', 0.),

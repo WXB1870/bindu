@@ -98,8 +98,7 @@ class DelegatedPositionExecutor(Executor):
             self.fail_stop(now, 'STOP_UNCONFIRMED:'+','.join(self.io.stop_failures))
             return
         # Some position devices acknowledge the actual braking/hold point.
-        # Its ACK changes the expected position, never the stop budget or the
-        # required measured position/velocity tolerances.
+        # Its ACK fixes the braking reference; it does not prove physical rest.
         confirm = getattr(self.io, 'confirmed_stop_targets', None)
         if confirm is not None:
             targets = confirm()
@@ -112,8 +111,12 @@ class DelegatedPositionExecutor(Executor):
                 return
             self.reference = State.rest(targets[n] for n in self.reference_names)
         # A sent hold is only a request. Require feedback newer than that request.
+        require_arrival = getattr(self.io, 'stop_requires_arrival', True)
+        resting = all(n in self.feedback.positions and math.isfinite(self.feedback.positions[n])
+                      and self.joint_at_rest(n) for n in self.reference_names)
         arrived = (self.feedback.stamp > self.io.stop_requested_at and
-                   0 <= now-self.feedback.stamp <= .2 and self.references_arrived())
+                   0 <= now-self.feedback.stamp <= .2 and resting and
+                   (not require_arrival or self.references_arrived()))
         window = getattr(self.io, 'stop_confirmation_window', 0.)
         if arrived and window:
             positions = {n: self.feedback.positions[n] for n in self.reference_names}

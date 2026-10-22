@@ -277,6 +277,7 @@ class PauseHandoffTests(unittest.TestCase):
         self.io.profile = self.engine.profile = self.profile
         self.io.stop_confirmation_window = .1
         self.io.stop_confirmation_max_gap = .04
+        self.io.stop_requires_arrival = False
 
     def test_target_pause_requires_continuous_measured_rest_window(self):
         self.enable_rest_window()
@@ -290,15 +291,16 @@ class PauseHandoffTests(unittest.TestCase):
         self.assertIsNone(self.engine.stopping)
         self.assertEqual(self.engine.stop_deadline, deadline)
 
-    def test_target_pause_zero_speed_with_recorded_position_error_is_unconfirmed(self):
+    def test_target_pause_rest_does_not_claim_arrival_at_offset_reference(self):
         self.enable_rest_window()
         hold = self.start_stop()
         hold[0] -= .0452
         for _ in range(24):
             self.update(hold=hold); self.engine.tick(self.now)
-        self.assertTrue(self.engine.stopping)
-        self.assertIsNone(self.engine.stop_rest_window)
+        self.assertIsNone(self.engine.stopping)
+        self.assertFalse(self.engine.stop_fault)
         self.assertEqual(self.io.pause_targets[CONTROL_NAMES[0]], hold[0])
+        self.assertAlmostEqual(self.q[CONTROL_NAMES[0]]-hold[0], .0452)
 
     def test_target_pause_fixed_window_anchor_catches_drift_inside_arrival_tolerance(self):
         self.enable_rest_window()
@@ -485,6 +487,76 @@ class TargetWireTests(unittest.TestCase):
             rejected_sequence=0 if accepted else packet.meta.sequence)
         data.update(changes)
         return S(**data)
+
+    def update_target_feedback(self, **changes):
+        self.rig.update(**changes)
+        for _, state in self.d.health.states.values(): state.wire_version = 4
+        self.d.health.states['servo'][1].reference_mode = 2
+
+    def start_powered_hold(self):
+        self.rig.enable_rest_window()
+        self.d.startup_hold_state = 'waiting'
+        self.d.node.closing = False
+        self.d.advance_startup_hold(self.rig.engine)
+        self.assertEqual(self.d.startup_hold_state, 'takeover')
+        packet = self.d.publishers['arms'].publish.call_args.args[0]
+        self.assertEqual(packet.meta.operation, 1)
+        self.assertEqual(list(packet.command.l_arm_position), [self.rig.q[n] for n in GROUPS['left_arm']])
+        self.d.receive_receipt(self.receipt(packet))
+        self.d.applied_sequence = 1
+        self.d.advance_startup_hold(self.rig.engine)
+        self.assertEqual(self.d.startup_hold_state, 'stopping')
+        self.assertFalse(self.rig.engine.lease_id)
+        return self.d.publishers['arms'].publish.call_args.args[0]
+
+    def test_startup_enables_once_then_confirms_powered_hold_without_vr(self):
+        pause = self.start_powered_hold()
+        self.assertEqual(pause.meta.operation, 2)
+        hold = [self.rig.q[n] for n in CONTROL_NAMES]
+        for _ in range(24):
+            self.update_target_feedback(hold=hold, reference_mode=2, segment_id=pause.meta.sequence,
+                trajectory_phase=4, hold_basis=0, reference_valid=True, output_valid=True)
+            self.rig.engine.tick(self.rig.now)
+            self.d.advance_startup_hold(self.rig.engine)
+        self.assertEqual(self.d.startup_hold_state, 'ready')
+        self.assertIsNone(self.rig.engine.stopping)
+        self.assertEqual(self.d.publishers['arms'].publish.call_count, 2)
+        for _ in range(10): self.d.advance_startup_hold(self.rig.engine)
+        self.assertEqual(self.d.publishers['arms'].publish.call_count, 2)
+
+    def test_startup_failure_or_disabled_writes_never_retry_enable(self):
+        self.d.node.closing = False
+        self.d.startup_hold_state = 'disabled'
+        self.d.advance_startup_hold(self.rig.engine)
+        self.d.publishers['arms'].publish.assert_not_called()
+        self.start_powered_hold()
+        self.rig.engine.stop_fault = 'STOP_UNCONFIRMED'
+        self.d.advance_startup_hold(self.rig.engine)
+        self.assertEqual(self.d.startup_hold_state, 'failed')
+        self.rig.engine.stop_fault = ''
+        for _ in range(10): self.d.advance_startup_hold(self.rig.engine)
+        self.assertEqual(self.d.publishers['arms'].publish.call_count, 2)
+
+    def test_target_loss_requests_one_pause_before_original_source_expiry(self):
+        self.rig.enable_rest_window()
+        self.d.startup_hold_state = 'waiting'; self.d.node.closing = False
+        self.d.advance_startup_hold(self.rig.engine)
+        first = self.d.publishers['arms'].publish.call_args.args[0]
+        deadline = first.meta.expires_at_ns
+        self.d.receive_receipt(self.receipt(first))
+        for _ in range(27):
+            self.update_target_feedback()
+            self.d.brake_before_source_expiry(self.rig.engine)
+        self.assertEqual(self.d.publishers['arms'].publish.call_count, 1)
+        self.update_target_feedback()
+        self.d.brake_before_source_expiry(self.rig.engine)
+        pause = self.d.publishers['arms'].publish.call_args.args[0]
+        self.assertEqual(pause.meta.operation, 2)
+        self.assertLess(pause.meta.source_stamp_ns, deadline)
+        self.assertEqual(first.meta.expires_at_ns, deadline)
+        self.assertEqual(pause.meta.expires_at_ns-pause.meta.source_stamp_ns, 2_000_000_000)
+        for _ in range(10): self.d.brake_before_source_expiry(self.rig.engine)
+        self.assertEqual(self.d.publishers['arms'].publish.call_count, 2)
 
     def test_old_wire_three_cannot_pass_target_stream_readiness(self):
         self.d.health.require(CONTROL_GROUPS)
