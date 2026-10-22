@@ -75,6 +75,25 @@ class PositionSessionIO(SnowbotIO):
         previous = self.requesting_pause
         self.requesting_pause = True
         try:
+            if self.trajectory_reference:
+                # PAUSE carries the existing session authority. Its position
+                # fields are only a wire/layout footprint: the servo brakes
+                # from its own reference, and its ACK supplies the hold point.
+                # In particular, do not require a fresh ROS measurement to ask
+                # that a following session stop producing motion.
+                self.reference.clear()
+                if not self.targets:
+                    return  # Pending PAUSE is not renewed on repeated faults.
+                self.stop_requested_at = self.now()
+                target = dict(self.targets)
+                try:
+                    self._send(target, hold=True)
+                except RuntimeError:
+                    self.stop_failures = tuple(sorted(self._groups(target)))
+                else:
+                    self.stop_targets = target
+                self.targets.clear()
+                return
             return super().stop()
         finally:
             self.requesting_pause = previous
@@ -292,7 +311,20 @@ class PositionSessionDevices:
                 self.target_fault = 'SNOWBOT_TARGET_REJECTED:'+servo.reason
 
     def check_ready(self, groups):
-        self.check_health(groups, acquiring=True)
+        if self.health.reference_mode == 2 and self.io.sending_hold:
+            # This is a stop-only request, never a takeover or target refresh.
+            # Keep the known boot/instances and all endpoint/authority checks;
+            # the servo still validates its local PDO and the stop trajectory.
+            sent = self.sent.get(self.envelopes.sequence)
+            servo = self.health.states.get('servo', (0., None))[1]
+            middle = self.health.states.get('middle', (0., None))[1]
+            if (sent is None or servo is None or middle is None or
+                    servo.instance_id != sent[1] or
+                    middle.instance_id != sent[0]['middle_instance_id'] or
+                    self.health.boot != sent[0]['feedback_boot_id']):
+                raise RuntimeError('SNOWBOT_PAUSE_AUTHORITY_UNAVAILABLE')
+        else:
+            self.check_health(groups, acquiring=True)
         for topic, kind, writer, reader in (
             ('command', 'PositionSessionCommand', None, 'arms'),
             ('upper', 'PositionSessionUpper', 'arms', 'middle'),
