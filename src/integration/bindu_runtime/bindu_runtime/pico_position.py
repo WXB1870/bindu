@@ -128,12 +128,9 @@ class PositionOperations:
                 n.control.gripper_update_token=intent.token
             await self.request('authorize_direct' if direct else 'authorize_loading', load_state=n.control.load,
                                external_support=False if direct else n.control.supported)
-            expected, sent_modes, renew_at = {}, {}, 0.
+            expected, sent_modes, failed, renew_at = {}, {}, {}, 0.
             while True:
                 n.current(intent)
-                states = {s:self.reading(s) for s in expected}
-                if any(s.state in ('FAILED','FAULT') for s in states.values()):
-                    raise RuntimeError('PICO_GRIPPER_OPERATION_FAILED')
                 if direct:
                     targets={s:m for s,m in zip(SIDES,n.control.pending.value) if m is not None}
                 for side, mode in targets.items():
@@ -144,16 +141,38 @@ class PositionOperations:
                         raise RuntimeError('PICO_GRIPPER_TARGET_INVALID')
                     await self.request('open' if mode=='open' else 'close',side)
                     sent_modes[side]=mode
+                    failed.pop(side,None)
                     expected[side]=(self.config['grippers'][side][mode],self.sequence,n.now(),
                                     time.monotonic()+self.config['motion_timeout']+1.)
                 states={s:self.reading(s) for s in expected}
+                for side,s in states.items():
+                    if s.state=='FAULT':
+                        raise RuntimeError('PICO_GRIPPER_OPERATION_FAILED')
+                    if (s.state=='FAILED' and s.epoch==lease.epoch and
+                            s.control_sequence>=expected[side][1] and
+                            seconds(s.stamp)>expected[side][2]):
+                        if not direct or s.code!='POSITION_TIMEOUT':
+                            raise RuntimeError('PICO_GRIPPER_OPERATION_FAILED')
+                        # FAILED/POSITION_TIMEOUT follows confirmed local hold.
+                        # Keep the partner's command/lease and await a NEW input
+                        # for this side. Never retry or report this target reached.
+                        if side not in failed:
+                            n.event('PICO_GRIPPER_SIDE_FAILED',json.dumps(dict(
+                                side=side,code=s.code,target=expected[side][0],
+                                measured=s.measured_position,epoch=s.epoch,
+                                control_sequence=s.control_sequence)))
+                        failed[side]=s.code
+                if direct:
+                    n.control.reason=('GRIPPER_POSITION_TIMEOUT:'+','.join(sorted(failed)) if failed else
+                                      'TRIGGERS_CONTROL_INDIVIDUAL_GRIPPERS')
                 reached={side:(s.position_reached and s.epoch==lease.epoch and
                     s.control_sequence>=expected[side][1] and seconds(s.feedback_stamp)>expected[side][2] and
                     abs(s.measured_position-expected[side][0])<=self.config['position_tolerance'])
                     for side,s in states.items()}
-                if reached and all(reached.values()):
+                if reached and not failed and all(reached.values()):
                     return
-                if any(not reached[s] and time.monotonic()>=expected[s][3] for s in expected):
+                if any(not reached[side] and side not in failed and
+                       time.monotonic()>=expected[side][3] for side,s in states.items()):
                     raise RuntimeError('PICO_GRIPPER_FEEDBACK_TIMEOUT')
                 if time.monotonic() >= renew_at:
                     response = await n.wait(self.leases.call_async(Lease.Request(operation='renew',

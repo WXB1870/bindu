@@ -4,6 +4,9 @@ import copy
 import json
 from pathlib import Path
 import unittest
+import ast
+import asyncio
+from types import SimpleNamespace as S
 from bindu_contracts.profile import Profile
 from bindu_contracts.teleoperation import VRFrame
 from bindu_hardware.snowbot_gripper import GripperController, JOINTS, GROUPS, SIDES, validate_config, native_command
@@ -373,6 +376,106 @@ class NativeGripperTests(unittest.TestCase):
         rig.v[JOINTS['left']] = 0.
         rig.step(8)
         self.assertEqual(rig.core.channels['left']['state'], 'SUCCEEDED')
+
+
+class DirectOperationTests(unittest.TestCase):
+    """Run the real async coordinator and gripper core without ROS or hardware."""
+    def run_case(self, interrupt=None):
+        from bindu_teleoperation.pico import PicoIntent
+        r=Rig(require_driver_ack=False)
+        r.q[JOINTS['right']]=.010666;r.step(track=False)
+        source=ROOT/'src/integration/bindu_runtime/bindu_runtime/pico_position.py'
+        cls=next(n for n in ast.parse(source.read_text()).body if isinstance(n,ast.ClassDef))
+        method=next(n for n in cls.body if getattr(n,'name','')=='move_grippers')
+        ns=dict(time=S(monotonic=lambda:r.steady),SIDES=SIDES,GROUPS=GROUPS,json=json,
+                Lease=S(Request=lambda **kw:S(**kw)),seconds=lambda value:value)
+        exec(compile(ast.Module(body=[method],type_ignores=[]),str(source),'exec'),ns)
+        control=S(pending=PicoIntent(1,'manual_grippers',(None,'closed')),load='unknown',
+                  supported=False,gripper_update_token=None,reason='')
+        events=[];requests=[];released=[];seen_failed=False;recovered=False;cached=None
+        async def wait(value):return value
+        def current(intent):
+            if control.pending.token!=intent.token:raise RuntimeError('SUPERSEDED')
+        def lease(req):
+            r.core.lease(req.operation,getattr(req,'owner',''),getattr(req,'resources',()),
+                         getattr(req,'lease_id',''),getattr(req,'epoch',0))
+            return S(ok=True,lease_id=r.core.lease_id,epoch=r.core.epoch)
+        async def request(operation,side='',**kw):
+            nonlocal cached
+            if side=='right' and operation=='open':
+                cached=S(stamp=r.now,**r.core.snapshot(side))
+            ops.sequence+=1
+            r.core.command(operation,side,ops.lease.lease_id,ops.lease.epoch,ops.sequence,
+                           r.now,.25,**kw)
+            requests.append((operation,side))
+        def reading(side):
+            nonlocal cached
+            if cached is not None and side=='right':
+                value,cached=cached,None;return value  # queued pre-retarget FAILED sample
+            return S(stamp=r.now,**r.core.snapshot(side))
+        async def release():
+            released.append(r.now)
+            if r.core.lease_id:r.core.lease('release',lease_id=ops.lease.lease_id,epoch=ops.lease.epoch)
+        async def pause():
+            nonlocal seen_failed,recovered
+            elapsed=r.now-10.
+            self.assertLess(elapsed,12.,'operation lost a deadline or failed to complete')
+            if elapsed>=4. and control.pending.value[0] is None:
+                control.pending=PicoIntent(1,'manual_grippers',('open','closed'))
+            right=r.core.channels['right']
+            if right['state']=='FAILED':
+                seen_failed=True
+                self.assertEqual(right['code'],'POSITION_TIMEOUT')
+                self.assertFalse(released)
+                self.assertTrue(r.core.lease_id)
+                if elapsed<5.5:
+                    self.assertEqual(r.core.channels['left']['state'],'MOVING')
+                self.assertNotIn(('close','left'),requests)
+            if elapsed>=6.5 and not recovered:
+                self.assertTrue(seen_failed)
+                self.assertEqual(r.core.channels['left']['state'],'SUCCEEDED')
+                self.assertIn('right',control.reason)
+                self.assertEqual(requests.count(('close','right')),1)  # no automatic retry
+                recovered=True
+                if interrupt=='stop':control.pending=PicoIntent(2,'stop')
+                elif interrupt=='fault':r.core.fail('TEST_DRIVER_FAULT')
+                else:control.pending=PicoIntent(1,'manual_grippers',('open','open'))
+            for side,target in r.goals.items():
+                # Right closure remains off-target until the operator changes it.
+                if side=='right' and requests.count(('open','right'))==0:continue
+                joint=JOINTS[side];delta=max(-.004,min(.004,target-r.q[joint]))
+                r.q[joint]+=delta;r.v[joint]=delta/.02
+            r.step(track=False)
+        node=S(control=control,instance_id='offline',now=lambda:r.now,wait=wait,current=current,
+               pause=pause,event=lambda kind,body:events.append((kind,json.loads(body))))
+        ops=S(node=node,config=r.config,reading=reading,leases=S(call_async=lease),request=request,
+              release=release,sequence=0)
+        async def run():await ns['move_grippers'](ops,control.pending,direct=True)
+        if interrupt:
+            with self.assertRaisesRegex(RuntimeError,'SUPERSEDED' if interrupt=='stop' else 'OPERATION_FAILED'):
+                asyncio.run(run())
+        else:asyncio.run(run())
+        self.assertTrue(seen_failed)
+        self.assertEqual(len(released),1)
+        self.assertIsNone(control.gripper_update_token)
+        self.assertEqual([e[1]['side'] for e in events],['right'])
+        return r,requests
+
+    def test_timeout_holds_only_failed_side_and_new_input_can_reverse_it(self):
+        r,requests=self.run_case()
+        self.assertEqual(requests,[('authorize_direct',''),('close','right'),('open','left'),('open','right')])
+        self.assertAlmostEqual(r.q[JOINTS['right']],.4)
+        self.assertAlmostEqual(r.q[JOINTS['left']],-.4)
+
+    def test_explicit_stop_cancels_pending_partial_failure(self):
+        r,_=self.run_case('stop')
+        self.assertFalse(r.core.lease_id)
+        self.assertFalse(r.core.direct_authorized)
+
+    def test_real_fault_still_ends_the_whole_operation(self):
+        r,_=self.run_case('fault')
+        self.assertTrue(r.core.fault)
+        self.assertFalse(r.core.direct_authorized)
 
 
 if __name__ == '__main__':

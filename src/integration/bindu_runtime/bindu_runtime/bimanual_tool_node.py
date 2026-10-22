@@ -38,7 +38,8 @@ class BimanualToolNode(RuntimeNode):
                                     self.get_parameter('position_protocol').value == 'session_v3')
         from .teleop_deployment import apply_execution_tracking
         self.cfg=apply_execution_tracking(self.cfg,self.get_parameter('execution_mode').value,
-                                          real=not self.simulation,position_contract=position_contract)
+                                          real=not self.simulation,position_contract=position_contract,
+                                          trajectory_reference=self.trajectory_reference)
         self.declare_parameter('gripper_config','',descriptor=ParameterDescriptor(read_only=True))
         gripper_path=self.get_parameter('gripper_config').value
         self.gripper_cfg=validate_config(json.loads(Path(gripper_path).read_text()),self.profile) if position_contract and gripper_path else None
@@ -426,6 +427,7 @@ class BimanualToolNode(RuntimeNode):
                 'tool_frame':self.cfg['left_frame'],
                 'tool_transform':None if isinstance(session,IndependentArmsSession) else self.cfg['left_to_tool'],
                 'position_scale':self.cfg['position_scale'],'rotation_scale':1.,
+                'tracking_feedback':self.cfg.get('tracking_feedback','measured'),
                 'vr_tool_mapping':self.cfg.get('vr_tool_mapping','legacy_wrist'),
                 'pose_filter':self.cfg.get('pose_filter') if self.input_source=='vr' else None,
                 'pose_filter_space':('per_hand_robot_pose' if isinstance(session,IndependentArmsSession)
@@ -613,7 +615,9 @@ class BimanualToolNode(RuntimeNode):
                                     'timing':geometry.get('timing') if geometry else None,
                                     'geometry_step':geometry if geometry and geometry['scale']<1. else None,
                                     'relative_error':None if isinstance(session,IndependentArmsSession) else metrics[1],
-                                    'relative_error_source':('accepted_reference' if self.cfg.get('reference_kinematics') else 'measured'),
+                                    'relative_error_source':None if isinstance(session,IndependentArmsSession) else
+                                        ('accepted_reference' if self.cfg.get('reference_kinematics') else 'measured'),
+                                    'tracking_feedback':self.cfg.get('tracking_feedback','measured'),
                                     'geometry_step_scale':geometry['scale'] if geometry else 1.,
                                     'teleop_mode':mode.mode,'recovery_scale':metrics[2],
                                     'input_stamp':work_stamp,'input_seq':work_seq,'integration_dt':work_dt,

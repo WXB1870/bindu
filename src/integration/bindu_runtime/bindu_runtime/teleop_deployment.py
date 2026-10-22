@@ -101,12 +101,14 @@ def load_deployment(path, share):
     return launch, result
 
 
-def apply_execution_tracking(config, mode='position', *, real, position_contract):
-    """Select nominal planning for the explicit impedance backend; keep guards."""
+def apply_execution_tracking(config, mode='position', *, real, position_contract,
+                             trajectory_reference=False):
+    """Pair accumulated planning with nominal error; measured guards stay active."""
     if mode not in ('position', 'impedance'):
         raise ValueError('SNOWBOT_EXECUTION_MODE')
-    if mode == 'position':
+    if mode == 'position' and not trajectory_reference:
         return config
     if not real or not position_contract or config.get('reference_kinematics') is not True:
-        raise ValueError('IMPEDANCE_REQUIRES_REAL_NOMINAL_KINEMATICS')
+        raise ValueError(('TRAJECTORY' if mode=='position' else 'IMPEDANCE')+
+                         '_REQUIRES_REAL_NOMINAL_KINEMATICS')
     return {**config, 'tracking_feedback': 'reference'}

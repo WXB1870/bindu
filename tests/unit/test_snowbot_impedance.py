@@ -32,6 +32,16 @@ class ImpedanceSelectionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'NOMINAL_KINEMATICS'):
             apply_execution_tracking({**self.config, 'reference_kinematics': False}, 'impedance', real=True, position_contract=True)
 
+    def test_position_target_stream_pairs_accumulation_with_nominal_error(self):
+        selected=apply_execution_tracking(self.config,real=True,position_contract=True,
+                                          trajectory_reference=True)
+        self.assertEqual(selected['tracking_feedback'],'reference')
+        self.assertEqual({k:v for k,v in selected.items() if k!='tracking_feedback'},self.config)
+        self.assertNotIn('tracking_feedback',self.config)
+        with self.assertRaisesRegex(ValueError,'TRAJECTORY_REQUIRES_REAL_NOMINAL'):
+            apply_execution_tracking(dict(self.config,reference_kinematics=False),real=True,
+                                     position_contract=True,trajectory_reference=True)
+
     def test_real_sixteen_axis_nominal_config_runs_native_qp(self):
         from bindu_contracts.profile import Profile
         from bindu_kinematics.bimanual import BimanualQP

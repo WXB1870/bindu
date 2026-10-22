@@ -181,6 +181,27 @@ class IndependentNativeTests(unittest.TestCase):
             solver.solve_independent(invalid,nominal,active_mask=1,reference=reference,dt=.01)
         self.assertFalse(solver.captured)
 
+    def test_target_stream_fixed_input_does_not_integrate_measured_offset(self):
+        from bindu_runtime.teleop_deployment import apply_execution_tracking
+        cfg=apply_execution_tracking(self.cfg,real=True,position_contract=True,trajectory_reference=True)
+        profile=Profile.load(ROOT/'src/integration/bindu_runtime/config/robots/snowbot/snowbot_real_position.json')
+        solver=BimanualQP(cfg,profile);self.addCleanup(solver.close)
+        solver.empty_collision_check=self.solver.empty_collision_check
+        for side in range(2):
+            targets=solver.capture_independent(self.feedback)
+            lagged=dict(self.feedback)
+            lagged[profile.groups[('left_arm','right_arm')[side]][0]]=-.04
+            reference=np.array([self.feedback[n] for n in solver.names])
+            initial=reference.copy()
+            for _ in range(30):
+                reference,_=solver.solve_independent(lagged,targets,active_mask=1<<side,
+                                                     reference=reference,dt=.02)
+            np.testing.assert_allclose(reference,initial,atol=1e-6)
+            targets[side,2,3]+=.005
+            moved,_=solver.solve_independent(lagged,targets,active_mask=1<<side,
+                                             reference=reference,dt=.02)
+            self.assertGreater(np.max(np.abs(np.array(moved)-reference)),1e-6)
+
     def test_tracking_timestep_collision_and_limits_are_enforced(self):
         poses=self.solver.capture_independent(self.feedback)
         with self.assertRaisesRegex(ValueError,'INTEGRATION_INTERVAL'):
