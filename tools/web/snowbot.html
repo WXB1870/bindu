@@ -417,6 +417,7 @@ function graspState(p,fresh){
 }
 function explainReason(reason){
   if(reasons[reason])return reasons[reason];
+  if((reason||'').includes('joint position outside hard limits'))return '实测关节位置超出本次配方的允许边界，接管已拒绝；请核对下方关节名、位置与范围。';
   if((reason||'').includes('PICO_AXIAL_GRASP_UNAVAILABLE'))return '夹爪尚未标定或未配置虚握开度。';
   if((reason||'').includes('PICO_GRASP_POSITION_CHANGED'))return '夹爪开度偏离当前握持方式，已停止跟随。';
   if((reason||'').includes('LEFT_GRIPPER_NOT_CLOSED')||(reason||'').includes('LEFT_NOT_CLOSED_STATIONARY'))return '左夹爪尚未闭合停稳，无法换握。';
@@ -431,7 +432,7 @@ function explainReason(reason){
   if((reason||'').includes('BIMANUAL_TOOL_TRANSFORM'))return '工具目标位姿未通过校验。';
   if((reason||'').includes('STOP_UNCONFIRMED'))return '控制器尚未确认机器人停稳。';
   if((reason||'').includes('LIMIT'))return '目标触发关节或工作范围限制。';
-  return reason?'状态说明尚未配置：'+reason:'等待状态更新。';
+  return reason?'执行检查未通过：'+reason:'等待状态更新。';
 }
 function prepareFailures(check){
   const labels={load_empty:check?.load_state==='held'?'当前已装载':'空手状态未确认',feedback_fresh:'关节反馈无效或过期',motion_stopped:'机器人尚未停稳',input_fresh:'手柄输入过期',left_squeeze_released:'左侧握未松开',right_squeeze_released:'右侧握未松开'};
