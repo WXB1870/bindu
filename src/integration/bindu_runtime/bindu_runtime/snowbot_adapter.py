@@ -260,9 +260,14 @@ class SnowbotAdapter(ExecutionNode):
         steady = engine.steady()
         if (signature != getattr(self, '_stop_check_signature', None) or
                 engine.stopping and steady-getattr(self, '_stop_check_at', 0.) >= .5):
+            try:
+                payload = json.dumps(data, separators=(',', ':'), allow_nan=False)
+            except (TypeError, ValueError) as exc:
+                self.get_logger().warn('STOP_CHECK_LOG_ERROR:'+str(exc), throttle_duration_sec=1.)
+                return  # Diagnostic encoding must not terminate the control loop.
             self._stop_check_signature, self._stop_check_at = signature, steady
             motion = engine.stopping[0] if engine.stopping else getattr(self, 'last_event', None)
-            self.event('STOP_CHECK', json.dumps(data, separators=(',', ':'), allow_nan=False),
+            self.event('STOP_CHECK', payload,
                        task_id=motion.task_id if motion else '',
                        command_id=motion.command_id if motion else '')
 

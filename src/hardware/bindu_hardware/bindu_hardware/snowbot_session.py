@@ -244,7 +244,7 @@ def stop_diagnostic(health, engine, now):
         max_position_error_rad=position_error, max_speed_rad_s=max_speed,
         position_error_basis='observed_hold_position',
         arrival_required=getattr(io, 'stop_requires_arrival', True),
-        reference_arrived=(len(errors)==len(names) and position_error < position_tolerance),
+        reference_arrived=bool(len(errors)==len(names) and position_error < position_tolerance),
         worst_position_joint=max(errors, key=errors.get) if errors else None,
         position_tolerance_rad=position_tolerance, velocity_tolerance_rad_s=velocity_tolerance,
         rest_window_required_s=getattr(io, 'stop_confirmation_window', 0.),

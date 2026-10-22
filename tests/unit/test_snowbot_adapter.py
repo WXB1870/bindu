@@ -707,9 +707,34 @@ class SnowbotStopDiagnosticTests(unittest.TestCase):
         self.assertEqual(json.loads(node.event.call_args.args[1])['reason'],self.engine.stop_fault)
         node.record_stop_check()
         self.assertEqual(node.event.call_count,4)
+        node.get_logger=Mock(return_value=Mock())
+        node._stop_check_signature=None
+        self.health.messages['servo']['operation_enabled_mask']=object()
+        node.record_stop_check()
+        node.get_logger().warn.assert_called_once()
+        self.assertEqual(node.event.call_count,4)
+        self.assertEqual(self.engine.stop_fault,'STOP_UNCONFIRMED:vendor_hold')
+        self.assertIsNone(node._stop_check_signature)
+        self.health.messages['servo']['operation_enabled_mask']=0xc7f7f
+        node.record_stop_check()
+        self.assertEqual(node.event.call_count,5)
 
 
 class SnowbotRosBindingTests(unittest.TestCase):
+    def test_stop_diagnostic_serializes_actual_ros_numeric_array_comparisons(self):
+        from snowbot_ctl_msgs.msg import PositionObservation
+        case=SnowbotStopDiagnosticTests();case.setUp()
+        # Fixed ROS float64 arrays produce NumPy scalars; list-only fixtures
+        # miss the numpy.bool result that previously killed record_stop_check.
+        case.obs.hold_position=PositionObservation().hold_position
+        for offset in (0., .038):
+            case.engine.feedback.positions[case.names[0]]=offset
+            result=case.diagnose(case.health,case.engine,case.now)
+            encoded=json.loads(json.dumps(result,allow_nan=False))
+            self.assertIs(type(result['reference_arrived']),bool)
+            self.assertEqual(encoded['reference_arrived'],offset==0.)
+            self.assertEqual(encoded['max_position_error_rad'],offset)
+
     def test_existing_adapter_tick_advances_session_before_engine_including_shutdown(self):
         # Load the production adapter with only its ROS base replaced; no node
         # or generated ROS messages are needed to verify the existing tick order.
