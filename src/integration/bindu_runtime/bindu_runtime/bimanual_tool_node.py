@@ -590,6 +590,7 @@ class BimanualToolNode(RuntimeNode):
                             trajectory_reference_deadline=None
                             trajectory_sample_at=None
                             self.event('BIMANUAL_CAPTURED',json.dumps({'tool_pose':value.tolist(),
+                                'measured_grasp_policy':self.cfg.get('measured_grasp_policy','enforce'),
                                 'feedback':work_feedback,
                                 'capture_reference':dict(zip(self.names,work_positions)),
                                 'capture_basis':'confirmed_hold' if work_reference is not None else 'measured',

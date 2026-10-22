@@ -34,6 +34,12 @@ class BimanualQP:
     def __init__(self, config, profile):
         self.cfg = config
         self.captured = False
+        # Explicit empty-hand test declaration; never relax the native relative
+        # task, joint/trajectory limits, tracking budget or collision checks.
+        self.measured_grasp_policy = config.get('measured_grasp_policy', 'enforce')
+        if (not isinstance(self.measured_grasp_policy, str) or
+                self.measured_grasp_policy not in ('enforce', 'unheld_test')):
+            raise ValueError('BIMANUAL_MEASURED_GRASP_POLICY')
         self.reference_kinematics = config.get('reference_kinematics', False)
         if type(self.reference_kinematics) is not bool:
             raise ValueError('BIMANUAL_REFERENCE_KINEMATICS_CONFIG')
@@ -393,7 +399,8 @@ class BimanualQP:
                 tool=np.empty((4,4),dtype=np.float64)
                 if not self.lib.bq_tool_pose(self.handle,self._ptr(q),self.nq,self._ptr(tool)):
                     raise ValueError('BIMANUAL_COLLISION_FK:'+self._error())
-                if self.expected_relative is not None and self.captured:
+                if (self.measured_grasp_policy == 'enforce' and
+                        self.expected_relative is not None and self.captured):
                     relative=np.empty((4,4),dtype=np.float64)
                     if not self.lib.bq_relative_pose(self.handle,self._ptr(q),self.nq,self._ptr(relative)):
                         raise ValueError('BIMANUAL_COLLISION_FK:'+self._error())
@@ -683,9 +690,10 @@ class BimanualQP:
                 actual = np.linalg.inv(self.tool) @ relative @ self.right_grip
                 distance = np.linalg.norm(actual[:3,3]-self.tool_grip[:3,3])
                 angle = math.acos(float(np.clip(actual[:3,2] @ self.tool_grip[:3,2],-1.,1.)))
-            if math.hypot(distance,angle) > self.cfg['max_relative_error']:
+            if (self.measured_grasp_policy == 'enforce' and
+                    math.hypot(distance,angle) > self.cfg['max_relative_error']):
                 raise ValueError('BIMANUAL_MEASURED_GRASP_ERROR')
-            if self.expected_relative is not None:
+            if self.measured_grasp_policy == 'enforce' and self.expected_relative is not None:
                 # Enforce the configured measured grip-point acceptance
                 # separately from CAD contact tolerance and mixed QP residuals.
                 point_error,angle=self._grip_error(relative)
