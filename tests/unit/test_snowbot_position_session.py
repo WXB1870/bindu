@@ -968,3 +968,88 @@ class TargetWireTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class DelayedFeedbackPauseTests(unittest.TestCase):
+    """Exercise stop-only admission with production checks and memory endpoints."""
+
+    def setUp(self):
+        from bindu_runtime.snowbot_position_session import PositionSessionDevices
+        self.fixture = TargetWireTests()
+        self.fixture.setUp()
+        self.d = self.fixture.d
+        self.d.envelopes = SourceEnvelope(11, self.d.node.now, target_stream=True)
+        self.d.node.count_publishers = lambda topic: int(topic == '/bindu/position/command')
+        self.d.receivers.update(arms='upper', middle='middle')
+        self.d.check_ready = lambda groups: PositionSessionDevices.check_ready(self.d, groups)
+        self.d.io.check_ready = self.d.check_ready
+
+    def delay_following(self):
+        packet = self.fixture.send()
+        self.d.io.targets = dict(self.fixture.target)
+        self.d.io.invalid = 'SNOWBOT_PDO_STALE'
+        self.fixture.rig.now += .06
+        self.fixture.rig.steady += .06
+        return packet
+
+    def test_delayed_feedback_blocks_following_but_sends_one_identified_pause(self):
+        original = self.delay_following()
+        with self.assertRaises(RuntimeError):
+            self.fixture.send('another-target')
+        # Revoking the motion must not manufacture a new source identity.
+        self.d.io.source_motion = None
+        self.d.io.stop()
+        pause = self.d.publishers['arms'].publish.call_args.args[0]
+        self.assertEqual(pause.meta.operation, 2)
+        for field in ('session', 'feedback_boot_id', 'middle_instance_id',
+                      'source_command_id', 'lease_id', 'epoch', 'profile_hash'):
+            self.assertEqual(getattr(pause.meta, field), getattr(original.meta, field))
+        self.assertEqual(pause.meta.sequence, original.meta.sequence + 1)
+        self.assertEqual(pause.meta.expires_at_ns - pause.meta.source_stamp_ns, 2_000_000_000)
+        self.assertFalse(self.d.io.stop_failures)
+        self.assertIsNone(self.d.io.confirmed_stop_targets())
+        count = self.d.publishers['arms'].publish.call_count
+        request = self.d.io.pause_request
+        for _ in range(5):
+            self.fixture.rig.now += .02
+            self.d.io.stop()
+        self.assertEqual(self.d.publishers['arms'].publish.call_count, count)
+        self.assertEqual(self.d.io.pause_request, request)
+
+    def test_pause_cannot_cross_boot_or_instance_change_or_missing_authority(self):
+        for changed in ('boot', 'servo', 'middle', 'sent'):
+            with self.subTest(changed=changed):
+                self.setUp()
+                self.delay_following()
+                if changed == 'boot':
+                    self.d.health.boot += 1
+                elif changed == 'sent':
+                    self.d.sent.clear()
+                else:
+                    self.d.health.states[changed][1].instance_id += 1
+                count = self.d.publishers['arms'].publish.call_count
+                self.d.io.stop()
+                self.assertEqual(self.d.publishers['arms'].publish.call_count, count)
+                self.assertEqual(set(self.d.io.stop_failures), CONTROL_GROUPS)
+                self.assertIsNone(self.d.io.confirmed_stop_targets())
+
+    def test_pause_retains_endpoint_and_competing_publisher_checks(self):
+        for conflict in ('legacy', 'duplicate', 'endpoint'):
+            with self.subTest(conflict=conflict):
+                self.setUp()
+                self.delay_following()
+                if conflict == 'endpoint':
+                    self.d.identity.side_effect = RuntimeError('endpoint mismatch')
+                else:
+                    self.d.node.count_publishers = lambda topic: (
+                        2 if conflict == 'duplicate' and topic == '/bindu/position/command'
+                        else int(topic == '/bindu/position/command' or
+                                 (conflict == 'legacy' and topic == '/joint_position_cmd')))
+                count = self.d.publishers['arms'].publish.call_count
+                self.d.io.stop()
+                self.assertEqual(self.d.publishers['arms'].publish.call_count, count)
+                self.assertTrue(self.d.io.stop_failures)
+
+    def test_stop_without_owned_targets_does_not_publish_or_enable(self):
+        self.d.io.stop()
+        self.d.publishers['arms'].publish.assert_not_called()
