@@ -203,7 +203,7 @@ class FaultWindow:
                 writer=self.writer.status()))
             self.until = self.triggered_at = None
 
-    def update(self, health, now, payload=None):
+    def _advance(self, now):
         if not number(now):
             raise ValueError('PDO_WINDOW_CLOCK')
         if self.last_time is not None and now < self.last_time:
@@ -217,6 +217,30 @@ class FaultWindow:
             self._finish(self.until, True)
         while self.ring and self.ring[0][0] < now-self.before:
             self.ring.popleft()
+
+    def trigger(self, now, kind, *, restart=False, **details):
+        """Share one bounded window across bus faults and execution stops."""
+        self._advance(now)
+        if restart:
+            self._finish(now, self.until is not None and now >= self.until)
+        starting = self.until is None
+        if starting:
+            self.event += 1
+            self.frames = 0
+            self.triggered_at, self.until = now, now+self.after
+        self.writer.record('pdo-events', dict(kind=kind, event=self.event,
+            requested_before_s=self.before, requested_after_s=self.after,
+            available_before_s=now-self.ring[0][0] if self.ring else 0.,
+            history_evicted_at_capacity=self.evicted, stored_pre_samples=len(self.ring),
+            sample_hz=self.sample_hz, sampled_out=self.sampled_out, **details))
+        if starting:
+            for stamp, frame in self.ring:
+                self.writer.record('pdo-observation', dict(event=self.event, observed_monotonic=stamp, data=frame))
+                self.frames += 1
+        return starting
+
+    def update(self, health, now, payload=None):
+        self._advance(now)
         signature = (tuple(health['reasons']), health.get('boot_id'), health.get('wkc'),
                      health.get('expected_wkc'), health.get('valid_mask'), health.get('fault_mask'),
                      health.get('operation_enabled_mask'))
@@ -242,20 +266,7 @@ class FaultWindow:
         elif payload is not None:
             self.sampled_out += 1
         if changed and health['reasons']:
-            starting = self.until is None
-            if starting:
-                self.event += 1
-                self.frames = 0
-                self.triggered_at, self.until = now, now+self.after
-            self.writer.record('pdo-events', dict(kind='fault_transition', event=self.event, health=health,
-                requested_before_s=self.before, requested_after_s=self.after,
-                available_before_s=now-self.ring[0][0] if self.ring else 0.,
-                history_evicted_at_capacity=self.evicted, stored_pre_samples=len(self.ring),
-                sample_hz=self.sample_hz, sampled_out=self.sampled_out))
-            if starting:
-                for stamp, frame in self.ring:
-                    self.writer.record('pdo-observation', dict(event=self.event, observed_monotonic=stamp, data=frame))
-                    self.frames += 1
+            if self.trigger(now, 'fault_transition', health=health):
                 return
         if self.until is not None and retain:
             self.writer.record('pdo-observation', dict(event=self.event, observed_monotonic=now, data=self.ring[-1][1]))
@@ -273,6 +284,8 @@ class PdoObserver:
         self.window = FaultWindow(writer) if writer else None
         self.last_summary = None
         self.publishers, self.graph_checked = (), None
+        self.stop_signature = None
+        self.pause_command = None
         self.unavailable = ''
         try:
             from snowbot_ctl_msgs.msg import PositionObservation
@@ -332,6 +345,34 @@ class PdoObserver:
             self.writer.record('pdo-health', result)
             self.last_summary = steady
         return result
+
+    def execution(self, msg, steady):
+        """Execution errors need capture even when WKC and drives stay healthy."""
+        signature = (msg.instance_id, msg.command_id, msg.state, msg.code)
+        if signature == self.stop_signature:
+            return
+        self.stop_signature = signature
+        if self.window and (msg.state == 'STOPPING' or 'STOP_UNCONFIRMED' in msg.code):
+            self._capture_stop(steady, 'execution_stop', state=msg.state, code=msg.code,
+                               instance_id=msg.instance_id, command_id=msg.command_id)
+
+    def event(self, msg, steady):
+        if self.window and (msg.state in ('STOPPING', 'BIMANUAL_PAUSE_REQUESTED') or
+                            'STOP_UNCONFIRMED' in msg.code):
+            self._capture_stop(steady, 'execution_stop_event', state=msg.state, code=msg.code,
+                               command_id=msg.command_id, task_id=msg.task_id,
+                               component=msg.component,
+                               source_stamp_ns=msg.stamp.sec*1_000_000_000+msg.stamp.nanosec)
+
+    def _capture_stop(self, steady, kind, **details):
+        command = details['command_id']
+        new_pause = (details['state'] in ('STOPPING', 'BIMANUAL_PAUSE_REQUESTED') and
+                     bool(command) and command != self.pause_command)
+        if new_pause:
+            self.pause_command = command
+        # A new PAUSE needs its full post-window, even near the end of an old
+        # startup/fault window. Repeated reports of that stop never extend it.
+        self.window.trigger(steady, kind, restart=new_pause, **details)
 
     def close(self, steady):
         if self.window:

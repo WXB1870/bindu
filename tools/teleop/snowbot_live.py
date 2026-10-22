@@ -94,6 +94,7 @@ def observe(args, publish=None, stop=None):
     def execution(msg):
         latest.update(state=msg)
         if diagnostics:diagnostics.record('execution-state',msg,ros=True)
+        if pdo_observer:pdo_observer.execution(msg, time.monotonic())
     node.create_subscription(ExecutionState, ns+'/execution/state',execution,100)
     def pico(msg):
         try:
@@ -118,6 +119,7 @@ def observe(args, publish=None, stop=None):
                 msg.simulated != (args.runtime_mode == 'simulation')):
             return
         if diagnostics:diagnostics.record('runtime-events',msg,ros=True)
+        if pdo_observer:pdo_observer.event(msg, time.monotonic())
         if msg.state in ('BIMANUAL_CAPTURED','BIMANUAL_QP_RESULT'):
             try:
                 errors.event(msg.state,json.loads(msg.code),msg.task_id,

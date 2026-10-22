@@ -98,30 +98,42 @@ class SessionHealth:
         A trajectory impedance PAUSE adopts a fixed nominal reference and keeps
         its controller. Executor still requires measured position and rest.
         """
-        if request is None:
+        if self.hold_failure(request):
             return None
+        return dict(zip(CONTROL_NAMES, self.observation.hold_position))
+
+    def hold_failure(self, request):
+        """Explain the same ACK gate without changing state or publishing."""
+        if request is None:
+            return 'PAUSE_REQUEST_MISSING'
         try:
             self.require(CONTROL_GROUPS, acquiring=True)
-        except RuntimeError:
-            return None
+        except RuntimeError as exc:
+            return str(exc)
         obs = self.observation
         session, sequence, boot, baseline = request
-        if (obs.boot_id != boot or not obs.session_selected or obs.session != session or
-                obs.command_sequence != sequence or obs.session_reason not in (1, 2) or
-                not getattr(obs, 'hold_valid', False) or
-                not baseline <= obs.hold_sample < obs.pdo_sample):
-            return None
-        if self.reference_mode and (getattr(obs, 'reference_mode', 0) != 2 or
-                getattr(obs, 'segment_id', 0) != sequence or obs.session_reason != 1 or
-                getattr(obs, 'trajectory_phase', 0) != 4 or getattr(obs, 'hold_basis', -1) != 0 or
-                not getattr(obs, 'reference_valid', False) or not getattr(obs, 'output_valid', False)):
-            # Expiry/fault/revocation is not a successful PAUSE. The executor's
-            # original stop budget and measured-rest checks remain authoritative.
-            return None
+        checks = ((obs.boot_id == boot, 'BOOT_MISMATCH'),
+                  (obs.session_selected, 'SESSION_NOT_SELECTED'),
+                  (obs.session == session, 'SESSION_MISMATCH'),
+                  (obs.command_sequence == sequence, 'PAUSE_SEQUENCE_MISMATCH'),
+                  (obs.session_reason in (1, 2), 'PAUSE_REASON_INVALID'),
+                  (getattr(obs, 'hold_valid', False), 'HOLD_NOT_VALID'),
+                  (baseline <= obs.hold_sample < obs.pdo_sample, 'HOLD_SAMPLE_NOT_ADVANCED'))
+        if self.reference_mode:
+            checks += ((getattr(obs, 'reference_mode', 0) == 2, 'REFERENCE_MODE_MISMATCH'),
+                       (getattr(obs, 'segment_id', 0) == sequence, 'SEGMENT_ID_MISMATCH'),
+                       (obs.session_reason == 1, 'PAUSE_EXPIRED_OR_REVOKED'),
+                       (getattr(obs, 'trajectory_phase', 0) == 4, 'TRAJECTORY_NOT_PAUSED'),
+                       (getattr(obs, 'hold_basis', -1) == 0, 'HOLD_BASIS_MISMATCH'),
+                       (getattr(obs, 'reference_valid', False), 'REFERENCE_NOT_VALID'),
+                       (getattr(obs, 'output_valid', False), 'OUTPUT_NOT_VALID'))
+        for passed, reason in checks:
+            if not passed:
+                return reason
         values = obs.hold_position
         if len(values) != len(CONTROL_NAMES) or not all(math.isfinite(q) for q in values):
-            return None
-        return dict(zip(CONTROL_NAMES, values))
+            return 'HOLD_POSITION_INVALID'
+        return ''
 
     def require(self, groups, *, acquiring=False):
         if set(groups) != CONTROL_GROUPS:
@@ -171,6 +183,71 @@ class SessionHealth:
                 raise RuntimeError('SNOWBOT_IMPEDANCE_SENSOR_INVALID')
         if obs.session_reason >= 2 and not acquiring:
             raise RuntimeError('SNOWBOT_SESSION_STOPPED:'+str(obs.session_reason))
+
+
+def stop_diagnostic(health, engine, now):
+    """Read-only stop-gate evidence, separate from any acceptance decision."""
+    if not engine.stopping and not engine.stop_fault:
+        return None
+    io, fb, obs = engine.io, engine.feedback, health.observation
+    request = getattr(io, 'pause_request', None)
+    session, sequence, boot, baseline = request or (None, None, None, None)
+    ack_reason = health.hold_failure(request)
+    names = tuple(engine.reference_names) or CONTROL_NAMES
+    tolerance = engine.profile.feedback_tolerances
+    position_tolerance = tolerance.get('joint_position', 1e-5)
+    velocity_tolerance = tolerance.get('joint_velocity', .01)
+    hold = getattr(obs, 'hold_position', ())
+    targets = dict(zip(CONTROL_NAMES, hold)) if len(hold) == len(CONTROL_NAMES) else {}
+    errors = {n: abs(fb.positions[n]-targets[n]) for n in names
+              if n in fb.positions and n in targets and math.isfinite(fb.positions[n]) and
+              math.isfinite(targets[n])}
+    speeds = {n: abs(fb.joint_velocities[n]) for n in names
+              if n in fb.joint_velocities and math.isfinite(fb.joint_velocities[n])}
+    position_error = max(errors.values()) if errors else None
+    max_speed = max(speeds.values()) if speeds else None
+    fresh = fb.stamp > io.stop_requested_at and 0 <= now-fb.stamp <= .2
+    steady = engine.steady()
+    reason = ack_reason
+    if not reason:
+        if any(not engine.profile.limits[n][0] <= q <= engine.profile.limits[n][1]
+               for n, q in targets.items()):
+            reason = 'HOLD_OUTSIDE_LIMITS'
+        elif getattr(io, 'pause_targets', None) is not None and targets != io.pause_targets:
+            reason = 'HOLD_POINT_CHANGED'
+        elif not fresh:
+            reason = 'STOP_FEEDBACK_NOT_FRESH'
+        elif len(errors) != len(names) or len(speeds) != len(names):
+            reason = 'STOP_FEEDBACK_INCOMPLETE'
+        elif position_error >= position_tolerance:
+            reason = 'STOP_POSITION_ERROR'
+        elif max_speed > velocity_tolerance:
+            reason = 'STOP_SPEED_NOT_ZERO'
+        else:
+            reason = 'WAIT_REST_WINDOW' if getattr(io, 'stop_confirmation_window', 0.) else 'WAIT_EXECUTOR'
+    if engine.stop_fault:
+        reason = engine.stop_fault
+    elif now >= engine.stop_deadline or steady >= engine.stop_steady_deadline:
+        reason = 'STOP_BUDGET_EXPIRED'
+    window = getattr(engine, 'stop_rest_window', None)
+    return dict(reason=reason, ack_reason=ack_reason, session=session, sequence=sequence,
+        boot_id=boot, baseline_sample=baseline,
+        observed={key:getattr(obs, key, None) for key in ('boot_id', 'pdo_sample', 'session',
+            'command_sequence', 'session_reason', 'session_selected', 'hold_valid', 'hold_sample',
+            'hold_basis', 'trajectory_phase', 'reference_valid', 'output_valid',
+            'wkc', 'expected_wkc', 'valid_mask', 'pdo_age')},
+        controlled_mask=CONTROL_MASK,
+        operation_enabled_mask=health.messages['servo'].get('operation_enabled_mask'),
+        stop_requested_at=io.stop_requested_at, feedback_stamp=fb.stamp, feedback_fresh=fresh,
+        stop_deadline=engine.stop_deadline, remaining_ros_s=engine.stop_deadline-now,
+        remaining_steady_s=engine.stop_steady_deadline-steady,
+        max_position_error_rad=position_error, max_speed_rad_s=max_speed,
+        position_error_basis='observed_hold_position',
+        worst_position_joint=max(errors, key=errors.get) if errors else None,
+        position_tolerance_rad=position_tolerance, velocity_tolerance_rad_s=velocity_tolerance,
+        rest_window_required_s=getattr(io, 'stop_confirmation_window', 0.),
+        rest_window_elapsed_s=max(0., steady-window[0]) if window else None,
+        stop_failures=list(io.stop_failures))
 
 
 class SourceEnvelope:

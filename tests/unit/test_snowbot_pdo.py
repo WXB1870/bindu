@@ -307,8 +307,94 @@ class FaultWindowTests(unittest.TestCase):
             window.update(self.good,tick*.001,dict(seq=tick,observation=fields))
         self.assertEqual([frame['seq'] for _,frame in window.ring],[0,1,2])
 
+    def test_healthy_pause_after_startup_window_saves_history_without_extending_on_repeats(self):
+        window=FaultWindow(self.writer,before=2.,after=3.)
+        window.update(self.bad,0.,dict(seq=0))
+        for t in (1.,2.,3.,30.,31.,32.):window.update(self.good,t,dict(seq=t))
+        self.assertIsNone(window.until)
+        self.assertTrue(window.trigger(32.,'execution_stop',command_id='pause'))
+        deadline=window.until
+        self.assertFalse(window.trigger(34.,'execution_stop_event',code='STOP_UNCONFIRMED'))
+        self.assertEqual(window.until,deadline)
+        for t in (34.,35.,35.1):window.update(self.good,t,dict(seq=t))
+        rows=[r for r in self.records('pdo-observation') if r['event']==2]
+        self.assertEqual([r['data']['seq'] for r in rows],[30.,31.,32.,34.,35.])
+        self.assertEqual(len({r['observed_monotonic'] for r in rows}),len(rows))
+        self.assertTrue(self.records('pdo-events')[-1]['complete_time_window'])
+
+    def test_external_trigger_preserves_missing_feedback_and_clock_reversal_evidence(self):
+        self.window.update(self.good,5.,dict(seq=5))
+        self.window.trigger(5.1,'execution_stop')
+        self.window.trigger(1.,'execution_stop')
+        events=self.records('pdo-events')
+        self.assertFalse(events[1]['complete_time_window'])
+        self.assertEqual(events[-1]['stored_pre_samples'],0)
+        self.assertEqual(self.window.event,2)
+        self.window.close(1.2)
+        self.assertFalse(self.records('pdo-events')[-1]['complete_time_window'])
+
 
 class ObserverTests(unittest.TestCase):
+    def test_new_stop_near_end_of_an_old_window_receives_its_full_post_window(self):
+        observer=PdoObserver.__new__(PdoObserver)
+        observer.window=FaultWindow(Writer(),before=2.,after=3.)
+        observer.pause_command=observer.stop_signature=None
+        observer.window.update(dict(reasons=['STARTUP']),0.,dict(seq=0))
+        observer.window.update(dict(reasons=[]),2.9,dict(seq=1))
+        state=S(instance_id='adapter',command_id='pause-1',state='STOPPING',code='CANCELED')
+        observer.execution(state,2.9)
+        self.assertAlmostEqual(observer.window.until,5.9)
+        observer.event(S(state='STOPPING',code='CANCELED',command_id='pause-1',task_id='',
+                         component='execution',stamp=S(sec=10,nanosec=0)),3.)
+        self.assertAlmostEqual(observer.window.until,5.9)
+        observer.execution(S(**dict(vars(state),command_id='pause-2')),5.8)
+        self.assertAlmostEqual(observer.window.until,8.8)
+        self.assertEqual(observer.window.event,3)
+        observer.execution(S(**dict(vars(state),command_id='pause-3')),8.8)
+        ends=[value for stream,value in observer.window.writer.records
+              if stream=='pdo-events' and value['kind']=='window_end']
+        self.assertTrue(ends[-1]['complete_time_window'])
+
+    def test_healthy_stop_events_capture_actual_payloads_and_terminal_state_without_commands(self):
+        with tempfile.TemporaryDirectory() as directory:
+            writer=DiagnosticWriter(Path(directory)/'diagnostics.jsonl')
+            callbacks=[]
+            node=S(create_subscription=lambda *args:callbacks.append(args),
+                   get_publishers_info_by_topic=lambda topic:[S(node_namespace='/',node_name='servo_node',
+                       topic_type='snowbot_ctl_msgs/msg/PositionObservation')])
+            with patch.dict('sys.modules',{'snowbot_ctl_msgs':S(),
+                    'snowbot_ctl_msgs.msg':S(PositionObservation=object),
+                    'rclpy.qos':S(qos_profile_sensor_data=object())}):
+                observer=PdoObserver(node,writer)
+            for tick in range(4):
+                raw=frame(sample=tick+1,stamp=10.+tick*.01,status=[0x27]*20)
+                raw.pop('stamp')
+                msg=S(header=S(stamp=S(sec=10,nanosec=tick*10_000_000)),
+                      session=8,command_sequence=12,hold_valid=tick>1,hold_sample=1,
+                      hold_position=[.3]*16,**raw)
+                with patch('time.time',return_value=10.+tick*.01+.001),\
+                        patch('time.monotonic',return_value=1.+tick*.01):
+                    observer.receive(msg)
+                if tick==1:
+                    state=S(instance_id='adapter',command_id='pause',state='STOPPING',code='CANCELED')
+                    observer.execution(state,1.011)
+                    observer.execution(state,1.012)  # Repeated execution state is not a new trigger.
+                    observer.event(S(state='STOPPING',code='CANCELED',command_id='pause',task_id='task',
+                                     component='execution',stamp=S(sec=10,nanosec=10_000_000)),1.013)
+            observer.execution(S(instance_id='adapter',command_id='pause',state='FAILED',
+                                 code='STOP_UNCONFIRMED:vendor_hold'),1.04)
+            observer.close(1.05);writer.close()
+            rows=[json.loads(line)['data'] for line in (Path(directory)/'pdo-observation.jsonl').read_text().splitlines()]
+            self.assertEqual([r['data']['observation']['pdo_sample'] for r in rows],[1,2,3,4])
+            self.assertEqual([r['data']['observation']['hold_valid'] for r in rows],[False,False,True,True])
+            events=[json.loads(line)['data'] for line in (Path(directory)/'pdo-events.jsonl').read_text().splitlines()]
+            self.assertEqual([e['kind'] for e in events],
+                             ['execution_stop','execution_stop_event','execution_stop','window_end'])
+            self.assertEqual({e['event'] for e in events},{1})
+            self.assertFalse(events[-1]['complete_time_window'])
+            self.assertEqual(len(callbacks),1)  # No publishers, enables or device access.
+            self.assertEqual(writer.status()['dropped'],0)
+
     def test_fault_window_keeps_hold_force_and_receive_times_in_the_same_observation(self):
         with tempfile.TemporaryDirectory() as directory:
             writer = DiagnosticWriter(Path(directory)/'diagnostics.jsonl')

@@ -581,6 +581,125 @@ class SnowbotAdapterTests(unittest.TestCase):
         self.assertEqual(transport.io.invalid, 'SNOWBOT_FEEDBACK_PUBLISHER_IDENTITY')
 
 
+class SnowbotStopDiagnosticTests(unittest.TestCase):
+    def setUp(self):
+        from bindu_hardware.snowbot_session import CONTROL_NAMES, SessionHealth, stop_diagnostic
+        self.diagnose=stop_diagnostic
+        self.names=CONTROL_NAMES
+        self.now,self.steady=10.,1.
+        self.health=SessionHealth(lambda:self.now,lambda:self.steady,reference_mode=2)
+        self.obs=S(boot_id=1,pdo_sample=0,pdo_age=.001,wkc=67,expected_wkc=67,valid_mask=0xfffff,
+            position=[0.]*20,speed=[0.]*20,current=[0.]*20,status=[0x27]*20,
+            session=7,command_sequence=12,session_selected=True,session_reason=1,
+            hold_valid=True,hold_sample=1,hold_position=[0.]*16,reference_mode=2,
+            segment_id=12,trajectory_phase=4,hold_basis=0,reference_valid=True,output_valid=True)
+        self.feed();self.feed()
+        self.io=S(pause_request=(7,12,1,1),pause_targets=None,stop_requested_at=10.,
+                  stop_confirmation_window=.1,stop_failures=())
+        self.engine=S(io=self.io,stopping=(S(task_id='task',command_id='motion'),'CANCELED'),stop_fault='',
+            feedback=S(stamp=self.now,positions=dict.fromkeys(self.names,0.),
+                       joint_velocities=dict.fromkeys(self.names,0.)),reference_names=self.names,
+            profile=S(limits=dict.fromkeys(self.names,(-1.,1.)),
+                      feedback_tolerances={'joint_position':.002,'joint_velocity':.01}),
+            stop_deadline=15.,stop_steady_deadline=6.,steady=lambda:self.steady,stop_rest_window=None)
+
+    def feed(self):
+        self.now=round(self.now+.01,6);self.steady=round(self.steady+.01,6)
+        header=S(stamp=S(sec=int(self.now),nanosec=round((self.now-int(self.now))*1e9)))
+        for layer in ('upper','middle','servo'):
+            self.health.state(layer,S(header=header,layer=layer,startup_complete=True,feedback_ready=True,
+                instance_id=1,control_source='topic' if layer=='upper' else 'position',
+                stop_policy='disable_no_load',wire_version=4,reference_mode=2))
+        self.obs.header=header;self.obs.pdo_sample+=1
+        self.health.observe(self.obs)
+
+    def test_hold_rejections_use_the_same_predicates_as_acceptance(self):
+        request=self.io.pause_request
+        self.assertEqual(self.health.hold_failure(request),'')
+        self.assertEqual(self.health.confirmed_hold(request),dict.fromkeys(self.names,0.))
+        for field,value,reason in (('boot_id',9,'BOOT_MISMATCH'),
+                ('session_selected',False,'SESSION_NOT_SELECTED'),('session',8,'SESSION_MISMATCH'),
+                ('command_sequence',13,'PAUSE_SEQUENCE_MISMATCH'),('hold_valid',False,'HOLD_NOT_VALID'),
+                ('hold_sample',2,'HOLD_SAMPLE_NOT_ADVANCED'),('reference_mode',0,'REFERENCE_MODE_MISMATCH'),
+                ('segment_id',13,'SEGMENT_ID_MISMATCH'),('session_reason',2,'PAUSE_EXPIRED_OR_REVOKED'),
+                ('trajectory_phase',3,'TRAJECTORY_NOT_PAUSED'),('hold_basis',1,'HOLD_BASIS_MISMATCH'),
+                ('reference_valid',False,'REFERENCE_NOT_VALID'),('output_valid',False,'OUTPUT_NOT_VALID'),
+                ('hold_position',[float('nan')]*16,'HOLD_POSITION_INVALID')):
+            original=getattr(self.obs,field)
+            with self.subTest(field=field):
+                setattr(self.obs,field,value)
+                self.assertEqual(self.health.hold_failure(request),reason)
+                self.assertIsNone(self.health.confirmed_hold(request))
+            setattr(self.obs,field,original)
+        self.assertEqual(self.health.sample,2)
+        self.assertEqual(self.health.hold_failure(None),'PAUSE_REQUEST_MISSING')
+
+    def test_ack_gate_error_is_not_misreported_as_measured_position_error(self):
+        self.engine.feedback.positions[self.names[0]]=.0452061978
+        self.obs.command_sequence=13
+        result=self.diagnose(self.health,self.engine,self.now)
+        self.assertEqual(result['reason'],'PAUSE_SEQUENCE_MISMATCH')
+        self.assertAlmostEqual(result['max_position_error_rad'],.0452061978)
+        self.assertEqual(result['observed']['pdo_sample'],2)
+        self.obs.command_sequence=12
+        self.assertEqual(self.diagnose(self.health,self.engine,self.now)['reason'],'STOP_POSITION_ERROR')
+        self.engine.feedback.positions[self.names[0]]=0.
+        self.engine.feedback.joint_velocities[self.names[1]]=.02
+        self.assertEqual(self.diagnose(self.health,self.engine,self.now)['reason'],'STOP_SPEED_NOT_ZERO')
+        self.engine.feedback.joint_velocities[self.names[1]]=0.
+        self.assertEqual(self.diagnose(self.health,self.engine,self.now)['reason'],'WAIT_REST_WINDOW')
+        self.engine.feedback.stamp=9.
+        self.assertEqual(self.diagnose(self.health,self.engine,self.now)['reason'],'STOP_FEEDBACK_NOT_FRESH')
+        self.engine.stop_steady_deadline=self.steady
+        self.assertEqual(self.diagnose(self.health,self.engine,self.now)['reason'],'STOP_BUDGET_EXPIRED')
+
+    def test_missing_request_fault_and_lost_progress_stay_visible_without_authorizing_a_stop(self):
+        request=self.io.pause_request
+        self.io.pause_request=None
+        result=self.diagnose(self.health,self.engine,self.now)
+        self.assertEqual(result['reason'],'PAUSE_REQUEST_MISSING')
+        self.assertIsNone(result['sequence'])
+        self.io.pause_request=request
+        self.obs.status[0]=0x08
+        self.assertEqual(self.diagnose(self.health,self.engine,self.now)['ack_reason'],'SNOWBOT_DRIVE_FAULT')
+        self.obs.status[0]=0x27
+        self.health.progress=self.steady-.041
+        self.assertEqual(self.diagnose(self.health,self.engine,self.now)['ack_reason'],'SNOWBOT_PDO_NOT_ADVANCING')
+        self.assertIsNone(self.io.pause_targets)
+        self.assertTrue(self.engine.stopping)
+
+    def test_adapter_emits_changed_reasons_immediately_and_repeated_checks_at_most_twice_per_second(self):
+        class Base:pass
+        spec=importlib.util.spec_from_file_location('bindu_runtime._offline_stop_adapter',
+            ROOT/'src/integration/bindu_runtime/bindu_runtime/snowbot_adapter.py')
+        module=importlib.util.module_from_spec(spec)
+        with patch.dict(sys.modules,{'rcl_interfaces':S(),'rcl_interfaces.msg':S(ParameterDescriptor=object),
+                'bindu_runtime.execution_node':S(ExecutionNode=Base,run_execution=lambda _:None)}):
+            spec.loader.exec_module(module)
+        node=module.SnowbotAdapter.__new__(module.SnowbotAdapter)
+        node.engine=self.engine;node.snowbot_devices=S(health=self.health)
+        node.now=lambda:self.now;node.event=Mock()
+        node.record_stop_check()
+        for _ in range(51):
+            self.feed();self.engine.feedback.stamp=self.now
+            node.record_stop_check()
+        self.assertEqual(node.event.call_count,2)
+        self.obs.hold_valid=False
+        node.record_stop_check()
+        self.assertEqual(node.event.call_count,3)
+        result=json.loads(node.event.call_args.args[1])
+        self.assertEqual(result['ack_reason'],'HOLD_NOT_VALID')
+        self.assertEqual((result['session'],result['sequence'],result['boot_id']),(7,12,1))
+        self.assertEqual(self.io.pause_targets,None)
+        self.assertEqual(self.engine.stop_deadline,15.)
+        self.assertEqual(self.engine.stopping[1],'CANCELED')
+        self.engine.stopping=None;self.engine.stop_fault='STOP_UNCONFIRMED:vendor_hold'
+        node.record_stop_check()
+        self.assertEqual(json.loads(node.event.call_args.args[1])['reason'],self.engine.stop_fault)
+        node.record_stop_check()
+        self.assertEqual(node.event.call_count,4)
+
+
 class SnowbotRosBindingTests(unittest.TestCase):
     def test_existing_adapter_tick_advances_session_before_engine_including_shutdown(self):
         # Load the production adapter with only its ROS base replaced; no node

@@ -38,13 +38,15 @@ ros2 run bindu_runtime recorder --ros-args -r __ns:=/bindu_sim \
 
 腰臂轨迹沿用现有记录链路：`execution/accepted`完整保存`MotionCommand`的目标、关节顺序、原时间和有效期；`execution/state`完整保存执行参考、实测、来源时间及命令／任务身份；`events`完整保存`RuntimeEvent`。节点按消息字段自动序列化，无需为轨迹或可选阻抗重复定义一套日志消息。`ExecutionState.reference`表示该执行层发布的参考，不能据此认定为servo当前生效参考或最终硬件输出。
 
-Snowbot补充PDO观察由非实时显示进程中的`PdoObserver`接收，经已有`FaultWindow`与`DiagnosticWriter`保存故障前后窗口。窗口保留同一消息的`boot_id`／`pdo_sample`、会话／命令序号、实测、固定保持回执，以及可选的`wrench`／`sensor_valid_mask`／`sensor_data_no`／`sensor_age`；缺失字段保持缺失，数值不由日志端补齐或推算。`received_ros`／`received_monotonic`是观察进程的接收时间，消息`header.stamp`（保存为`stamp`）是发布时刻，`pdo_age`及各臂`sensor_age`保留源端报告的采样年龄。窗口落盘外层的接收时间可以晚于原接收时间，不能将它当成设备采样时间。PDO号推进、接收帧率及写入无丢弃均不能证明力样本完整或现场标定正确。
+Snowbot补充PDO观察由非实时显示进程中的`PdoObserver`接收，经已有`FaultWindow`与`DiagnosticWriter`保存故障及停止前后窗口。总线健康时，执行状态或事件中的`STOPPING`、显式暂停请求和`STOP_UNCONFIRMED`也触发采集。窗口保留同一消息的`boot_id`／`pdo_sample`、会话／命令序号、实测、固定保持回执，以及可选的`wrench`／`sensor_valid_mask`／`sensor_data_no`／`sensor_age`；缺失字段保持缺失，数值不由日志端补齐或推算。`received_ros`／`received_monotonic`是观察进程的接收时间，消息`header.stamp`（保存为`stamp`）是发布时刻，`pdo_age`及各臂`sensor_age`保留源端报告的采样年龄。窗口落盘外层的接收时间可以晚于原接收时间，不能将它当成设备采样时间。PDO号推进、接收帧率及写入无丢弃均不能证明力样本完整或现场标定正确。
 
 观察端还可按原值复制消息存在时的`reference_mode`／`segment_id`／`sample_time_ns`、`reference_position/speed/acceleration[16]`及`output_position/speed/torque/kp/kd[16]`／`output_valid`，仅随上述选中窗口落盘。数组顺序、单位、源时钟和“最终输出”的实际含义以servo消息及写入点为准；未生成对应消息字段或未完成servo接入时，这些数据不会出现，不能用上层参考或实测替代。`q_goal`由原接纳命令记录；接入侧须另在现有接纳事件或段元数据中建立`command_id`与`session/command_sequence/segment_id`、租约／epoch和原期限的映射，观察端不按时间接近推断对应关系。
 
+停止期间，适配器在现有执行循环旁路发布`STOP_CHECK`，沿用`runtime-events.jsonl`保存。保持回执检查与实际接纳共用判据，记录首个未通过原因、请求／观察的boot与会话序号、PDO号、使能掩码、反馈时间、误差／速度与阈值、停稳窗口及原停止预算余量。回执未通过时仍可报告观察到的保持点误差，但`ack_reason`明确阻塞在回执校验，不能据此改称位置误差导致停止失败。原因变化立即发布，停止等待中的重复原因每0.5秒最多一次，最终故障不周期刷屏；诊断不授予控制权、不续期、不改变停止或使能策略。
+
 这些队列只供ROS回调和非实时观察侧使用；Python的`put_nowait`仍包含锁，不能从PDO实时线程调用。servo只旁路复制固定大小快照，发布和日志在非实时侧完成；不因1000 Hz轨迹采样默认开启全程1000 Hz JSON记录。
 
-操作台诊断在入队／ROS序列化前采样：VR原始／投影输入按流和左右手分别最多10 Hz，执行／遥操／夹爪／模式状态及连续IK／QP诊断最多10 Hz，健康摘要1 Hz；按键边沿、接合／释放阈值、有效性及状态变化额外保留，已接纳命令与会话映射事件完整保留。PDO故障窗口默认100 Hz（状态变化额外保留），前10秒／后30秒、前窗容量1200帧；监视仍逐帧检查，抽样不会改变控制或健康判定。后台约每秒刷新，`sampled_out`与意外`dropped`分开报告，PDO抽样计数另见`log_sampled_out`。这些采样日志用于日常排查，不保证完整原始VR回放或逐周期分析；本节策略独立于`recording_mode`。
+操作台诊断在入队／ROS序列化前采样：VR原始／投影输入按流和左右手分别最多10 Hz，执行／遥操／夹爪／模式状态及连续IK／QP诊断最多10 Hz，健康摘要1 Hz；按键边沿、接合／释放阈值、有效性及状态变化额外保留，已接纳命令与会话映射事件完整保留。PDO故障／停止窗口默认100 Hz（状态变化额外保留），前10秒／后30秒、前窗容量1200帧；监视仍逐帧检查，抽样不会改变控制或健康判定。新命令的暂停重新开启完整后窗，同一次停止的重复状态／事件不延长窗口；重叠窗口按event及源PDO身份关联，原接收时间不变，退出时报告窗口是否完整。后台约每秒刷新，`sampled_out`与意外`dropped`分开报告，PDO抽样计数另见`log_sampled_out`。这些采样日志用于日常排查，不保证完整原始VR回放或逐周期分析；本节策略独立于`recording_mode`。
 
 真实Snowbot观察器还只读接收`/rosout`中`servo_node`／`dual_arm_control_node`／`robot_upperMonitor`及其子logger的WARN以上记录，保存到`rosout-log-events.jsonl`。订阅使用100深度、best-effort／volatile，不请求历史、不作为保护输入；只保证记录实际收到的消息，不能证明上游完整。相同logger／级别／调用点／原文首次立即入队，重复每5秒汇总观测次数与首末时间；不同电机、错误码及原文数值不合并，128键有界缓存，退出前结算，日志静默不判定故障恢复。独立终端的普通`printf`／`std::cerr`仍须另行保存，既往未保存内容无法补录。
 

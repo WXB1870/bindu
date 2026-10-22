@@ -1,4 +1,5 @@
 """Opt-in Snowbot execution endpoint; controller nodes are never launched here."""
+import json
 import secrets
 from rcl_interfaces.msg import ParameterDescriptor
 from bindu_execution.delegated_position import DelegatedPositionExecutor
@@ -231,8 +232,32 @@ class SnowbotAdapter(ExecutionNode):
         if advance is not None:
             advance()
         super().tick()
+        self.record_stop_check()
         if getattr(self, 'grippers', None) and self.grippers.core:
             self.grippers.tick()
+
+    def record_stop_check(self):
+        # Emit from the explicit non-RT loop, never from a health predicate.
+        devices = getattr(self, 'snowbot_devices', None)
+        health = getattr(devices, 'health', None)
+        engine = getattr(self, 'engine', None)
+        if engine is None or not hasattr(health, 'hold_failure'):
+            return
+        from bindu_hardware.snowbot_session import stop_diagnostic
+        data = stop_diagnostic(health, engine, self.now())
+        if data is None:
+            self._stop_check_signature = None
+            return
+        signature = (data['boot_id'], data['session'], data['sequence'], data['reason'],
+                     data['ack_reason'], tuple(data['stop_failures']))
+        steady = engine.steady()
+        if (signature != getattr(self, '_stop_check_signature', None) or
+                engine.stopping and steady-getattr(self, '_stop_check_at', 0.) >= .5):
+            self._stop_check_signature, self._stop_check_at = signature, steady
+            motion = engine.stopping[0] if engine.stopping else getattr(self, 'last_event', None)
+            self.event('STOP_CHECK', json.dumps(data, separators=(',', ':'), allow_nan=False),
+                       task_id=motion.task_id if motion else '',
+                       command_id=motion.command_id if motion else '')
 
     def shutdown_pending(self):
         return super().shutdown_pending() or self.grippers.stopping
