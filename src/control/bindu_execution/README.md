@@ -40,13 +40,20 @@ ros2 launch bindu_runtime skeleton.launch.py runtime_mode:=simulation recording_
 
 ## 扫雪位置执行
 
-- 当前统一Snowbot VR位置契约使用`DelegatedPositionExecutor`，直接交目标给选定位置设备；准备、普通双臂及扫雪共用该接口。它仅接纳非定时`joint_target`，不承诺通用曲线的导数或到达时间。滤波和插值的实际路径见[下表](#当前snowbot-vr链路的滤波与插值)。
+- 当前统一Snowbot VR位置契约使用`DelegatedPositionExecutor`，直接交目标给选定位置设备；准备、普通双臂及扫雪共用该接口。上层仅接纳非定时`joint_target`；具体设备协议决定是否在适配层准备曲线，不能仅凭上层命令类型推断底层算法。滤波和插值的实际路径见[下表](#当前snowbot-vr链路的滤波与插值)。
 - 旧`tool_pose`运动学装配仍可使用通用`Executor`及`snowbot_shovel_sim.json`的同步插值；该路径与当前统一位置契约分别由装配选择，不能按配置名称推断正在使用的算法。
 - 换握、暂停和取消依赖新鲜实测反馈确认停稳。反馈过期或速度未知不能报告已停稳，停止超时会锁存未确认状态并阻止新接管。
 
 PICO协调器管理准备、夹爪请求与控制权交接；旧模拟入口使用短参考段，统一位置配方使用直接位置目标及独立夹爪服务。操作资格、确认和停止规则统一见[工具操作契约](../../../动作执行契约.md#61-snowbot-工具操作与握持切换)。真实设备接口已适配，实体夹持、现场标定及真机效果仍待验收。
 
-两种执行路径由装配选择；上层不重复叠加底层已有的柔顺控制。场景与入口见[扫雪运行装配](../../integration/bindu_runtime/README.md#扫雪遥操作)，完整时间／停止规则见执行契约。
+真实位置设备的协议分支由运行装配显式选择：
+
+| 协议 | 曲线与参考职责 |
+|---|---|
+| `legacy_guard`／`session_v1` | 委托已有底层的位置跟随，不从通用执行器推定曲线导数或到达时间；仓库统一真机模板默认`session_v1` |
+| `session_v2` | 适配层复用`PreparedSegment`准备16轴联合曲线，与servo的`position_reference_mode=trajectory`配对；后台导入后按原控制循环采样，实际接纳回执才推进接续，重发及采样不延长源期限 |
+
+配置、动态限制及可选阻抗的配对条件在[运行装配](../../integration/bindu_runtime/README.md#扫雪遥操作)维护。两种执行路径由装配选择；上层不重复叠加底层已有的柔顺控制。场景与入口见[扫雪运行装配](../../integration/bindu_runtime/README.md#扫雪遥操作)，完整时间／停止规则见执行契约。
 
 ## 源码导航
 
@@ -154,6 +161,6 @@ python3 -m tools.analysis.compare_interpolators --legacy-root 历史代码/legs_
 | 手柄位姿滤波 | 共用Snowbot配方已启用One Euro；普通双臂分别滤波手柄，扫雪滤波合成中点／姿态。按键与时效使用原始输入，参数及重置规则见[遥操作模块](../../capabilities/bindu_teleoperation/README.md#vr-位姿-one-euro-滤波) |
 | 共享位置执行 | `DelegatedPositionExecutor.prepare_path`保留直接位置目标，不调用通用执行器的原生自适应／S曲线生成；profile中的`joint_target_interpolation=adaptive`不能据此证明此路径使用了自适应插值 |
 | 当前PhysX设备 | 腰与双臂共用一个限速向量进度，生成一致的位置／速度参考；实际关节由物理驱动跟随，头部与夹爪独立 |
-| 真实设备 | 上层同样委托位置设备负责插值／保持；底层实际使用的曲线、动态限制和同步性能需按现场源码、配置与实测核对 |
+| 真实设备 | `legacy_guard/session_v1`委托底层跟随；`session_v2`由适配层准备联合曲线并由servo采样，实际配置和同步性能仍需按现场记录与实测核对 |
 
-原有插值路径仍由通用`Executor`使用；新增`PreparedSegment`供联合轨迹的非实时准备与原生周期采样复用。具体装配是否替换底层Follower须按实际调用核对，不因本库接口存在就认定真实链路已接入。输入滤波保持独立。
+原有插值路径仍由通用`Executor`使用；`PreparedSegment`已供`session_v2`适配层的非实时准备复用，见[snowbot_position_session.py](../../integration/bindu_runtime/bindu_runtime/snowbot_position_session.py)。软件接入与现场已加载版本、真实周期及停止验收分别核对。输入滤波保持独立。

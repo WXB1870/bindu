@@ -65,9 +65,16 @@ bindu/
 | 数据记录 | [bindu_recording](src/data/bindu_recording/README.md) | 异步结构化记录、采样和记录健康状态 |
 | 运行装配 | [bindu_runtime](src/integration/bindu_runtime/README.md) | ROS 节点、launch、配置和模块装配 |
 
-公共说明：[软件架构](软件架构设计.md) · [动作执行契约](动作执行契约.md) · [运行与验证](运行与验证.md) · [配置分类](src/integration/bindu_runtime/README.md#配置目录)。
+## 文档阅读与维护
 
-现场接入差异及待修复项集中维护在[底层驱动问题记录](../../snowbot/底层驱动问题记录.md)。
+| 需要了解的内容 | 维护位置 |
+|---|---|
+| 模块职责、装配边界及尚未实现的设计 | [软件架构](软件架构设计.md)，具体实现见各模块 README |
+| 动作身份、时间、控制权、反馈与停止语义 | [动作执行契约](动作执行契约.md) |
+| 环境、构建、运行和验证步骤 | [运行与验证](运行与验证.md)；配置选择见[运行装配](src/integration/bindu_runtime/README.md#配置目录) |
+| Snowbot／118现场配方、问题与验收 | [Snowbot工作区](../../snowbot/README.md)及[底层驱动问题记录](../../snowbot/底层驱动问题记录.md) |
+
+主工作区另有本地的`项目上下文.md`、`当前进度.md`、`决策记录.md`与`过程记录/`，分别保存确认条件、当前状态、重要取舍和历史证据；它们不随Git分发，新克隆按本文、工程文档与源码使用。Snowbot链接指向独立本地工作区，未取得该目录时不影响阅读Bindu公共工程说明。
 
 ### 扫雪遥操作阅读路径
 

@@ -217,19 +217,19 @@ ros2 topic echo /bindu/servo_health
 
 ## 配置目录
 
-| 位置 | 数量 | 作用与适用范围 |
-|---|---|---|
-| [deployments/](config/deployments) | 6 | 选择节点、输入和后端；含默认只读的Snowbot真机最小配方 |
-| [robots/snowbot/](config/robots/snowbot) | 17 | 本体、位置执行、单／双臂、PICO及物理参数；真实接口与仿真分别维护，见下表 |
-| [robots/g1/](config/robots/g1) | 6 | 临时G1模型、执行限制、单／双臂及碰撞检查，均用于模拟验证 |
-| [robots/huawei_v34/](config/robots/huawei_v34) | 2 | 旧单臂模型的执行与遥操作模拟基线 |
-| [robots/wheel_gen2/](config/robots/wheel_gen2) | 3 | 二代位置映射、Airy雷达预适配及未补齐的本体描述 |
-| [navigation/](config/navigation) | 8 | LIO／定位算法参数、导航站点、仿真房间及传感器扰动；真机还需模型与标定 |
-| [vla/](config/vla) | 2 | Pi客户端及回环示例，真实模型服务待联调 |
-| [simulation/](config/simulation) | 1 | 通用模拟执行参数，用于接口与任务验证 |
-| [tests/config/](../../../tests/config) | 4 | 验证专用夹具，不安装到运行包，也不计入上述40份 |
+| 位置 | 作用与适用范围 |
+|---|---|
+| [deployments/](config/deployments) | 选择节点、输入和后端；含默认只读的Snowbot真机最小配方 |
+| [robots/snowbot/](config/robots/snowbot) | 本体、位置执行、单／双臂、PICO及物理参数；真实接口与仿真分别维护，见下表 |
+| [robots/g1/](config/robots/g1) | 临时G1模型、执行限制、单／双臂及碰撞检查，均用于模拟验证 |
+| [robots/huawei_v34/](config/robots/huawei_v34) | 旧单臂模型的执行与遥操作模拟基线 |
+| [robots/wheel_gen2/](config/robots/wheel_gen2) | 二代位置映射、Airy雷达预适配及未补齐的本体描述 |
+| [navigation/](config/navigation) | LIO／定位算法参数、导航站点、仿真房间及传感器扰动；真机还需模型与标定 |
+| [vla/](config/vla) | Pi客户端及回环示例，真实模型服务待联调 |
+| [simulation/](config/simulation) | 通用模拟执行参数，用于接口与任务验证 |
+| [tests/config/](../../../tests/config) | 验证专用夹具，不安装到运行包 |
 
-**40份是随运行包安装的参数与示例，不代表40套真机配置。** Snowbot源位置接口保留`snowbot_vendor_position.json`，真机工具装配使用`snowbot_real_position.json`；二代的[position_mapping_wheel_gen2.json](config/robots/wheel_gen2/position_mapping_wheel_gen2.json)维护通道／单位／方向映射，[navigation_wheel_gen2_airy.json](config/robots/wheel_gen2/navigation_wheel_gen2_airy.json)尚缺基座系、外参与高度范围。`robot_wheel_gen2.json`的模型、profile及遥操作仍为空；`robot_snowbot.json`当前绑定仿真profile。真机位置链使用下表专用配方，完整PICO开合／虚握流程仍待实体适配。
+运行包中的配置包含参数与示例，不代表每份都可用于真机；新增配置按职责放入对应目录。Snowbot源位置接口保留`snowbot_vendor_position.json`，真机工具装配使用`snowbot_real_position.json`；二代的[position_mapping_wheel_gen2.json](config/robots/wheel_gen2/position_mapping_wheel_gen2.json)维护通道／单位／方向映射，[navigation_wheel_gen2_airy.json](config/robots/wheel_gen2/navigation_wheel_gen2_airy.json)尚缺基座系、外参与高度范围。`robot_wheel_gen2.json`的模型、profile及遥操作仍为空；`robot_snowbot.json`当前绑定仿真profile。真机位置链使用下表专用配方，完整PICO开合／虚握流程仍待实体适配。
 
 安装保持相同目录结构。旧`teleop_snowbot_deployment.json`并入`deployments/teleop_robot_deployment.json`，schema 1读取仍兼容；升级需重建运行包并更新外部脚本中的旧平铺路径。
 
@@ -252,7 +252,7 @@ ros2 topic echo /bindu/servo_health
 
 真实腰臂联合轨迹通过`position_protocol=session_v2`显式选择，须与servo只读参数`position_reference_mode=trajectory`配对，消息及全部使用方成套重建。适配器复用`PreparedSegment`准备16轴曲线，servo后台导入后在原控制循环采样，替换该分支的Follower；原身份与期限随片段透传，重发和采样不续期，收到实际接纳回执才推进接续。`ExecutionState.reference`来自有效servo采样的q／dq／ddq及采样时刻，缺失时为空，等待目标和实测分别保留。
 
-新分支逐轴取profile与`0.25 rad/s、0.5 rad/s²、162 rad/s³`的较小界，servo默认校验帽一致；PAUSE无法在原剩余期限内完成则拒绝／保持未确认。可选`execution_mode=impedance`还须配套含阻抗代码的底层及相同模式，复用原控制器，名义保持不代表实测停稳。仓库真实配方模板仍为`session_v1`、`position`、`command_enabled=false`，底层默认`follower`／`unconfirmed`；118现场覆盖配方已显式选择v2／trajectory，当前部署记录由Snowbot维护。接口的Ubuntu x86离线验证已完成；Orin、真实手柄、实机1 ms调度与持载停止仍待验收，场景版本和证据见[Snowbot修改目标](../../../../../snowbot/位置遥操作修改目标.md)。
+新分支逐轴取profile与`0.25 rad/s、0.5 rad/s²、162 rad/s³`的较小界，servo默认校验帽一致；PAUSE无法在原剩余期限内完成则拒绝／保持未确认。可选`execution_mode=impedance`还须配套含阻抗代码的底层及相同模式，复用原控制器，名义保持不代表实测停稳。仓库真实配方模板仍为`session_v1`、`position`、`command_enabled=false`，底层默认`follower`／`unconfirmed`；现场是否选择v2／trajectory及当前运行版本，以[Snowbot当前进度](../../../../../snowbot/当前进度.md)为准。接口的Ubuntu x86离线验证已完成；Orin、真实手柄到运动执行的整链路、实机1 ms周期与持载停止仍待验收，场景版本和证据见[Snowbot修改目标](../../../../../snowbot/位置遥操作修改目标.md)。
 
 ### 配套配置与流程
 
