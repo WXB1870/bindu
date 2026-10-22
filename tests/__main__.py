@@ -9,7 +9,7 @@ PICO_TESTS=('test_pico_control','test_pico_loading','test_pico_mapping','test_pi
 SUITES={
     'core':('test_interpolation','test_execution_fault_sequences','test_system_contracts','test_runtime_mode'),
     'pico':PICO_TESTS,
-    'vr':PICO_TESTS+('test_independent_arms','test_vr_timing','test_one_euro','test_teleoperation','test_teleop_modes',
+    'vr':PICO_TESTS+('test_independent_arms','test_vr_timing','test_bimanual_worker','test_one_euro','test_teleoperation','test_teleop_modes',
           'test_snowbot_adapter','test_snowbot_gripper','test_snowbot_physics','test_snowbot_isaac_io',
           'test_snowbot_position_session','test_snowbot_live','test_snowbot_errors','test_snowbot_diagnostics','test_snowbot_pdo','test_teleop_deployment'),
 }

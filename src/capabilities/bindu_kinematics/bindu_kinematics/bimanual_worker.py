@@ -131,13 +131,14 @@ class BimanualWorker:
         self.process=ctx.Process(target=_run,args=(config,profile,self.requests,self.results,preload_path_checks),daemon=True)
         self.ready=self.busy=False
         self.error=''
+        self.failure=''
         self.diagnostic=None
         self.submitted=0.
         self.started=time.monotonic()
         self.process.start()
 
     def submit(self,operation,token,feedback,target=None,*,reference=None,dt=None,grasp_mode='rigid',target_stamp=None):
-        if not self.ready or self.busy: return False
+        if self.failure or not self.ready or self.busy: return False
         self.requests.put_nowait((operation,token,feedback,target,reference,dt,grasp_mode,target_stamp))
         self.diagnostic=None
         self.busy=True
@@ -145,6 +146,15 @@ class BimanualWorker:
         return True
 
     def poll(self):
+        if getattr(self,'failure',''): raise RuntimeError(self.failure)
+        # This is a parent receipt budget, including queueing and scheduling.
+        # Draining a late result first would clear busy (or set ready) and
+        # erase the very deadline it must satisfy. A faulted worker requires
+        # explicit replacement; a late message cannot revive prior intent.
+        now=time.monotonic()
+        if ((self.busy and now-self.submitted > self.timeout) or
+                (not self.ready and now-self.started > self.startup_timeout)):
+            self._fail('BIMANUAL_WORKER_TIMEOUT')
         item=None
         for _ in range(2):
             try: kind,token,value=self.results.get_nowait()
@@ -155,12 +165,14 @@ class BimanualWorker:
             else:
                 self.busy=False
                 item=(kind,token,value)
-        if self.error: raise RuntimeError('BIMANUAL_WORKER_FAILED:'+self.error)
-        if not self.process.is_alive(): raise RuntimeError('BIMANUAL_WORKER_EXITED')
-        if ((self.busy and time.monotonic()-self.submitted > self.timeout) or
-                (not self.ready and time.monotonic()-self.started > self.startup_timeout)):
-            raise RuntimeError('BIMANUAL_WORKER_TIMEOUT')
+        if self.error: self._fail('BIMANUAL_WORKER_FAILED:'+self.error)
+        if not self.process.is_alive(): self._fail('BIMANUAL_WORKER_EXITED')
         return item
+
+    def _fail(self,code):
+        self.failure=code
+        self.ready=False
+        raise RuntimeError(code)
 
     def close(self):
         if self.process.is_alive(): self.process.terminate()

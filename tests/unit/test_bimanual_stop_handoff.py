@@ -54,6 +54,7 @@ class BimanualStopHandoff(unittest.IsolatedAsyncioTestCase):
 
     def state(self, revision, state='IDLE', **kw):
         data = dict(revision=revision, state=state, code='', stop_failures=[],
+            instance_id='executor-instance',
             lease_active=True, lease_epoch=3, profile_hash='profile', simulated=True,
             feedback_stamp=self.node.now(), reference=S(name=[]),
             joints=S(name=['a'], velocity=[0.]))
