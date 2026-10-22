@@ -450,11 +450,12 @@ function prepareFailures(check){
   const labels={load_empty:check?.load_state==='held'?'当前已装载':'空手状态未确认',feedback_fresh:'关节反馈无效或过期',motion_stopped:'机器人尚未停稳',input_fresh:'手柄输入过期',left_squeeze_released:'左侧握未松开',right_squeeze_released:'右侧握未松开'};
   return Object.entries(check?.checks||{}).filter(([,v])=>v===false).map(([k])=>labels[k]||k).join('；');
 }
-function operatorState(p,online,fresh,pcFresh,tracked){
+function operatorState(p,online,fresh,pcFresh,tracked,execution={}){
   const result={status:phases[p.phase]||'状态待确认',reason:explainReason(p.reason),next:'保持松握，等待控制条件确认。',key:'',tone:'warn'};
   if(!online)return {...result,status:'网页连接中断',reason:'未收到操作台服务的最新状态，画面可能保留末帧。',next:'保持松握，检查本机状态服务。',tone:'bad'};
   if(!fresh)return {...result,status:'关节反馈不可用',reason:'当前模型不能代表最新机器人姿态。',next:'保持松握，等待关节反馈恢复。',tone:'bad'};
   if(!pcFresh)return {...result,status:'遥操作状态未知',reason:'关节反馈已收到，PICO 控制状态未更新。',next:'保持松握，检查遥操作节点。',tone:'bad'};
+  if(execution.execution==='FAILED'&&execution.task_id==='startup_hold')return {...result,status:'启动接管失败',reason:'关节反馈正常；启动接管未完成，停止尚未确认。',next:'保持双侧握松开，排查控制会话接纳与停止确认；当前不能进入准备。',key:'',tone:'bad'};
   if(p.phase==='locked')return {...result,status:p.stop_confirmed===true?'已停止（锁定）':'停止未确认',next:p.stop_confirmed===true?'排除原因，松开双侧握后按 B 恢复待命。':'保持双侧握松开，等待停稳确认。',key:p.stop_confirmed===true?'B':'',tone:'bad'};
   if(p.idle_input_lost&&['standby','tool_standby','load_check'].includes(p.phase))return {...result,status:'等待手柄输入',reason:'手柄输入暂停，机器人已停稳，当前操作步骤已保留。',next:'保持松握，等待输入恢复后继续当前步骤。'};
   if(p.operator_guide?.title&&['standby','loading','load_check','gripper_control'].includes(p.phase))return {...result,status:p.operator_guide.title,reason:p.operator_guide.step==='retry'?explainReason(p.reason):result.reason,next:p.operator_guide.detail,key:p.operator_guide.key};
@@ -666,8 +667,8 @@ function render(data,online){
   renderControlMode(p,pcFresh);
   const rawAge=p.raw_input_age_s,vrFresh=pcFresh&&finite(rawAge)&&rawAge>=0&&rawAge<=.25;
   const tracked=vrFresh&&p.input_fresh===true&&p.raw_input_valid===true;
-  const state=operatorState(p,online,fresh,pcFresh,tracked);
-  badge('system-health',!online?'状态服务断连':!fresh?'反馈不可用':!pcFresh?'PICO 状态过期':p.phase==='locked'?'控制已锁定':tracked?'反馈在线':'等待手柄',!online||!fresh||!pcFresh?'bad':p.phase==='locked'?'warn':tracked?'good':'warn');
+  const state=operatorState(p,online,fresh,pcFresh,tracked,data);
+  badge('system-health',!online?'状态服务断连':!fresh?'反馈不可用':!pcFresh?'PICO 状态过期':p.phase==='locked'?'反馈正常 · 控制锁定':tracked?'反馈在线':'等待手柄',!online||!fresh||!pcFresh?'bad':p.phase==='locked'?'warn':tracked?'good':'warn');
   const modelLive=viewer&&meshConnected&&fresh&&modelMeshes>0&&data.model&&finite(data.model.updated_at)&&Math.max(0,data.server_time-data.model.updated_at)<=2;
   const modelPreview=data.model?.pose_source==='model_preview';
   badge('model-health',modelLive?'模型实时更新':meshConnected&&!modelMeshes?'场景加载中':meshConnected&&modelPreview?'静态模型预览':meshConnected?'模型保持末帧':'模型未连接',modelLive?'good':'warn');
@@ -687,7 +688,7 @@ function render(data,online){
   const load=pcFresh?p.load_state:null;const loadText=load==='held'?'已装载':load==='empty'?'未装载':'未知';
   const sources={configured_initial_state:'场景初始配置',simulation_scene:'场景状态',operator_declaration:'操作员声明',operator_empty_confirmation:'B 键确认空手',operator_support_confirmation:'B 键确认外部支撑',operator_load_confirmation:'B 键确认装卸完成',direct_gripper_open:'直接开爪后待确认',interrupted_loading:'装卸中断，需重新确认',unknown:'未确认'};
   text('load-source',pcFresh?sources[p.load_source]||p.load_source||'未确认':'—');
-  text('prepare-checks',pcFresh?(prepareFailures({checks:p.prepare_checks,load_state:p.load_state})||'条件已满足；长按 A 后检查执行'):'—');
+  text('prepare-checks',fresh&&data.stop_failures?.length?'关节反馈正常；控制接管／停止确认未通过，准备不可用。':pcFresh?(prepareFailures({checks:p.prepare_checks,load_state:p.load_state})||'条件已满足；长按 A 后检查执行'):'—');
   text('load',loadText);
   text('mapping-info',pcFresh&&Number.isFinite(p.position_scale)?`平移 ${p.position_scale} 倍，旋转 1∶1，${p.control_point==='individual_flange'?'左右末端各自相对':p.control_point==='grip_midpoint'?'双握点中点':'工具原点'}`:'—');
   text('grasp',grasp.current);

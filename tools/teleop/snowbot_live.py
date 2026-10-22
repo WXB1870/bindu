@@ -159,7 +159,7 @@ def observe(args, publish=None, stop=None):
             if msg is not None:
                 data.update(runtime_mode=msg.runtime_mode, device_backend=msg.device_backend,
                     feedback_stamp=msg.feedback_stamp.sec+msg.feedback_stamp.nanosec*1e-9,
-                    execution=msg.state, code=msg.code, instance_id=msg.instance_id,
+                    execution=msg.state, code=msg.code, task_id=msg.task_id, instance_id=msg.instance_id,
                     stop_failures=list(msg.stop_failures),
                     valid=(msg.simulated == (args.runtime_mode=='simulation') and msg.profile_hash == robot.profile.digest and
                            len(msg.joints.name) == len(msg.joints.position) and

@@ -1,10 +1,9 @@
 """Typed three-layer position sessions, using the independent PDO observation."""
-import secrets
 import json
 import math
 
 from bindu_hardware.snowbot import SnowbotIO, GROUPS
-from bindu_hardware.snowbot_session import CONTROL_GROUPS, CONTROL_NAMES, ROS_FEEDBACK_TIMEOUT_S, SessionHealth, SourceEnvelope
+from bindu_hardware.snowbot_session import CONTROL_GROUPS, CONTROL_NAMES, ROS_FEEDBACK_TIMEOUT_S, SessionHealth, SourceEnvelope, new_session_id
 
 
 def sampled_nominal_reference(state, names, epoch, now, max_age, *, wait_until=None, steady_now=None):
@@ -124,7 +123,7 @@ class PositionSessionDevices:
             ('head', 'servo_receiver_node', '/servo_node'))}
         self.health = SessionHealth(node.now, execution_mode=node.snowbot_execution_mode,
                                    reference_mode=getattr(node, 'snowbot_reference_mode', 0))
-        self.envelopes = SourceEnvelope(secrets.randbits(64) or 1, node.now,
+        self.envelopes = SourceEnvelope(new_session_id(node.now()), node.now,
                                        target_stream=self.health.reference_mode == 2)
         self.sent = {}
         self.target_instance = None
@@ -199,7 +198,7 @@ class PositionSessionDevices:
             session = msg.session if msg.state == 'accepted' else msg.rejected_session
             stamp = msg.header.stamp.sec*1_000_000_000+msg.header.stamp.nanosec
             if (msg.header.stamp.sec < 0 or not 0 <= msg.header.stamp.nanosec < 1_000_000_000 or
-                    msg.layer != 'servo' or msg.wire_version != 4 or msg.reference_mode != 2 or
+                    msg.layer != 'servo' or msg.wire_version != 5 or msg.reference_mode != 2 or
                     msg.state not in ('accepted', 'rejected') or msg.instance_id != instance or
                     msg.feedback_boot_id != self.health.boot or session != metadata['session'] or
                     not metadata['source_stamp_ns'] <= stamp < metadata['expires_at_ns'] or
@@ -313,7 +312,7 @@ class PositionSessionDevices:
             self.io.pause_targets and self.io.confirmed_stop_targets() == self.io.pause_targets)
 
     def new_session(self):
-        self.envelopes = SourceEnvelope(secrets.randbits(64) or 1, self.node.now,
+        self.envelopes = SourceEnvelope(new_session_id(self.node.now(), self.envelopes.session), self.node.now,
                                        target_stream=self.health.reference_mode == 2)
         self.io.source_motion = None
         self.sent = {}
@@ -346,7 +345,7 @@ class PositionSessionDevices:
                 report.instance_id == instance and getattr(report, 'session', 0) == metadata['session'] and
                 getattr(report, 'sequence', 0) == metadata['sequence'] and
                 metadata['source_stamp_ns'] <= stamp <= now_ns and
-                report.wire_version == 4 and report.reference_mode == 2 and
+                report.wire_version == 5 and report.reference_mode == 2 and
                 (receipt or report.selected and report.feedback_ready and report.startup_complete)):
             self.takeover_pending = None
 

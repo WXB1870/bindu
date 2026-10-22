@@ -168,8 +168,9 @@ class SessionHealth:
                 raise RuntimeError('SNOWBOT_STOP_POLICY_UNCONFIRMED')
             if layer == 'servo' and state.control_source != self.execution_mode:
                 raise RuntimeError('SNOWBOT_EXECUTION_MODE_CONFLICT:'+self.execution_mode)
-            if self.reference_mode and (getattr(state, 'wire_version', 0) != 4 or
-                    layer == 'servo' and getattr(state, 'reference_mode', 0) != self.reference_mode):
+            if getattr(state, 'wire_version', 0) != (5 if self.reference_mode else 3):
+                raise RuntimeError('SNOWBOT_SESSION_PROTOCOL_CONFLICT:'+layer)
+            if self.reference_mode and layer == 'servo' and getattr(state, 'reference_mode', 0) != self.reference_mode:
                 raise RuntimeError('SNOWBOT_TRAJECTORY_PROTOCOL_CONFLICT:'+layer)
         if self.execution_mode == 'impedance':
             # The optional vendor build places force data in this exact PDO sample.
@@ -250,6 +251,20 @@ def stop_diagnostic(health, engine, now):
         rest_window_required_s=getattr(io, 'stop_confirmation_window', 0.),
         rest_window_elapsed_s=max(0., steady-window[0]) if window else None,
         stop_failures=list(io.stop_failures))
+
+
+def new_session_id(now, previous=0):
+    """Ordered uint64 authority identity; time rollback never wraps/reuses it.
+
+    Across a source restart ROS time must advance past the receiver watermark;
+    otherwise admission fails closed. No receiver clock or TTL is rewritten.
+    """
+    if not math.isfinite(now) or now <= 0:
+        raise ValueError('SNOWBOT_SESSION_CLOCK_INVALID')
+    value = max(round(now*1e9), previous+1)
+    if value >= 1 << 64:
+        raise ValueError('SNOWBOT_SESSION_ID_EXHAUSTED')
+    return value
 
 
 class SourceEnvelope:

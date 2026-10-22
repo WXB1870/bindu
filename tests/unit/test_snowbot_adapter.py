@@ -609,7 +609,7 @@ class SnowbotStopDiagnosticTests(unittest.TestCase):
         for layer in ('upper','middle','servo'):
             self.health.state(layer,S(header=header,layer=layer,startup_complete=True,feedback_ready=True,
                 instance_id=1,control_source='topic' if layer=='upper' else 'position',
-                stop_policy='disable_no_load',wire_version=4,reference_mode=2))
+                stop_policy='disable_no_load',wire_version=5,reference_mode=2))
         self.obs.header=header;self.obs.pdo_sample+=1
         self.health.observe(self.obs)
 

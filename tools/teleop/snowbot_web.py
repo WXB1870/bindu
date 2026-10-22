@@ -41,7 +41,7 @@ def meshcat_urdf(source, output):
 def project_state(data, now, identity):
     """Do not let a recently read file make stale robot/input data look live."""
     from tools.teleop.snowbot_live import validate_state
-    result = {k:data.get(k) for k in ('run_id','written_at','feedback_stamp','execution','code')}
+    result = {k:data.get(k) for k in ('run_id','written_at','feedback_stamp','execution','code','task_id','stop_failures')}
     result.update(valid=False, pico_fresh=False, pico={}, server_time=now)
     result['diagnostics']=data.get('diagnostics',{})
     if identity.get('runtime_mode') == 'real' and identity.get('device_backend') == 'snowbot_vendor':

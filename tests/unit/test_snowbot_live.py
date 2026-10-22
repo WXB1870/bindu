@@ -10,6 +10,7 @@ import tempfile
 import unittest
 import subprocess
 import signal
+import shutil
 from types import SimpleNamespace as S
 from unittest.mock import patch
 
@@ -22,6 +23,28 @@ webspec.loader.exec_module(web)
 entryspec = importlib.util.spec_from_file_location('run_vr_sim', ROOT/'tools/teleop/run_vr.py')
 entry = importlib.util.module_from_spec(entryspec)
 entryspec.loader.exec_module(entry)
+
+
+class BrowserControlFailureTests(unittest.TestCase):
+    def test_startup_failure_feedback_loss_and_web_disconnect_have_separate_status(self):
+        node=shutil.which('node')
+        self.assertIsNotNone(node, 'Node is required for this browser logic check')
+        html=(ROOT/'tools/web/snowbot.html').read_text()
+        js=html[html.index('function operatorState('):html.index('for(const [side,name,keys]')]
+        code="const phases={};const explainReason=r=>r;\n"+js+"""
+const assert=require('node:assert/strict');
+const p={phase:'locked',reason:'PICO_STOP_UNCONFIRMED',stop_confirmed:false};
+const e={execution:'FAILED',task_id:'startup_hold'};
+let s=operatorState(p,true,true,true,true,e);
+assert.equal(s.status,'启动接管失败');assert.match(s.reason,/关节反馈正常/);assert.equal(s.key,'');
+assert.match(s.next,/不能进入准备/);
+assert.equal(operatorState(p,true,false,true,true,e).status,'关节反馈不可用');
+assert.equal(operatorState(p,false,true,true,true,e).status,'网页连接中断');
+assert.equal(operatorState(p,true,true,false,true,e).status,'遥操作状态未知');
+assert.equal(operatorState(p,true,true,true,true,{}).status,'停止未确认');
+"""
+        result=subprocess.run([node,'-e',code],capture_output=True,text=True)
+        self.assertEqual(result.returncode,0,result.stderr)
 
 
 class LiveFeedbackTests(unittest.TestCase):
@@ -86,10 +109,12 @@ class WebFeedbackTests(unittest.TestCase):
     def test_fresh_measured_pose_keeps_execution_fault_visible(self):
         p=dict(self.data['pico'],phase='locked',reason='PICO_STOP_UNCONFIRMED:vendor_hold',
                motion_stopped=False,stop_confirmed=False)
-        data=dict(self.data,execution='FAILED',code='STOP_UNCONFIRMED:vendor_hold',pico=p)
+        data=dict(self.data,execution='FAILED',task_id='startup_hold',stop_failures=['vendor_hold'],code='STOP_UNCONFIRMED:vendor_hold',pico=p)
         view=self.project(data)
         self.assertTrue(view['valid'])
         self.assertEqual(view['code'],'STOP_UNCONFIRMED:vendor_hold')
+        self.assertEqual(view['task_id'],'startup_hold')
+        self.assertEqual(view['stop_failures'],['vendor_hold'])
         self.assertEqual(view['pico']['reason'],p['reason'])
         self.assertFalse(view['pico']['stop_confirmed'])
         self.assertFalse(self.project(data,10.7)['valid'])
