@@ -14,6 +14,21 @@ from tests.support.pico import Rig
 
 
 class DirectGripperTests(unittest.TestCase):
+    def test_active_backend_updates_sides_without_canceling_its_token(self):
+        r=self.rig();r.triggers=[1.,0.];opened=r.step()[-1]
+        r.core.gripper_update_token=opened.token
+        r.stopped=False;r.triggers=[0.,0.]
+        self.assertEqual(r.step(),[])
+        self.assertEqual(r.core.pending.value,('closed',None))
+        r.triggers=[0.,1.]
+        self.assertEqual(r.step(),[])
+        self.assertEqual(r.core.pending.value,('closed','open'))
+        self.assertEqual(r.core.pending.token,opened.token)
+        # A real stop still fences the active worker and both channels.
+        r.grips=[1.,0.];stopped=r.step()[-1]
+        self.assertEqual(stopped.operation,'stop')
+        self.assertNotEqual(stopped.token,opened.token)
+
     def rig(self, load='unknown', mode='independent_arms'):
         r=Rig(load,guided=True,dual=True,direct=True)
         r.core.teleop_mode=mode

@@ -234,7 +234,9 @@ class GripperController:
         if (side not in SIDES or GROUPS[side] not in self.groups or
                 not (self.grasp_authorized and side == 'right' if grasp else self.authorized)):
             raise RuntimeError('GRIPPER_LOADING_NOT_AUTHORIZED')
-        if any(c['state'] == 'STOPPING' for c in self.channels.values()):
+        channels=(self.channels[side],) if self.direct_authorized else self.channels.values()
+        if any(c['state']=='STOPPING' and not
+                (self.direct_authorized and c['result']=='SUCCEEDED') for c in channels):
             raise RuntimeError('GRIPPER_STOPPING')
         if grasp:
             self.require_left_closed()

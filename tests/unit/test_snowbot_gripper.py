@@ -71,6 +71,20 @@ class Rig:
 
 
 class GripperTests(unittest.TestCase):
+    def test_direct_retarget_does_not_interrupt_other_channel_or_renew_its_budget(self):
+        r=Rig();r.acquire();r.command('authorize_direct')
+        r.command('close','left');left=dict(r.core.channels['left'])
+        r.command('open','right')
+        self.assertEqual(r.core.channels['left'],left)
+        r.core._hold('left','SUCCEEDED','POSITION_REACHED')
+        r.command('close','right')
+        self.assertEqual(r.core.channels['left']['state'],'STOPPING')
+        r.command('open','left')
+        self.assertEqual(r.core.channels['left']['state'],'MOVING')
+        r.core.stop('OPERATOR_STOP',revoke=False)
+        with self.assertRaisesRegex(RuntimeError,'NOT_AUTHORIZED'):
+            r.command('close','left')
+
     def setUp(self):
         self.r = Rig()
 
@@ -174,6 +188,7 @@ class GripperTests(unittest.TestCase):
             if code:
                 with self.assertRaisesRegex(RuntimeError,code):r.acquire()
         r.core.cfg['calibrated']=False
+        r.core.cfg['allow_uncalibrated_direct']=False
         with self.assertRaisesRegex(RuntimeError,'CALIBRATION'):r.acquire()
         r.core.cfg['calibrated']=True;r.idle=False
         with self.assertRaisesRegex(RuntimeError,'STOPPED_ARMS'):r.acquire()

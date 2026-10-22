@@ -118,32 +118,43 @@ class PositionOperations:
         for side in SIDES:
             self.reading(side)
         lease = await n.wait(self.leases.call_async(Lease.Request(operation='acquire',
-            owner=n.instance_id, resources=[GROUPS[s] for s in targets])))
+            owner=n.instance_id, resources=[GROUPS[s] for s in (SIDES if direct else targets)])))
         if not lease.ok:
             raise RuntimeError(lease.code)
         self.lease, self.sequence = lease, 0
         try:
             n.current(intent)
+            if direct:
+                n.control.gripper_update_token=intent.token
             await self.request('authorize_direct' if direct else 'authorize_loading', load_state=n.control.load,
                                external_support=False if direct else n.control.supported)
-            expected = {}
-            for side, mode in targets.items():
+            expected, sent_modes, renew_at = {}, {}, 0.
+            while True:
                 n.current(intent)
-                if mode not in ('open', 'closed'):
-                    raise RuntimeError('PICO_AXIAL_GRASP_UNAVAILABLE')
-                await self.request('open' if mode == 'open' else 'close', side)
-                expected[side] = self.config['grippers'][side][mode]
-            issued = n.now()
-            end, renew_at = time.monotonic()+self.config['motion_timeout']+1., 0.
-            while time.monotonic() < end:
-                n.current(intent)
-                states = [self.reading(s) for s in targets]
-                if any(s.state in ('FAILED','FAULT') for s in states):
+                states = {s:self.reading(s) for s in expected}
+                if any(s.state in ('FAILED','FAULT') for s in states.values()):
                     raise RuntimeError('PICO_GRIPPER_OPERATION_FAILED')
-                if all(s.position_reached and s.epoch == lease.epoch and s.control_sequence >= self.sequence and
-                       seconds(s.feedback_stamp) > issued and
-                       abs(s.measured_position-expected[s.side]) <= self.config['position_tolerance'] for s in states):
+                if direct:
+                    targets={s:m for s,m in zip(SIDES,n.control.pending.value) if m is not None}
+                for side, mode in targets.items():
+                    if sent_modes.get(side)==mode:
+                        continue
+                    n.current(intent)
+                    if mode not in ('open','closed'):
+                        raise RuntimeError('PICO_GRIPPER_TARGET_INVALID')
+                    await self.request('open' if mode=='open' else 'close',side)
+                    sent_modes[side]=mode
+                    expected[side]=(self.config['grippers'][side][mode],self.sequence,n.now(),
+                                    time.monotonic()+self.config['motion_timeout']+1.)
+                states={s:self.reading(s) for s in expected}
+                reached={side:(s.position_reached and s.epoch==lease.epoch and
+                    s.control_sequence>=expected[side][1] and seconds(s.feedback_stamp)>expected[side][2] and
+                    abs(s.measured_position-expected[side][0])<=self.config['position_tolerance'])
+                    for side,s in states.items()}
+                if reached and all(reached.values()):
                     return
+                if any(not reached[s] and time.monotonic()>=expected[s][3] for s in expected):
+                    raise RuntimeError('PICO_GRIPPER_FEEDBACK_TIMEOUT')
                 if time.monotonic() >= renew_at:
                     response = await n.wait(self.leases.call_async(Lease.Request(operation='renew',
                         lease_id=lease.lease_id, epoch=lease.epoch)))
@@ -151,8 +162,9 @@ class PositionOperations:
                         raise RuntimeError(response.code)
                     renew_at = time.monotonic()+.2
                 await n.pause()
-            raise RuntimeError('PICO_GRIPPER_FEEDBACK_TIMEOUT')
         finally:
+            if direct:
+                n.control.gripper_update_token=None
             await self.release()
 
     async def switch_grasp(self, intent):

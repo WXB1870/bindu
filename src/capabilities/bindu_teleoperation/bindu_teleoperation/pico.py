@@ -60,6 +60,7 @@ class PicoControl:
         self.pending = None
         self.desired = ['closed','closed']
         self.direct_grippers = direct_grippers
+        self.gripper_update_token = None
         self.manual_targets = [None,None]
         self.effects = []
         self.changed_at = float('-inf')
@@ -423,7 +424,13 @@ class PicoControl:
         self.supported=False
         if 'open' in targets and self.load=='held':
             self.load,self.load_source='unknown','direct_gripper_open'
-        self.emit('manual_grippers',tuple(targets))
+        if (self.pending and self.pending.operation=='manual_grippers' and
+                self.gripper_update_token==self.pending.token):
+            # The active backend owns both channels and updates only changed sides.
+            # Stops/mode changes still issue a new token and cancel this operation.
+            self.pending=PicoIntent(self.pending.token,'manual_grippers',tuple(targets))
+        else:
+            self.emit('manual_grippers',tuple(targets))
 
     def complete(self, token, success, reason='', now=0., *, rejected=False):
         if not self.pending or self.pending.token!=token:return False

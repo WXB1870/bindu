@@ -398,6 +398,7 @@ class BimanualToolNode(RuntimeNode):
         pending_reference=None
         trajectory_bootstrap=True
         trajectory_reference_deadline=None
+        trajectory_sample_at=None
         last_mode='idle'
         last_grasp_generation=0
         self.worker_result=None
@@ -448,9 +449,8 @@ class BimanualToolNode(RuntimeNode):
                         reply=pending.result()
                         if not reply.accepted: raise RuntimeError(reply.code)
                         submit_revision=max(submit_revision,reply.revision)
-                        if not self.trajectory_reference:
-                            reference.accept(*pending_reference)
-                        else:
+                        reference.accept(*pending_reference)
+                        if self.trajectory_reference:
                             trajectory_bootstrap=False
                             trajectory_reference_deadline=time.monotonic()+reference.max_sample_gap
                         self.event('BIMANUAL_SUBMIT_TIMING',json.dumps({
@@ -572,6 +572,7 @@ class BimanualToolNode(RuntimeNode):
                             reference.capture(work_positions,self.now())
                             trajectory_bootstrap=True
                             trajectory_reference_deadline=None
+                            trajectory_sample_at=None
                             self.event('BIMANUAL_CAPTURED',json.dumps({'tool_pose':value.tolist(),
                                 'feedback':work_feedback,
                                 'input_stamp':session.stamp,'input_seq':session.seq,'grasp_mode':session.grasp_mode,
@@ -612,7 +613,7 @@ class BimanualToolNode(RuntimeNode):
                                     'timing':geometry.get('timing') if geometry else None,
                                     'geometry_step':geometry if geometry and geometry['scale']<1. else None,
                                     'relative_error':None if isinstance(session,IndependentArmsSession) else metrics[1],
-                                    'relative_error_source':(('servo_reference' if self.trajectory_reference else 'accepted_reference') if self.cfg.get('reference_kinematics') else 'measured'),
+                                    'relative_error_source':('accepted_reference' if self.cfg.get('reference_kinematics') else 'measured'),
                                     'geometry_step_scale':geometry['scale'] if geometry else 1.,
                                     'teleop_mode':mode.mode,'recovery_scale':metrics[2],
                                     'input_stamp':work_stamp,'input_seq':work_seq,'integration_dt':work_dt,
@@ -661,12 +662,18 @@ class BimanualToolNode(RuntimeNode):
                             await self.pause()
                             continue
                         actual,actual_stamp=sample
-                        if actual_stamp<=reference.sampled_at or actual_stamp>=sampled_at:
+                        if (trajectory_sample_at is not None and actual_stamp<=trajectory_sample_at or
+                                actual_stamp>=sampled_at):
                             if time.monotonic()>=trajectory_reference_deadline:
                                 raise RuntimeError('SNOWBOT_TRAJECTORY_REFERENCE_NOT_ADVANCING')
                             await self.pause()
                             continue
-                        reference.accept(actual,actual_stamp)
+                        # Keep integrating from accepted goals. Replacing them with
+                        # the lagging servo sample each cycle erases planned progress
+                        # and makes each tiny target a new rest-to-rest move.
+                        # Still require fresh advancing, lease-bound servo feedback;
+                        # QP measured tracking/geometry and device limits stay active.
+                        trajectory_sample_at=actual_stamp
                         trajectory_reference_deadline=None
                     baseline,dt=reference.step(sampled_at) if operation=='solve' else (None,None)
                     if self.worker.submit(operation,worker_token,measured,session.target,
