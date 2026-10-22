@@ -61,6 +61,20 @@ class ShovelGeometryTests(unittest.TestCase):
         right=np.linalg.inv(np.array(self.config['right_to_tool']).reshape(4,4)) if right is None else right
         return dict(t=t,flanges={self.config['left_frame']:world @ left,self.config['right_frame']:world @ right})
 
+    def test_empty_online_scene_checks_robot_without_unused_distance_bounds(self):
+        from unittest.mock import patch
+        import coal as fcl
+        from bindu_kinematics import tool_geometry as geometry
+        recipe=copy.deepcopy(self.recipe);recipe.pop('receiving_bin',None)
+        check=geometry.make_collision_checker(self.urdf,recipe,tool_present=False,validation_only=True)
+        with (patch.object(fcl,'Transform3s',side_effect=AssertionError('unused distance poses')),
+                patch.object(pin,'computeCollisions',wraps=pin.computeCollisions) as compute):
+            self.assertTrue(check([self.sample])['validation_only'])
+            self.assertEqual(compute.call_count,1)
+        recipe['ground']['z_in_base_m']=0.
+        check=geometry.make_collision_checker(self.urdf,recipe,tool_present=False,validation_only=True)
+        with self.assertRaisesRegex(ValueError,'GROUND_SUPPORT_MISMATCH'):check([self.sample])
+
     def right_roll(self,angle):
         axis=np.array(self.config['right_axial_grasp']['axis_in_tool'])
         mount=np.array(self.config['right_to_tool']).reshape(4,4)

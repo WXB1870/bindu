@@ -204,6 +204,9 @@ class BimanualQP:
                 self.tool_grip[:3,3] = (np.linalg.inv(right_tool) @ np.r_[point,1.])[:3]
                 self.right_grip = right_tool @ self.tool_grip
             self.expected_relative = None
+            self.measured_rigid_grasp=config.get('grasp_reference_source','configured')=='measured_rigid'
+            if config.get('grasp_reference_source','configured') not in ('configured','measured_rigid'):
+                raise ValueError('BIMANUAL_GRASP_REFERENCE_SOURCE')
             if 'right_to_tool' in config:
                 right_tool = self._transform(config['right_to_tool'])
                 self.expected_relative = self.tool @ np.linalg.inv(right_tool)
@@ -289,6 +292,8 @@ class BimanualQP:
             raise ValueError('BIMANUAL_CLOSED')
         if grasp_mode not in ('rigid', 'right_axial') or grasp_mode == 'right_axial' and self.axial is None:
             raise ValueError('BIMANUAL_GRASP_MODE')
+        if self.measured_rigid_grasp and grasp_mode!='rigid':
+            raise ValueError('BIMANUAL_MEASURED_GRASP_REQUIRES_RIGID')
         q = self._q(feedback)
         measured = np.empty((4,4), dtype=np.float64)
         if not self.lib.bq_relative_pose(self.handle, self._ptr(q), self.nq, self._ptr(measured)):
@@ -297,7 +302,7 @@ class BimanualQP:
         low, high = self.cfg['flange_distance_range']
         if self.axial is None and not low <= distance <= high:
             raise ValueError('BIMANUAL_GRASP_GEOMETRY')
-        if self.expected_relative is not None:
+        if self.expected_relative is not None and not self.measured_rigid_grasp:
             error = np.linalg.inv(self.expected_relative) @ measured
             angle = math.acos(float(np.clip((np.trace(error[:3,:3])-1.)/2., -1., 1.)))
             distance_error = np.linalg.norm(error[:3,3])
@@ -398,6 +403,8 @@ class BimanualQP:
     def _grip_error(self, relative):
         error=np.linalg.inv(self.grasp_reference) @ relative
         angle=math.acos(float(np.clip((np.trace(error[:3,:3])-1.)/2.,-1.,1.)))
+        if self.measured_rigid_grasp:
+            return np.linalg.norm(error[:3,3]),angle
         distance=np.linalg.norm(relative[:3,3]-self.expected_relative[:3,3])
         if self.axial is not None:
             actual=np.linalg.inv(self.tool) @ relative @ self.right_grip

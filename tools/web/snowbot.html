@@ -419,6 +419,12 @@ function graspState(p,fresh){
 }
 function explainReason(reason){
   if(reasons[reason])return reasons[reason];
+  if((reason||'').includes('PICO_ACTUATOR_FEEDBACK_TIMEOUT')){
+    const detail=reason.match(/PICO_ACTUATOR_FEEDBACK_TIMEOUT:([^:]+):error_rad=([-\d.]+)/);
+    const joint=detail?.[1].replace(/^arm_([lr])_joint_(\d+)$/,(_,side,n)=>(side==='l'?'左':'右')+'臂第 '+n+' 轴');
+    const error=detail?`${joint} 相差约 ${(Math.abs(Number(detail[2]))*180/Math.PI).toFixed(2)}°。`:'';
+    return '动作等待到位超时，未确认到达目标；停止与到位分别判断。'+error;
+  }
   if((reason||'').startsWith('GRIPPER_POSITION_TIMEOUT:')){
     const sides=reason.split(':')[1].split(',').map(side=>({left:'左',right:'右'}[side]||side)).join('、');
     return sides+'夹爪开合超时，未到目标位置；可重新操作对应扳机，或按 B 停止并退出。';
@@ -642,6 +648,7 @@ function controlMode(p,fresh){
   }else if(p.phase==='locked'){result.hint=p.stop_confirmed===true?'恢复待命；恢复后再切换模式':'等待停稳确认后恢复待命';result.key=p.stop_confirmed===true;}
   else if(['loading','load_check'].includes(p.phase))result.hint='确认当前装卸步骤';
   else if(p.dual_modes!==true){result.hint='按右侧提示继续当前操作';result.key=false;}
+  else if(p.tool_grasp_confirmation==='operator'&&independent&&result.key){result.hint='人工确认铲已握稳后，松握按 B 切扫雪；不依赖夹爪标定';}
   return result;
 }
 function renderControlMode(p,fresh){

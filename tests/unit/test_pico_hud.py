@@ -14,6 +14,16 @@ from tests.support.pico import Rig
 
 
 class PicoHUDTests(unittest.TestCase):
+    def test_arrival_timeout_does_not_claim_arrival_or_unconfirmed_stop(self):
+        from bindu_teleoperation.vr.hud import hud_spec
+        for stopped in (False,True):
+            view=dict(mode='locked',reason='RuntimeError:PICO_ACTUATOR_FEEDBACK_TIMEOUT:arm_r_joint_7:error_rad=0.14543',
+                      stop_confirmed=stopped)
+            spec=hud_spec(view)
+            self.assertEqual(spec['title'],'未到目标位置')
+            self.assertEqual('已停稳' in spec['detail'],stopped)
+            self.assertEqual('B 恢复待命' in spec['action'],stopped)
+
     def view(self,mode='following',**values):
         return dict(pico=True,mode=mode,reason='FOLLOWING',input_fresh=True,raw_input_valid=True,
             grasp_applied='rigid',grasp_requested='rigid',**values)

@@ -66,6 +66,14 @@ class PicoNode(RuntimeNode):
                                      ('kinematic',) if self.simulation else ('snowbot_vendor',))):
             raise ValueError('PICO_ACTUATOR_BACKEND_UNAVAILABLE:'+self.backend)
         self.tool_cfg=json.loads(Path(self.get_parameter('tool_config').value).read_text())
+        confirmation=self.tool_cfg.get('tool_grasp_confirmation','calibrated')
+        if confirmation not in ('calibrated','operator'):
+            raise ValueError('PICO_TOOL_GRASP_CONFIRMATION_CONFIG')
+        self.operator_grasp=confirmation=='operator'
+        self.operator_grasp_positions={}
+        if self.operator_grasp and (not self.position_contract or
+                self.tool_cfg.get('grasp_reference_source')!='measured_rigid'):
+            raise ValueError('PICO_OPERATOR_GRASP_REQUIRES_MEASURED_RIGID')
         if (not self.tool_cfg.get('right_axial_grasp') or self.tool_cfg.get('collision_scope')!='configured_tool_geometry' or
                 not self.position_contract and not self.tool_cfg.get('demo',{}).get('initial_positions_rad')):
             raise ValueError('PICO_REQUIRES_AXIAL_SHOVEL_CONFIG')
@@ -375,7 +383,18 @@ class PicoNode(RuntimeNode):
                     revision=response.revision;segment+=1
                     next_submit=now+.04
                 await self.pause()
-            raise RuntimeError('PICO_ACTUATOR_FEEDBACK_TIMEOUT')
+            state,measured=self.reading()
+            errors={n:float(v-measured[n]) for n,v in zip(self.names,end)}
+            worst=max(errors,key=lambda n:abs(errors[n]))
+            self.event('PICO_ACTUATOR_FEEDBACK_TIMEOUT',json.dumps(dict(
+                operation=intent.operation,elapsed_s=self.now()-started,
+                feedback_stamp=seconds(state.feedback_stamp),
+                target=dict(zip(self.names,end)),measured={n:measured[n] for n in self.names},
+                reference=dict(zip(state.reference.name,state.reference.position)),
+                error_rad=errors,worst_joint=worst,position_tolerance_rad=.002,
+                measured_at_rest=joints_at_rest(state.joints,self.names,.005),
+                velocity_tolerance_rad_s=.005,arrival_confirmed=False)))
+            raise RuntimeError(f'PICO_ACTUATOR_FEEDBACK_TIMEOUT:{worst}:error_rad={errors[worst]:.6f}')
         finally:
             await self.release_lease()
 
@@ -432,9 +451,18 @@ class PicoNode(RuntimeNode):
         f=self.feedback()
         if not f.healthy:raise RuntimeError('PICO_FEEDBACK_UNAVAILABLE')
         if not f.stopped:raise RuntimeError('PICO_MODE_REQUIRES_STOPPED')
-        if mode=='bimanual_tool' and self.position_ops and not self.position_ops.config['calibrated']:
+        if mode=='bimanual_tool' and self.operator_grasp:
+            # Explicit tool-mode selection / two-hand engagement confirms the
+            # physical grip. Keep raw modes unknown; never invent calibration.
+            states={side:self.position_ops.reading(side) for side in ('left','right')}
+            self.operator_grasp_positions={side:s.measured_position for side,s in states.items()}
+            self.control.virtual=False
+            self.event('PICO_TOOL_GRASP_OPERATOR',json.dumps(dict(operation=intent.operation,
+                gripper_positions=self.operator_grasp_positions,grasp_sensor_confirmed=False,
+                reference_source='measured_rigid')))
+        elif mode=='bimanual_tool' and self.position_ops and not self.position_ops.config['calibrated']:
             raise RuntimeError('PICO_TOOL_GRASP_UNCONFIRMED_UNCALIBRATED')
-        if mode=='bimanual_tool' and (f.modes[0]!='closed' or f.modes[1] not in ('closed','virtual')):
+        if mode=='bimanual_tool' and not self.operator_grasp and (f.modes[0]!='closed' or f.modes[1] not in ('closed','virtual')):
             raise RuntimeError('PICO_GRIPPER_CONFIRMATION_REQUIRED')
         client=self.arms_ready_client if mode=='independent_arms' else self.ready_client
         end=time.monotonic()+self.tool_cfg.get('worker_startup_timeout',30.)
@@ -495,7 +523,7 @@ class PicoNode(RuntimeNode):
         self.tool_phase=msg.feedback.mode
 
     async def perform(self,intent):
-        ok=False;reason='';read_only=False;rejected=False;canceled=False
+        ok=False;reason='';read_only=False;rejected=False;canceled=False;stopped_failure=False
         try:
             await self.cancel_tool()
             self.current(intent)
@@ -543,7 +571,7 @@ class PicoNode(RuntimeNode):
                 await self.select_tool_mode(intent,intent.value)
             elif intent.operation=='switch_grasp':
                 if self.position_contract:
-                    if not self.position_ops.axial_available:
+                    if self.operator_grasp or not self.position_ops.axial_available:
                         raise RuntimeError('PICO_AXIAL_GRASP_UNAVAILABLE')
                     target=self.position_ops.grasp_target(intent.value)
                     await self.validate_prepare(intent,target)
@@ -583,13 +611,16 @@ class PicoNode(RuntimeNode):
             try:
                 await self.cancel_tool()
                 rejected=read_only
+                stopped_failure=(intent.operation=='prepare' and
+                    reason.startswith('RuntimeError:PICO_ACTUATOR_FEEDBACK_TIMEOUT:'))
             except Exception as stop_error:reason+=':'+type(stop_error).__name__+':'+str(stop_error)
         if ok and intent.operation=='manual_grippers':
             # The release barrier has just observed fresh device hold. Read it
             # now rather than depending on the coordinator timer's previous
             # feedback sample when handing a held A request back to standby.
             self.control.update_feedback(self.feedback(),self.now())
-        self.control.complete(intent.token,ok,reason,self.now(),rejected=rejected)
+        if stopped_failure:self.control.update_feedback(self.feedback(),self.now())
+        self.control.complete(intent.token,ok,reason,self.now(),rejected=rejected,stopped_failure=stopped_failure)
         if canceled:
             self.event('PICO_OPERATION_CANCELED',json.dumps(dict(token=intent.token,operation=intent.operation,
                 outcome='superseded',reason=reason,simulated_actuator=self.simulation)))
@@ -616,11 +647,19 @@ class PicoNode(RuntimeNode):
             self.handoff_complete=True
         feedback=self.feedback()
         if self.position_ops and self.control.teleop_mode=='bimanual_tool' and feedback.healthy:
-            if (not self.control.pending and feedback.stopped and
+            if (not self.operator_grasp and not self.control.pending and feedback.stopped and
                     self.control.phase in ('checking','standby','tool_standby') and
                     feedback.modes[1] in ('closed','virtual')):
                 self.control.virtual=feedback.modes[1]=='virtual'
-            if (self.control.phase in ('engaging','following') and
+            if self.operator_grasp and self.control.phase in ('engaging','following') and self.operator_grasp_positions:
+                try:
+                    for side,position in self.operator_grasp_positions.items():
+                        s=self.position_ops.reading(side)
+                        if (s.state in ('MOVING','STOPPING') or
+                                abs(s.measured_position-position)>self.position_ops.config['position_tolerance']):
+                            raise RuntimeError('PICO_GRASP_POSITION_CHANGED')
+                except RuntimeError as exc:self.control.lock(str(exc),self.now())
+            if (not self.operator_grasp and self.control.phase in ('engaging','following') and
                     feedback.modes!=('closed','virtual' if self.control.virtual else 'closed')):
                 self.control.lock('PICO_GRASP_POSITION_CHANGED',self.now())
         self.control.update_feedback(feedback,self.now());self.control.tick(self.now())
@@ -664,7 +703,8 @@ class PicoNode(RuntimeNode):
                 capabilities=dict(prepare=self.prepare_positions is not None,
                     independent_arms=self.position_contract,mode_switch=self.position_contract,
                     grippers=bool(self.position_ops.config['calibrated'] or self.position_ops.config.get('allow_uncalibrated_direct', False)) if self.position_ops else True,
-                    axial_grasp=self.position_ops.axial_available if self.position_ops else True),
+                    axial_grasp=not self.operator_grasp and self.position_ops.axial_available if self.position_ops else True),
+                tool_grasp_confirmation='operator' if self.operator_grasp else 'calibrated',
                 execution_state=self.state.state if self.state is not None else 'unavailable',
                 feedback_age_s=self.now()-seconds(self.state.feedback_stamp) if self.state is not None else None)
             raw=tuple(self.frames.values())

@@ -14,6 +14,31 @@ from tests.support.pico import Rig
 
 
 class DirectGripperTests(unittest.TestCase):
+    def test_prepare_timeout_returns_to_standby_only_after_confirmed_stop(self):
+        reason='RuntimeError:PICO_ACTUATOR_FEEDBACK_TIMEOUT:arm_r_joint_7:error_rad=0.14543'
+        for stopped,attested in ((True,True),(False,True),(True,False)):
+            with self.subTest(stopped=stopped,attested=attested):
+                r=self.rig();r.buttons[1]=1
+                for _ in range(60):r.step()
+                pending=r.core.pending;self.assertEqual(pending.operation,'prepare')
+                r.stopped=stopped;r.step()
+                r.core.complete(pending.token,False,reason,r.now,stopped_failure=attested)
+                retry=stopped and attested
+                self.assertEqual(r.core.phase,'standby' if retry else 'locked')
+                self.assertEqual(r.core.reason,reason)
+                for _ in range(3):self.assertFalse(r.step())  # Held A cannot restart.
+                if retry:
+                    self.assertEqual(r.core.snapshot(r.now)['operator_guide']['title'],'未到准备位，已停稳待命')
+                    r.buttons[1]=0;r.step();r.grips=[1.,0.]
+                    self.assertEqual(r.step()[-1].operation,'follow')
+
+    def test_stop_failure_is_not_downgraded_to_prepare_arrival_warning(self):
+        r=self.rig();r.buttons[1]=1
+        for _ in range(60):r.step()
+        pending=r.core.pending
+        r.core.complete(pending.token,False,'RuntimeError:PICO_STOP_UNCONFIRMED',r.now,stopped_failure=True)
+        self.assertEqual(r.core.phase,'locked')
+
     def test_active_backend_updates_sides_without_canceling_its_token(self):
         r=self.rig();r.triggers=[1.,0.];opened=r.step()[-1]
         r.core.gripper_update_token=opened.token

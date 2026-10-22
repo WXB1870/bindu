@@ -20,6 +20,7 @@ def hud_spec(view):
     if independent:spec.update(context='普通双臂',mode_hint='左右手柄各控一臂',grip='逐臂离合')
     elif view.get('teleop_mode')=='bimanual_tool':
         spec.update(context='扫雪耦合',mode_hint='双手柄共同控制工具')
+        if view.get('tool_grasp_confirmation')=='operator':spec['grip']='人工确认 · 刚握'
         if view.get('tool_variant')=='short_rod':spec.update(context='短棍耦合',mode_hint='双手柄共同控制短棍')
     if mode in ('DISPLAY_STALE','DISPLAY_WAITING'):
         spec.update(context='模式待确认',mode_hint='等待有效控制状态')
@@ -32,7 +33,11 @@ def hud_spec(view):
     elif mode == 'locked':
         spec.update(state='lost' if input_fault else 'stopped',
                     status='已停止 · 锁定' if confirmed else '停止未确认', tone='danger')
-        if input_fault:
+        if 'PICO_ACTUATOR_FEEDBACK_TIMEOUT' in reason:
+            notice('未到目标位置',
+                   '已停稳；查看电脑端关节误差，松握按 B 恢复待命' if confirmed else
+                   '到位等待超时；保持松握，等待停稳确认')
+        elif input_fault:
             hands = view.get('controller_states', {})
             invalid = [label for side,label in (('left','左'),('right','右'))
                        if not view.get('tracking_valid',{}).get(side,hands.get(side, {}).get('valid',False))]

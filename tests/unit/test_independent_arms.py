@@ -83,7 +83,7 @@ class IndependentNativeTests(unittest.TestCase):
                                      np.r_[recipe['grip_offset_m'],1.])[:3].tolist()
         self.solver.empty_collision_check=make_collision_checker(
             Path(self.cfg['urdf']).parent/recipe['display_urdf'],recipe,
-            conservative_convex=True,tool_present=False)
+            conservative_convex=True,tool_present=False,validation_only=True)
         self.feedback={n:0. for n in self.solver.model_names}
 
     def test_recorded_collision_candidates_shrink_without_ending_control(self):

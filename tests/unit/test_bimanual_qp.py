@@ -965,6 +965,21 @@ class NativeBimanual(unittest.TestCase):
 
 
 class AxialShovelTests(unittest.TestCase):
+    def test_measured_rigid_capture_preserves_actual_grasp_without_nominal_coaxial_gate(self):
+        cfg=dict(self.cfg,grasp_reference_source='measured_rigid')
+        solver=BimanualQP(cfg,self.profile);self.addCleanup(solver.close)
+        q=dict(self.ready);q['arm_r_joint_7']-=.05
+        with self.assertRaisesRegex(ValueError,'BIMANUAL_GRASP_POSE'):self.qp.capture(q)
+        # This synthetic skew intersects the configured shaft: the new
+        # capture policy must still reject the physical geometry.
+        with self.assertRaisesRegex(ValueError,'GRASP_PENETRATION'):solver.capture(q)
+        # Isolate the native relative-pose contract from that CAD collision.
+        with patch.object(solver,'check_path'):solver.capture(q)
+        np.testing.assert_allclose(solver._grip_error(solver.grasp_reference),(0.,0.),atol=1e-7)
+        shifted=solver.grasp_reference.copy();shifted[0,3]+=.02
+        self.assertGreater(solver._grip_error(shifted)[0],solver.grasp_position_tolerance)
+        with self.assertRaisesRegex(ValueError,'REQUIRES_RIGID'):solver.capture(q,'right_axial')
+
     def setUp(self):
         self.cfg=json.loads((ROOT/'src/integration/bindu_runtime/config/robots/snowbot/bimanual_snowbot_shovel.json').read_text())
         self.cfg['urdf']=str(ROOT/'src/hardware/bindu_description/urdf/snowbot_control.urdf')

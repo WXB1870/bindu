@@ -458,6 +458,13 @@ def make_collision_checker(urdf, recipe, conservative_convex=False, *, tool_pres
                 if (set(support_heights) != set(ground['support_links']) or
                         any(abs(height-ground_z) > support_tolerance for height in support_heights.values())):
                     raise ValueError('GROUND_SUPPORT_MISMATCH')
+            if fast and not tool_present and not bin_parts:
+                # Self-collision and support checks above are the complete
+                # geometry contract for this empty scene. Do not construct
+                # tool/body distance bounds that no query will consume.
+                validated[key]=True
+                if len(validated)>256:validated.popitem(last=False)
+                continue
             corners = (tool @ corners_local.T).T
             # The real/visual shaft is a flat-ended cylinder. A capsule's
             # artificial end sphere would extend below the shovel attachment.

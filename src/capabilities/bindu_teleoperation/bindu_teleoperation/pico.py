@@ -442,14 +442,16 @@ class PicoControl:
         else:
             self.emit('manual_grippers',tuple(targets))
 
-    def complete(self, token, success, reason='', now=0., *, rejected=False):
+    def complete(self, token, success, reason='', now=0., *, rejected=False, stopped_failure=False):
         if not self.pending or self.pending.token!=token:return False
         operation,value=self.pending.operation,self.pending.value
         self.pending=None
         if not success:
-            # Only the backend can attest that a read-only check failed before
-            # actuator motion began and a fresh stopped state was confirmed.
-            retry=(rejected and self.guided_loading and self.rest(now) and
+            # Only the backend can attest either a read-only rejection or a
+            # completed stop after an arrival timeout. Neither means arrival.
+            arrival_failure=(stopped_failure and operation=='prepare' and
+                             reason.startswith('RuntimeError:PICO_ACTUATOR_FEEDBACK_TIMEOUT:'))
+            retry=((rejected or arrival_failure) and self.guided_loading and self.rest(now) and
                    self.frames and 0<=now-self.stamp<=self.max_age)
             self.phase,self.reason='standby' if retry else 'locked',reason or 'PICO_OPERATION_FAILED'
             self.squeeze_released=[False,False]
@@ -564,6 +566,9 @@ def loading_guide(view, modes):
         reason=view.get('reason','')
         if reason=='GRIPPER_CONTROL_EXIT_REQUESTED':
             return dict(title='正在退出夹爪开合',detail='等待夹爪停止确认；保持双侧握松开',key='',step='gripper_stop')
+        if reason.startswith('RuntimeError:PICO_ACTUATOR_FEEDBACK_TIMEOUT:'):
+            return dict(title='未到准备位，已停稳待命',
+                        detail='松开 A 和双侧握后，可从当前位置重新接管；未确认到位，具体误差见电脑端',key='握',step='retry')
         if reason=='PREPARE_HOLD_AFTER_GRIPPER_STOP':
             return dict(title='夹爪已停稳，继续按住 A 回位',detail='正在重新计长按时间；松开 A 可取消',key='A',step='prepare_wait')
         if reason=='GRIPPER_REQUIRES_STOP_AND_RELEASED_SQUEEZE':
