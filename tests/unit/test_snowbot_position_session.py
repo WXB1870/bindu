@@ -458,6 +458,7 @@ class TargetWireTests(unittest.TestCase):
         d.sent, d.target_instance, d.source_identity, d.target_fault = {}, None, None, ''
         d.applied_sequence = 0
         d.takeover_pending = None
+        d.takeover_previous_hold = None
         d.io.trajectory_reference = True
         d.node.event = Mock(); d.node.get_logger = Mock()
         d.arm_type = lambda: S(meta=S(), command=S(), trajectory=S(effective_at_ns=0,
@@ -536,6 +537,30 @@ class TargetWireTests(unittest.TestCase):
         self.rig.engine.stop_fault = ''
         for _ in range(10): self.d.advance_startup_hold(self.rig.engine)
         self.assertEqual(self.d.publishers['arms'].publish.call_count, 2)
+
+    def test_follow_after_startup_hold_keeps_lease_during_pdo_handoff(self):
+        from bindu_contracts.contracts import Motion
+        self.test_startup_enables_once_then_confirms_powered_hold_without_vr()
+        old = self.d.health.observation
+        groups = ('waist', 'left_arm', 'right_arm')
+        lease, epoch = self.rig.engine.acquire('teleop', groups, 2., self.rig.now)
+        names = tuple(n for group in groups for n in GROUPS[group])
+        motion = Motion('first_follow', lease, epoch, self.rig.profile.digest,
+            'test', '', 'joint_target', '', self.rig.now, .2, names=names,
+            positions=tuple(self.target[n] for n in names), schema_version=2,
+            resource_groups=groups, runtime_mode='real')
+        self.rig.engine.submit(motion, self.rig.now)
+        self.rig.engine.tick(self.rig.now)
+        packet = self.d.publishers['arms'].publish.call_args.args[0]
+        self.assertEqual(packet.meta.operation, 1)
+        for i in range(7):
+            self.held_feedback(session=old.session, command_sequence=old.command_sequence)
+            if i == 5: self.d.receive_receipt(self.receipt(packet))
+            self.d.advance_session()
+            self.rig.engine.tick(self.rig.now)
+            self.assertEqual(self.rig.engine.lease_id, lease)
+            self.assertIsNone(self.rig.engine.stopping)
+        self.assertEqual(self.d.publishers['arms'].publish.call_count, 3)
 
     def test_target_loss_requests_one_pause_before_original_source_expiry(self):
         self.rig.enable_rest_window()
@@ -757,6 +782,94 @@ class TargetWireTests(unittest.TestCase):
         self.assertEqual((latest.meta.sequence,latest.meta.operation),(2,0))
         self.send('next-without-ack')
         self.assertEqual(self.d.envelopes.sequence,3)
+
+    def held_feedback(self, **changes):
+        data = dict(session_selected=True, session=17, command_sequence=2,
+            session_reason=1, hold_valid=True, reference_mode=2, trajectory_phase=4,
+            reference_valid=True, output_valid=True)
+        data.update(changes)
+        self.update_target_feedback(**data)
+
+    def test_old_hold_is_allowed_until_new_takeover_pdo_even_after_ack(self):
+        self.held_feedback()
+        self.d.new_session()
+        first = self.send('follow')
+        # Reproduce the field ordering: old held PDO at +20 ms, ACK at
+        # +28 ms, then the first new-session PDO. ACK is not applied feedback.
+        for _ in range(4): self.held_feedback()
+        self.d.check_health(CONTROL_GROUPS)
+        self.d.receive_receipt(self.receipt(first))
+        self.assertIsNone(self.d.takeover_pending)
+        self.held_feedback()
+        self.d.check_health(CONTROL_GROUPS)
+        self.assertEqual(self.d.applied_sequence, 0)
+        self.assertIsNone(self.d.io.servo_reference)
+        self.rig.now += .001; self.rig.steady += .001; self.rig.sample += 1
+        msg = observation(self.rig.now, pdo_sample=self.d.health.sample+1,
+            session_selected=True, session=first.meta.session, command_sequence=1,
+            segment_id=1, reference_mode=2, trajectory_phase=2,
+            reference_valid=True, output_valid=True, sample_time_ns=round(self.rig.now*1e9),
+            reference_position=list(self.target.values()), reference_speed=[0.]*16,
+            reference_acceleration=[0.]*16)
+        self.d.receive(msg)
+        self.d.check_health(CONTROL_GROUPS)
+        self.assertEqual(self.d.applied_sequence, 1)
+        self.held_feedback()
+        with self.assertRaisesRegex(RuntimeError, 'SESSION_OWNER_CONFLICT'):
+            self.d.check_health(CONTROL_GROUPS)
+
+    def test_handoff_does_not_accept_other_owners_or_unhealthy_hold(self):
+        self.held_feedback()
+        self.d.new_session()
+        self.send()
+        for changes in (dict(session=18), dict(command_sequence=3),
+                dict(session_reason=0), dict(hold_valid=False), dict(trajectory_phase=3),
+                dict(reference_valid=False), dict(output_valid=False)):
+            with self.subTest(changes=changes):
+                self.held_feedback(**changes)
+                with self.assertRaisesRegex(RuntimeError, 'SESSION_OWNER_CONFLICT'):
+                    self.d.check_health(CONTROL_GROUPS)
+        self.held_feedback(status=[0x2f]*20)
+        with self.assertRaisesRegex(RuntimeError, 'DRIVE_FAULT'):
+            self.d.check_health(CONTROL_GROUPS)
+        self.held_feedback()
+        self.held_feedback()
+        self.d.health.states['servo'][1].instance_id += 1
+        with self.assertRaisesRegex(RuntimeError, 'SESSION_OWNER_CONFLICT'):
+            self.d.check_health(CONTROL_GROUPS)
+        self.held_feedback()
+        self.rig.steady += .041
+        with self.assertRaisesRegex(RuntimeError, 'PDO_NOT_ADVANCING'):
+            self.d.check_health(CONTROL_GROUPS)
+
+    def test_handoff_deadline_is_original_takeover_even_after_ack_and_new_targets(self):
+        for acknowledged in (False, True):
+            with self.subTest(acknowledged=acknowledged):
+                self.setUp()
+                self.held_feedback()
+                self.d.new_session()
+                first = self.send()
+                if acknowledged: self.d.receive_receipt(self.receipt(first))
+                for i in range(39):
+                    self.held_feedback()
+                    self.send('next-'+str(i))
+                    self.d.check_health(CONTROL_GROUPS)
+                self.rig.now = first.meta.expires_at_ns*1e-9
+                self.held_feedback()
+                with self.assertRaisesRegex(RuntimeError, 'SESSION_OWNER_CONFLICT'):
+                    self.d.check_health(CONTROL_GROUPS)
+
+    def test_takeover_handoff_does_not_confirm_pause_with_old_hold(self):
+        self.held_feedback()
+        self.d.new_session()
+        self.send()
+        pause = self.send(pause=True)
+        self.held_feedback()
+        self.assertIsNone(self.d.io.confirmed_stop_targets())
+        hold = list(self.target.values())
+        self.update_target_feedback(hold=hold, reference_mode=2, segment_id=pause.meta.sequence,
+            trajectory_phase=4, hold_basis=0, reference_valid=True, output_valid=True)
+        self.assertEqual(self.d.io.confirmed_stop_targets(), self.target)
 
     def test_takeover_late_ack_rejection_and_restart_cannot_unblock_ordinary_stream(self):
         first=self.send()

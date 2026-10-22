@@ -110,6 +110,7 @@ class PositionSessionDevices:
         self.target_fault = ''
         self.applied_sequence = 0
         self.takeover_pending = None
+        self.takeover_previous_hold = None
         self.io = PositionSessionIO(profile, self.send, node.now,
                             command_enabled=node.get_parameter('command_enabled').value,
                             simulated=False, check_ready=self.check_ready, check_health=self.check_health)
@@ -183,6 +184,8 @@ class PositionSessionDevices:
             self.identity(self.feedback_topic, self.receivers['head'], 'snowbot_ctl_msgs/msg/PositionObservation')
             q, v, stamp = self.health.observe(msg)
             self.io.observe(q, v, stamp, self.node.now(), sample=msg.pdo_sample)
+            if msg.session_selected and msg.session == self.envelopes.session:
+                self.takeover_previous_hold = None
             if self.health.reference_mode:
                 self.io.servo_reference = None
                 sample = getattr(msg, 'sample_time_ns', 0)*1e-9
@@ -214,8 +217,21 @@ class PositionSessionDevices:
             # A paused/expired session can be explicitly replaced after capture.
             # During a pending stop, ignore its delayed observation and wait for
             # the exact new PAUSE identity; it cannot confirm this stop.
-            if not (acquiring or self.io.requesting_pause or self.io.stop_targets) or obs.session_reason < 1:
+            if not (acquiring or self.io.requesting_pause or self.io.stop_targets or
+                    self._waiting_for_takeover_pdo(obs)) or obs.session_reason < 1:
                 raise RuntimeError('SNOWBOT_SESSION_OWNER_CONFLICT')
+
+    def _waiting_for_takeover_pdo(self, obs):
+        # ACK may arrive before PDO changes owner. Allow only the captured old
+        # hold, until actual adoption or the original TAKEOVER deadline.
+        previous = self.takeover_previous_hold
+        return bool(previous is not None and
+            (obs.boot_id, obs.session, obs.command_sequence,
+             self.health.states['servo'][1].instance_id) == previous[:4] and
+            round(self.node.now()*1e9) < previous[4] and
+            obs.session_reason == 1 and obs.hold_valid and
+            getattr(obs, 'trajectory_phase', 0) == 4 and
+            getattr(obs, 'reference_valid', False) and getattr(obs, 'output_valid', False))
 
     def check_health(self, groups, *, acquiring=False):
         self._check_session_health(groups, acquiring=acquiring)
@@ -233,6 +249,7 @@ class PositionSessionDevices:
         self.target_fault = ''
         self.applied_sequence = 0
         self.takeover_pending = None
+        self.takeover_previous_hold = None
 
     def _settle_takeover(self, report=None, *, receipt=False):
         """Only takeover has a delivery barrier; normal targets never wait."""
@@ -401,6 +418,14 @@ class PositionSessionDevices:
             self.target_instance = instance
             if metadata['operation'] == 1:
                 self.takeover_pending = (dict(metadata), instance)
+                obs = self.health.observation
+                self.takeover_previous_hold = (
+                    (obs.boot_id, obs.session, obs.command_sequence, instance, metadata['expires_at_ns'])
+                    if obs.session_selected and obs.session != metadata['session'] and
+                    obs.session_reason == 1 and obs.hold_valid and
+                    getattr(obs, 'trajectory_phase', 0) == 4 and
+                    getattr(obs, 'reference_valid', False) and getattr(obs, 'output_valid', False)
+                    else None)
             elif metadata['operation'] == 2:
                 self.takeover_pending = None
             self.sent[metadata['sequence']] = (metadata, instance, msg.meta.source_command_id)
