@@ -4,7 +4,7 @@ import json
 import math
 
 from bindu_hardware.snowbot import SnowbotIO, GROUPS
-from bindu_hardware.snowbot_session import CONTROL_GROUPS, CONTROL_NAMES, SessionHealth, SourceEnvelope
+from bindu_hardware.snowbot_session import CONTROL_GROUPS, CONTROL_NAMES, ROS_FEEDBACK_TIMEOUT_S, SessionHealth, SourceEnvelope
 
 
 def sampled_nominal_reference(state, names, epoch, now, max_age, *, wait_until=None, steady_now=None):
@@ -115,6 +115,8 @@ class PositionSessionDevices:
                             simulated=False, check_ready=self.check_ready, check_health=self.check_health)
         self.io.source_motion = None
         self.io.trajectory_reference = bool(self.health.reference_mode)
+        self.io.stop_confirmation_window = .1 if self.health.reference_mode == 2 else 0.
+        self.io.stop_confirmation_max_gap = ROS_FEEDBACK_TIMEOUT_S
         self.io.after_capture = lambda: self.new_session()
         self.io.pause_feedback = self.health.confirmed_hold
         self.arm_type, self.array_type = PositionSessionCommand, Float64MultiArray

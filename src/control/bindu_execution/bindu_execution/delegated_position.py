@@ -66,6 +66,7 @@ class DelegatedPositionExecutor(Executor):
         if not self.stopping:
             self.stop_deadline = now+self.profile.stop_timeout
             self.stop_steady_deadline = self.steady()+self.profile.stop_timeout
+            self.stop_rest_window = None
         motion = self.active or (self.stopping[0] if self.stopping else None)
         self.last_stamp = max(self.last_stamp, now if math.isfinite(now) else self.last_stamp)
         self.revision += 1
@@ -103,6 +104,7 @@ class DelegatedPositionExecutor(Executor):
         if confirm is not None:
             targets = confirm()
             if targets is None:
+                self.stop_rest_window = None
                 return
             if (set(targets) != set(self.reference_names) or
                     any(not math.isfinite(q) for q in targets.values())):
@@ -110,8 +112,27 @@ class DelegatedPositionExecutor(Executor):
                 return
             self.reference = State.rest(targets[n] for n in self.reference_names)
         # A sent hold is only a request. Require feedback newer than that request.
-        if (self.feedback.stamp > self.io.stop_requested_at and
-                0 <= now-self.feedback.stamp <= .2 and self.references_arrived()):
+        arrived = (self.feedback.stamp > self.io.stop_requested_at and
+                   0 <= now-self.feedback.stamp <= .2 and self.references_arrived())
+        window = getattr(self.io, 'stop_confirmation_window', 0.)
+        if arrived and window:
+            positions = {n: self.feedback.positions[n] for n in self.reference_names}
+            previous = self.stop_rest_window
+            tolerance = self.profile.feedback_tolerances.get('joint_position', 1e-5)
+            max_gap = getattr(self.io, 'stop_confirmation_max_gap', window)
+            if (previous is None or self.feedback.stamp < previous[1] or
+                    self.feedback.stamp-previous[1] > max_gap or
+                    any(abs(q-previous[2][n]) >= tolerance for n, q in positions.items())):
+                self.stop_rest_window = (self.steady(), self.feedback.stamp, positions)
+                return
+            if self.feedback.stamp <= previous[1]:
+                return  # Repeated feedback cannot complete a measured-rest window.
+            self.stop_rest_window = (previous[0], self.feedback.stamp, previous[2])
+            if self.steady()-previous[0] < window:
+                return
+        elif not arrived:
+            self.stop_rest_window = None
+        if arrived:
             self.io.stop_targets.clear()
             self.stopping = self.reference = None
             self.reference_names = ()

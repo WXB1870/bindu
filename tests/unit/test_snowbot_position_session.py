@@ -272,6 +272,77 @@ class PauseHandoffTests(unittest.TestCase):
         self.assertIsNone(self.engine.stopping)
         self.assertFalse(self.engine.stop_fault)
 
+    def enable_rest_window(self):
+        self.profile = replace(self.profile, stop_timeout=.5)
+        self.io.profile = self.engine.profile = self.profile
+        self.io.stop_confirmation_window = .1
+        self.io.stop_confirmation_max_gap = .04
+
+    def test_target_pause_requires_continuous_measured_rest_window(self):
+        self.enable_rest_window()
+        hold = self.start_stop()
+        deadline = self.engine.stop_deadline
+        for _ in range(20):
+            self.update(hold=hold); self.engine.tick(self.now)
+            self.assertTrue(self.engine.stopping)
+        self.update(hold=hold); self.engine.tick(self.now)
+        self.update(hold=hold); self.engine.tick(self.now)
+        self.assertIsNone(self.engine.stopping)
+        self.assertEqual(self.engine.stop_deadline, deadline)
+
+    def test_target_pause_zero_speed_with_recorded_position_error_is_unconfirmed(self):
+        self.enable_rest_window()
+        hold = self.start_stop()
+        hold[0] -= .0452
+        for _ in range(24):
+            self.update(hold=hold); self.engine.tick(self.now)
+        self.assertTrue(self.engine.stopping)
+        self.assertIsNone(self.engine.stop_rest_window)
+        self.assertEqual(self.io.pause_targets[CONTROL_NAMES[0]], hold[0])
+
+    def test_target_pause_fixed_window_anchor_catches_drift_inside_arrival_tolerance(self):
+        self.enable_rest_window()
+        hold = self.start_stop()
+        self.q[CONTROL_NAMES[0]] = hold[0]-.0015
+        for _ in range(16):
+            self.update(hold=hold); self.engine.tick(self.now)
+        self.q[CONTROL_NAMES[0]] = hold[0]+.0015
+        self.update(hold=hold); self.engine.tick(self.now)
+        for _ in range(8):
+            self.update(hold=hold); self.engine.tick(self.now)
+        self.assertTrue(self.engine.stopping)
+        self.assertEqual(self.io.pause_targets[CONTROL_NAMES[0]], hold[0])
+        for _ in range(14):
+            self.update(hold=hold); self.engine.tick(self.now)
+        self.assertIsNone(self.engine.stopping)
+
+    def test_target_pause_unmatched_ack_cannot_start_rest_window(self):
+        self.enable_rest_window()
+        hold = self.start_stop()
+        for _ in range(24):
+            self.update(hold=hold, command_sequence=999); self.engine.tick(self.now)
+        self.assertTrue(self.engine.stopping)
+        self.assertIsNone(self.engine.stop_rest_window)
+
+    def test_target_pause_velocity_and_feedback_gap_restart_window(self):
+        self.enable_rest_window()
+        hold = self.start_stop()
+        for _ in range(16):
+            self.update(hold=hold); self.engine.tick(self.now)
+        self.update(hold=hold, velocity=.03); self.engine.tick(self.now)
+        self.assertIsNone(self.engine.stop_rest_window)
+        for _ in range(16):
+            self.update(hold=hold); self.engine.tick(self.now)
+        # The observer may keep receiving while execution stalls. Do not infer
+        # rest during that gap from only its first and final samples.
+        for _ in range(10): self.update(hold=hold)
+        self.engine.tick(self.now)
+        self.assertTrue(self.engine.stopping)
+        self.assertEqual(self.engine.stop_rest_window[0], self.steady)
+        for _ in range(22):
+            self.update(hold=hold); self.engine.tick(self.now)
+        self.assertIsNone(self.engine.stopping)
+
     def test_old_identity_incomplete_or_nonfinite_ack_cannot_finish_stop(self):
         hold = self.start_stop()
         for changes in (dict(session=123), dict(command_sequence=1), dict(hold_valid=False),
