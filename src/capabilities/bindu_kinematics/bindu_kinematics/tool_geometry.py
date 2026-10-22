@@ -326,29 +326,37 @@ def make_collision_checker(urdf, recipe, conservative_convex=False, *, tool_pres
     contacts = recipe['shaft_contacts']
     if not set(contacts).issubset(names):
         raise ValueError('UNKNOWN_SHAFT_CONTACT_LINK')
-    segments = {}
-    segment_cache = {}
-    for name in set(names):
-        spans = [tuple(ends)]
-        if name in contacts:
-            center, half_length = contacts[name]['center_m'], contacts[name]['half_length_m']
-            if (not np.isfinite([center, half_length]).all() or half_length <= 0 or
-                    center-half_length < ends[0]-1e-9 or center+half_length > ends[1]+1e-9):
-                raise ValueError('INVALID_SHAFT_CONTACT_BAND')
-            # Cylinder cut faces bound each allowed contact band precisely;
-            # unlike skipping a hand mesh this still checks the rest of the rod.
-            if not check_grasp_contacts:
-                spans = [(ends[0], max(ends[0],center-half_length)),
-                         (min(ends[1],center+half_length), ends[1])]
-        segments[name] = []
-        for a, b in spans:
-            if b-a<=1e-12:continue  # Contact bands may meet either physical end.
-            key = (a, b, name in contacts)
-            if key not in segment_cache:
-                query_radius = radius-grasp_penetration if check_grasp_contacts and name in contacts else radius
-                segment_cache[key] = (fcl.Cylinder(query_radius, b-a) if name in contacts or geometry_kind=='rod' else fcl.Capsule(radius, b-a),
-                    np.array(recipe['left_grip_in_tool_m'])+shaft_axis*(a+b)/2)
-            segments[name].append(segment_cache[key])
+    def shaft_queries(contact_bands):
+        segments = {}
+        segment_cache = {}
+        for name in set(names):
+            spans = [tuple(ends)]
+            if name in contact_bands:
+                center, half_length = contact_bands[name]['center_m'], contact_bands[name]['half_length_m']
+                if (not np.isfinite([center, half_length]).all() or half_length <= 0 or
+                        center-half_length < ends[0]-1e-9 or center+half_length > ends[1]+1e-9):
+                    raise ValueError('INVALID_SHAFT_CONTACT_BAND')
+                # Cylinder cut faces bound each allowed contact band precisely;
+                # unlike skipping a hand mesh this still checks the rest of the rod.
+                if not check_grasp_contacts:
+                    spans = [(ends[0], max(ends[0],center-half_length)),
+                             (min(ends[1],center+half_length), ends[1])]
+            segments[name] = []
+            for a, b in spans:
+                if b-a<=1e-12:continue  # Contact bands may meet either physical end.
+                key = (a, b, name in contact_bands)
+                if key not in segment_cache:
+                    query_radius = radius-grasp_penetration if check_grasp_contacts and name in contact_bands else radius
+                    segment_cache[key] = (fcl.Cylinder(query_radius, b-a) if name in contact_bands or geometry_kind=='rod' else fcl.Capsule(radius, b-a),
+                        np.array(recipe['left_grip_in_tool_m'])+shaft_axis*(a+b)/2)
+                segments[name].append(segment_cache[key])
+        tool_parts = ([('PAN', pan, np.asarray(recipe['pan_center_m']))] if has_pan else []) + [
+            ('SHAFT', shape, center) for shape, center in segment_cache.values()]
+        tool_ids = {id(shape): i for i, (_, shape, _) in enumerate(tool_parts)}
+        body_queries = [(i, j) for i, name in enumerate(names)
+                        for j in ([0] if has_pan else [])+[tool_ids[id(shape)] for shape, _ in segments[name]]]
+        body_indices, part_indices = np.array(body_queries).T
+        return tool_parts, body_queries, body_indices, part_indices
     pan = fcl.Box(*recipe['pan_size_m'])
     bin_parts = [(name, fcl.Box(*size), fcl.Transform3s(np.eye(3), np.array(center)))
                  for name, size, center in bin_boxes(recipe)]
@@ -368,14 +376,8 @@ def make_collision_checker(urdf, recipe, conservative_convex=False, *, tool_pres
             bounds[key] = (shape, (low+high)/2, (high-low)/2)
         _, center, half = bounds[key]
         return rotation @ center+translation, np.abs(rotation) @ half
-    # Geometry is immutable: share identical shaft pieces and precompute query
-    # layout. Only transforms and conservative bounds change with each pose.
-    tool_parts = ([('PAN', pan, np.asarray(recipe['pan_center_m']))] if has_pan else []) + [
-        ('SHAFT', shape, center) for shape, center in segment_cache.values()]
-    tool_ids = {id(shape): i for i, (_, shape, _) in enumerate(tool_parts)}
-    body_queries = [(i, j) for i, name in enumerate(names)
-                    for j in ([0] if has_pan else [])+[tool_ids[id(shape)] for shape, _ in segments[name]]]
-    body_indices, part_indices = np.array(body_queries).T
+    # Share shaft pieces and query layout until the next measured grasp capture.
+    tool_parts, body_queries, body_indices, part_indices = shaft_queries(contacts)
     corners_local = pan_corners(recipe)
     shaft_points = np.array(recipe['left_grip_in_tool_m']) + ends[:, None]*shaft_axis
     bin_bounds = [world_bounds(box, pose.getRotation(), pose.getTranslation())
@@ -383,6 +385,19 @@ def make_collision_checker(urdf, recipe, conservative_convex=False, *, tool_pres
 
     from collections import OrderedDict
     validated=OrderedDict()
+
+    def set_contact_centers(centers):
+        nonlocal contacts, tool_parts, body_queries, body_indices, part_indices
+        if not set(centers).issubset(contacts):
+            raise ValueError('UNKNOWN_SHAFT_CONTACT_LINK')
+        updated={name:dict(band,center_m=centers.get(name,band['center_m']))
+                 for name,band in contacts.items()}
+        layout=shaft_queries(updated)  # Validate before changing the active layout.
+        for _,shape,_ in tool_parts:
+            bounds.pop(id(shape),None)
+        contacts=updated
+        tool_parts,body_queries,body_indices,part_indices=layout
+        validated.clear()  # Identical poses must be rechecked against the new bands.
 
     def check(samples, collect_failures=False, *, deadline=None, initial_self_collision_recovery=None):
         recovery=(InitialSelfCollisionRecovery(initial_self_collision_recovery)
@@ -578,6 +593,7 @@ def make_collision_checker(urdf, recipe, conservative_convex=False, *, tool_pres
                 'exact_distance_queries': exact_queries, 'aabb_bounded_queries': bounded_queries,
                 'min_bin_clearance_m': bin_minimum if bin_parts else None, 'closest_bin_pair': bin_worst,
                 'source_sha256': asset_hashes, 'violations': len(failures), 'failures': failures}
+    check.set_contact_centers=set_contact_centers
     check.validation_only=validation_only
     return check
 

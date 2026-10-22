@@ -14,6 +14,45 @@ from tests.support.pico import Rig
 
 
 class PrepareReturnPathTests(unittest.IsolatedAsyncioTestCase):
+    async def arrival(self,operation='prepare',error=.0284,velocity=0.,fresh=True,stop_error=None):
+        from types import SimpleNamespace as S
+        from unittest.mock import Mock,AsyncMock,patch
+        from bindu_runtime import pico_node as module
+        from bindu_contracts.profile import Profile
+        from bindu_teleoperation.pico import PicoIntent
+        from tests.support.paths import ROOT
+        profile=Profile.load(ROOT/'src/integration/bindu_runtime/config/robots/snowbot/snowbot_real_position.json')
+        clock=[0.];joint='arm_l_joint_1';target=.2
+        lease=S(ok=True,lease_id='test',epoch=1)
+        state=S(lease_active=True,lease_epoch=1,revision=0,command_id='',state='HOLDING',
+            joints=S(name=[joint],velocity=[velocity]),reference=S(name=[joint],position=[target]))
+        def reading():
+            state.feedback_stamp=module.stamp(clock[0] if fresh else 0.)
+            return state,{joint:target-error}
+        async def pause():clock[0]+=1.
+        async def wait(value):return value
+        node=S(current=Mock(),feedback=lambda:S(stopped=True),prepare_position_tolerance=.035,
+            leases=S(call_async=lambda r:lease),wait=wait,instance_id='test',groups=('left_arm',),
+            state=state,reading=reading,names=(joint,),position_contract=True,profile=profile,
+            event=Mock(),simulation=False,now=lambda:clock[0],runtime_mode='real',pause=pause,
+            submit=S(call_async=lambda r:S(accepted=True,revision=0)),
+            release_lease=AsyncMock(side_effect=stop_error))
+        with patch.object(module,'time',S(monotonic=lambda:clock[0])):
+            try:await module.PicoNode.move(node,PicoIntent(1,operation),{joint:target},2.)
+            finally:node.release_lease.assert_awaited_once()
+        return node
+
+    async def test_prepare_arrival_tolerance_is_separate_from_other_moves_and_stop(self):
+        node=await self.arrival()
+        arrived=[json.loads(c.args[1]) for c in node.event.call_args_list if c.args[0]=='PICO_ACTUATOR_ARRIVED']
+        self.assertEqual(len(arrived),1);self.assertEqual(arrived[0]['position_tolerance_rad'],.035)
+        for options in ({'error':.03501},{'operation':'load'},{'velocity':.00501},{'fresh':False}):
+            with self.subTest(options=options),self.assertRaisesRegex(RuntimeError,'PICO_ACTUATOR_FEEDBACK_TIMEOUT'):
+                await self.arrival(**options)
+        await self.arrival(operation='load',error=.0019)
+        with self.assertRaisesRegex(RuntimeError,'STOP_UNCONFIRMED'):
+            await self.arrival(stop_error=RuntimeError('STOP_UNCONFIRMED'))
+
     def node(self, load='unknown', mode='bimanual_tool', *, error=None, changed=False):
         from types import SimpleNamespace as S
         from unittest.mock import Mock

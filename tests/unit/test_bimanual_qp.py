@@ -988,6 +988,25 @@ class AxialShovelTests(unittest.TestCase):
         self.addCleanup(self.qp.close)
         self.ready=self.cfg['demo']['initial_positions_rad']
 
+    def test_measured_contact_center_is_frozen_at_capture(self):
+        import copy
+        cfg=copy.deepcopy(self.cfg);cfg['grasp_reference_source']='measured_rigid'
+        cfg['demo']['check_grasp_contacts']=False
+        solver=BimanualQP(cfg,self.profile);self.addCleanup(solver.close)
+        q=dict(self.ready);q['arm_r_joint_7']-=.05
+        setter=solver.collision_check.set_contact_centers
+        with patch.object(solver.collision_check,'set_contact_centers',wraps=setter) as update:
+            # Isolate recapture binding from this deliberately skewed CAD pose.
+            with patch.object(solver,'check_path'):solver.capture(q)
+            inverse=np.linalg.inv(solver.tool);recipe=cfg['demo']
+            left=(inverse @ np.r_[recipe['grip_offset_m'],1.])[:3]
+            right=(inverse @ solver.grasp_reference @ np.r_[recipe['right_grip_offset_m'],1.])[:3]
+            expected=float((right-left) @ np.asarray(recipe['shaft_axis_in_tool']))
+            update.assert_called_once_with({n:expected for n,b in recipe['shaft_contacts'].items() if b['grip']=='right'})
+            with patch.object(solver,'_validate_geometry'):
+                solver.check_path(q,[q[n] for n in solver.names])
+            self.assertEqual(update.call_count,1)  # Following cannot move the exemption.
+
     def test_axial_capture_and_relock_preserve_tool_with_grip_checks(self):
         before=self.qp.capture(self.ready)
         axial=self.qp.capture(self.ready,'right_axial')

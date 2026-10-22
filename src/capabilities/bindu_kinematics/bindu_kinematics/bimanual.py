@@ -341,6 +341,17 @@ class BimanualQP:
                 raise ValueError('BIMANUAL_POSTURE_POLICY:'+self._error())
             if self.posture_reference_margin > 0 and not self.lib.bq_posture_reference_margin(self.handle,self.posture_reference_margin):
                 raise ValueError('BIMANUAL_POSTURE_REFERENCE_MARGIN:'+self._error())
+        if self.measured_rigid_grasp and self.collision_check is not None:
+            # Freeze the actual right grip at capture, rather than moving the
+            # contact exemption with later feedback. Width and all gates stay fixed.
+            recipe=self.cfg['demo']
+            if not recipe.get('check_grasp_contacts',False):
+                inverse=np.linalg.inv(self.tool)
+                left=(inverse @ np.r_[recipe['grip_offset_m'],1.])[:3]
+                right=(inverse @ measured @ np.r_[recipe['right_grip_offset_m'],1.])[:3]
+                center=float((right-left) @ np.asarray(recipe['shaft_axis_in_tool']))
+                self.collision_check.set_contact_centers({name:center
+                    for name,band in recipe['shaft_contacts'].items() if band.get('grip')=='right'})
         self.grasp_mode = grasp_mode
         self.grasp_reference = measured.copy()
         out = np.empty((4,4), dtype=np.float64)

@@ -115,6 +115,9 @@ class PicoNode(RuntimeNode):
             raise ValueError('PICO_PREPARE_PRESET_INVALID')
         if not 0 < float(self.cfg['prepare_duration']) <= 60:
             raise ValueError('PICO_PREPARE_DURATION_INVALID')
+        self.prepare_position_tolerance=float(self.cfg.get('prepare_position_tolerance_rad',.002))
+        if not math.isfinite(self.prepare_position_tolerance) or self.prepare_position_tolerance<=0:
+            raise ValueError('PICO_PREPARE_TOLERANCE_INVALID')
         self.control=PicoControl(initial_load=initial_load,simulation_demo=self.simulation_demo,
                                  max_age=float(self.tool_cfg['input_max_age']),guided_loading=self.position_contract,
                                  dual_modes=self.position_contract,direct_grippers=self.position_contract,
@@ -324,6 +327,7 @@ class PicoNode(RuntimeNode):
     async def move(self,intent,targets,duration,*,fit_duration=False):
         self.current(intent)
         if not self.feedback().stopped:raise RuntimeError('PICO_MOTION_REQUIRES_STOP')
+        arrival_tolerance=self.prepare_position_tolerance if intent.operation=='prepare' else .002
         lease=await self.wait(self.leases.call_async(Lease.Request(operation='acquire',
             owner=self.instance_id,resources=list(self.groups))))
         if not lease.ok:raise RuntimeError(lease.code)
@@ -353,7 +357,8 @@ class PicoNode(RuntimeNode):
                     if not candidate.valid(self.profile,self.names):break
                     duration*=.75;curve=candidate
             self.event('PICO_ACTUATOR_STARTED',json.dumps(dict(operation=intent.operation,
-                duration_s=duration,fit_duration=fit_duration,simulated_actuator=self.simulation)))
+                duration_s=duration,position_tolerance_rad=arrival_tolerance,
+                fit_duration=fit_duration,simulated_actuator=self.simulation)))
             started=self.now();command_id=self.instance_id+'_'+str(intent.token)+'_'+uuid.uuid4().hex[:8]
             deadline=time.monotonic()+duration+6.;renew_at=0.;next_submit=0.
             while time.monotonic()<deadline:
@@ -361,8 +366,13 @@ class PicoNode(RuntimeNode):
                 state,measured=self.reading();now=self.now()
                 if state.command_id.startswith(command_id+'_') and state.state=='FAILED':raise RuntimeError(state.code)
                 if (now>=started+duration and seconds(state.feedback_stamp)>=started+duration and
-                        all(abs(measured[n]-v)<.002 for n,v in zip(self.names,end)) and
-                        joints_at_rest(state.joints,self.names,.005)):return
+                        all(abs(measured[n]-v)<arrival_tolerance for n,v in zip(self.names,end)) and
+                        joints_at_rest(state.joints,self.names,.005)):
+                    self.event('PICO_ACTUATOR_ARRIVED',json.dumps(dict(operation=intent.operation,
+                        position_tolerance_rad=arrival_tolerance,
+                        error_rad={n:float(v-measured[n]) for n,v in zip(self.names,end)},
+                        measured_at_rest=True)))
+                    return
                 if time.monotonic()>renew_at:
                     reply=await self.wait(self.leases.call_async(Lease.Request(operation='renew',
                         lease_id=lease.lease_id,epoch=lease.epoch)))
@@ -391,7 +401,7 @@ class PicoNode(RuntimeNode):
                 feedback_stamp=seconds(state.feedback_stamp),
                 target=dict(zip(self.names,end)),measured={n:measured[n] for n in self.names},
                 reference=dict(zip(state.reference.name,state.reference.position)),
-                error_rad=errors,worst_joint=worst,position_tolerance_rad=.002,
+                error_rad=errors,worst_joint=worst,position_tolerance_rad=arrival_tolerance,
                 measured_at_rest=joints_at_rest(state.joints,self.names,.005),
                 velocity_tolerance_rad_s=.005,arrival_confirmed=False)))
             raise RuntimeError(f'PICO_ACTUATOR_FEEDBACK_TIMEOUT:{worst}:error_rad={errors[worst]:.6f}')

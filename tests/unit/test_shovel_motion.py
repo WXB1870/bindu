@@ -55,6 +55,35 @@ class ShovelGeometryTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,'NONFINITE'):
                 checker([bad])
 
+    def test_contact_recenter_preserves_width_and_other_gates_and_clears_pose_cache(self):
+        import time
+        from unittest.mock import patch
+        from bindu_kinematics.tool_geometry import make_collision_checker, GeometryBudgetExceeded
+        recipe=copy.deepcopy(self.recipe);recipe['check_grasp_contacts']=False
+        checker=make_collision_checker(self.urdf,recipe,conservative_convex=True,validation_only=True)
+        centers={name:band['center_m']+.01 for name,band in recipe['shaft_contacts'].items()
+                 if band.get('grip')=='right'}
+        self.assertTrue(centers)
+        checker([self.sample])
+        with patch.object(pin,'buildModelFromUrdf',side_effect=AssertionError('CAD reload')):
+            checker.set_contact_centers(centers)
+        with self.assertRaises(GeometryBudgetExceeded):
+            checker([self.sample],deadline=time.perf_counter()-1)
+        report=checker([self.sample],collect_failures=True)
+        for name,band in recipe['shaft_contacts'].items():
+            expected=dict(band,center_m=centers.get(name,band['center_m']))
+            self.assertEqual(report['shaft_contacts'][name],expected)
+        before=report['shaft_contacts']
+        with self.assertRaisesRegex(ValueError,'INVALID_SHAFT_CONTACT_BAND'):
+            checker.set_contact_centers({next(iter(centers)):100.})
+        with self.assertRaisesRegex(ValueError,'UNKNOWN_SHAFT_CONTACT_LINK'):
+            checker.set_contact_centers({'body_link_2':0.})
+        self.assertEqual(checker([self.sample],collect_failures=True)['shaft_contacts'],before)
+        # Recentring the right-hand band must not hide a tool/body collision.
+        bad=copy.deepcopy(self.sample);bad['tool'][0][3]-=.5
+        with self.assertRaisesRegex(ValueError,'CLEARANCE|COLLISION|GROUND'):
+            checker([bad])
+
     def coupling_sample(self,t,right=None,world=None):
         world=np.eye(4) if world is None else world
         left=np.linalg.inv(np.array(self.config['left_to_tool']).reshape(4,4))
