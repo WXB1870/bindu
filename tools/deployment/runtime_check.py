@@ -25,6 +25,11 @@ def check_installed_configs(paths, share):
 
 def check_runtime(args, robot):
     """Load native libraries/typesupport and construct QP; no targets or device IO."""
+    if args['runtime_mode'] == 'real':
+        from bindu_hardware.snowbot import SnowbotIO
+        # Match the adapter's profile guard before launching any control node.
+        # Construction is passive; no device or ROS publisher is created.
+        SnowbotIO(robot.profile, lambda *_: None, lambda: 0., command_enabled=False)
     from ament_index_python.packages import get_package_share_directory
     from rclpy.type_support import check_for_type_support
     from bindu_kinematics.bimanual import BimanualQP

@@ -12,6 +12,15 @@ from tools.deployment import runtime_check, x86_real
 
 
 class X86DeploymentTests(unittest.TestCase):
+    def test_real_profile_guard_runs_before_native_or_ros_checks(self):
+        from bindu_contracts.profile import Profile
+        from dataclasses import replace
+        profile=Profile.load(x86_real.ROOT/'src/integration/bindu_runtime/config/robots/snowbot/snowbot_real_position.json')
+        for invalid in (replace(profile,name='snowbot_real_position_first_run'),
+                        replace(profile,capabilities=('joint_position','velocity'))):
+            with self.subTest(name=invalid.name),self.assertRaisesRegex(ValueError,'SNOWBOT_PROFILE_REQUIRED'):
+                runtime_check.check_runtime(dict(runtime_mode='real'),NS(profile=invalid))
+
     def test_supported_os_python_pairs_and_abi_rejection(self):
         for release, version, distro in [('22.04', (3, 10), 'humble'), ('24.04', (3, 12), 'jazzy')]:
             info = dict(ID='ubuntu', VERSION_ID=release)
