@@ -559,6 +559,51 @@ class TargetWireTests(unittest.TestCase):
         self.assertFalse(self.d.read_held_reference(None,S()).success)
         self.assertEqual(self.d.publishers['arms'].publish.call_count,sent)
 
+    def expired_completed_pause(self):
+        self.test_startup_enables_once_then_confirms_powered_hold_without_vr()
+        pause = self.d.publishers['arms'].publish.call_args.args[0]
+        self.rig.now += 2.; self.rig.steady += 2.
+        for _ in range(2):
+            self.update_target_feedback(hold=[self.rig.q[n] for n in CONTROL_NAMES],
+                reference_mode=2, segment_id=pause.meta.sequence, trajectory_phase=4,
+                hold_basis=0, reference_valid=True, output_valid=True)
+        servo = self.d.health.states['servo'][1]
+        servo.rejected_session, servo.rejected_sequence = pause.meta.session, pause.meta.sequence
+        servo.reason = 'duplicate_or_expired_frame'
+        self.d.advance_session()
+        return pause
+
+    def test_completed_pause_expired_repeat_allows_fresh_capture_without_sending(self):
+        pause = self.expired_completed_pause()
+        self.assertIn('duplicate_or_expired_frame', self.d.target_fault)
+        sent = self.d.publishers['arms'].publish.call_count
+        lease, epoch = self.rig.engine.acquire('follow', tuple(CONTROL_GROUPS), 2., self.rig.now)
+        self.assertTrue(lease)
+        self.assertNotEqual(self.d.envelopes.session, pause.meta.session)
+        self.assertEqual(self.d.target_fault, '')
+        self.assertEqual(self.d.publishers['arms'].publish.call_count, sent)
+        packet = self.send('new-follow', lease_id=lease, epoch=epoch)
+        self.assertEqual(packet.meta.operation, 1)
+        self.assertIsNotNone(self.d.takeover_pending)
+
+    def test_expired_pause_recovery_requires_completed_unchanged_healthy_hold(self):
+        for fault in ('pending_stop', 'stop_failed', 'target', 'unexpired',
+                      'wrong_sequence', 'hold_changed', 'hold_invalid', 'instance_changed', 'other_rejection'):
+            with self.subTest(fault=fault):
+                self.setUp(); self.expired_completed_pause()
+                metadata = self.d.sent[self.d.envelopes.sequence][0]
+                if fault == 'pending_stop': self.d.io.stop_targets = dict(self.target)
+                elif fault == 'stop_failed': self.d.io.stop_failures = ('vendor_hold',)
+                elif fault == 'target': metadata['operation'] = 0
+                elif fault == 'unexpired': metadata['expires_at_ns'] = round((self.rig.now+1)*1e9)
+                elif fault == 'wrong_sequence': self.d.health.observation.command_sequence += 1
+                elif fault == 'hold_changed': self.d.health.observation.hold_position[0] += .01
+                elif fault == 'hold_invalid': self.d.health.observation.hold_valid = False
+                elif fault == 'instance_changed': self.d.health.states['servo'][1].instance_id += 1
+                else: self.d.target_fault = 'SNOWBOT_TARGET_REJECTED:target_invalid'
+                with self.assertRaisesRegex(RuntimeError, 'TARGET_REJECTED'):
+                    self.d.check_health(CONTROL_GROUPS, acquiring=True)
+
     def test_startup_failure_or_disabled_writes_never_retry_enable(self):
         self.d.node.closing = False
         self.d.startup_hold_state = 'disabled'

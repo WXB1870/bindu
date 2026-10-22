@@ -293,7 +293,24 @@ class PositionSessionDevices:
         self._check_session_health(groups, acquiring=acquiring)
         if self.health.reference_mode:
             if self.target_fault and not (self.io.requesting_pause or self.io.sending_hold):
-                raise RuntimeError(self.target_fault)
+                if not (acquiring and self._completed_pause_rejection()):
+                    raise RuntimeError(self.target_fault)
+
+    def _completed_pause_rejection(self):
+        # An expired repeat of a completed PAUSE cannot poison the next capture.
+        # Keep the rejection recorded; only a successful capture opens a new session.
+        source = self.sent.get(self.envelopes.sequence)
+        if (self.health.reference_mode != 2 or
+                self.target_fault != 'SNOWBOT_TARGET_REJECTED:duplicate_or_expired_frame' or
+                source is None or self.io.targets or self.io.stop_targets or self.io.stop_failures):
+            return False
+        metadata = source[0]
+        request = getattr(self.io, 'pause_request', None)
+        return bool(metadata['operation'] == 2 and
+            source[1] == self.health.states['servo'][1].instance_id and
+            round(self.node.now()*1e9) >= metadata['expires_at_ns'] and
+            request and request[:2] == (metadata['session'], metadata['sequence']) and
+            self.io.pause_targets and self.io.confirmed_stop_targets() == self.io.pause_targets)
 
     def new_session(self):
         self.envelopes = SourceEnvelope(secrets.randbits(64) or 1, self.node.now,
