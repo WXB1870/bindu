@@ -9,6 +9,8 @@
     "command_enabled": false,
     "position_protocol": "session_v1",
     "execution_mode": "position",
+    "trajectory_lead_ms": 60.0,
+    "trajectory_fast_receipt": true,
     "gripper_config": "@runtime/config/robots/snowbot/snowbot_grippers_real.json",
     "vendor_namespace": "/",
     "side": "left",

@@ -35,6 +35,10 @@ def assemble(context):
     common = {'profile': profile, 'runtime_mode': mode, 'run_id': value('run_id', 'manual')}
     parameters = {**common}
     if mode == 'real':
+        parameters.update(trajectory_lead_ms=float(value('trajectory_lead_ms', '60.0')),
+                          trajectory_fast_receipt=value('trajectory_fast_receipt', 'true') == 'true')
+        if value('trajectory_fast_receipt', 'true') not in ('true', 'false'):
+            raise ValueError('SNOWBOT_TRAJECTORY_FAST_RECEIPT')
         parameters.update(command_enabled=enabled == 'true', vendor_namespace=value('vendor_namespace', '/snowbot'),
             position_protocol=value('position_protocol', 'legacy_guard'), execution_mode=value('execution_mode', 'position'),
             **{key: value(key) for key in ('arm_receiver_node', 'servo_receiver_node', 'mid_receiver_node', 'gripper_config')})
@@ -51,6 +55,7 @@ def generate_launch_description():
     defaults = {'runtime_mode': '', 'simulation': '', 'device_backend': '', 'profile': '',
                 'namespace': 'bindu_snowbot', 'run_id': uuid.uuid4().hex, 'vendor_namespace': '/snowbot',
                 'arm_receiver_node': '', 'servo_receiver_node': '', 'mid_receiver_node': '',
+                'trajectory_lead_ms': '60.0', 'trajectory_fast_receipt': 'true',
                 'command_enabled': 'false', 'recording_mode': 'off', 'output': '/tmp/bindu-runs', 'gripper_config': '', 'position_protocol': 'legacy_guard', 'execution_mode': 'position'}
     return LaunchDescription([DeclareLaunchArgument(k, default_value=v) for k, v in defaults.items()]
                              + [OpaqueFunction(function=assemble)])

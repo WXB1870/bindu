@@ -361,6 +361,118 @@ class RealResourceTests(unittest.TestCase):
 
 
 class TrajectoryWireTests(unittest.TestCase):
+    def test_runtime_latency_parameters_wire_guard_without_command_publishers(self):
+        from bindu_runtime.snowbot_position_session import PositionSessionDevices
+        from bindu_contracts.profile import Profile
+        from tests.support.paths import ROOT
+        profile = Profile.load(ROOT/'src/integration/bindu_runtime/config/robots/snowbot/snowbot_vendor_position.json')
+        modules = {'rcl_interfaces': S(), 'rcl_interfaces.msg': S(ParameterDescriptor=lambda **kw: S(**kw)),
+            'snowbot_ctl_msgs': S(), 'snowbot_ctl_msgs.msg': S(PositionObservation=object,
+                PositionSessionCommand=object, PositionSessionState=object),
+            'std_msgs': S(), 'std_msgs.msg': S(Float64MultiArray=object),
+            'rclpy': S(), 'rclpy.qos': S(qos_profile_sensor_data=object())}
+        for fast in (True, False):
+            parameters = dict(trajectory_lead_ms=20., trajectory_fast_receipt=fast)
+            descriptors = {}
+            def declare(key, default, descriptor):
+                descriptors[key] = descriptor
+                parameters.setdefault(key, default)
+                return S(value=parameters[key])
+            node = S(runtime_mode='real', snowbot_execution_mode='position', snowbot_reference_mode=1,
+                now=lambda: 10., declare_parameter=declare,
+                get_parameter=lambda key: S(value=parameters[key]),
+                create_guard_condition=Mock(return_value=Mock()), create_subscription=Mock(), create_publisher=Mock())
+            with patch.dict('sys.modules', modules):
+                devices = PositionSessionDevices(node, profile)
+            self.assertEqual(devices.trajectory.lead_ns, 20_000_000)
+            self.assertTrue(descriptors['trajectory_lead_ms'].read_only)
+            node.create_publisher.assert_not_called()
+            topics = [call.args[1] for call in node.create_subscription.call_args_list]
+            self.assertEqual('/bindu/position/servo_receipt' in topics, fast)
+            if fast:
+                callback = node.create_guard_condition.call_args.args[0]
+                self.assertEqual(callback, devices.advance_session)
+            else:
+                node.create_guard_condition.assert_not_called()
+
+    def receipt(self, rig, packet, *, accepted=True, **changes):
+        rig.devices.receivers = {'head': '/servo_node'}
+        rig.devices.identity = Mock()
+        rig.devices.receipt_wakeup = Mock()
+        data = dict(header=observation(rig.now).header, layer='servo', wire_version=2,
+            reference_mode=1, instance_id=12, feedback_boot_id=rig.devices.health.boot,
+            state='accepted' if accepted else 'rejected', reason='trajectory_late_or_expired',
+            session=packet.meta.session if accepted else 0, sequence=packet.meta.sequence if accepted else 0,
+            rejected_session=0 if accepted else packet.meta.session,
+            rejected_sequence=0 if accepted else packet.meta.sequence)
+        data.update(changes)
+        return S(**data)
+
+    def test_fast_receipt_wakes_existing_tick_without_replacing_health(self):
+        rig = self.binding(); d = rig.devices
+        packet = self.send_source(rig)
+        states = dict(d.health.states)
+        d.receive_receipt(self.receipt(rig, packet))
+        d.receipt_wakeup.trigger.assert_called_once()
+        self.assertIsNotNone(d.pending_trajectory)
+        self.assertEqual(d.health.states, states)
+        self.assertIsNone(d.trajectory.segment)
+        d.advance_session()
+        self.assertIsNone(d.pending_trajectory)
+        self.assertIsNotNone(d.trajectory.segment)
+
+    def test_fast_receipt_requires_matching_identity_time_boot_and_publisher(self):
+        for changes in (dict(instance_id=99), dict(feedback_boot_id=99), dict(sequence=99),
+                        dict(session=99), dict(wire_version=1), dict(reference_mode=0),
+                        dict(layer='middle'), dict(state='following'),
+                        dict(header=observation(9.).header), dict(header=observation(11.).header)):
+            rig = self.binding(); d = rig.devices; packet = self.send_source(rig)
+            d.receive_receipt(self.receipt(rig, packet, **changes))
+            d.receipt_wakeup.trigger.assert_not_called()
+            self.assertIsNotNone(d.pending_trajectory)
+        rig = self.binding(); d = rig.devices; packet = self.send_source(rig)
+        receipt = self.receipt(rig, packet)
+        d.node.get_logger = lambda: S(warn=Mock())
+        d.identity.side_effect = RuntimeError('publisher_conflict')
+        d.receive_receipt(receipt)
+        d.receipt_wakeup.trigger.assert_not_called()
+
+    def test_fast_receipt_cannot_bypass_fault_or_expiry_and_rejection_is_not_acceptance(self):
+        rig = self.binding(); d = rig.devices; packet = self.send_source(rig)
+        d.receive_receipt(self.receipt(rig, packet))
+        d.health.observation.status[0] |= 8
+        d.advance_session()
+        self.assertIsNone(d.trajectory.segment)
+        rig = self.binding(); d = rig.devices; packet = self.send_source(rig)
+        receipt = self.receipt(rig, packet)
+        rig.now += .21
+        d.receive_receipt(receipt)
+        d.receipt_wakeup.trigger.assert_not_called()
+        rig = self.binding(); d = rig.devices; packet = self.send_source(rig)
+        d.receive_receipt(self.receipt(rig, packet, accepted=False))
+        d.advance_session()
+        self.assertIsNone(d.trajectory.segment)
+        self.assertIs(d.trajectory_fault_kind, TrajectoryFault.RECONNECT_REQUIRED)
+
+    def test_receipt_during_slow_publish_is_fenced_at_publish_start(self):
+        rig = self.binding(); d = rig.devices
+        published = rig.now
+        d.publishers['arms'].publish.side_effect = lambda msg: setattr(rig, 'now', rig.now+.003)
+        packet = self.send_source(rig)
+        receipt = self.receipt(rig, packet, header=observation(published+.001).header)
+        d.receive_receipt(receipt)
+        d.receipt_wakeup.trigger.assert_called_once()
+        d.advance_session()
+        self.assertIsNotNone(d.trajectory.segment)
+
+    def test_new_session_keeps_configured_lead_and_discards_old_receipt(self):
+        rig = self.binding(); d = rig.devices
+        d.trajectory_lead_ms = 20.
+        d.trajectory_receipt = (1, object())
+        d.new_session()
+        self.assertEqual(d.trajectory.lead_ns, 20_000_000)
+        self.assertIsNone(d.trajectory_receipt)
+
     def binding(self):
         from bindu_runtime.snowbot_position_session import SessionTrajectory
         rig = PauseHandoffTests(); rig.setUp(); d = rig.devices
@@ -432,7 +544,7 @@ class TrajectoryWireTests(unittest.TestCase):
         rig = self.binding(); d = rig.devices
         first = self.send_source(rig); self.acknowledge(rig, first)
         pending = d.pending_trajectory
-        rig.now += .03; rig.steady += .03
+        rig.now += .041; rig.steady += .041
         d.advance_session()
         self.assertIs(d.pending_trajectory, pending)
         self.assertIsNone(d.trajectory.segment)
@@ -558,6 +670,26 @@ class TrajectoryWireTests(unittest.TestCase):
         self.now += .01
         self.assertIsNone(self.source.command(S(command_id='1', stamp=10., valid_for=.2)))
         self.assertEqual(metadata['expires_at_ns'], 10_200_000_000)
+
+    def test_configurable_lead_preserves_source_deadline_and_future_c2_seed(self):
+        from bindu_runtime.snowbot_position_session import SessionTrajectory
+        for lead in (5., 10., 15., 20., 30., 60., 150.):
+            self.planner = SessionTrajectory(self.profile, lead_ms=lead)
+            self.source = SourceEnvelope(91, lambda: self.now)
+            self.goal['arm_l_joint_1'] += .0001
+            wire, source = self.plan(1)
+            self.assertEqual(wire['effective_at_ns'], round(self.now*1e9)+round(lead*1e6))
+            self.assertEqual(source['expires_at_ns'], round(self.now*1e9)+200_000_000)
+            old, effective = self.planner.segment, self.planner.effective_ns
+            self.now += .01
+            wire, _ = self.plan(2)
+            expected = old.sample((wire['effective_at_ns']-effective)*1e-9)
+            actual = self.planner.segment.sample(0.)
+            for lhs, rhs in zip((actual.q, actual.v, actual.a), (expected.q, expected.v, expected.a)):
+                for a, b in zip(lhs, rhs): self.assertAlmostEqual(a, b, places=10)
+        for lead in (True, '20', float('nan'), float('inf'), 0., 4.99, 150.01):
+            with self.subTest(lead=lead), self.assertRaisesRegex(ValueError, 'LEAD_MS'):
+                SessionTrajectory(self.profile, lead_ms=lead)
 
     def test_noncollinear_retarget_and_pause_continue_predicted_state(self):
         self.goal['arm_l_joint_1'] += .02

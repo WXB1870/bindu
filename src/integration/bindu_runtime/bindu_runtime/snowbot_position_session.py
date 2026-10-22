@@ -18,9 +18,11 @@ class PreparedSessionTrajectory:
 
 class SessionTrajectory:
     """Plan once outside the servo loop; keep one common clock for all axes."""
-    lead_ns = 60_000_000
-
-    def __init__(self, profile):
+    def __init__(self, profile, *, lead_ms=60.):
+        if (isinstance(lead_ms, bool) or not isinstance(lead_ms, (int, float)) or
+                not math.isfinite(lead_ms) or not 5. <= lead_ms <= 150.):
+            raise ValueError('SNOWBOT_TRAJECTORY_LEAD_MS')
+        self.lead_ns = round(lead_ms*1_000_000)
         # The device's existing conservative Follower bounds remain the ceiling.
         # Its faster software profile is not hardware validation. No second
         # limiter is applied after the certified trajectory is sampled.
@@ -191,7 +193,16 @@ class PositionSessionDevices:
         self.health = SessionHealth(node.now, execution_mode=node.snowbot_execution_mode,
                                    reference_mode=getattr(node, 'snowbot_reference_mode', 0))
         self.envelopes = SourceEnvelope(secrets.randbits(64) or 1, node.now)
-        self.trajectory = SessionTrajectory(profile) if self.health.reference_mode else None
+        self.trajectory_lead_ms = node.declare_parameter('trajectory_lead_ms', 60.,
+            descriptor=ParameterDescriptor(read_only=True)).value
+        self.fast_receipt = node.declare_parameter('trajectory_fast_receipt', True,
+            descriptor=ParameterDescriptor(read_only=True)).value
+        if type(self.fast_receipt) is not bool:
+            raise ValueError('SNOWBOT_TRAJECTORY_FAST_RECEIPT')
+        self.trajectory = SessionTrajectory(profile, lead_ms=self.trajectory_lead_ms) if self.health.reference_mode else None
+        self.trajectory_receipt = None
+        self.receipt_wakeup = (node.create_guard_condition(self.advance_session)
+                               if self.health.reference_mode and self.fast_receipt else None)
         self.pending_trajectory = None
         self.trajectory_fault_kind, self.trajectory_fault_reason = TrajectoryFault.NONE, ''
         self.trajectory_instance = None
@@ -213,6 +224,36 @@ class PositionSessionDevices:
             topic = '/bindu/position/'+layer+'_state'
             node.create_subscription(PositionSessionState, topic,
                 lambda msg, l=layer, t=topic, r=receiver: self.receive_state(l, t, r, msg), 1)
+        if self.receipt_wakeup is not None:
+            node.create_subscription(PositionSessionState, '/bindu/position/servo_receipt', self.receive_receipt, 1)
+
+    def receive_receipt(self, msg):
+        """Admission result only; never replace PDO/health or claim physical stop."""
+        try:
+            self.identity('/bindu/position/servo_receipt', self.receivers['head'],
+                          'snowbot_ctl_msgs/msg/PositionSessionState')
+            pending = self.pending_trajectory
+            if pending is None:
+                return
+            metadata, _, instance, _, sent_at = pending
+            if msg.header.stamp.sec < 0 or not 0 <= msg.header.stamp.nanosec < 1_000_000_000:
+                return
+            stamp = msg.header.stamp.sec*1_000_000_000+msg.header.stamp.nanosec
+            identity = ((msg.session, msg.sequence) if msg.state == 'accepted' else
+                        (msg.rejected_session, msg.rejected_sequence))
+            if (msg.layer != 'servo' or msg.wire_version != 2 or msg.reference_mode != 1 or
+                    msg.state not in ('accepted', 'rejected') or msg.instance_id != instance or
+                    msg.feedback_boot_id != self.health.boot or
+                    identity != (metadata['session'], metadata['sequence']) or
+                    not sent_at <= stamp <= round(self.node.now()*1e9) or
+                    round(self.node.now()*1e9) >= metadata['expires_at_ns']):
+                return
+            self.trajectory_receipt = (stamp, msg)
+            # Wake only session settlement in the same mutually exclusive group.
+            # Keep joint-output frequency on the original execution timer.
+            self.receipt_wakeup.trigger()
+        except (ValueError, RuntimeError) as exc:
+            self.node.get_logger().warn(str(exc), throttle_duration_sec=1.)
 
     def identity(self, topic, expected, kind, *, subscription=False):
         method = self.node.get_subscriptions_info_by_topic if subscription else self.node.get_publishers_info_by_topic
@@ -277,7 +318,8 @@ class PositionSessionDevices:
         self.envelopes = SourceEnvelope(secrets.randbits(64) or 1, self.node.now)
         self.io.source_motion = None
         if getattr(getattr(self, 'health', None), 'reference_mode', 0):
-            self.trajectory = SessionTrajectory(self.io.profile)
+            self.trajectory = SessionTrajectory(self.io.profile, lead_ms=getattr(self, 'trajectory_lead_ms', 60.))
+            self.trajectory_receipt = None
             self.pending_trajectory = None
             self.trajectory_fault_kind, self.trajectory_fault_reason = TrajectoryFault.NONE, ''
             self.trajectory_instance = None
@@ -294,24 +336,30 @@ class PositionSessionDevices:
             self.pending_trajectory = pending = None
         if pending:
             metadata, proposal, instance, command_id, sent_at = pending
+            report_at, report = self.health.states.get('servo', (0., None))
+            report_at_ns = round(report_at*1e9)
+            receipt = getattr(self, 'trajectory_receipt', None)
+            if receipt is not None and receipt[0] >= sent_at:
+                report_at_ns, report = receipt
             if self.node.now()*1e9 >= metadata['expires_at_ns']:
                 self.trajectory_fault_kind = TrajectoryFault.RECONNECT_REQUIRED
                 self.trajectory_fault_reason = 'SNOWBOT_TRAJECTORY_ACCEPTANCE_UNCONFIRMED_RECONNECT_REQUIRED'
                 self.pending_trajectory = None
-            elif (ready and servo is not None and servo.instance_id == instance and
-                    getattr(servo, 'rejected_session', 0) == metadata['session'] and
-                    getattr(servo, 'rejected_sequence', 0) == metadata['sequence']):
+            elif (ready and report is not None and report.instance_id == instance and
+                    getattr(report, 'rejected_session', 0) == metadata['session'] and
+                    getattr(report, 'rejected_sequence', 0) == metadata['sequence']):
                 known_reference = self.trajectory.segment is not None
                 self.trajectory_fault_kind = (TrajectoryFault.REJECTED_WITH_REFERENCE if known_reference else
                                               TrajectoryFault.RECONNECT_REQUIRED)
                 self.trajectory_fault_reason = ('SNOWBOT_TRAJECTORY_REJECTED:' if known_reference else
-                    'SNOWBOT_TRAJECTORY_REJECTED_RECONNECT_REQUIRED:')+servo.reason
+                    'SNOWBOT_TRAJECTORY_REJECTED_RECONNECT_REQUIRED:')+report.reason
                 self.pending_trajectory = None
             elif (ready and servo is not None and servo.instance_id == instance and servo.feedback_ready and
                     servo.startup_complete and servo.reference_mode == 1 and
-                    getattr(servo, 'session', 0) == metadata['session'] and
-                    getattr(servo, 'sequence', 0) == metadata['sequence'] and
-                    round(self.health.states['servo'][0]*1e9) >= sent_at):
+                    report is not None and report.instance_id == instance and
+                    getattr(report, 'session', 0) == metadata['session'] and
+                    getattr(report, 'sequence', 0) == metadata['sequence'] and
+                    report_at_ns >= sent_at):
                 self.trajectory.commit(proposal)
                 self.pending_trajectory = None
                 if metadata['operation'] == 2:
@@ -398,11 +446,13 @@ class PositionSessionDevices:
         msg.command.l_arm_position = [float(target[n]) for n in GROUPS['left_arm']]
         msg.command.r_arm_position = [float(target[n]) for n in GROUPS['right_arm']]
         msg.waist_position = [float(target[n]) for n in GROUPS['waist']]
+        sent_at = round(self.node.now()*1e9)
         self.publishers['arms'].publish(msg)
         if self.health.reference_mode:
+            self.trajectory_receipt = None
             self.trajectory_instance = self.health.states['servo'][1].instance_id
             self.pending_trajectory = (metadata, proposal, self.health.states['servo'][1].instance_id,
-                                       msg.meta.source_command_id, round(self.node.now()*1e9))
+                                       msg.meta.source_command_id, sent_at)
             mapping = {k: metadata[k] for k in ('session', 'sequence', 'source_stamp_ns', 'expires_at_ns')}
             mapping.update(segment_id=msg.trajectory.segment_id, effective_at_ns=msg.trajectory.effective_at_ns,
                            lease_id=msg.meta.lease_id, epoch=msg.meta.epoch,

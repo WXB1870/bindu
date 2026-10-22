@@ -98,6 +98,8 @@ def assemble(context):
         pose = json.loads(robot.tool_config.read_text())['demo']['initial_positions_rad']
         execution['kinematic_initial_positions'] = ParameterValue(json.dumps(pose), value_type=str)
     if mode=='real' or position_contract:
+        execution.update(trajectory_lead_ms=ParameterValue(value('trajectory_lead_ms','60.0'), value_type=float),
+                         trajectory_fast_receipt=enabled('trajectory_fast_receipt','true'))
         execution.update(command_enabled=enabled('command_enabled','false'),
             **{key:value(key,default) for key,default in (
                 ('execution_mode','position'),('gripper_config',''),('vendor_namespace','/snowbot'),('position_protocol','legacy_guard'),('arm_receiver_node',''),

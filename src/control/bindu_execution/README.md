@@ -109,6 +109,10 @@ ROS_LOCALHOST_ONLY=1 ROS_DOMAIN_ID=209 python3 -m tests.integration.validate_exe
 
 `describe()`导出每个真实片段的`(start, duration, source_duration, source_elapsed, controls[axis])`；位置控制点采用Bernstein基，每轴4个（cubic）或6个（quintic）。`source_duration==0`时按`elapsed/duration`求值，否则按`(elapsed+source_elapsed)/source_duration`保留原曲线裁剪区间。`from_description(description, limits)`只在非实时侧重建导数、核验片段时间／`q/v/a`接续、动态限制及最终静止条件，不拟合、重排或重定时。轴序、源身份、原期限、时钟异常和真实停止确认由调用方管理；取样、派生帧和心跳都不能续期。到达采样端点也不能报告机器人实际到达。Python同名类提供`target`／`stop`／`describe`／`from_description`／`sample_into`。
 
+`session_v2`的只读启动参数`trajectory_lead_ms`设置从准备开始到曲线切换的提前量，范围5～150ms，兼容默认60ms；新会话保留该配置，缩短提前量不延长原TTL、不改变动态限制或接续时刻的`q/v/a`。`trajectory_fast_receipt=true`接收`/bindu/position/servo_receipt`上的实际接纳／拒绝结果，使用既有`PositionSessionState`类型，只唤醒会话结算，不替换周期健康／PDO反馈，也不提高原关节输出频率。配套servo补丁用有界SPSC队列把后台导入后的最终提交结果交给ROS线程，`position_receipt_poll_ms`默认2ms、允许1～50ms，0关闭快速发布；原50ms状态反馈作为兜底。提前量过短仍按原2ms提交余量拒绝；早期预检拒绝继续走周期状态。旧servo没有快速回执时自动沿用周期回执。
+
+本机可用[时序对比工具](../../../tools/analysis/compare_session_latency.py)扫描提前量及快速／周期回执。工具要求本地Snowbot维护仓库与其准备器生成的`src`，只通过管道连接原生内存探针；覆盖实际曲线准备、导入、提交和回执队列，ROS/DDS、完整ROS节点及硬件时序不在测量范围。20ms目标间隔沿用当前执行配置；`--target-period-ms 0`仅用于队列饱和对照。结果中的最低通过值只适用于记录的本机负载，不能作为现场默认值。
+
 原生消费者可`add_subdirectory(path/to/native)`并链接`bindu::execution_native`；独立安装后也可`find_package(bindu_execution_native CONFIG REQUIRED)`。Python包会将同一份源码与CMake入口安装到`share/bindu_execution/native`，避免servo另写插值器。独立构建不需要ROS、Python或设备SDK：
 
 ```bash
