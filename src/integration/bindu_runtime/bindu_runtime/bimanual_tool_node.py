@@ -287,6 +287,7 @@ class BimanualToolNode(RuntimeNode):
         return future.result()
 
     def begin_stop(self,lease,release=False):
+        instance_id=self.state.instance_id if self.state else ''
         requested=self.now()
         deadline=time.monotonic()+self.profile.stop_timeout+.5
         if release:
@@ -295,14 +296,17 @@ class BimanualToolNode(RuntimeNode):
         else:
             future=self.control_client.call_async(ControlExecution.Request(operation='hold',
                 lease_id=lease.lease_id,epoch=lease.epoch))
-        return future,requested,deadline
+        return future,requested,deadline,instance_id
 
-    async def execution_revision(self,lease,minimum=0):
+    async def execution_revision(self,lease,minimum=0,*,instance_id=None):
         """Read a fresh revision for this lease; late state cannot move it back."""
+        if instance_id is None:
+            instance_id=self.state.instance_id if self.state else ''
         deadline=time.monotonic()+.7
         while time.monotonic()<deadline:
             s=self.state
-            if (s and s.lease_active and s.lease_epoch==lease.epoch and
+            if (s and instance_id and s.instance_id==instance_id and
+                    s.lease_active and s.lease_epoch==lease.epoch and
                     s.profile_hash==self.profile.digest and s.simulated==self.simulation and
                     s.revision>=minimum and
                     0<=self.now()-seconds(s.feedback_stamp)<=self.cfg['feedback_max_age']):
@@ -338,14 +342,14 @@ class BimanualToolNode(RuntimeNode):
         if not await self.stop(lease,request=request):
             return False,accepted,revision
         # Require the stop's newer state, never a delayed pre-stop snapshot.
-        revision=await self.execution_revision(lease,revision+1)
+        revision=await self.execution_revision(lease,revision+1,instance_id=request[3])
         if rejection:
             raise RuntimeError(rejection)
         return True,accepted,revision
 
     async def stop(self,lease,release=False,*,request=None):
-        instance_id=self.state.instance_id if self.state else ''
-        future,requested,deadline=request or self.begin_stop(lease,release)
+        future,requested,deadline,instance_id=request or self.begin_stop(lease,release)
+        expected_epoch=lease.epoch+1 if release else lease.epoch
         revoked_epoch=None
         try:
             reply=await self.wait(future)
@@ -367,7 +371,10 @@ class BimanualToolNode(RuntimeNode):
                         not s.lease_active):
                     await self.pause()
                     continue
-                if (s and s.state not in ('RUNNING','STOPPING') and not s.stop_failures and seconds(s.feedback_stamp)>=requested and
+                if (s and instance_id and s.instance_id==instance_id and
+                        s.profile_hash==self.profile.digest and s.simulated==self.simulation and
+                        s.lease_epoch==expected_epoch and s.lease_active==(not release) and
+                        s.state not in ('RUNNING','STOPPING') and not s.stop_failures and seconds(s.feedback_stamp)>=requested and
                         0 <= self.now()-seconds(s.feedback_stamp)<self.cfg['feedback_max_age'] and
                         not s.reference.name and
                         joints_at_rest(s.joints, self.names, .005) and
@@ -379,6 +386,8 @@ class BimanualToolNode(RuntimeNode):
         s=self.state
         self.event('BIMANUAL_STOP_UNCONFIRMED',json.dumps({
             'state':s.state if s else '', 'code':s.code if s else '',
+            'requested_instance_id':instance_id,'observed_instance_id':s.instance_id if s else '',
+            'expected_epoch':expected_epoch,'observed_epoch':s.lease_epoch if s else None,
             'lease_active':s.lease_active if s else None,
             'reference_count':len(s.reference.name) if s else None,
             'max_controlled_velocity':max((abs(v) for n,v in zip(s.joints.name,s.joints.velocity)

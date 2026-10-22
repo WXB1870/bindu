@@ -71,7 +71,7 @@ class BimanualStopHandoff(unittest.IsolatedAsyncioTestCase):
         self.calls.append(('release', request.lease_id, request.epoch))
         future = asyncio.get_running_loop().create_future()
         future.set_result(S(ok=True))
-        self.node.state = self.state(10, lease_active=False)
+        self.node.state = self.state(10, lease_active=False, lease_epoch=4)
         return future
 
     async def pause(self):
@@ -126,8 +126,56 @@ class BimanualStopHandoff(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.node.event.called)
         self.clock.value = 0.
         self.node.state = self.state(8,lease_epoch=2)
+        self.assertEqual(await self.node.stop_pending(self.lease,None,7),(False,0,7))
+
+    async def test_restart_during_pending_submit_cannot_confirm_old_stop(self):
+        pending = self.pending()
+        self.node.state = self.state(7, 'RUNNING')
+        def restart():
+            pending.set_result(S(accepted=True, revision=8))
+            self.node.state = self.state(9, instance_id='new-executor')
+        self.steps = [restart]
+        self.assertEqual(await self.node.stop_pending(self.lease,pending,7),(False,1,8))
+
+    async def test_normal_hold_requires_matching_instance_epoch_profile_and_mode(self):
+        for changes in ({'instance_id':'new-executor'}, {'lease_epoch':9},
+                        {'profile_hash':'other'}, {'simulated':False}, {'lease_active':False}):
+            with self.subTest(changes=changes):
+                self.clock.value = 0.
+                self.node.state = self.state(7, 'STOPPING')
+                self.steps = [lambda changes=changes:setattr(self.node,'state',self.state(8,**changes))]
+                self.assertFalse(await self.node.stop(self.lease))
+
+    async def test_revision_wait_cannot_cross_execution_instance_restart(self):
+        self.node.state = self.state(7, 'STOPPING')
+        self.steps = [lambda:setattr(self.node,'state',self.state(9,instance_id='new-executor'))]
         with self.assertRaisesRegex(RuntimeError,'REVISION_UNAVAILABLE'):
-            await self.node.stop_pending(self.lease,None,7)
+            await self.node.execution_revision(self.lease,8)
+
+    async def test_release_does_not_use_idle_state_from_newer_unrelated_epoch(self):
+        def unrelated_release(request):
+            future = self.pending()
+            future.set_result(S(ok=True))
+            self.node.state = self.state(10, lease_active=False, lease_epoch=9)
+            return future
+        self.node.lease_client = S(call_async=unrelated_release)
+        self.assertFalse(await self.node.stop(self.lease,release=True))
+
+    async def test_auto_revoked_lease_still_waits_for_original_instance_measured_rest(self):
+        for instance in ('executor-instance', 'new-executor'):
+            with self.subTest(instance=instance):
+                self.clock.value = 0.
+                self.node.state = self.state(7, 'STOPPING', lease_active=False, lease_epoch=4)
+                def already_revoked(request):
+                    future = self.pending()
+                    future.set_result(S(ok=False,code='INVALID_LEASE',lease_id='',epoch=4,
+                                        profile_hash='profile'))
+                    return future
+                self.node.lease_client = S(call_async=already_revoked)
+                self.steps = [lambda instance=instance:setattr(self.node,'state',self.state(
+                    8,lease_active=False,lease_epoch=4,instance_id=instance))]
+                self.assertEqual(await self.node.stop(self.lease,release=True),
+                                 instance=='executor-instance')
 
     async def test_pause_clutch_and_grasp_fence_old_worker_before_wait_and_reset_after(self):
         execute = next(n for n in NODE.body if getattr(n,'name','')=='execute')
