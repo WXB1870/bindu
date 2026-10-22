@@ -283,18 +283,56 @@ class BimanualToolNode(RuntimeNode):
             await self.pause()
         return future.result()
 
-    async def stop(self,lease,release=False):
+    def begin_stop(self,lease,release=False):
         requested=self.now()
+        deadline=time.monotonic()+self.profile.stop_timeout+.5
         if release:
             future=self.lease_client.call_async(Lease.Request(operation='release',
                 lease_id=lease.lease_id,epoch=lease.epoch))
         else:
             future=self.control_client.call_async(ControlExecution.Request(operation='hold',
                 lease_id=lease.lease_id,epoch=lease.epoch))
+        return future,requested,deadline
+
+    async def execution_revision(self,lease,minimum=0):
+        """Read a fresh revision for this lease; late state cannot move it back."""
+        deadline=time.monotonic()+.7
+        while time.monotonic()<deadline:
+            s=self.state
+            if (s and s.lease_active and s.lease_epoch==lease.epoch and
+                    s.profile_hash==self.profile.digest and s.simulated==self.simulation and
+                    s.revision>=minimum and
+                    0<=self.now()-seconds(s.feedback_stamp)<=self.cfg['feedback_max_age']):
+                return s.revision
+            await self.pause()
+        raise RuntimeError('BIMANUAL_EXECUTION_REVISION_UNAVAILABLE')
+
+    async def stop_pending(self,lease,pending,revision):
+        # Sending hold precedes every await. Stop increments Executor.revision;
+        # an old SubmitMotion carries the previous revision and cannot restart.
+        request=self.begin_stop(lease)
+        accepted=0
+        rejection=''
+        if pending is not None:
+            reply=await self.wait(pending)
+            if reply.accepted:
+                accepted=1
+                revision=max(revision,reply.revision)
+            elif reply.code not in ('STALE_REVISION','STOPPING','STALE_OR_UNORDERED'):
+                rejection=reply.code
+        if not await self.stop(lease,request=request):
+            return False,accepted,revision
+        # Require the stop's newer state, never a delayed pre-stop snapshot.
+        revision=await self.execution_revision(lease,revision+1)
+        if rejection:
+            raise RuntimeError(rejection)
+        return True,accepted,revision
+
+    async def stop(self,lease,release=False,*,request=None):
+        future,requested,deadline=request or self.begin_stop(lease,release)
         try:
             reply=await self.wait(future)
             if not reply.ok: return False
-            deadline=time.monotonic()+self.profile.stop_timeout+.5
             while time.monotonic()<deadline:
                 s=self.state
                 if s and ('EMERGENCY_STOP' in s.code or s.code == 'STOP_FEEDBACK_TIMEOUT'):
@@ -364,6 +402,7 @@ class BimanualToolNode(RuntimeNode):
                 except RuntimeError:
                     if time.monotonic()>=startup_deadline: raise
                     await self.pause()
+            submit_revision=await self.execution_revision(lease)
             self.event('BIMANUAL_STARTED',json.dumps({'session_id':session.identity,
                 'teleop_mode':mode.mode,
                 'mode_generation':session.generation,'resource_groups':self.groups,
@@ -389,10 +428,11 @@ class BimanualToolNode(RuntimeNode):
                 self.check(require_input=self.pause_control.phase=='follow')
                 if self.mode_state.generation != session.generation:
                     raise RuntimeError('BIMANUAL_MODE_GENERATION_CHANGED')
-                if pending is not None:
+                if pending is not None and self.pause_control.phase!='pausing':
                     if pending.done():
                         reply=pending.result()
                         if not reply.accepted: raise RuntimeError(reply.code)
+                        submit_revision=max(submit_revision,reply.revision)
                         if not self.trajectory_reference:
                             reference.accept(*pending_reference)
                         else:
@@ -416,16 +456,15 @@ class BimanualToolNode(RuntimeNode):
                         lease_id=lease.lease_id,epoch=lease.epoch))
                     renewal_at,next_renewal=now,now+.3
                 if self.pause_control.phase == 'pausing':
-                    if pending is not None:
-                        reply=await self.wait(pending)
-                        if not reply.accepted: raise RuntimeError(reply.code)
-                        accepted+=1
-                        pending=None
-                    if not await self.stop(lease):
-                        raise RuntimeError('BIMANUAL_PAUSE_STOP_UNCONFIRMED')
                     worker_token+=1
                     self.worker_result=None
                     awaiting=''
+                    ok,settled,submit_revision=await self.stop_pending(lease,pending,submit_revision)
+                    accepted+=settled
+                    pending=None
+                    if not ok:
+                        raise RuntimeError('BIMANUAL_PAUSE_STOP_UNCONFIRMED')
+                    self.worker_result=None
                     reference.reset()
                     pending_reference=None
                     session.reanchor()
@@ -457,18 +496,15 @@ class BimanualToolNode(RuntimeNode):
                         continue
                     session.ingest(left,right,self.now())
                 if session.grasp_generation != last_grasp_generation:
-                    # Finish accepted submissions, stop physically, then fence
-                    # every old worker result and rebuild both VR/QP anchors.
-                    if pending is not None:
-                        reply=await self.wait(pending)
-                        if not reply.accepted: raise RuntimeError(reply.code)
-                        accepted+=1
-                        pending=None
-                    if not await self.stop(lease):
-                        raise RuntimeError('BIMANUAL_GRASP_STOP_UNCONFIRMED')
                     worker_token+=1
                     self.worker_result=None
                     awaiting=''
+                    ok,settled,submit_revision=await self.stop_pending(lease,pending,submit_revision)
+                    accepted+=settled
+                    pending=None
+                    if not ok:
+                        raise RuntimeError('BIMANUAL_GRASP_STOP_UNCONFIRMED')
+                    self.worker_result=None
                     reference.reset()
                     pending_reference=None
                     if isinstance(session,IndependentArmsSession):session.reanchor(preserve_active=True)
@@ -480,16 +516,15 @@ class BimanualToolNode(RuntimeNode):
                     continue
                 if session.mode != last_mode:
                     if session.mode == 'idle':
-                        if pending is not None:
-                            reply=await self.wait(pending)
-                            if not reply.accepted: raise RuntimeError(reply.code)
-                            accepted+=1
-                            pending=None
-                        if not await self.stop(lease):
-                            raise RuntimeError('BIMANUAL_HOLD_UNCONFIRMED')
                         worker_token+=1
                         self.worker_result=None
                         awaiting=''
+                        ok,settled,submit_revision=await self.stop_pending(lease,pending,submit_revision)
+                        accepted+=settled
+                        pending=None
+                        if not ok:
+                            raise RuntimeError('BIMANUAL_HOLD_UNCONFIRMED')
+                        self.worker_result=None
                         reference.reset()
                         pending_reference=None
                     last_mode=session.mode
@@ -552,7 +587,7 @@ class BimanualToolNode(RuntimeNode):
                                     command_id=session.identity+'_'+str(token),
                                     task_id=goal.request.task_id,observation_id=str(token),
                                     profile_hash=self.profile.digest,lease_id=lease.lease_id,epoch=lease.epoch,
-                                    mode='joint_target',resource_group='',resource_groups=list(self.groups),
+                                    expected_revision=submit_revision,mode='joint_target',resource_group='',resource_groups=list(self.groups),
                                     stamp=stamp(work_stamp),valid_for=self.cfg['command_max_age'],
                                     joint_names=list(self.names),positions=list(positions))
                                 pending=self.submit_client.call_async(SubmitMotion.Request(command=command))

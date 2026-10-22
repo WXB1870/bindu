@@ -612,6 +612,7 @@ class SnowbotRosBindingTests(unittest.TestCase):
         profile=Profile.load(CONFIG/'robots/snowbot/snowbot_vendor_position.json')
         devices=PositionSessionDevices.__new__(PositionSessionDevices)
         devices.node=S(now=lambda:10.)
+        devices.health=S(reference_mode=0)
         devices.envelopes=SourceEnvelope(1,devices.node.now)
         io=PositionSessionIO(profile,Mock(),devices.node.now,command_enabled=True)
         io.after_capture=devices.new_session

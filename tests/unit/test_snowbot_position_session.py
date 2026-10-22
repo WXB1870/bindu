@@ -69,6 +69,21 @@ class PositionSessionTests(unittest.TestCase):
         packet = SourceEnvelope(1, lambda: self.now).command(self.motion())
         self.assertEqual(packet['expires_at_ns']-packet['source_stamp_ns'], 200_000_000)
 
+    def test_target_stream_pause_has_own_fixed_stop_deadline(self):
+        source = SourceEnvelope(11, lambda: self.now, target_stream=True)
+        motion = self.motion()
+        ordinary = source.command(motion)
+        self.now += .01
+        pause = source.command(None, pause=True)
+        self.assertEqual(ordinary['expires_at_ns']-ordinary['source_stamp_ns'], 200_000_000)
+        self.assertEqual(pause['expires_at_ns']-pause['source_stamp_ns'], 2_000_000_000)
+        self.assertEqual(pause['operation'], 2)
+        self.now += .02
+        self.assertIsNone(source.command(motion))
+        self.assertEqual(pause['expires_at_ns'], pause['source_stamp_ns']+2_000_000_000)
+        legacy = SourceEnvelope(12, lambda: self.now).command(None, pause=True)
+        self.assertEqual(legacy['expires_at_ns']-legacy['source_stamp_ns'], 200_000_000)
+
     def test_ros_publication_without_pdo_progress_is_rejected(self):
         self.health.require(CONTROL_GROUPS)
         self.now += .041
@@ -365,7 +380,7 @@ class TargetWireTests(unittest.TestCase):
         self.rig = rig = PauseHandoffTests(); rig.setUp()
         self.d = d = rig.devices
         d.health.reference_mode = 2
-        for _, state in d.health.states.values(): state.wire_version = 3
+        for _, state in d.health.states.values(): state.wire_version = 4
         d.health.states['servo'][1].reference_mode = 2
         d.sent, d.target_instance, d.source_identity, d.target_fault = {}, None, None, ''
         d.applied_sequence = 0
@@ -391,7 +406,7 @@ class TargetWireTests(unittest.TestCase):
         return self.d.publishers['arms'].publish.call_args.args[0]
 
     def receipt(self, packet, *, accepted=True, **changes):
-        data = dict(header=observation(self.rig.now).header, layer='servo', wire_version=3,
+        data = dict(header=observation(self.rig.now).header, layer='servo', wire_version=4,
             reference_mode=2, instance_id=12, feedback_boot_id=self.d.health.boot,
             state='accepted' if accepted else 'rejected', reason='target_invalid',
             session=packet.meta.session if accepted else 0, sequence=packet.meta.sequence if accepted else 0,
@@ -399,6 +414,15 @@ class TargetWireTests(unittest.TestCase):
             rejected_sequence=0 if accepted else packet.meta.sequence)
         data.update(changes)
         return S(**data)
+
+    def test_old_wire_three_cannot_pass_target_stream_readiness(self):
+        self.d.health.require(CONTROL_GROUPS)
+        for layer in ('upper', 'middle', 'servo'):
+            state = self.d.health.states[layer][1]
+            state.wire_version = 3
+            with self.assertRaisesRegex(RuntimeError, 'PROTOCOL_CONFLICT:'+layer):
+                self.d.health.require(CONTROL_GROUPS)
+            state.wire_version = 4
 
     def test_runtime_declares_no_lead_or_ack_gate_and_readonly_recipe_has_no_publisher(self):
         from bindu_runtime.snowbot_position_session import PositionSessionDevices
@@ -415,7 +439,10 @@ class TargetWireTests(unittest.TestCase):
             now=lambda: 10., declare_parameter=declare, get_parameter=lambda key: S(value=parameters[key]),
             create_subscription=Mock(), create_publisher=Mock())
         with patch.dict('sys.modules', modules):
-            PositionSessionDevices(node, self.rig.profile)
+            created = PositionSessionDevices(node, self.rig.profile)
+        self.assertEqual(created.envelopes.pause_valid_for, 2.)
+        created.new_session()
+        self.assertEqual(created.envelopes.pause_valid_for, 2.)
         node.create_publisher.assert_not_called()
         self.assertNotIn('trajectory_lead_ms', descriptors)
         self.assertNotIn('trajectory_fast_receipt', descriptors)
@@ -480,7 +507,7 @@ class TargetWireTests(unittest.TestCase):
         self.assertTrue(self.rig.engine.stopping)
         self.assertIsNone(self.rig.io.confirmed_stop_targets())
         self.rig.update(hold=hold,reference_mode=2,segment_id=2,trajectory_phase=4,hold_basis=0,reference_valid=True,output_valid=True)
-        for _,state in self.d.health.states.values():state.wire_version=3
+        for _,state in self.d.health.states.values():state.wire_version=4
         self.d.health.states['servo'][1].reference_mode=2
         self.rig.engine.tick(self.rig.now)
         self.assertIsNone(self.rig.engine.stopping)
@@ -536,7 +563,7 @@ class TargetWireTests(unittest.TestCase):
     def test_receipts_validate_protocol_owner_boot_time_and_endpoint(self):
         packet = self.send()
         events = self.d.node.event.call_count
-        for changes in ({'wire_version':2},{'reference_mode':1},{'instance_id':13},
+        for changes in ({'wire_version':2},{'wire_version':3},{'reference_mode':1},{'instance_id':13},
                 {'feedback_boot_id':9},{'header':S(stamp=S(sec=9,nanosec=1_010_000_000))},
                 {'header':S(stamp=S(sec=-1,nanosec=0))},{'session':0},{'sequence':99},{'layer':'middle'},
                 {'header':observation(self.rig.now+.001).header},
@@ -573,7 +600,7 @@ class TargetWireTests(unittest.TestCase):
             self.rig.now+=.01
             # Keep valid feedback flowing, as a real input loop would.
             self.rig.update()
-            for _,state in self.d.health.states.values():state.wire_version=3
+            for _,state in self.d.health.states.values():state.wire_version=4
             self.d.health.states['servo'][1].reference_mode=2
             self.send('queued-'+str(number))
         self.assertEqual(self.d.envelopes.sequence,1)
@@ -596,7 +623,7 @@ class TargetWireTests(unittest.TestCase):
         self.assertIsNotNone(self.d.takeover_pending)
         self.d.new_session()
         self.rig.update()
-        for _,state in self.d.health.states.values():state.wire_version=3
+        for _,state in self.d.health.states.values():state.wire_version=4
         self.d.health.states['servo'][1].reference_mode=2
         first=self.send('new')
         self.d.receive_receipt(self.receipt(first,accepted=False))
@@ -641,7 +668,7 @@ class TargetWireTests(unittest.TestCase):
         self.send(pause=True)
         hold = [self.target[n] for n in CONTROL_NAMES]
         self.rig.update(hold=hold, reference_mode=2, segment_id=2, trajectory_phase=3, hold_basis=0,reference_valid=True,output_valid=True)
-        for _,state in self.d.health.states.values():state.wire_version=3
+        for _,state in self.d.health.states.values():state.wire_version=4
         self.d.health.states['servo'][1].reference_mode=2
         self.assertIsNone(self.d.health.confirmed_hold(self.d.io.pause_request))
         self.d.health.observation.trajectory_phase=4

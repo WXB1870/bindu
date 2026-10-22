@@ -156,7 +156,7 @@ class SessionHealth:
                 raise RuntimeError('SNOWBOT_STOP_POLICY_UNCONFIRMED')
             if layer == 'servo' and state.control_source != self.execution_mode:
                 raise RuntimeError('SNOWBOT_EXECUTION_MODE_CONFLICT:'+self.execution_mode)
-            if self.reference_mode and (getattr(state, 'wire_version', 0) != 3 or
+            if self.reference_mode and (getattr(state, 'wire_version', 0) != 4 or
                     layer == 'servo' and getattr(state, 'reference_mode', 0) != self.reference_mode):
                 raise RuntimeError('SNOWBOT_TRAJECTORY_PROTOCOL_CONFLICT:'+layer)
         if self.execution_mode == 'impedance':
@@ -175,8 +175,11 @@ class SessionHealth:
 
 class SourceEnvelope:
     """One envelope per accepted Motion; executor ticks cannot renew a target."""
-    def __init__(self, session, now):
+    def __init__(self, session, now, *, target_stream=False):
         self.session, self.now = session, now
+        # A new PAUSE authorizes only braking. Its original deadline is fixed
+        # here; ordinary motion and legacy/impedance TTLs remain 200 ms.
+        self.pause_valid_for = 2. if target_stream else .2
         self.sequence = 0
         self.last_id = None
         self.takeover = True
@@ -187,7 +190,7 @@ class SourceEnvelope:
         if not pause and motion.command_id == self.last_id:
             return None
         source = self.now() if pause else motion.stamp
-        expires = source + (.2 if pause else min(.2, motion.valid_for))
+        expires = source + (self.pause_valid_for if pause else min(.2, motion.valid_for))
         if not source <= self.now() < expires:
             raise RuntimeError('SNOWBOT_SOURCE_COMMAND_EXPIRED')
         self.sequence += 1
@@ -196,7 +199,8 @@ class SourceEnvelope:
         if not pause:
             self.last_id = motion.command_id
         source_ns = round(source*1e9)
-        ttl_ns = min(200_000_000, round((.2 if pause else motion.valid_for)*1e9))
+        ttl_ns = (round(self.pause_valid_for*1e9) if pause else
+                  min(200_000_000, round(motion.valid_for*1e9)))
         return dict(session=self.session, sequence=self.sequence,
                     source_stamp_ns=source_ns, expires_at_ns=source_ns+ttl_ns,
                     operation=operation)

@@ -102,7 +102,8 @@ class PositionSessionDevices:
             ('head', 'servo_receiver_node', '/servo_node'))}
         self.health = SessionHealth(node.now, execution_mode=node.snowbot_execution_mode,
                                    reference_mode=getattr(node, 'snowbot_reference_mode', 0))
-        self.envelopes = SourceEnvelope(secrets.randbits(64) or 1, node.now)
+        self.envelopes = SourceEnvelope(secrets.randbits(64) or 1, node.now,
+                                       target_stream=self.health.reference_mode == 2)
         self.sent = {}
         self.target_instance = None
         self.source_identity = None
@@ -142,7 +143,7 @@ class PositionSessionDevices:
             session = msg.session if msg.state == 'accepted' else msg.rejected_session
             stamp = msg.header.stamp.sec*1_000_000_000+msg.header.stamp.nanosec
             if (msg.header.stamp.sec < 0 or not 0 <= msg.header.stamp.nanosec < 1_000_000_000 or
-                    msg.layer != 'servo' or msg.wire_version != 3 or msg.reference_mode != 2 or
+                    msg.layer != 'servo' or msg.wire_version != 4 or msg.reference_mode != 2 or
                     msg.state not in ('accepted', 'rejected') or msg.instance_id != instance or
                     msg.feedback_boot_id != self.health.boot or session != metadata['session'] or
                     not metadata['source_stamp_ns'] <= stamp < metadata['expires_at_ns'] or
@@ -218,7 +219,8 @@ class PositionSessionDevices:
                 raise RuntimeError(self.target_fault)
 
     def new_session(self):
-        self.envelopes = SourceEnvelope(secrets.randbits(64) or 1, self.node.now)
+        self.envelopes = SourceEnvelope(secrets.randbits(64) or 1, self.node.now,
+                                       target_stream=self.health.reference_mode == 2)
         self.io.source_motion = None
         self.sent = {}
         self.target_instance = None
@@ -249,7 +251,7 @@ class PositionSessionDevices:
                 report.instance_id == instance and getattr(report, 'session', 0) == metadata['session'] and
                 getattr(report, 'sequence', 0) == metadata['sequence'] and
                 metadata['source_stamp_ns'] <= stamp <= now_ns and
-                report.wire_version == 3 and report.reference_mode == 2 and
+                report.wire_version == 4 and report.reference_mode == 2 and
                 (receipt or report.selected and report.feedback_ready and report.startup_complete)):
             self.takeover_pending = None
 
