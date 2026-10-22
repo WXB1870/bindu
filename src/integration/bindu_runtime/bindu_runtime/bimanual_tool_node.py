@@ -329,14 +329,29 @@ class BimanualToolNode(RuntimeNode):
         return True,accepted,revision
 
     async def stop(self,lease,release=False,*,request=None):
+        instance_id=self.state.instance_id if self.state else ''
         future,requested,deadline=request or self.begin_stop(lease,release)
+        revoked_epoch=None
         try:
             reply=await self.wait(future)
-            if not reply.ok: return False
+            if not reply.ok:
+                # A timeout may already have revoked this lease and begun braking.
+                # Releasing that old lease fails; the measured stop is still pending.
+                if not (release and reply.code=='INVALID_LEASE' and instance_id and
+                        not reply.lease_id and reply.epoch==lease.epoch+1 and
+                        reply.profile_hash==self.profile.digest):
+                    return False
+                revoked_epoch=reply.epoch
             while time.monotonic()<deadline:
                 s=self.state
                 if s and ('EMERGENCY_STOP' in s.code or s.code == 'STOP_FEEDBACK_TIMEOUT'):
                     return False
+                if revoked_epoch is not None and not (s and
+                        s.instance_id==instance_id and s.lease_epoch==revoked_epoch and
+                        s.profile_hash==self.profile.digest and s.simulated==self.simulation and
+                        not s.lease_active):
+                    await self.pause()
+                    continue
                 if (s and s.state not in ('RUNNING','STOPPING') and not s.stop_failures and seconds(s.feedback_stamp)>=requested and
                         0 <= self.now()-seconds(s.feedback_stamp)<self.cfg['feedback_max_age'] and
                         not s.reference.name and
