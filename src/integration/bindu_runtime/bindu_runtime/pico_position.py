@@ -144,6 +144,7 @@ class PositionOperations:
                     failed.pop(side,None)
                     expected[side]=(self.config['grippers'][side][mode],self.sequence,n.now(),
                                     time.monotonic()+self.config['motion_timeout']+1.)
+                n.current(intent)  # A stop may have arrived while a request awaited its reply.
                 states={s:self.reading(s) for s in expected}
                 for side,s in states.items():
                     if s.state=='FAULT':

@@ -46,11 +46,63 @@ class DirectGripperTests(unittest.TestCase):
                     r.modes=tuple('open' if i==side else 'virtual' for i in (0,1))
                     r.complete();r.step()
                     self.assertEqual(r.core.phase,'gripper_control')
-                    self.assertFalse(r.click(1,1));self.assertEqual(r.core.phase,'gripper_control')
                     r.triggers[side]=0.;intent=r.step()[-1]
                     target[side]='closed';self.assertEqual(intent.value,tuple(target))
                     r.modes=tuple('closed' if i==side else 'virtual' for i in (0,1))
                     r.complete();self.assertEqual(r.core.phase,'standby')
+
+    def test_b_exits_gripper_operation_without_closing_or_switching_mode(self):
+        for state in ('moving','timed_out','open_complete'):
+            with self.subTest(state=state):
+                r=self.rig();r.modes=('unknown','unknown')
+                r.triggers=[1.,0.];old=r.step()[-1]
+                r.core.gripper_update_token=old.token
+                if state=='open_complete':r.complete();r.step()
+                elif state=='timed_out':r.core.reason='GRIPPER_POSITION_TIMEOUT:left'
+                else:r.stopped=False
+                # B preempts even a simultaneous press on the partner's trigger.
+                r.triggers[1]=1.
+                effects=r.click(1,1)
+                self.assertEqual([e.operation for e in effects],['stop'])
+                self.assertNotEqual(effects[0].token,old.token)
+                self.assertEqual(r.core.reason,'GRIPPER_CONTROL_EXIT_REQUESTED')
+                self.assertEqual(r.core.snapshot(r.now)['operator_guide']['step'],'gripper_stop')
+                self.assertFalse(r.core.complete(old.token,True,now=r.now))
+                r.stopped=True;r.complete()
+                self.assertEqual((r.core.phase,r.core.reason),('standby','GRIPPER_CONTROL_EXITED'))
+                self.assertEqual(r.core.teleop_mode,'independent_arms')
+                self.assertEqual(r.core.feedback.modes,('unknown','unknown'))
+                self.assertEqual(r.core.manual_targets,[None,None])
+                r.triggers=[0.,0.];self.assertFalse(r.step())
+                self.assertIsNone(r.core.pending)
+
+    def test_b_exit_requires_stop_confirmation_and_does_not_queue_held_a(self):
+        for success in (True,False):
+            with self.subTest(success=success):
+                r=self.closing_with_a();old=r.core.pending
+                r.core.gripper_update_token=old.token
+                r.core.reason='GRIPPER_POSITION_TIMEOUT:left'
+                self.assertEqual([e.operation for e in r.click(1,1)],['stop'])
+                r.complete(success,'' if success else 'PICO_GRIPPER_STOP_UNCONFIRMED')
+                self.assertEqual(r.core.phase,'standby' if success else 'locked')
+                if not success:self.assertEqual(r.core.reason,'PICO_GRIPPER_STOP_UNCONFIRMED')
+                for _ in range(60):self.assertFalse(r.step())
+                self.assertIsNone(r.core.pending)
+                self.assertTrue(r.core.prepare_blocked)
+
+    def test_held_a_does_not_hide_gripper_timeout_or_block_new_trigger(self):
+        r=self.closing_with_a();old=r.core.pending
+        r.core.gripper_update_token=old.token
+        r.core.reason='GRIPPER_POSITION_TIMEOUT:left,right'
+        for _ in range(60):self.assertFalse(r.step())
+        self.assertEqual(r.core.reason,'GRIPPER_POSITION_TIMEOUT:left,right')
+        view=r.core.snapshot(r.now)
+        self.assertEqual(view['operator_guide']['step'],'gripper_failed')
+        self.assertIn('左、右',view['operator_guide']['title'])
+        self.assertIn('未确认到位',view['operator_guide']['detail'])
+        r.triggers=[0.,1.];self.assertFalse(r.step())
+        self.assertEqual(r.core.pending.token,old.token)
+        self.assertEqual(r.core.pending.value,('closed','open'))
 
     def test_quick_release_replaces_open_and_ignores_stale_completion(self):
         r=self.rig('held');r.triggers=[1.,0.];opened=r.step()[-1]

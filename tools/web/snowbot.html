@@ -383,6 +383,8 @@ Object.assign(reasons,{
   PREPARE_HOLD_AFTER_GRIPPER_STOP:'夹爪已停稳，正在重新计算 A 的长按时间。',
   GRIPPER_REQUIRES_STOP_AND_RELEASED_SQUEEZE:'夹爪开合需要停稳并松开双侧握，请松开扳机后重新按下。',
   GRIPPER_CONTROL_COMPLETE:'夹爪已闭合停稳，等待下一步操作。',
+  GRIPPER_CONTROL_EXIT_REQUESTED:'已请求停止夹爪并退出，正在等待停稳确认。',
+  GRIPPER_CONTROL_EXITED:'已停止夹爪并退出开合操作；不代表已闭合。',
   TELEOP_MODE_SELECTED:'模式已切换，仍保持当前位置；重新握合才开始跟随。',
   MODE_SWITCH_REQUIRES_STOP:'切模式前请松开双侧握，并等待停稳后重新按 B。',
   PICO_TOOL_HELD_REQUIRES_TOOL_MODE:'已确认装夹共同工具；请使用扫雪模式，卸载后再切普通模式。',
@@ -417,6 +419,10 @@ function graspState(p,fresh){
 }
 function explainReason(reason){
   if(reasons[reason])return reasons[reason];
+  if((reason||'').startsWith('GRIPPER_POSITION_TIMEOUT:')){
+    const sides=reason.split(':')[1].split(',').map(side=>({left:'左',right:'右'}[side]||side)).join('、');
+    return sides+'夹爪开合超时，未到目标位置；可重新操作对应扳机，或按 B 停止并退出。';
+  }
   if((reason||'').includes('joint position outside hard limits'))return '实测关节位置超出本次配方的允许边界，接管已拒绝；请核对下方关节名、位置与范围。';
   if((reason||'').includes('PICO_AXIAL_GRASP_UNAVAILABLE'))return '夹爪尚未标定或未配置虚握开度。';
   if((reason||'').includes('PICO_GRASP_POSITION_CHANGED'))return '夹爪开度偏离当前握持方式，已停止跟随。';

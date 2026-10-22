@@ -380,6 +380,35 @@ class NativeGripperTests(unittest.TestCase):
 
 class DirectOperationTests(unittest.TestCase):
     """Run the real async coordinator and gripper core without ROS or hardware."""
+    def test_stop_during_command_reply_keeps_exit_reason_and_releases(self):
+        from bindu_teleoperation.pico import PicoIntent
+        source=ROOT/'src/integration/bindu_runtime/bindu_runtime/pico_position.py'
+        cls=next(n for n in ast.parse(source.read_text()).body if isinstance(n,ast.ClassDef))
+        method=next(n for n in cls.body if getattr(n,'name','')=='move_grippers')
+        ns=dict(time=__import__('time'),SIDES=SIDES,GROUPS=GROUPS,
+                Lease=S(Request=lambda **kw:S(**kw)))
+        exec(compile(ast.Module(body=[method],type_ignores=[]),str(source),'exec'),ns)
+        intent=PicoIntent(1,'manual_grippers',('open',None))
+        control=S(pending=intent,load='unknown',reason='',gripper_update_token=None)
+        released=[]
+        async def wait(value):return value
+        def current(value):
+            if value.token!=control.pending.token:raise RuntimeError('SUPERSEDED')
+        async def request(operation,*args,**kwargs):
+            if operation=='open':
+                control.pending=PicoIntent(2,'stop')
+                control.reason='GRIPPER_CONTROL_EXIT_REQUESTED'
+        async def release():released.append(True)
+        node=S(control=control,instance_id='offline',now=lambda:10.,current=current,wait=wait)
+        ops=S(node=node,reading=lambda _:None,leases=S(call_async=lambda _:S(ok=True)),
+              config={'grippers':{'left':{'open':-.4}},'motion_timeout':5.},
+              request=request,release=release)
+        with self.assertRaisesRegex(RuntimeError,'SUPERSEDED'):
+            asyncio.run(ns['move_grippers'](ops,intent,direct=True))
+        self.assertEqual(control.reason,'GRIPPER_CONTROL_EXIT_REQUESTED')
+        self.assertEqual(released,[True])
+        self.assertIsNone(control.gripper_update_token)
+
     def test_uncalibrated_manual_entry_does_not_claim_tool_grasp(self):
         from bindu_teleoperation.pico import loading_guide
         path=ROOT/'src/integration/bindu_runtime/bindu_runtime/pico_node.py'
