@@ -9,22 +9,18 @@ SHARE=ROOT/'src/integration/bindu_runtime'
 
 
 class DeploymentTests(unittest.TestCase):
-    def test_trajectory_latency_options_are_typed_and_preserved(self):
+    def test_target_recipe_rejects_retired_curve_options_and_impedance_combination(self):
         recipe=json.loads((SHARE/'config/deployments/snowbot_vr_real.json').read_text())
         with tempfile.TemporaryDirectory() as tmp:
-            path=Path(tmp)/'deploy.json'
-            for lead in (5., 20., 60., 150.):
-                recipe['arguments'].update(trajectory_lead_ms=lead, trajectory_fast_receipt=False)
-                path.write_text(json.dumps(recipe))
-                _, args=load_deployment(path, SHARE)
-                self.assertEqual(float(args['trajectory_lead_ms']), lead)
-                self.assertEqual(args['trajectory_fast_receipt'], 'false')
-            for key, value in (('trajectory_lead_ms',True), ('trajectory_lead_ms',4.),
-                               ('trajectory_lead_ms',151.), ('trajectory_lead_ms','20'),
-                               ('trajectory_fast_receipt','true')):
+            path=Path(tmp)/'deploy.json';path.write_text(json.dumps(recipe))
+            _,args=load_deployment(path,SHARE)
+            self.assertEqual(args['position_protocol'],'session_v3')
+            self.assertEqual(args['command_enabled'],'false')
+            for key,value in (('trajectory_lead_ms',60.),('trajectory_fast_receipt',True),
+                              ('position_protocol','session_v2'),('execution_mode','impedance')):
                 bad=json.loads(json.dumps(recipe));bad['arguments'][key]=value
                 path.write_text(json.dumps(bad))
-                with self.assertRaises(ValueError):load_deployment(path, SHARE)
+                with self.subTest(key=key),self.assertRaises(ValueError):load_deployment(path,SHARE)
     def test_position_assembly_rejects_cross_mode_calibration_before_launch(self):
         from launch import LaunchContext
         from bindu_runtime.teleop_assembly import assemble

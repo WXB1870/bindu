@@ -45,8 +45,10 @@ class SessionHealth:
         if execution_mode not in ("position", "impedance"):
             raise ValueError("SNOWBOT_EXECUTION_MODE")
         self.execution_mode = execution_mode
-        if reference_mode not in (0, 1):
+        if reference_mode not in (0, 2):
             raise ValueError('SNOWBOT_REFERENCE_MODE')
+        if reference_mode and execution_mode != 'position':
+            raise ValueError('SNOWBOT_TARGET_REQUIRES_PURE_POSITION')
         self.reference_mode = reference_mode
         self.now, self.steady = now, steady
         self.states, self.received = {}, {}
@@ -109,11 +111,12 @@ class SessionHealth:
                 not getattr(obs, 'hold_valid', False) or
                 not baseline <= obs.hold_sample < obs.pdo_sample):
             return None
-        if self.reference_mode and (getattr(obs, 'reference_mode', 0) != 1 or
-                getattr(obs, 'segment_id', 0) != sequence or
-                obs.session_reason == 1 and (getattr(obs, 'trajectory_phase', 0) != 4 or
-                    getattr(obs, 'hold_basis', -1) != int(self.execution_mode == 'impedance')) or
-                obs.session_reason == 2 and getattr(obs, 'hold_basis', -1) != 0):
+        if self.reference_mode and (getattr(obs, 'reference_mode', 0) != 2 or
+                getattr(obs, 'segment_id', 0) != sequence or obs.session_reason != 1 or
+                getattr(obs, 'trajectory_phase', 0) != 4 or getattr(obs, 'hold_basis', -1) != 0 or
+                not getattr(obs, 'reference_valid', False) or not getattr(obs, 'output_valid', False)):
+            # Expiry/fault/revocation is not a successful PAUSE. The executor's
+            # original stop budget and measured-rest checks remain authoritative.
             return None
         values = obs.hold_position
         if len(values) != len(CONTROL_NAMES) or not all(math.isfinite(q) for q in values):
@@ -153,7 +156,7 @@ class SessionHealth:
                 raise RuntimeError('SNOWBOT_STOP_POLICY_UNCONFIRMED')
             if layer == 'servo' and state.control_source != self.execution_mode:
                 raise RuntimeError('SNOWBOT_EXECUTION_MODE_CONFLICT:'+self.execution_mode)
-            if self.reference_mode and (getattr(state, 'wire_version', 0) != 2 or
+            if self.reference_mode and (getattr(state, 'wire_version', 0) != 3 or
                     layer == 'servo' and getattr(state, 'reference_mode', 0) != self.reference_mode):
                 raise RuntimeError('SNOWBOT_TRAJECTORY_PROTOCOL_CONFLICT:'+layer)
         if self.execution_mode == 'impedance':

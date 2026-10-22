@@ -5,7 +5,6 @@ import json
 import unittest
 from unittest.mock import Mock, patch
 
-from bindu_runtime.snowbot_position_session import TrajectoryFault
 from bindu_hardware.snowbot import GROUPS
 from bindu_hardware.snowbot_session import ARMS, CONTROL_GROUPS, CONTROL_NAMES, CONTROL_MASK, SLOTS, SessionHealth, SourceEnvelope, decode_observation
 
@@ -360,528 +359,328 @@ class RealResourceTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'FEEDBACK_LAYOUT'): solver.capture(missing)
 
 
-class TrajectoryWireTests(unittest.TestCase):
-    def test_runtime_latency_parameters_wire_guard_without_command_publishers(self):
-        from bindu_runtime.snowbot_position_session import PositionSessionDevices
-        from bindu_contracts.profile import Profile
-        from tests.support.paths import ROOT
-        profile = Profile.load(ROOT/'src/integration/bindu_runtime/config/robots/snowbot/snowbot_vendor_position.json')
-        modules = {'rcl_interfaces': S(), 'rcl_interfaces.msg': S(ParameterDescriptor=lambda **kw: S(**kw)),
-            'snowbot_ctl_msgs': S(), 'snowbot_ctl_msgs.msg': S(PositionObservation=object,
-                PositionSessionCommand=object, PositionSessionState=object),
-            'std_msgs': S(), 'std_msgs.msg': S(Float64MultiArray=object),
-            'rclpy': S(), 'rclpy.qos': S(qos_profile_sensor_data=object())}
-        for fast in (True, False):
-            parameters = dict(trajectory_lead_ms=20., trajectory_fast_receipt=fast)
-            descriptors = {}
-            def declare(key, default, descriptor):
-                descriptors[key] = descriptor
-                parameters.setdefault(key, default)
-                return S(value=parameters[key])
-            node = S(runtime_mode='real', snowbot_execution_mode='position', snowbot_reference_mode=1,
-                now=lambda: 10., declare_parameter=declare,
-                get_parameter=lambda key: S(value=parameters[key]),
-                create_guard_condition=Mock(return_value=Mock()), create_subscription=Mock(), create_publisher=Mock())
-            with patch.dict('sys.modules', modules):
-                devices = PositionSessionDevices(node, profile)
-            self.assertEqual(devices.trajectory.lead_ns, 20_000_000)
-            self.assertTrue(descriptors['trajectory_lead_ms'].read_only)
-            node.create_publisher.assert_not_called()
-            topics = [call.args[1] for call in node.create_subscription.call_args_list]
-            self.assertEqual('/bindu/position/servo_receipt' in topics, fast)
-            if fast:
-                callback = node.create_guard_condition.call_args.args[0]
-                self.assertEqual(callback, devices.advance_session)
-            else:
-                node.create_guard_condition.assert_not_called()
+class TargetWireTests(unittest.TestCase):
+    """Production binding with synthetic messages; no ROS or device access."""
+    def setUp(self):
+        self.rig = rig = PauseHandoffTests(); rig.setUp()
+        self.d = d = rig.devices
+        d.health.reference_mode = 2
+        for _, state in d.health.states.values(): state.wire_version = 3
+        d.health.states['servo'][1].reference_mode = 2
+        d.sent, d.target_instance, d.source_identity, d.target_fault = {}, None, None, ''
+        d.applied_sequence = 0
+        d.takeover_pending = None
+        d.io.trajectory_reference = True
+        d.node.event = Mock(); d.node.get_logger = Mock()
+        d.arm_type = lambda: S(meta=S(), command=S(), trajectory=S(effective_at_ns=0,
+            piece_start=[], duration=[], source_duration=[], source_elapsed=[], control_count=[], controls=[]))
+        d.identity = Mock()
+        d.receivers = {'head': '/servo_node'}
+        d.feedback_topic='/bindu/position/observation'
+        self.target = {n: rig.q[n] for n in CONTROL_NAMES}
 
-    def receipt(self, rig, packet, *, accepted=True, **changes):
-        rig.devices.receivers = {'head': '/servo_node'}
-        rig.devices.identity = Mock()
-        rig.devices.receipt_wakeup = Mock()
-        data = dict(header=observation(rig.now).header, layer='servo', wire_version=2,
-            reference_mode=1, instance_id=12, feedback_boot_id=rig.devices.health.boot,
-            state='accepted' if accepted else 'rejected', reason='trajectory_late_or_expired',
+    def send(self, command_id='move', *, pause=False, **changes):
+        data = dict(command_id=command_id, lease_id='lease', epoch=3, stamp=self.rig.now, valid_for=.2)
+        data.update(changes)
+        self.d.io.source_motion = S(**data)
+        self.d.io.sending_hold = pause
+        try:
+            self.d.send(CONTROL_GROUPS, dict(self.target))
+        finally:
+            self.d.io.sending_hold = False
+        return self.d.publishers['arms'].publish.call_args.args[0]
+
+    def receipt(self, packet, *, accepted=True, **changes):
+        data = dict(header=observation(self.rig.now).header, layer='servo', wire_version=3,
+            reference_mode=2, instance_id=12, feedback_boot_id=self.d.health.boot,
+            state='accepted' if accepted else 'rejected', reason='target_invalid',
             session=packet.meta.session if accepted else 0, sequence=packet.meta.sequence if accepted else 0,
             rejected_session=0 if accepted else packet.meta.session,
             rejected_sequence=0 if accepted else packet.meta.sequence)
         data.update(changes)
         return S(**data)
 
-    def test_fast_receipt_wakes_existing_tick_without_replacing_health(self):
-        rig = self.binding(); d = rig.devices
-        packet = self.send_source(rig)
-        states = dict(d.health.states)
-        d.receive_receipt(self.receipt(rig, packet))
-        d.receipt_wakeup.trigger.assert_called_once()
-        self.assertIsNotNone(d.pending_trajectory)
-        self.assertEqual(d.health.states, states)
-        self.assertIsNone(d.trajectory.segment)
-        d.advance_session()
-        self.assertIsNone(d.pending_trajectory)
-        self.assertIsNotNone(d.trajectory.segment)
+    def test_runtime_declares_no_lead_or_ack_gate_and_readonly_recipe_has_no_publisher(self):
+        from bindu_runtime.snowbot_position_session import PositionSessionDevices
+        modules = {'rcl_interfaces': S(), 'rcl_interfaces.msg': S(ParameterDescriptor=lambda **kw: S(**kw)),
+            'snowbot_ctl_msgs': S(), 'snowbot_ctl_msgs.msg': S(PositionObservation=object,
+                PositionSessionCommand=object, PositionSessionState=object),
+            'std_msgs': S(), 'std_msgs.msg': S(Float64MultiArray=object),
+            'rclpy': S(), 'rclpy.qos': S(qos_profile_sensor_data=object())}
+        parameters = {}; descriptors = {}
+        def declare(key, default, descriptor):
+            descriptors[key] = descriptor; parameters.setdefault(key, default)
+            return S(value=parameters[key])
+        node = S(runtime_mode='real', snowbot_execution_mode='position', snowbot_reference_mode=2,
+            now=lambda: 10., declare_parameter=declare, get_parameter=lambda key: S(value=parameters[key]),
+            create_subscription=Mock(), create_publisher=Mock())
+        with patch.dict('sys.modules', modules):
+            PositionSessionDevices(node, self.rig.profile)
+        node.create_publisher.assert_not_called()
+        self.assertNotIn('trajectory_lead_ms', descriptors)
+        self.assertNotIn('trajectory_fast_receipt', descriptors)
+        self.assertIn('/bindu/position/servo_receipt', [call.args[1] for call in node.create_subscription.call_args_list])
 
-    def test_fast_receipt_requires_matching_identity_time_boot_and_publisher(self):
-        for changes in (dict(instance_id=99), dict(feedback_boot_id=99), dict(sequence=99),
-                        dict(session=99), dict(wire_version=1), dict(reference_mode=0),
-                        dict(layer='middle'), dict(state='following'),
-                        dict(header=observation(9.).header), dict(header=observation(11.).header)):
-            rig = self.binding(); d = rig.devices; packet = self.send_source(rig)
-            d.receive_receipt(self.receipt(rig, packet, **changes))
-            d.receipt_wakeup.trigger.assert_not_called()
-            self.assertIsNotNone(d.pending_trajectory)
-        rig = self.binding(); d = rig.devices; packet = self.send_source(rig)
-        receipt = self.receipt(rig, packet)
-        d.node.get_logger = lambda: S(warn=Mock())
-        d.identity.side_effect = RuntimeError('publisher_conflict')
-        d.receive_receipt(receipt)
-        d.receipt_wakeup.trigger.assert_not_called()
+    def test_targets_keep_joint_order_identity_original_expiry_and_no_curve(self):
+        first = self.send(stamp=self.rig.now-.01, valid_for=.15)
+        self.assertEqual(first.meta.reference_mode, 2)
+        self.assertEqual(first.meta.operation, 1)
+        self.assertEqual((first.meta.source_command_id, first.meta.lease_id, first.meta.epoch), ('move','lease',3))
+        self.assertEqual(first.meta.profile_hash, self.rig.profile.digest)
+        self.assertEqual(first.meta.source_stamp_ns, round((self.rig.now-.01)*1e9))
+        self.assertEqual(first.meta.expires_at_ns-first.meta.source_stamp_ns, 150_000_000)
+        self.assertEqual(first.command.l_arm_position, [self.target[n] for n in GROUPS['left_arm']])
+        self.assertEqual(first.command.r_arm_position, [self.target[n] for n in GROUPS['right_arm']])
+        self.assertEqual(first.waist_position, [self.target[n] for n in GROUPS['waist']])
+        self.assertEqual((first.trajectory.version, first.trajectory.segment_id), (2, 1))
+        self.assertEqual(first.trajectory.effective_at_ns, 0)
+        for field in ('piece_start','duration','source_duration','source_elapsed','control_count','controls'):
+            self.assertEqual(getattr(first.trajectory, field), [])
+        for field, getter, cap in (('max_velocity',self.rig.profile.speed,.25),
+                ('max_acceleration',self.rig.profile.acceleration,.5),('max_jerk',self.rig.profile.jerk,162.)):
+            self.assertEqual(getattr(first.trajectory,field), [min(cap,getter(n)) for n in CONTROL_NAMES])
+        # Only the first takeover has an acceptance barrier. Repeated ticks
+        # never issue a derived frame or renew its original source deadline.
+        self.send(stamp=self.rig.now-.01, valid_for=.15)
+        self.assertEqual(self.d.publishers['arms'].publish.call_count, 1)
+        self.send('waiting-latest')
+        self.assertEqual(self.d.publishers['arms'].publish.call_count,1)
+        self.assertEqual(self.d.envelopes.sequence,1)
+        self.assertEqual(self.d.takeover_pending[0]['expires_at_ns'],first.meta.expires_at_ns)
+        self.d.receive_receipt(self.receipt(first))
+        second = self.send('next')
+        self.assertEqual((second.meta.operation, second.meta.sequence), (0,2))
+        self.assertFalse(hasattr(self.d,'pending_trajectory'))
+        self.assertFalse(hasattr(self.d,'trajectory'))
 
-    def test_fast_receipt_cannot_bypass_fault_or_expiry_and_rejection_is_not_acceptance(self):
-        rig = self.binding(); d = rig.devices; packet = self.send_source(rig)
-        d.receive_receipt(self.receipt(rig, packet))
-        d.health.observation.status[0] |= 8
-        d.advance_session()
-        self.assertIsNone(d.trajectory.segment)
-        rig = self.binding(); d = rig.devices; packet = self.send_source(rig)
-        receipt = self.receipt(rig, packet)
-        rig.now += .21
-        d.receive_receipt(receipt)
-        d.receipt_wakeup.trigger.assert_not_called()
-        rig = self.binding(); d = rig.devices; packet = self.send_source(rig)
-        d.receive_receipt(self.receipt(rig, packet, accepted=False))
-        d.advance_session()
-        self.assertIsNone(d.trajectory.segment)
-        self.assertIs(d.trajectory_fault_kind, TrajectoryFault.RECONNECT_REQUIRED)
+    def test_pause_preempts_without_receipt_and_retains_identity_after_motion_clear(self):
+        first = self.send()
+        self.d.io.source_motion = None
+        self.d.io.sending_hold = True
+        self.d.send(CONTROL_GROUPS, self.target)
+        self.d.io.sending_hold = False
+        pause = self.d.publishers['arms'].publish.call_args.args[0]
+        self.assertEqual(pause.meta.operation,2)
+        self.assertEqual(pause.meta.sequence,2)
+        self.assertEqual(pause.meta.source_command_id,first.meta.source_command_id)
+        self.assertEqual(pause.meta.lease_id,first.meta.lease_id)
+        self.assertEqual(pause.meta.source_stamp_ns, round(self.rig.now*1e9))
+        self.assertIsNone(self.d.takeover_pending)
+        self.assertEqual(self.d.io.pause_request[:2],(pause.meta.session,2))
 
-    def test_receipt_during_slow_publish_is_fenced_at_publish_start(self):
-        rig = self.binding(); d = rig.devices
-        published = rig.now
-        d.publishers['arms'].publish.side_effect = lambda msg: setattr(rig, 'now', rig.now+.003)
-        packet = self.send_source(rig)
-        receipt = self.receipt(rig, packet, header=observation(published+.001).header)
-        d.receive_receipt(receipt)
-        d.receipt_wakeup.trigger.assert_called_once()
-        d.advance_session()
-        self.assertIsNotNone(d.trajectory.segment)
+    def test_pause_from_executor_never_waits_and_keeps_original_stop_budget(self):
+        hold = self.rig.start_stop()
+        self.assertEqual(self.d.publishers['arms'].publish.call_count,2)
+        pause = self.d.publishers['arms'].publish.call_args.args[0]
+        self.assertEqual(pause.meta.operation,2)
+        budget=(self.rig.engine.stop_deadline,self.rig.engine.stop_steady_deadline)
+        self.rig.io.stop();self.rig.io.stop()
+        self.assertEqual(self.d.publishers['arms'].publish.call_count,2)
+        self.assertEqual(budget,(self.rig.engine.stop_deadline,self.rig.engine.stop_steady_deadline))
+        self.assertTrue(self.rig.engine.stopping)
+        self.assertIsNone(self.rig.io.confirmed_stop_targets())
+        self.rig.update(hold=hold,reference_mode=2,segment_id=2,trajectory_phase=4,hold_basis=0,reference_valid=True,output_valid=True)
+        for _,state in self.d.health.states.values():state.wire_version=3
+        self.d.health.states['servo'][1].reference_mode=2
+        self.rig.engine.tick(self.rig.now)
+        self.assertIsNone(self.rig.engine.stopping)
 
-    def test_new_session_keeps_configured_lead_and_discards_old_receipt(self):
-        rig = self.binding(); d = rig.devices
-        d.trajectory_lead_ms = 20.
-        d.trajectory_receipt = (1, object())
-        d.new_session()
-        self.assertEqual(d.trajectory.lead_ns, 20_000_000)
-        self.assertIsNone(d.trajectory_receipt)
+    def test_applied_requires_actual_valid_servo_sample_and_is_distinct_from_accepted(self):
+        packet=self.send()
+        self.d.receive_receipt(self.receipt(packet))
+        self.assertEqual(self.d.node.event.call_args.args[0],'TARGET_ACCEPTED')
+        self.rig.now+=.001;self.rig.steady+=.001
+        stamp=self.rig.now
+        msg=observation(stamp,pdo_sample=self.d.health.sample+1,session_selected=True,
+            session=packet.meta.session,command_sequence=packet.meta.sequence,segment_id=packet.meta.sequence,
+            reference_mode=2,trajectory_phase=1,reference_valid=True,output_valid=True,sample_time_ns=round(stamp*1e9),
+            reference_position=[self.target[n] for n in CONTROL_NAMES],
+            reference_speed=[0.]*16,reference_acceleration=[0.]*16)
+        self.d.receive(msg)
+        self.assertEqual(self.d.node.event.call_args.args[0],'TARGET_ACCEPTED')
+        self.rig.now+=.001;self.rig.steady+=.001
+        msg.header=observation(self.rig.now).header
+        msg.pdo_sample+=1;msg.sample_time_ns=round(self.rig.now*1e9);msg.output_valid=True
+        msg.trajectory_phase=2
+        self.d.receive(msg)
+        self.assertEqual(self.d.node.event.call_args.args[0],'TARGET_APPLIED')
+        count=self.d.node.event.call_count
+        self.d.receive(msg)
+        self.assertEqual(self.d.node.event.call_count,count)
+        self.assertEqual(self.d.io.servo_reference[1],self.target)
 
-    def binding(self):
-        from bindu_runtime.snowbot_position_session import SessionTrajectory
-        rig = PauseHandoffTests(); rig.setUp(); d = rig.devices
-        d.health.reference_mode = 1
-        for _, state in d.health.states.values(): state.wire_version = 2
-        d.health.states['servo'][1].reference_mode = 1
-        d.arm_type = lambda: S(meta=S(), command=S(), trajectory=S())
-        d.node.event = Mock()
-        d.trajectory = SessionTrajectory(rig.profile)
-        d.pending_trajectory, d.trajectory_instance = None, None
-        d.trajectory_fault_kind, d.trajectory_fault_reason = TrajectoryFault.NONE, ''
-        d.io.trajectory_reference = True
-        d.io.wait_for_acceptance = lambda: d.pending_trajectory is not None
-        return rig
+    def test_invalid_source_or_target_is_rejected_before_sequence_or_publish(self):
+        for changes in ({'lease_id':''},{'command_id':'x'*129},{'epoch':True},{'epoch':-1}):
+            with self.subTest(changes=changes), self.assertRaisesRegex(RuntimeError,'IDENTITY'):
+                self.send(**changes)
+            self.assertEqual(self.d.envelopes.sequence,0)
+        self.target['body_joint_1'] = float('nan')
+        with self.assertRaisesRegex(RuntimeError,'TARGET_LAYOUT_OR_LIMIT'): self.send()
+        self.assertEqual(self.d.envelopes.sequence,0)
+        self.d.publishers['arms'].publish.assert_not_called()
 
-    def send_source(self, rig, command_id='source'):
-        d = rig.devices
-        d.io.source_motion = S(command_id=command_id, stamp=rig.now, valid_for=.2, lease_id='lease', epoch=1)
-        d.send(CONTROL_GROUPS, {n: rig.q[n] for n in CONTROL_NAMES})
-        return d.publishers['arms'].publish.call_args.args[0]
+    def test_receipt_is_telemetry_and_old_rejection_cannot_latch_newer_source(self):
+        first = self.send('first');self.d.receive_receipt(self.receipt(first))
+        second = self.send('second')
+        self.d.receive_receipt(self.receipt(first,accepted=False))
+        self.assertEqual(self.d.target_fault,'')
+        self.d.receive_receipt(self.receipt(second))
+        self.assertEqual(self.d.node.event.call_args.args[0],'TARGET_ACCEPTED')
+        self.assertFalse(hasattr(self.d.io,'servo_reference') and self.d.io.servo_reference)
+        self.d.receive_receipt(self.receipt(second,accepted=False))
+        self.assertEqual(self.d.target_fault,'SNOWBOT_TARGET_REJECTED:target_invalid')
+        with self.assertRaisesRegex(RuntimeError,'TARGET_REJECTED'): self.send('third')
+        # A reject never prevents a separately identified PAUSE request.
+        self.assertEqual(self.send('second',pause=True).meta.operation,2)
 
-    def acknowledge(self, rig, msg):
-        servo = rig.devices.health.states['servo'][1]
-        servo.session, servo.sequence = msg.meta.session, msg.meta.sequence
+    def test_receipts_validate_protocol_owner_boot_time_and_endpoint(self):
+        packet = self.send()
+        events = self.d.node.event.call_count
+        for changes in ({'wire_version':2},{'reference_mode':1},{'instance_id':13},
+                {'feedback_boot_id':9},{'header':S(stamp=S(sec=9,nanosec=1_010_000_000))},
+                {'header':S(stamp=S(sec=-1,nanosec=0))},{'session':0},{'sequence':99},{'layer':'middle'},
+                {'header':observation(self.rig.now+.001).header},
+                {'header':observation(self.rig.now-.001).header}):
+            self.d.receive_receipt(self.receipt(packet,**changes))
+            self.assertEqual(self.d.node.event.call_count,events)
+        self.d.identity.side_effect = RuntimeError('wrong publisher')
+        self.d.receive_receipt(self.receipt(packet))
+        self.assertEqual(self.d.node.event.call_count,events)
 
-    def test_health_and_send_never_settle_or_dispatch_deferred_pause(self):
-        rig = self.binding(); d = rig.devices
-        first = self.send_source(rig); self.acknowledge(rig, first)
-        pending = d.pending_trajectory
-        d.io.deferred_pause = True
-        d.node.event.reset_mock()
-        with patch.object(d.io, 'stop') as stop, patch.object(d.trajectory, 'commit', wraps=d.trajectory.commit) as commit:
-            for _ in range(3): d.check_health(CONTROL_GROUPS)
-            self.send_source(rig, 'waiting')
-            self.assertIs(d.pending_trajectory, pending)
-            self.assertIsNone(d.trajectory.segment)
-            self.assertTrue(d.io.deferred_pause)
-            self.assertEqual(d.envelopes.sequence, 1)
-            self.assertEqual(d.publishers['arms'].publish.call_count, 1)
-            commit.assert_not_called(); stop.assert_not_called(); d.node.event.assert_not_called()
-            d.advance_session(); d.advance_session()
-            commit.assert_called_once(); stop.assert_called_once()
-            self.assertEqual(d.node.event.call_count, 1)
-            self.assertEqual(d.node.event.call_args.args[0], 'SEGMENT_ACCEPTED')
-            self.assertFalse(d.io.deferred_pause)
+    def test_restart_requires_reconnect_bounded_bookkeeping_and_old_results_do_not_restore(self):
+        first=self.send('first');self.d.receive_receipt(self.receipt(first))
+        for i in range(40): self.send(str(i))
+        self.assertEqual(len(self.d.sent),32)
+        servo = self.d.health.states['servo'][1]
+        servo.rejected_session,servo.rejected_sequence,servo.reason = self.d.envelopes.session,1,'old_reject'
+        self.d.advance_session()
+        self.assertEqual(self.d.target_fault,'')
+        servo.instance_id += 1
+        self.d.advance_session()
+        self.assertIn('RECONNECT_REQUIRED',self.d.target_fault)
+        servo.instance_id -= 1
+        self.d.advance_session()
+        self.assertIn('RECONNECT_REQUIRED',self.d.target_fault)
+        self.d.new_session()
+        self.assertEqual(self.d.sent,{})
+        self.assertIsNone(self.d.source_identity)
+        self.assertEqual(self.d.target_fault,'')
 
-    def test_fault_category_controls_pause_even_when_reason_text_is_misleading(self):
-        rig = self.binding(); d = rig.devices
-        d.trajectory.segment = object()
-        d.io.stop_targets = {n: rig.q[n] for n in CONTROL_NAMES}
-        for kind, reason, allowed in (
-                (TrajectoryFault.REJECTED_WITH_REFERENCE, 'SNOWBOT_TRAJECTORY_INSTANCE_CHANGED_RECONNECT_REQUIRED', True),
-                (TrajectoryFault.RECONNECT_REQUIRED, 'SNOWBOT_TRAJECTORY_REJECTED:looks_recoverable', False)):
-            with self.subTest(kind=kind):
-                d.trajectory_fault_kind, d.trajectory_fault_reason = kind, reason
-                d.io.requesting_pause = True
-                if allowed: d.check_health(CONTROL_GROUPS)
-                else:
-                    with self.assertRaisesRegex(RuntimeError, reason): d.check_health(CONTROL_GROUPS)
-                d.io.requesting_pause = False
-                with self.assertRaisesRegex(RuntimeError, reason): self.send_source(rig, 'forbidden-target')
-                d.io.deferred_pause = True
-                with patch.object(d.io, 'stop') as stop:
-                    d.advance_session()
-                    self.assertEqual(stop.call_count, int(allowed))
-                self.assertIs(d.trajectory_fault_kind, kind)
+    def test_takeover_only_handshake_preserves_source_expiry_and_latest_target(self):
+        first=self.send('takeover')
+        deadline=first.meta.expires_at_ns
+        for number in range(8):
+            self.rig.now+=.01
+            # Keep valid feedback flowing, as a real input loop would.
+            self.rig.update()
+            for _,state in self.d.health.states.values():state.wire_version=3
+            self.d.health.states['servo'][1].reference_mode=2
+            self.send('queued-'+str(number))
+        self.assertEqual(self.d.envelopes.sequence,1)
+        self.assertEqual(self.d.takeover_pending[0]['expires_at_ns'],deadline)
+        self.assertEqual(self.d.publishers['arms'].publish.call_count,1)
+        self.d.receive_receipt(self.receipt(first))
+        self.assertIsNone(self.d.takeover_pending)
+        self.assertEqual(self.d.publishers['arms'].publish.call_count,1)
+        latest=self.send('queued-7')
+        self.assertEqual(latest.meta.source_command_id,'queued-7')
+        self.assertEqual((latest.meta.sequence,latest.meta.operation),(2,0))
+        self.send('next-without-ack')
+        self.assertEqual(self.d.envelopes.sequence,3)
 
-    def test_stale_ack_cannot_commit_and_late_ack_latches_without_health_side_effects(self):
-        rig = self.binding(); d = rig.devices
-        first = self.send_source(rig); self.acknowledge(rig, first)
-        pending = d.pending_trajectory
-        rig.now += .041; rig.steady += .041
-        d.advance_session()
-        self.assertIs(d.pending_trajectory, pending)
-        self.assertIsNone(d.trajectory.segment)
-        with self.assertRaisesRegex(RuntimeError, 'NOT_ADVANCING'): d.check_health(CONTROL_GROUPS)
-        self.assertIs(d.trajectory_fault_kind, TrajectoryFault.NONE)
-        rig.now += .18; rig.steady += .18
-        d.advance_session()
-        self.assertIsNone(d.pending_trajectory)
-        self.assertIsNone(d.trajectory.segment)
-        self.assertIs(d.trajectory_fault_kind, TrajectoryFault.RECONNECT_REQUIRED)
-        self.assertIn('ACCEPTANCE_UNCONFIRMED', d.trajectory_fault_reason)
-        self.assertEqual([call.args[0] for call in d.node.event.call_args_list], ['SEGMENT_SENT'])
+    def test_takeover_late_ack_rejection_and_restart_cannot_unblock_ordinary_stream(self):
+        first=self.send()
+        self.rig.now+=.201
+        self.d.receive_receipt(self.receipt(first,header=observation(first.meta.source_stamp_ns*1e-9).header))
+        self.assertIn('TAKEOVER_UNCONFIRMED_RECONNECT_REQUIRED',self.d.target_fault)
+        self.assertIsNotNone(self.d.takeover_pending)
+        self.d.new_session()
+        self.rig.update()
+        for _,state in self.d.health.states.values():state.wire_version=3
+        self.d.health.states['servo'][1].reference_mode=2
+        first=self.send('new')
+        self.d.receive_receipt(self.receipt(first,accepted=False))
+        self.assertIn('TARGET_REJECTED',self.d.target_fault)
+        self.d.receive_receipt(self.receipt(first))
+        self.assertIsNotNone(self.d.takeover_pending)
+        self.d.new_session()
+        first=self.send('restart')
+        self.d.health.states['servo'][1].instance_id+=1
+        self.d.receive_receipt(self.receipt(first))
+        self.assertIn('INSTANCE_CHANGED_RECONNECT_REQUIRED',self.d.target_fault)
+        self.assertIsNotNone(self.d.takeover_pending)
 
-    def test_explicit_rejection_allows_one_deferred_pause_from_last_accepted_reference(self):
-        rig = self.binding(); d = rig.devices
-        first = self.send_source(rig); self.acknowledge(rig, first); d.advance_session()
-        accepted = d.trajectory.segment
-        middle = self.send_source(rig, 'rejected')
-        d.io.targets = {n: rig.q[n] for n in CONTROL_NAMES}
-        d.io.stop()
-        self.assertTrue(d.io.deferred_pause)
-        servo = d.health.states['servo'][1]
-        servo.rejected_session, servo.rejected_sequence = middle.meta.session, middle.meta.sequence
-        servo.reason = 'rejected_segment'
-        d.advance_session()
-        pause = d.publishers['arms'].publish.call_args.args[0]
-        self.assertEqual(pause.meta.operation, 2)
-        self.assertEqual(d.publishers['arms'].publish.call_count, 3)
-        self.assertIs(d.trajectory.segment, accepted)
-        self.assertIs(d.trajectory_fault_kind, TrajectoryFault.REJECTED_WITH_REFERENCE)
-        self.assertFalse(d.io.deferred_pause)
-        self.assertFalse(d.io.stop_failures)
-        d.check_health(CONTROL_GROUPS)  # STOPPING can await this permitted PAUSE.
-        d.advance_session()
-        self.assertEqual(d.publishers['arms'].publish.call_count, 3)
-        self.acknowledge(rig, pause); d.advance_session(); d.advance_session()
-        self.assertIs(d.trajectory_fault_kind, TrajectoryFault.NONE)
-        self.assertEqual(d.publishers['arms'].publish.call_count, 3)
-        self.assertTrue(d.io.stop_targets)  # Software ACK still does not confirm physical rest.
+    def test_takeover_selected_state_releases_only_matching_source_and_instance(self):
+        first=self.send()
+        state=self.d.health.states['servo'][1]
+        state.selected=True;state.session=first.meta.session;state.sequence=2
+        state.feedback_boot_id=self.d.health.boot
+        self.d.advance_session();self.assertIsNotNone(self.d.takeover_pending)
+        state.sequence=first.meta.sequence
+        for header,boot in ((S(stamp=S(sec=9,nanosec=1_010_000_000)),self.d.health.boot),
+                (state.header,self.d.health.boot+1)):
+            original=state.header;state.header=header;state.feedback_boot_id=boot
+            self.d.advance_session();self.assertIsNotNone(self.d.takeover_pending)
+            state.header=original
+        state.feedback_boot_id=self.d.health.boot
+        self.d.advance_session();self.assertIsNone(self.d.takeover_pending)
+        self.send('ordinary')
+        self.assertEqual(self.d.envelopes.sequence,2)
 
-    def test_pending_send_keeps_full_endpoint_checks_without_minting_source(self):
-        rig = self.binding(); d = rig.devices
-        del d.check_ready
-        d.receivers = dict(arms='/robot_upperMonitor', middle='/dual_arm_control_node', head='/servo_node')
-        routes = dict(command=('PositionSessionCommand', None, 'arms'),
-                      upper=('PositionSessionUpper', 'arms', 'middle'),
-                      servo=('PositionSessionServo', 'middle', 'head'))
-        queries = []
-        def infos(topic, subscription):
-            queries.append(topic)
-            kind, writer, reader = routes[topic.rsplit('/', 1)[1]]
-            return [S(node_namespace='/', node_name=d.receivers[reader if subscription else writer][1:],
-                      topic_type='snowbot_ctl_msgs/msg/'+kind)]
-        def count(topic):
-            queries.append(topic)
-            return int(topic == '/bindu/position/command')
-        d.node.get_publishers_info_by_topic = lambda t: infos(t, False)
-        d.node.get_subscriptions_info_by_topic = lambda t: infos(t, True)
-        d.node.count_publishers = count
-        self.send_source(rig)
-        for _ in range(3):
-            queries.clear(); self.send_source(rig, 'waiting')
-            self.assertEqual(len(queries), 8)
-        d.node.count_publishers = lambda t: 2 if t == '/bindu/position/command' else 0
-        with self.assertRaisesRegex(RuntimeError, 'COMMAND_PUBLISHER_CONFLICT'): self.send_source(rig, 'conflict')
-        self.assertEqual(d.envelopes.sequence, 1)
-        self.assertEqual(d.publishers['arms'].publish.call_count, 1)
+    def test_old_curve_protocol_and_target_impedance_combination_rejected(self):
+        for mode in (0,1):
+            self.d.health.states['servo'][1].reference_mode=mode
+            with self.assertRaisesRegex(RuntimeError,'PROTOCOL_CONFLICT'): self.d.check_health(CONTROL_GROUPS)
+        with self.assertRaisesRegex(ValueError,'PURE_POSITION'):
+            SessionHealth(lambda:10.,execution_mode='impedance',reference_mode=2)
+        with self.assertRaisesRegex(ValueError,'REFERENCE_MODE'):
+            SessionHealth(lambda:10.,reference_mode=1)
 
-    def test_deferred_pause_failure_stays_inside_original_stop_budgets(self):
-        from bindu_contracts.contracts import Motion
-        rig = self.binding(); d = rig.devices
-        groups = ('left_arm', 'right_arm', 'waist')
-        lease, epoch = rig.engine.acquire('test', groups, 2., rig.now)
-        motion = Motion('inflight', lease, epoch, rig.profile.digest, 'test', '', 'joint_target', '', rig.now, .2,
-            names=tuple(CONTROL_NAMES), positions=tuple(rig.q[n] for n in CONTROL_NAMES), runtime_mode='real',
-            schema_version=2, resource_groups=groups)
-        rig.engine.submit(motion, rig.now); rig.engine.tick(rig.now)
-        first = d.publishers['arms'].publish.call_args.args[0]
-        rig.engine.halt(rig.now, revoke=True)
-        budgets = rig.engine.stop_deadline, rig.engine.stop_steady_deadline
-        self.acknowledge(rig, first)
-        with patch.object(d.io, 'stop', side_effect=RuntimeError('deferred_pause_failed')):
-            d.advance_session()  # Must return so the original engine tick still runs.
-            rig.engine.tick(rig.now)
-        self.assertIs(d.trajectory_fault_kind, TrajectoryFault.RECONNECT_REQUIRED)
-        self.assertEqual(d.trajectory_fault_reason, 'deferred_pause_failed')
-        self.assertIn('vendor_hold', d.io.stop_failures)
-        self.assertTrue(rig.engine.stop_fault.startswith('STOP_UNCONFIRMED'))
-        self.assertEqual((rig.engine.stop_deadline, rig.engine.stop_steady_deadline), budgets)
+    def test_pause_basis_uses_servo_fixed_reference_and_never_claims_measured_rest(self):
+        self.send()
+        self.send(pause=True)
+        hold = [self.target[n] for n in CONTROL_NAMES]
+        self.rig.update(hold=hold, reference_mode=2, segment_id=2, trajectory_phase=3, hold_basis=0,reference_valid=True,output_valid=True)
+        for _,state in self.d.health.states.values():state.wire_version=3
+        self.d.health.states['servo'][1].reference_mode=2
+        self.assertIsNone(self.d.health.confirmed_hold(self.d.io.pause_request))
+        self.d.health.observation.trajectory_phase=4
+        self.d.health.observation.hold_basis=1
+        self.assertIsNone(self.d.health.confirmed_hold(self.d.io.pause_request))
+        self.d.health.observation.hold_basis=0
+        self.assertEqual(self.d.health.confirmed_hold(self.d.io.pause_request),dict(zip(CONTROL_NAMES,hold)))
+        # Normal PAUSE confirmation cannot be fabricated by expiry fallback,
+        # revocation, fault, or invalid sampled output, even at measured rest.
+        for changes in ({'session_reason':2},{'session_reason':3},{'session_reason':7},
+                        {'output_valid':False},{'reference_valid':False}):
+            previous={key:getattr(self.d.health.observation,key) for key in changes}
+            for key,value in changes.items():setattr(self.d.health.observation,key,value)
+            self.assertIsNone(self.d.health.confirmed_hold(self.d.io.pause_request))
+            for key,value in previous.items():setattr(self.d.health.observation,key,value)
 
-    def setUp(self):
-        from tests.support.paths import ROOT
-        from bindu_contracts.profile import Profile
-        from bindu_runtime.snowbot_position_session import SessionTrajectory
-        self.profile = Profile.load(ROOT/'src/integration/bindu_runtime/config/robots/snowbot/snowbot_vendor_position.json')
-        self.planner = SessionTrajectory(self.profile)
-        self.obs = observation(position=[0.]*20)
-        self.obs.position[1], self.obs.position[9] = .2, -.2
-        self.goal = {n: self.obs.position[SLOTS.index(n)] for n in CONTROL_NAMES}
-        self.source = SourceEnvelope(91, lambda: self.now)
-        self.now = 10.
-
-    def plan(self, number, *, pause=False):
-        motion = S(command_id=str(number), stamp=self.now, valid_for=.2)
-        metadata = self.source.command(motion, pause=pause)
-        proposal = self.planner.prepare(metadata, self.goal, self.obs, self.now)
-        self.planner.commit(proposal)  # Fixture explicitly simulates servo acceptance.
-        return proposal.wire, metadata
-
-    def test_real_curve_description_retains_order_clock_and_source_identity(self):
-        from bindu_execution.interpolation import PreparedSegment
-        self.goal['arm_l_joint_1'] += .02
-        self.goal['body_joint_1'] += .01
-        wire, metadata = self.plan(1)
-        self.assertEqual(wire['segment_id'], metadata['sequence'])
-        self.assertEqual(wire['effective_at_ns'], 10_060_000_000)
-        self.assertEqual(len(wire['control_count']), 16*len(wire['duration']))
-        self.assertTrue(all(v <= .25 for v in wire['max_velocity']))
-        self.assertTrue(all(a <= .5 for a in wire['max_acceleration']))
-        imported = PreparedSegment.from_description(self.profile, CONTROL_NAMES, self.planner.segment.describe())
-        for t in (0., .001, .02, imported.end):
-            self.assertEqual(imported.sample(t), self.planner.segment.sample(t))
-        self.now += .01
-        self.assertIsNone(self.source.command(S(command_id='1', stamp=10., valid_for=.2)))
-        self.assertEqual(metadata['expires_at_ns'], 10_200_000_000)
-
-    def test_configurable_lead_preserves_source_deadline_and_future_c2_seed(self):
-        from bindu_runtime.snowbot_position_session import SessionTrajectory
-        for lead in (5., 10., 15., 20., 30., 60., 150.):
-            self.planner = SessionTrajectory(self.profile, lead_ms=lead)
-            self.source = SourceEnvelope(91, lambda: self.now)
-            self.goal['arm_l_joint_1'] += .0001
-            wire, source = self.plan(1)
-            self.assertEqual(wire['effective_at_ns'], round(self.now*1e9)+round(lead*1e6))
-            self.assertEqual(source['expires_at_ns'], round(self.now*1e9)+200_000_000)
-            old, effective = self.planner.segment, self.planner.effective_ns
-            self.now += .01
-            wire, _ = self.plan(2)
-            expected = old.sample((wire['effective_at_ns']-effective)*1e-9)
-            actual = self.planner.segment.sample(0.)
-            for lhs, rhs in zip((actual.q, actual.v, actual.a), (expected.q, expected.v, expected.a)):
-                for a, b in zip(lhs, rhs): self.assertAlmostEqual(a, b, places=10)
-        for lead in (True, '20', float('nan'), float('inf'), 0., 4.99, 150.01):
-            with self.subTest(lead=lead), self.assertRaisesRegex(ValueError, 'LEAD_MS'):
-                SessionTrajectory(self.profile, lead_ms=lead)
-
-    def test_noncollinear_retarget_and_pause_continue_predicted_state(self):
-        self.goal['arm_l_joint_1'] += .02
-        self.plan(1)
-        previous, switch = self.planner.segment, self.planner.effective_ns
-        self.now += .02
-        self.goal['arm_r_joint_1'] -= .01
-        self.plan(2)
-        expected = previous.sample((self.planner.effective_ns-switch)*1e-9)
-        actual = self.planner.segment.sample(0.)
-        for a, b in zip((expected.q, expected.v, expected.a), (actual.q, actual.v, actual.a)):
-            for x, y in zip(a, b): self.assertAlmostEqual(x, y, places=10)
-        previous, switch = self.planner.segment, self.planner.effective_ns
-        self.now += .02
-        wire, metadata = self.plan(3, pause=True)
-        expected = previous.sample((wire['effective_at_ns']-switch)*1e-9)
-        actual = self.planner.segment.sample(0.)
-        for x, y in zip(actual.v, expected.v): self.assertAlmostEqual(x, y, places=10)
-        self.assertLess(wire['effective_at_ns']+self.planner.segment.end*1e9, metadata['expires_at_ns'])
-        self.assertTrue(all(abs(v)<1e-8 for v in self.planner.segment.sample(self.planner.segment.end).v))
-
-    def test_moving_takeover_short_deadline_and_wrong_protocol_are_rejected(self):
-        self.obs.speed[18] = .02
-        with self.assertRaisesRegex(RuntimeError, 'REQUIRES_REST'): self.plan(1)
-        self.obs.speed[18] = 0.
-        with self.assertRaisesRegex(RuntimeError, 'DEADLINE_TOO_SHORT'):
-            self.planner.prepare(dict(operation=1, sequence=1, expires_at_ns=10_050_000_000), self.goal, self.obs, 10.)
-        health = PositionSessionTests(); health.setUp()
-        health.health.reference_mode = 1
-        with self.assertRaisesRegex(RuntimeError, 'PROTOCOL_CONFLICT'): health.health.require(CONTROL_GROUPS)
-        for _, state in health.health.states.values(): state.wire_version=2
-        health.health.states['servo'][1].reference_mode = 1
-        health.health.require(CONTROL_GROUPS)
-
-    def test_conservative_limits_reject_pause_that_cannot_fit_original_ttl(self):
-        from bindu_execution.interpolation import PreparedSegment, State
-        q = tuple(self.goal[n] for n in CONTROL_NAMES)
-        velocity = (.25,)+(0.,)*15
-        goal = list(q); goal[0] += .2
-        previous = PreparedSegment.target(self.planner.profile, CONTROL_NAMES,
-                                          State(q, velocity, (0.,)*16), goal, 0.)
-        self.planner.segment, self.planner.effective_ns = previous, 10_000_000_000
-        with self.assertRaisesRegex(ValueError, 'NO_FEASIBLE_STOP'):
-            self.planner.prepare(dict(operation=2,sequence=2,expires_at_ns=10_200_000_000),
-                                 self.goal,self.obs,10.)
-        self.assertIs(self.planner.segment, previous)
-
-    def test_binding_records_mapping_once_and_checks_pause_reference_basis(self):
-        rig = PauseHandoffTests(); rig.setUp()
-        devices = rig.devices
-        devices.health.reference_mode = 1
-        for _, state in devices.health.states.values(): state.wire_version=2
-        devices.health.states['servo'][1].reference_mode = 1
-        devices.arm_type = lambda: S(meta=S(), command=S(), trajectory=S())
-        devices.node.event = Mock()
-        devices.pending_trajectory, devices.trajectory_instance = None, None
-        devices.trajectory_fault_kind, devices.trajectory_fault_reason = TrajectoryFault.NONE, ''
-        def acknowledge(msg):
-            servo = devices.health.states['servo'][1]
-            servo.session, servo.sequence = msg.meta.session, msg.meta.sequence
-        devices.publishers['arms'].publish.side_effect = acknowledge
-        hold = rig.start_stop('source-v2')
-        sent = [call.args[0] for call in devices.publishers['arms'].publish.call_args_list]
-        self.assertEqual(len(sent), 2)
-        self.assertEqual([p.meta.reference_mode for p in sent], [1, 1])
-        self.assertEqual([p.trajectory.segment_id for p in sent], [1, 2])
-        self.assertEqual([p.meta.source_command_id for p in sent], ['source-v2']*2)
-        self.assertEqual(devices.node.event.call_count, 3)
-        mappings = [json.loads(call.args[1].split(':', 1)[1]) for call in devices.node.event.call_args_list
-                    if call.args[0] == 'SEGMENT_SENT']
-        self.assertEqual(mappings[0]['session'], sent[0].meta.session)
-        self.assertEqual(mappings[0]['expires_at_ns'], sent[0].meta.expires_at_ns)
-        self.assertEqual(mappings[0]['lease_id'], sent[0].meta.lease_id)
-        self.assertEqual(mappings[1]['segment_id'], 2)
-        # A braking reference and an impedance nominal-hold ACK cannot confirm
-        # a position stop. The same identity with its completed basis can.
-        rig.update(hold=hold, reference_mode=1, segment_id=2, trajectory_phase=3, hold_basis=0)
-        for _, state in devices.health.states.values(): state.wire_version=2
-        devices.health.states['servo'][1].reference_mode = 1
-        self.assertIsNone(devices.health.confirmed_hold(rig.io.pause_request))
-        devices.health.observation.trajectory_phase = 4
-        devices.health.observation.hold_basis = 1
-        self.assertIsNone(devices.health.confirmed_hold(rig.io.pause_request))
-        devices.health.observation.hold_basis = 0
-        self.assertEqual(devices.health.confirmed_hold(rig.io.pause_request), dict(zip(CONTROL_NAMES, hold)))
-
-    def test_dropped_rejected_ack_timeout_and_restart_never_advance_fake_reference(self):
-        from bindu_runtime.snowbot_position_session import SessionTrajectory
-        for failure in ('dropped', 'rejected', 'restart'):
-            with self.subTest(failure=failure):
-                rig = PauseHandoffTests(); rig.setUp(); devices = rig.devices
-                devices.health.reference_mode = 1
-                for _, state in devices.health.states.values(): state.wire_version = 2
-                servo = devices.health.states['servo'][1]; servo.reference_mode = 1
-                devices.node.event = Mock(); devices.arm_type = lambda: S(meta=S(), command=S(), trajectory=S())
-                devices.trajectory = SessionTrajectory(rig.profile)
-                devices.pending_trajectory, devices.trajectory_instance = None, None
-                devices.trajectory_fault_kind, devices.trajectory_fault_reason = TrajectoryFault.NONE, ''
-                target = {n: rig.q[n] for n in CONTROL_NAMES}
-                def send(command):
-                    devices.io.source_motion = S(command_id=command, stamp=rig.now, valid_for=.2, lease_id='lease', epoch=1)
-                    devices.send(CONTROL_GROUPS, target)
-                send('accepted')
-                self.assertIsNone(devices.trajectory.segment)  # Publishing is not acceptance.
-                first = devices.publishers['arms'].publish.call_args.args[0]
-                servo.session, servo.sequence = first.meta.session, first.meta.sequence
-                devices.advance_session()
-                confirmed = devices.trajectory.segment
-                send('middle')  # This segment is lost/rejected before servo adoption.
-                middle = devices.publishers['arms'].publish.call_args.args[0]
-                send('latest')
-                self.assertEqual(devices.publishers['arms'].publish.call_count, 2)
-                self.assertEqual(devices.envelopes.sequence, 2)
-                self.assertIs(devices.trajectory.segment, confirmed)
-                if failure == 'rejected':
-                    servo.rejected_session, servo.rejected_sequence = middle.meta.session, middle.meta.sequence
-                    servo.reason = 'trajectory_late_or_expired'
-                    expected = 'TRAJECTORY_REJECTED'
-                elif failure == 'restart':
-                    servo.instance_id += 1; expected = 'INSTANCE_CHANGED_RECONNECT_REQUIRED'
-                else:
-                    rig.now += .201; expected = 'ACCEPTANCE_UNCONFIRMED'
-                devices.advance_session()
-                self.assertIn(expected, devices.trajectory_fault_reason)
-                self.assertIs(devices.trajectory.segment, confirmed)
-                self.assertIsNot(devices.trajectory_fault_kind, TrajectoryFault.NONE)
-                with self.assertRaises(RuntimeError): send('dependent')
-                self.assertEqual(devices.publishers['arms'].publish.call_count, 2)
 
     def test_upstream_goal_waits_for_actual_reference_then_expires_without_fallback(self):
         from bindu_runtime.snowbot_position_session import sampled_nominal_reference
-        rig = PauseHandoffTests(); rig.setUp(); io = rig.io
-        io.trajectory_reference = True
+        io,rig = self.d.io,self.rig
         goal = {n: rig.q[n]+.01 for n in CONTROL_NAMES}
         io.targets = dict(goal); io.reference = dict(goal)
         self.assertEqual(io.reference_positions, {})
-        state = S(lease_active=True, lease_epoch=3,
-                  reference=S(header=observation(rig.now).header, name=[], position=[]))
-        # Service accepted precedes worker adoption/first PDO. New input waits;
-        # it cannot bootstrap another solve from the queued goal.
+        state = S(lease_active=True,lease_epoch=3,reference=S(header=observation(rig.now).header,name=[],position=[]))
         self.assertIsNone(sampled_nominal_reference(state, CONTROL_NAMES, 3, rig.now, .1,
                           wait_until=1.1, steady_now=1.))
         with self.assertRaisesRegex(RuntimeError, 'UNAVAILABLE'):
-            sampled_nominal_reference(state, CONTROL_NAMES, 3, rig.now, .1,
-                                      wait_until=1.1, steady_now=1.11)
-        actual = {n: rig.q[n] for n in CONTROL_NAMES}
-        sampled = rig.now-.005
-        io.servo_reference = (sampled, actual, dict.fromkeys(actual, .03), dict.fromkeys(actual, .1))
-        self.assertEqual(io.reference_positions, actual)
-        self.assertNotEqual(io.reference_positions, goal)
-        state.reference = S(header=observation(sampled).header, name=list(actual), position=list(actual.values()))
-        value, at = sampled_nominal_reference(state, CONTROL_NAMES[::-1], 3, rig.now, .1)
-        self.assertEqual(value, tuple(actual[n] for n in CONTROL_NAMES[::-1]))
-        self.assertAlmostEqual(at, sampled)
-        with self.assertRaisesRegex(RuntimeError, 'OWNER'):
-            sampled_nominal_reference(state, CONTROL_NAMES, 4, rig.now, .1,
-                                      wait_until=2., steady_now=1.)
+            sampled_nominal_reference(state,CONTROL_NAMES,3,rig.now,.1,wait_until=1.1,steady_now=1.11)
+        actual = {n: rig.q[n] for n in CONTROL_NAMES}; sampled=rig.now-.005
+        io.servo_reference=(sampled,actual,dict.fromkeys(actual,.03),dict.fromkeys(actual,.1))
+        self.assertEqual(io.reference_positions,actual)
+        self.assertNotEqual(io.reference_positions,goal)
+        state.reference=S(header=observation(sampled).header,name=list(actual),position=list(actual.values()))
+        value,at=sampled_nominal_reference(state,CONTROL_NAMES[::-1],3,rig.now,.1)
+        self.assertEqual(value,tuple(actual[n] for n in CONTROL_NAMES[::-1]));self.assertAlmostEqual(at,sampled)
+        with self.assertRaisesRegex(RuntimeError,'OWNER'):
+            sampled_nominal_reference(state,CONTROL_NAMES,4,rig.now,.1,wait_until=2.,steady_now=1.)
         rig.now += .03
-        self.assertEqual(io.reference_positions, {})
-
-    def test_pause_waits_for_inflight_acceptance_without_resetting_stop_budget(self):
-        from bindu_contracts.contracts import Motion
-        rig = PauseHandoffTests(); rig.setUp(); d = rig.devices
-        d.health.reference_mode = 1; d.io.trajectory_reference = True
-        d.pending_trajectory, d.trajectory_instance = None, None
-        d.trajectory_fault_kind, d.trajectory_fault_reason = TrajectoryFault.NONE, ''
-        d.io.wait_for_acceptance = lambda: d.pending_trajectory is not None
-        for _, state in d.health.states.values(): state.wire_version = 2
-        d.health.states['servo'][1].reference_mode = 1
-        d.arm_type = lambda: S(meta=S(), command=S(), trajectory=S()); d.node.event = Mock()
-        groups = ('left_arm','right_arm','waist')
-        lease, epoch = rig.engine.acquire('test', groups, 2., rig.now)
-        names = tuple(CONTROL_NAMES)
-        motion = Motion('inflight',lease,epoch,rig.profile.digest,'test','','joint_target','',rig.now,.2,
-                        names=names,positions=tuple(rig.q[n] for n in names),runtime_mode='real',
-                        schema_version=2,resource_groups=groups)
-        rig.engine.submit(motion,rig.now);rig.engine.tick(rig.now)
-        first = d.publishers['arms'].publish.call_args.args[0]
-        rig.engine.halt(rig.now,revoke=True)
-        budget = rig.engine.stop_deadline
-        self.assertTrue(rig.io.deferred_pause);self.assertTrue(rig.engine.stopping)
-        self.assertFalse(rig.io.stop_failures);self.assertEqual(d.publishers['arms'].publish.call_count,1)
-        servo = d.health.states['servo'][1];servo.session,servo.sequence = first.meta.session,first.meta.sequence
-        d.advance_session(); d.advance_session()
-        self.assertFalse(rig.io.deferred_pause)
-        self.assertEqual(d.publishers['arms'].publish.call_count,2)
-        pause = d.publishers['arms'].publish.call_args.args[0]
-        self.assertEqual(pause.meta.operation,2);self.assertEqual(rig.engine.stop_deadline,budget)
-        expiry = pause.meta.expires_at_ns
-        rig.io.stop();rig.io.stop()
-        self.assertEqual(d.publishers['arms'].publish.call_count,2)
-        self.assertEqual(d.pending_trajectory[0]['expires_at_ns'],expiry)
+        self.assertEqual(io.reference_positions,{})
 
 
 if __name__ == '__main__':

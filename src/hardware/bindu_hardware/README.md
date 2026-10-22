@@ -218,6 +218,8 @@ ROS_LOCALHOST_ONLY=1 ROS_DOMAIN_ID=226 python3 -m tests.integration.validate_sno
 
 `session_v1`使用独立位置会话与`PositionObservation`，真实场景以腰部2轴＋双臂14轴为一个控制组接管、联合求解和停止；完整模型仍要求其余关节具备新鲜实测，不补零。腰部目标与双臂共用原目标身份／期限，在三个独立封包内透传，servo单处Follower输出由原PT／CSP接口发送，不再把新腰目标串入旧腰部插补。暂停回传16轴固定保持点、采样号及会话／PAUSE序号；腰部回执对应实际编码器目标的量化值，执行器仍按原位置／速度容差及预算确认新鲜实测停稳，回执本身不表示物理停止。接管只改变受控组使能，不改变旧全局使能或头部／夹爪资源。新字段仅扩展独立消息，全部使用方须统一构建。期限要求控制链同机部署；共同向量限幅的适用边界、停止策略和现场条件见[修改目标](../../../../../snowbot/位置遥操作修改目标.md#暂停确认资源与异常停止策略)。
 
+真实腰臂遥操的新装配为`session_v3`：仅发送16轴目标（左J1～7、右J1～7、腰J1～2，rad）及源身份／原期限，servo显式`target_stream`路径后台生成、统一采样。普通目标与PAUSE不依赖上一轨迹接纳；新路径的停止参考只接受正常PAUSE有效输出，过期／故障保持不能冒充成功。`legacy_guard/session_v1`设备接口保留；旧上层曲线`session_v2`已从本轮装配退休。配对、动态限制和纯位置边界见[运行装配](../../integration/bindu_runtime/README.md#扫雪遥操作)。
+
 `session_v1`只读预检同时比较本机生成消息与各层端点的类型哈希，并按实际发布／订阅方向核对QoS；缺失／未知元数据或不兼容均不报告可用。探测仅增加被动订阅，不创建运动发布者或调用控制服务。ROS元数据语义见[端点信息](https://github.com/ros2/rclpy/blob/jazzy/rclpy/rclpy/topic_endpoint_info.py)及[QoS检查](https://github.com/ros2/rclpy/blob/jazzy/rclpy/rclpy/qos.py)。
 
 以下为`legacy_guard`接口：在目标ROS环境构建／加载原包的`snowbot_ctl_msgs`，然后构建并加载Bindu。启用写入时，现场底层控制版本必须应用补丁、上层启动为`control_source:=topic`、伺服节点启动为`bindu_guard:=true`；后者默认false，保留原有控制入口。未补丁的底层节点仍可用于只读观察，适配器拒绝取得控制权。底层全包的硬编码依赖路径和ARM64构建仍需现场验证，准备成功不代表已构建／部署。

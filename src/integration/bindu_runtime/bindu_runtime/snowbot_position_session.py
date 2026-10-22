@@ -2,81 +2,9 @@
 import secrets
 import json
 import math
-from dataclasses import dataclass, replace
-from enum import Enum
 
 from bindu_hardware.snowbot import SnowbotIO, GROUPS
-from bindu_hardware.snowbot_session import CONTROL_GROUPS, CONTROL_NAMES, SLOTS, SessionHealth, SourceEnvelope
-
-
-@dataclass(frozen=True)
-class PreparedSessionTrajectory:
-    segment: object
-    effective_ns: int
-    wire: dict
-
-
-class SessionTrajectory:
-    """Plan once outside the servo loop; keep one common clock for all axes."""
-    def __init__(self, profile, *, lead_ms=60.):
-        if (isinstance(lead_ms, bool) or not isinstance(lead_ms, (int, float)) or
-                not math.isfinite(lead_ms) or not 5. <= lead_ms <= 150.):
-            raise ValueError('SNOWBOT_TRAJECTORY_LEAD_MS')
-        self.lead_ns = round(lead_ms*1_000_000)
-        # The device's existing conservative Follower bounds remain the ceiling.
-        # Its faster software profile is not hardware validation. No second
-        # limiter is applied after the certified trajectory is sampled.
-        dynamics = dict(profile.joint_dynamics)
-        for name in CONTROL_NAMES:
-            dynamics[name] = dict(velocity=min(.25, profile.speed(name)),
-                                  acceleration=min(.5, profile.acceleration(name)),
-                                  jerk=min(162., profile.jerk(name)))
-        self.profile = replace(profile, joint_dynamics=dynamics)
-        self.segment = None
-        self.effective_ns = 0
-
-    def prepare(self, metadata, target, observation, now):
-        from bindu_execution.interpolation import PreparedSegment, State
-        effective = max(round(now*1e9)+self.lead_ns, self.effective_ns+1)
-        remaining = (metadata['expires_at_ns']-effective)*1e-9
-        if remaining <= .005:
-            raise RuntimeError('SNOWBOT_TRAJECTORY_DEADLINE_TOO_SHORT')
-        takeover = metadata['operation'] == 1
-        if takeover or self.segment is None:
-            if any(abs(observation.speed[SLOTS.index(n)]) > .01 for n in CONTROL_NAMES):
-                raise RuntimeError('SNOWBOT_TRAJECTORY_TAKEOVER_REQUIRES_REST')
-            state = State.rest(observation.position[SLOTS.index(n)] for n in CONTROL_NAMES)
-        else:
-            state = self.segment.sample((effective-self.effective_ns)*1e-9)
-        if metadata['operation'] == 2:
-            segment = PreparedSegment.stop(replace(self.profile, stop_timeout=remaining),
-                                           CONTROL_NAMES, state, 0.)
-        else:
-            segment = PreparedSegment.target(self.profile, CONTROL_NAMES, state,
-                                             tuple(target[n] for n in CONTROL_NAMES), 0.)
-        description = segment.describe()
-        if len(description) > 64:
-            raise RuntimeError('SNOWBOT_TRAJECTORY_PIECE_CAPACITY')
-        wire = dict(version=1, segment_id=metadata['sequence'], effective_at_ns=effective,
-                    piece_start=[], duration=[], source_duration=[], source_elapsed=[],
-                    control_count=[], controls=[])
-        for start, duration, source_duration, source_elapsed, axes in description:
-            wire['piece_start'].append(start)
-            wire['duration'].append(duration)
-            wire['source_duration'].append(source_duration)
-            wire['source_elapsed'].append(source_elapsed)
-            for controls in axes:
-                wire['control_count'].append(len(controls))
-                wire['controls'].extend(controls)
-        for field, getter in (('max_velocity', self.profile.speed),
-                              ('max_acceleration', self.profile.acceleration),
-                              ('max_jerk', self.profile.jerk)):
-            wire[field] = [getter(n) for n in CONTROL_NAMES]
-        return PreparedSessionTrajectory(segment, effective, wire)
-
-    def commit(self, proposal):
-        # Only a matching servo acceptance may advance the nominal timeline.
-        self.segment, self.effective_ns = proposal.segment, proposal.effective_ns
+from bindu_hardware.snowbot_session import CONTROL_GROUPS, CONTROL_NAMES, SessionHealth, SourceEnvelope
 
 
 def sampled_nominal_reference(state, names, epoch, now, max_age, *, wait_until=None, steady_now=None):
@@ -99,7 +27,6 @@ class PositionSessionIO(SnowbotIO):
     requesting_pause = False
     trajectory_reference = False
     servo_reference = None
-    deferred_pause = False
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -114,7 +41,6 @@ class PositionSessionIO(SnowbotIO):
         super().capture(groups)
         self.pause_request = self.pause_targets = None
         self.servo_reference = None
-        self.deferred_pause = False
         self.after_capture()
 
     def sampled_reference(self):
@@ -146,28 +72,12 @@ class PositionSessionIO(SnowbotIO):
         return self.pause_targets if targets == self.pause_targets else {}
 
     def stop(self):
-        # A healthy measured pause is still possible after a target expires.
-        # Bus/drive faults and invalid measurements remain blocking conditions.
         previous = self.requesting_pause
         self.requesting_pause = True
         try:
-            if self.trajectory_reference and self.targets:
-                self.require_feedback(CONTROL_GROUPS)
-                if self.targets and self.wait_for_acceptance():
-                    if not self.deferred_pause:
-                        self.stop_requested_at = self.now()
-                        self.stop_targets = {n: self.last_feedback.positions[n] for n in CONTROL_NAMES}
-                    self.deferred_pause = True
-                    return  # STOPPING waits within the original source/stop budgets.
             return super().stop()
         finally:
             self.requesting_pause = previous
-
-
-class TrajectoryFault(Enum):
-    NONE = 0
-    REJECTED_WITH_REFERENCE = 1
-    RECONNECT_REQUIRED = 2
 
 
 class PositionSessionDevices:
@@ -193,25 +103,17 @@ class PositionSessionDevices:
         self.health = SessionHealth(node.now, execution_mode=node.snowbot_execution_mode,
                                    reference_mode=getattr(node, 'snowbot_reference_mode', 0))
         self.envelopes = SourceEnvelope(secrets.randbits(64) or 1, node.now)
-        self.trajectory_lead_ms = node.declare_parameter('trajectory_lead_ms', 60.,
-            descriptor=ParameterDescriptor(read_only=True)).value
-        self.fast_receipt = node.declare_parameter('trajectory_fast_receipt', True,
-            descriptor=ParameterDescriptor(read_only=True)).value
-        if type(self.fast_receipt) is not bool:
-            raise ValueError('SNOWBOT_TRAJECTORY_FAST_RECEIPT')
-        self.trajectory = SessionTrajectory(profile, lead_ms=self.trajectory_lead_ms) if self.health.reference_mode else None
-        self.trajectory_receipt = None
-        self.receipt_wakeup = (node.create_guard_condition(self.advance_session)
-                               if self.health.reference_mode and self.fast_receipt else None)
-        self.pending_trajectory = None
-        self.trajectory_fault_kind, self.trajectory_fault_reason = TrajectoryFault.NONE, ''
-        self.trajectory_instance = None
+        self.sent = {}
+        self.target_instance = None
+        self.source_identity = None
+        self.target_fault = ''
+        self.applied_sequence = 0
+        self.takeover_pending = None
         self.io = PositionSessionIO(profile, self.send, node.now,
                             command_enabled=node.get_parameter('command_enabled').value,
                             simulated=False, check_ready=self.check_ready, check_health=self.check_health)
         self.io.source_motion = None
         self.io.trajectory_reference = bool(self.health.reference_mode)
-        self.io.wait_for_acceptance = lambda: self.pending_trajectory is not None
         self.io.after_capture = lambda: self.new_session()
         self.io.pause_feedback = self.health.confirmed_hold
         self.arm_type, self.array_type = PositionSessionCommand, Float64MultiArray
@@ -224,34 +126,34 @@ class PositionSessionDevices:
             topic = '/bindu/position/'+layer+'_state'
             node.create_subscription(PositionSessionState, topic,
                 lambda msg, l=layer, t=topic, r=receiver: self.receive_state(l, t, r, msg), 1)
-        if self.receipt_wakeup is not None:
+        if self.health.reference_mode:
             node.create_subscription(PositionSessionState, '/bindu/position/servo_receipt', self.receive_receipt, 1)
 
     def receive_receipt(self, msg):
-        """Admission result only; never replace PDO/health or claim physical stop."""
+        """Takeover ACK opens its initial barrier; ordinary targets/PAUSE never wait."""
         try:
             self.identity('/bindu/position/servo_receipt', self.receivers['head'],
                           'snowbot_ctl_msgs/msg/PositionSessionState')
-            pending = self.pending_trajectory
-            if pending is None:
+            sequence = msg.sequence if msg.state == 'accepted' else msg.rejected_sequence
+            source = self.sent.get(sequence)
+            if source is None:
                 return
-            metadata, _, instance, _, sent_at = pending
-            if msg.header.stamp.sec < 0 or not 0 <= msg.header.stamp.nanosec < 1_000_000_000:
-                return
+            metadata, instance, command_id = source
+            session = msg.session if msg.state == 'accepted' else msg.rejected_session
             stamp = msg.header.stamp.sec*1_000_000_000+msg.header.stamp.nanosec
-            identity = ((msg.session, msg.sequence) if msg.state == 'accepted' else
-                        (msg.rejected_session, msg.rejected_sequence))
-            if (msg.layer != 'servo' or msg.wire_version != 2 or msg.reference_mode != 1 or
+            if (msg.header.stamp.sec < 0 or not 0 <= msg.header.stamp.nanosec < 1_000_000_000 or
+                    msg.layer != 'servo' or msg.wire_version != 3 or msg.reference_mode != 2 or
                     msg.state not in ('accepted', 'rejected') or msg.instance_id != instance or
-                    msg.feedback_boot_id != self.health.boot or
-                    identity != (metadata['session'], metadata['sequence']) or
-                    not sent_at <= stamp <= round(self.node.now()*1e9) or
-                    round(self.node.now()*1e9) >= metadata['expires_at_ns']):
+                    msg.feedback_boot_id != self.health.boot or session != metadata['session'] or
+                    not metadata['source_stamp_ns'] <= stamp < metadata['expires_at_ns'] or
+                    stamp > round(self.node.now()*1e9)):
                 return
-            self.trajectory_receipt = (stamp, msg)
-            # Wake only session settlement in the same mutually exclusive group.
-            # Keep joint-output frequency on the original execution timer.
-            self.receipt_wakeup.trigger()
+            self._settle_takeover(msg if msg.state == 'accepted' else None, receipt=True)
+            if msg.state == 'rejected' and sequence == self.envelopes.sequence:
+                self.target_fault = 'SNOWBOT_TARGET_REJECTED:'+msg.reason
+            self.node.event('TARGET_'+msg.state.upper(), 'SNOWBOT_TARGET:'+json.dumps(dict(
+                session=session, sequence=sequence, reason=msg.reason), separators=(',', ':')),
+                command_id=command_id)
         except (ValueError, RuntimeError) as exc:
             self.node.get_logger().warn(str(exc), throttle_duration_sec=1.)
 
@@ -281,11 +183,20 @@ class PositionSessionDevices:
                 arrays = [getattr(msg, field, ()) for field in
                           ('reference_position','reference_speed','reference_acceleration')]
                 if (msg.session_selected and msg.session == self.envelopes.session and
-                        getattr(msg, 'reference_mode', 0) == 1 and getattr(msg, 'reference_valid', False) and
+                        getattr(msg, 'reference_mode', 0) == 2 and getattr(msg, 'reference_valid', False) and
                         getattr(msg, 'output_valid', False) and getattr(msg, 'segment_id', 0) == msg.command_sequence and
                         0 <= self.node.now()-sample <= .02 and
                         all(len(values)==len(CONTROL_NAMES) and all(math.isfinite(x) for x in values) for values in arrays)):
                     self.io.servo_reference = (sample, *[dict(zip(CONTROL_NAMES, values)) for values in arrays])
+                    source = self.sent.get(msg.command_sequence)
+                    if (source is not None and msg.command_sequence > self.applied_sequence and
+                            getattr(msg, 'trajectory_phase', 0) in (2, 3, 4, 5) and
+                            source[0]['source_stamp_ns'] <= msg.sample_time_ns < source[0]['expires_at_ns']):
+                        self.applied_sequence = msg.command_sequence
+                        self.node.event('TARGET_APPLIED', 'SNOWBOT_TARGET:'+json.dumps(dict(
+                            session=msg.session, sequence=msg.command_sequence,
+                            sample_time_ns=msg.sample_time_ns), separators=(',', ':')),
+                            command_id=source[2])
         except (ValueError, RuntimeError) as exc:
             self.io.invalid = str(exc)
             self.node.get_logger().warn(str(exc), throttle_duration_sec=1.)
@@ -300,96 +211,61 @@ class PositionSessionDevices:
             if not (acquiring or self.io.requesting_pause or self.io.stop_targets) or obs.session_reason < 1:
                 raise RuntimeError('SNOWBOT_SESSION_OWNER_CONFLICT')
 
-    def _require_trajectory(self, *, allow_rejected=False):
-        if self.trajectory_fault_kind is TrajectoryFault.NONE:
-            return
-        if (allow_rejected and self.trajectory.segment is not None and
-                self.trajectory_fault_kind is TrajectoryFault.REJECTED_WITH_REFERENCE):
-            return
-        raise RuntimeError(self.trajectory_fault_reason)
-
     def check_health(self, groups, *, acquiring=False):
         self._check_session_health(groups, acquiring=acquiring)
         if self.health.reference_mode:
-            self._require_trajectory(allow_rejected=(self.io.requesting_pause or self.io.sending_hold or
-                                                   bool(self.io.stop_targets)))
+            if self.target_fault and not (self.io.requesting_pause or self.io.sending_hold):
+                raise RuntimeError(self.target_fault)
 
     def new_session(self):
         self.envelopes = SourceEnvelope(secrets.randbits(64) or 1, self.node.now)
         self.io.source_motion = None
-        if getattr(getattr(self, 'health', None), 'reference_mode', 0):
-            self.trajectory = SessionTrajectory(self.io.profile, lead_ms=getattr(self, 'trajectory_lead_ms', 60.))
-            self.trajectory_receipt = None
-            self.pending_trajectory = None
-            self.trajectory_fault_kind, self.trajectory_fault_reason = TrajectoryFault.NONE, ''
-            self.trajectory_instance = None
+        self.sent = {}
+        self.target_instance = None
+        self.source_identity = None
+        self.target_fault = ''
+        self.applied_sequence = 0
+        self.takeover_pending = None
 
-    def _settle_trajectory(self, *, ready):
-        # Unknown adoption or a changed servo instance is latched for reconnect.
-        # Do not bypass the existing executor's unconfirmed-stop barrier here.
-        pending = self.pending_trajectory
-        _, servo = self.health.states.get('servo', (0., None))
-        if (self.trajectory_instance is not None and servo is not None and
-                servo.instance_id != self.trajectory_instance):
-            self.trajectory_fault_kind = TrajectoryFault.RECONNECT_REQUIRED
-            self.trajectory_fault_reason = 'SNOWBOT_TRAJECTORY_INSTANCE_CHANGED_RECONNECT_REQUIRED'
-            self.pending_trajectory = pending = None
-        if pending:
-            metadata, proposal, instance, command_id, sent_at = pending
-            report_at, report = self.health.states.get('servo', (0., None))
-            report_at_ns = round(report_at*1e9)
-            receipt = getattr(self, 'trajectory_receipt', None)
-            if receipt is not None and receipt[0] >= sent_at:
-                report_at_ns, report = receipt
-            if self.node.now()*1e9 >= metadata['expires_at_ns']:
-                self.trajectory_fault_kind = TrajectoryFault.RECONNECT_REQUIRED
-                self.trajectory_fault_reason = 'SNOWBOT_TRAJECTORY_ACCEPTANCE_UNCONFIRMED_RECONNECT_REQUIRED'
-                self.pending_trajectory = None
-            elif (ready and report is not None and report.instance_id == instance and
-                    getattr(report, 'rejected_session', 0) == metadata['session'] and
-                    getattr(report, 'rejected_sequence', 0) == metadata['sequence']):
-                known_reference = self.trajectory.segment is not None
-                self.trajectory_fault_kind = (TrajectoryFault.REJECTED_WITH_REFERENCE if known_reference else
-                                              TrajectoryFault.RECONNECT_REQUIRED)
-                self.trajectory_fault_reason = ('SNOWBOT_TRAJECTORY_REJECTED:' if known_reference else
-                    'SNOWBOT_TRAJECTORY_REJECTED_RECONNECT_REQUIRED:')+report.reason
-                self.pending_trajectory = None
-            elif (ready and servo is not None and servo.instance_id == instance and servo.feedback_ready and
-                    servo.startup_complete and servo.reference_mode == 1 and
-                    report is not None and report.instance_id == instance and
-                    getattr(report, 'session', 0) == metadata['session'] and
-                    getattr(report, 'sequence', 0) == metadata['sequence'] and
-                    report_at_ns >= sent_at):
-                self.trajectory.commit(proposal)
-                self.pending_trajectory = None
-                if metadata['operation'] == 2:
-                    self.trajectory_fault_kind, self.trajectory_fault_reason = TrajectoryFault.NONE, ''
-                self.node.event('SEGMENT_ACCEPTED', 'SNOWBOT_SEGMENT:'+json.dumps(dict(
-                    session=metadata['session'], sequence=metadata['sequence'], segment_id=proposal.wire['segment_id'],
-                    source_stamp_ns=metadata['source_stamp_ns'], expires_at_ns=metadata['expires_at_ns']),
-                    separators=(',', ':')), command_id=command_id)
+    def _settle_takeover(self, report=None, *, receipt=False):
+        """Only takeover has a delivery barrier; normal targets never wait."""
+        pending = self.takeover_pending
+        if pending is None:
+            return
+        metadata, instance = pending
+        _, current_servo = self.health.states.get('servo', (0., None))
+        if current_servo is not None and current_servo.instance_id != instance:
+            self.target_fault = 'SNOWBOT_TARGET_INSTANCE_CHANGED_RECONNECT_REQUIRED'
+            return
+        now_ns = round(self.node.now()*1e9)
+        if now_ns >= metadata['expires_at_ns']:
+            self.target_fault = 'SNOWBOT_TARGET_TAKEOVER_UNCONFIRMED_RECONNECT_REQUIRED'
+            return
+        if report is None or self.target_fault:
+            return
+        stamp = report.header.stamp.sec*1_000_000_000+report.header.stamp.nanosec
+        if (report.header.stamp.sec >= 0 and 0 <= report.header.stamp.nanosec < 1_000_000_000 and
+                getattr(report, 'feedback_boot_id', 0) == self.health.boot and
+                report.instance_id == instance and getattr(report, 'session', 0) == metadata['session'] and
+                getattr(report, 'sequence', 0) == metadata['sequence'] and
+                metadata['source_stamp_ns'] <= stamp <= now_ns and
+                report.wire_version == 3 and report.reference_mode == 2 and
+                (receipt or report.selected and report.feedback_ready and report.startup_complete)):
+            self.takeover_pending = None
 
     def advance_session(self):
-        """Advance once from the existing execution loop, never from health reads."""
+        """Observe restart/rejection without gating subsequent target production."""
         if not self.health.reference_mode:
             return
-        ready = True
-        try:
-            self._check_session_health(CONTROL_GROUPS)
-        except (RuntimeError, ValueError):
-            ready = False  # Expiry still latches; stale feedback cannot acknowledge adoption.
-        try:
-            self._settle_trajectory(ready=ready)
-            if (ready and self.io.deferred_pause and self.pending_trajectory is None and
-                    self.trajectory_fault_kind in (TrajectoryFault.NONE, TrajectoryFault.REJECTED_WITH_REFERENCE)):
-                self.io.deferred_pause = False
-                self.io.stop()
-        except (RuntimeError, ValueError) as exc:
-            # Keep the engine tick running so its original stop deadlines and
-            # STOP_UNCONFIRMED barrier still decide the outcome.
-            self.trajectory_fault_kind = TrajectoryFault.RECONNECT_REQUIRED
-            self.trajectory_fault_reason = str(exc)
-            self.io.stop_failures = tuple(sorted(set(self.io.stop_failures) | {'vendor_hold'}))
+        _, servo = self.health.states.get('servo', (0., None))
+        self._settle_takeover(servo)
+        if servo is not None:
+            if self.target_instance is not None and servo.instance_id != self.target_instance:
+                self.target_fault = 'SNOWBOT_TARGET_INSTANCE_CHANGED_RECONNECT_REQUIRED'
+            if (getattr(servo, 'rejected_session', 0) == self.envelopes.session and
+                    getattr(servo, 'rejected_sequence', 0) == self.envelopes.sequence and
+                    self.envelopes.sequence in self.sent):
+                self.target_fault = 'SNOWBOT_TARGET_REJECTED:'+servo.reason
 
     def check_ready(self, groups):
         self.check_health(groups, acquiring=True)
@@ -410,13 +286,26 @@ class PositionSessionDevices:
         if set(groups) != CONTROL_GROUPS:
             raise RuntimeError('SNOWBOT_POSITION_SESSION_RESOURCE_LAYOUT')
         # Validate before minting an envelope, so rejected requests cannot renew.
-        self.check_ready(groups)
         if self.health.reference_mode:
-            self._require_trajectory(allow_rejected=self.io.sending_hold)
-            if self.pending_trajectory:
-                if self.io.sending_hold:
-                    raise RuntimeError('SNOWBOT_TRAJECTORY_ACCEPTANCE_UNCONFIRMED_RECONNECT_REQUIRED')
-                return  # One in flight: latest Motion waits without minting a source.
+            self._settle_takeover()
+        self.check_ready(groups)
+        if set(target) != set(CONTROL_NAMES) or any(not math.isfinite(target[n]) or
+                not self.io.profile.limits[n][0] <= target[n] <= self.io.profile.limits[n][1]
+                for n in CONTROL_NAMES):
+            raise RuntimeError('SNOWBOT_TARGET_LAYOUT_OR_LIMIT')
+        identity = None
+        if self.health.reference_mode:
+            motion = self.io.source_motion
+            # PAUSE may follow revocation/clearing of the Motion. Retain the last
+            # source identity in this session; stopping never invents ownership.
+            identity = ((motion.command_id, motion.lease_id, motion.epoch, self.io.profile.digest)
+                        if motion is not None else self.source_identity if self.io.sending_hold else None)
+            if (identity is None or any(not isinstance(value, str) or not value or
+                    len(value.encode('utf-8')) > 128 for value in (identity[0], identity[1], identity[3])) or
+                    type(identity[2]) is not int or not 0 <= identity[2] < 2**64):
+                raise RuntimeError('SNOWBOT_SOURCE_IDENTITY_LAYOUT')
+        if self.health.reference_mode and self.takeover_pending is not None and not self.io.sending_hold:
+            return  # Retain the latest original Motion in IO; no identity/TTL renewal.
         metadata = self.envelopes.command(self.io.source_motion, pause=self.io.sending_hold)
         if metadata is None:
             return
@@ -426,38 +315,36 @@ class PositionSessionDevices:
         for name, value in metadata.items():
             setattr(msg.meta, name, value)
         if self.health.reference_mode:
-            motion = self.io.source_motion
-            identity = (motion.command_id, motion.lease_id, self.io.profile.digest) if motion else ()
-            if (len(identity) != 3 or any(not isinstance(value, str) or not value or
-                    len(value.encode('utf-8')) > 128 for value in identity) or
-                    type(motion.epoch) is not int or not 0 <= motion.epoch < 2**64):
-                raise RuntimeError('SNOWBOT_SOURCE_IDENTITY_LAYOUT')
+            self.source_identity = identity
             msg.meta.reference_mode = self.health.reference_mode
-            msg.meta.source_command_id = motion.command_id
-            msg.meta.lease_id = motion.lease_id
-            msg.meta.epoch = motion.epoch
-            msg.meta.profile_hash = self.io.profile.digest
-            try:
-                proposal = self.trajectory.prepare(metadata, target, self.health.observation, self.node.now())
-            except ValueError as exc:
-                raise RuntimeError('SNOWBOT_TRAJECTORY_PREPARE:'+str(exc)) from exc
-            for field, value in proposal.wire.items():
-                setattr(msg.trajectory, field, value)
+            msg.meta.source_command_id, msg.meta.lease_id, msg.meta.epoch, msg.meta.profile_hash = identity
+            # Version 2 is a target recipe, never a curve. The servo owns its
+            # local switching time; empty curve fields reject legacy packets.
+            msg.trajectory.version = 2
+            msg.trajectory.segment_id = metadata['sequence']
+            for field, getter, ceiling in (('max_velocity', self.io.profile.speed, .25),
+                    ('max_acceleration', self.io.profile.acceleration, .5),
+                    ('max_jerk', self.io.profile.jerk, 162.)):
+                setattr(msg.trajectory, field, [min(ceiling, getter(n)) for n in CONTROL_NAMES])
         msg.command.l_arm_position = [float(target[n]) for n in GROUPS['left_arm']]
         msg.command.r_arm_position = [float(target[n]) for n in GROUPS['right_arm']]
         msg.waist_position = [float(target[n]) for n in GROUPS['waist']]
-        sent_at = round(self.node.now()*1e9)
+        if self.health.reference_mode:
+            instance = self.health.states['servo'][1].instance_id
+            self.target_instance = instance
+            if metadata['operation'] == 1:
+                self.takeover_pending = (dict(metadata), instance)
+            elif metadata['operation'] == 2:
+                self.takeover_pending = None
+            self.sent[metadata['sequence']] = (metadata, instance, msg.meta.source_command_id)
+            while len(self.sent) > 32:
+                del self.sent[next(iter(self.sent))]
         self.publishers['arms'].publish(msg)
         if self.health.reference_mode:
-            self.trajectory_receipt = None
-            self.trajectory_instance = self.health.states['servo'][1].instance_id
-            self.pending_trajectory = (metadata, proposal, self.health.states['servo'][1].instance_id,
-                                       msg.meta.source_command_id, sent_at)
             mapping = {k: metadata[k] for k in ('session', 'sequence', 'source_stamp_ns', 'expires_at_ns')}
-            mapping.update(segment_id=msg.trajectory.segment_id, effective_at_ns=msg.trajectory.effective_at_ns,
-                           lease_id=msg.meta.lease_id, epoch=msg.meta.epoch,
-                           execution_mode=self.health.execution_mode, reference_mode=1)
-            self.node.event('SEGMENT_SENT', 'SNOWBOT_SEGMENT:'+json.dumps(mapping, separators=(',', ':')),
+            mapping.update(lease_id=msg.meta.lease_id, epoch=msg.meta.epoch,
+                           execution_mode='position', reference_mode=2)
+            self.node.event('TARGET_SENT', 'SNOWBOT_TARGET:'+json.dumps(mapping, separators=(',', ':')),
                             command_id=msg.meta.source_command_id)
         if self.io.sending_hold:
             self.io.pause_request = (metadata['session'], metadata['sequence'],

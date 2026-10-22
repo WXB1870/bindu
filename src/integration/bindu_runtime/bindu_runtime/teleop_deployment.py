@@ -1,6 +1,5 @@
 """Validate a small deployment recipe. No hardware enable or startup motion."""
 import json
-import math
 from pathlib import Path
 from bindu_contracts.runtime_mode import resolve_mode
 
@@ -18,8 +17,6 @@ COMMON.update(('position_protocol','execution_mode'))
 COMMON.update(('position_contract','physics_config'))
 EXECUTION.add('gripper_config')
 EXECUTION.update(('position_protocol','execution_mode'))
-COMMON.update(('trajectory_lead_ms', 'trajectory_fast_receipt'))
-EXECUTION.update(('trajectory_lead_ms', 'trajectory_fast_receipt'))
 PATHS = {'profile', 'bimanual_config', 'robot_config', 'cert_file', 'key_file', 'output', 'pico_config', 'gripper_config', 'physics_config'}
 
 
@@ -39,18 +36,12 @@ def load_deployment(path, share):
     allowed = EXECUTION if execution_only else (COMMON if version == 1 else COMMON-{'profile', 'bimanual_config'} | {'robot_config'})
     if not isinstance(args, dict) or set(args)-allowed:
         raise ValueError('TELEOP_DEPLOYMENT_ARGUMENT')
-    if args.get('position_protocol', 'legacy_guard') not in ('legacy_guard', 'session_v1', 'session_v2'):
+    if args.get('position_protocol', 'legacy_guard') not in ('legacy_guard', 'session_v1', 'session_v3'):
         raise ValueError('SNOWBOT_POSITION_PROTOCOL')
     execution_mode = args.get('execution_mode', 'position')
-    lead = args.get('trajectory_lead_ms', 60.)
-    if (isinstance(lead, bool) or not isinstance(lead, (int, float)) or
-            not math.isfinite(lead) or not 5. <= lead <= 150.):
-        raise ValueError('SNOWBOT_TRAJECTORY_LEAD_MS')
-    if type(args.get('trajectory_fast_receipt', True)) is not bool:
-        raise ValueError('SNOWBOT_TRAJECTORY_FAST_RECEIPT')
     if execution_mode not in ('position', 'impedance'):
         raise ValueError('SNOWBOT_EXECUTION_MODE')
-    if execution_mode == 'impedance' and (args.get('runtime_mode') != 'real' or args.get('position_protocol') not in ('session_v1','session_v2')):
+    if execution_mode == 'impedance' and (args.get('runtime_mode') != 'real' or args.get('position_protocol') != 'session_v1'):
         raise ValueError('IMPEDANCE_REQUIRES_REAL_SESSION')
     required = {'runtime_mode'} if execution_only else ({'profile', 'bimanual_config'} if version == 1 else {'robot_config'})
     if not required <= set(args):
@@ -94,7 +85,7 @@ def load_deployment(path, share):
     if version == 2 and not execution_only:
         del result['initialize_tool_pose']
     for key, value in args.items():
-        if not isinstance(value, (str, bool, int)) and not (key == 'trajectory_lead_ms' and isinstance(value, float)):
+        if not isinstance(value, (str, bool, int)):
             raise ValueError('TELEOP_DEPLOYMENT_VALUE:'+key)
         if key.endswith('_enabled') and type(value) is not bool:
             raise ValueError('TELEOP_DEPLOYMENT_BOOLEAN:'+key)

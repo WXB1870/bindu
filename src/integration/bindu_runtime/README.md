@@ -250,9 +250,9 @@ ros2 topic echo /bindu/servo_health
 
 统一PICO入口为[`tools/run_vr.sh`](../../../tools/run_vr.sh)，选择`snowbot_vr_sim.json`或`snowbot_vr_real.json`。两者使用`position_contract=true`、同一真实位置profile／工具几何和协调器；只在设备IO、初始测量状态及现场标定处区分。状态统一到`teleop/state`，夹爪由同一执行节点提供服务。旧四节点配方保留底层联调用途；具体启动与操作见[统一入口](../../../运行与验证.md#vr-统一部署与启动)。
 
-真实腰臂联合轨迹通过`position_protocol=session_v2`显式选择，须与servo只读参数`position_reference_mode=trajectory`配对，消息及全部使用方成套重建。适配器复用`PreparedSegment`准备16轴曲线，servo后台导入后在原控制循环采样，替换该分支的Follower；原身份与期限随片段透传，重发和采样不续期，收到实际接纳回执才推进接续。`ExecutionState.reference`来自有效servo采样的q／dq／ddq及采样时刻，缺失时为空，等待目标和实测分别保留。
+真实腰臂通过`position_protocol=session_v3`显式选择目标流，须与servo只读参数`position_reference_mode=target_stream`配对（wire 3／reference 2／目标配方version 2），消息及使用方成套重建。上层只发送16轴联合目标和源身份／期限，servo非实时后台复用`PreparedSegment`生成；仅首次／恢复接管有一次真实接纳握手；正常更新不等待上一目标接纳，PAUSE立即绕过等待，由执行侧从已采用名义参考制动。适配器已移除旧`session_v2`曲线准备、ACK串行依赖及跨层提前量配置；`ExecutionState.reference`来自有效servo采样的q／dq／ddq及采样时刻，缺失时为空。
 
-新分支逐轴取profile与`0.25 rad/s、0.5 rad/s²、162 rad/s³`的较小界，servo默认校验帽一致；PAUSE无法在原剩余期限内完成则拒绝／保持未确认。可选`execution_mode=impedance`还须配套含阻抗代码的底层及相同模式，复用原控制器，名义保持不代表实测停稳。仓库真实配方模板仍为`session_v1`、`position`、`command_enabled=false`，底层默认`follower`／`unconfirmed`；现场是否选择v2／trajectory及当前运行版本，以[Snowbot当前进度](../../../../../snowbot/当前进度.md)为准。接口的Ubuntu x86离线验证已完成；Orin、真实手柄到运动执行的整链路、实机1 ms周期与持载停止仍待验收，场景版本和证据见[Snowbot修改目标](../../../../../snowbot/位置遥操作修改目标.md)。
+目标轴序为左臂J1～J7、右臂J1～J7、腰J1～J2，rad。动态界逐轴取profile与`0.25 rad/s、0.5 rad/s²、162 rad/s³`的较小值，servo默认帽一致。名义50 Hz输出／1 ms采样保持，原始期限不因合并、后台生成、派生帧或心跳延长。此新路径只支持`execution_mode=position`，与阻抗组合明确拒绝；既有可选阻抗入口的控制和暂停语义保持，其兼容性不属于本轮验证；含可选阻抗的准备器候选不应用目标流补丁，也不接受`target_stream`配置。真实腰臂配方为`session_v3`、`position`、`command_enabled=false`；servo默认仍`follower`／`unconfirmed`，必须显式成套选择新路径。版本、离线证据与现场未完成项见[Snowbot当前进度](../../../../../snowbot/当前进度.md)。
 
 ### 配套配置与流程
 

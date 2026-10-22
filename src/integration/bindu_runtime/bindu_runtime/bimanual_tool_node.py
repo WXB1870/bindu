@@ -35,7 +35,7 @@ class BimanualToolNode(RuntimeNode):
         self.declare_parameter('execution_mode','position',descriptor=ParameterDescriptor(read_only=True))
         self.declare_parameter('position_protocol','legacy_guard',descriptor=ParameterDescriptor(read_only=True))
         self.trajectory_reference = (not self.simulation and position_contract and
-                                    self.get_parameter('position_protocol').value == 'session_v2')
+                                    self.get_parameter('position_protocol').value == 'session_v3')
         from .teleop_deployment import apply_execution_tracking
         self.cfg=apply_execution_tracking(self.cfg,self.get_parameter('execution_mode').value,
                                           real=not self.simulation,position_contract=position_contract)

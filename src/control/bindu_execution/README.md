@@ -40,7 +40,7 @@ ros2 launch bindu_runtime skeleton.launch.py runtime_mode:=simulation recording_
 
 ## 扫雪位置执行
 
-- 当前统一Snowbot VR位置契约使用`DelegatedPositionExecutor`，直接交目标给选定位置设备；准备、普通双臂及扫雪共用该接口。上层仅接纳非定时`joint_target`；具体设备协议决定是否在适配层准备曲线，不能仅凭上层命令类型推断底层算法。滤波和插值的实际路径见[下表](#当前snowbot-vr链路的滤波与插值)。
+- 当前统一Snowbot VR位置契约使用`DelegatedPositionExecutor`，直接交目标给选定位置设备；准备、普通双臂及扫雪共用该接口。上层仅接纳非定时`joint_target`；具体设备协议决定底层参考生成方式，不能仅凭上层命令类型推断底层算法。滤波和插值的实际路径见[下表](#当前snowbot-vr链路的滤波与插值)。
 - 旧`tool_pose`运动学装配仍可使用通用`Executor`及`snowbot_shovel_sim.json`的同步插值；该路径与当前统一位置契约分别由装配选择，不能按配置名称推断正在使用的算法。
 - 换握、暂停和取消依赖新鲜实测反馈确认停稳。反馈过期或速度未知不能报告已停稳，停止超时会锁存未确认状态并阻止新接管。
 
@@ -50,8 +50,8 @@ PICO协调器管理准备、夹爪请求与控制权交接；旧模拟入口使�
 
 | 协议 | 曲线与参考职责 |
 |---|---|
-| `legacy_guard`／`session_v1` | 委托已有底层的位置跟随，不从通用执行器推定曲线导数或到达时间；仓库统一真机模板默认`session_v1` |
-| `session_v2` | 适配层复用`PreparedSegment`准备16轴联合曲线，与servo的`position_reference_mode=trajectory`配对；后台导入后按原控制循环采样，实际接纳回执才推进接续，重发及采样不延长源期限 |
+| `legacy_guard`／`session_v1` | 委托已有底层的位置跟随，不从通用执行器推定曲线导数或到达时间 |
+| `session_v3` | 上层只发送16轴联合目标及原身份／期限，与servo的`position_reference_mode=target_stream`配对；servo后台复用`PreparedSegment`生成曲线，原周期统一采样，普通发送和PAUSE不等待接纳回执 |
 
 配置、动态限制及可选阻抗的配对条件在[运行装配](../../integration/bindu_runtime/README.md#扫雪遥操作)维护。两种执行路径由装配选择；上层不重复叠加底层已有的柔顺控制。场景与入口见[扫雪运行装配](../../integration/bindu_runtime/README.md#扫雪遥操作)，完整时间／停止规则见执行契约。
 
@@ -109,9 +109,13 @@ ROS_LOCALHOST_ONLY=1 ROS_DOMAIN_ID=209 python3 -m tests.integration.validate_exe
 
 `describe()`导出每个真实片段的`(start, duration, source_duration, source_elapsed, controls[axis])`；位置控制点采用Bernstein基，每轴4个（cubic）或6个（quintic）。`source_duration==0`时按`elapsed/duration`求值，否则按`(elapsed+source_elapsed)/source_duration`保留原曲线裁剪区间。`from_description(description, limits)`只在非实时侧重建导数、核验片段时间／`q/v/a`接续、动态限制及最终静止条件，不拟合、重排或重定时。轴序、源身份、原期限、时钟异常和真实停止确认由调用方管理；取样、派生帧和心跳都不能续期。到达采样端点也不能报告机器人实际到达。Python同名类提供`target`／`stop`／`describe`／`from_description`／`sample_into`。
 
-`session_v2`的只读启动参数`trajectory_lead_ms`设置从准备开始到曲线切换的提前量，范围5～150ms，兼容默认60ms；新会话保留该配置，缩短提前量不延长原TTL、不改变动态限制或接续时刻的`q/v/a`。`trajectory_fast_receipt=true`接收`/bindu/position/servo_receipt`上的实际接纳／拒绝结果，使用既有`PositionSessionState`类型，只唤醒会话结算，不替换周期健康／PDO反馈，也不提高原关节输出频率。配套servo补丁用有界SPSC队列把后台导入后的最终提交结果交给ROS线程，`position_receipt_poll_ms`默认2ms、允许1～50ms，0关闭快速发布；原50ms状态反馈作为兜底。提前量过短仍按原2ms提交余量拒绝；早期预检拒绝继续走周期状态。旧servo没有快速回执时自动沿用周期回执。
+`session_v3`是纯位置目标流协议（wire 3、reference 2、目标配方version 2）。上层退休曲线发送及跨层提前量配置；旧`session_v2`配方拒绝加载。目标轴序为左臂J1～J7、右臂J1～J7、腰部J1～J2，单位rad；动态界逐轴取profile与0.25 rad/s、0.5 rad/s²、162 rad/s³的较小值。消息同时保留session、源command／lease／epoch／profile身份、sequence、源时间及原始期限；中层只透传，派生帧、接纳、采样和心跳不续期。
 
-本机可用[时序对比工具](../../../tools/analysis/compare_session_latency.py)扫描提前量及快速／周期回执。工具要求本地Snowbot维护仓库与其准备器生成的`src`，只通过管道连接原生内存探针；覆盖实际曲线准备、导入、提交和回执队列，ROS/DDS、完整ROS节点及硬件时序不在测量范围。20ms目标间隔沿用当前执行配置；`--target-period-ms 0`仅用于队列饱和对照。结果中的最低通过值只适用于记录的本机负载，不能作为现场默认值。
+servo在非实时后台从已采用名义轨迹的未来`q/v/a`快照生成联合曲线，周期线程验证版本、期限和接续条件后共同切换。普通在途生成不因更新取消，待处理普通目标只保留最新一份；PAUSE及控制权／故障边界使旧结果失效。首次接管才用新鲜实测播种，正常更新不逐帧用实测重置。整段动态限制保留，不再串联旧B样条或逐轴非线性限幅；共同采样不承诺任意换目标的共同标量进度、闭链几何或jerk连续。
+
+首次／恢复接管保留一次接纳握手，避免op1在中层或DDS的latest缓存被普通目标覆盖；等待期间上层只保留最新目标，原接管期限不变。接纳后普通目标不逐段等待回执；PAUSE立即绕过该等待。接纳／拒绝通过`/bindu/position/servo_receipt`或周期状态观察，放行后的发送仍沿用原50 Hz tick。真实生效以servo采样身份与时刻判断，参考终点不表示真实到达；正常暂停、期限失效、撤权、Fault和STOP_UNCONFIRMED分别保留。名义目标输出50 Hz、servo名义1 ms采样不变，本地准备预算和离线对比证据在[Snowbot运行说明](../../../../../snowbot/运行与验证.md#执行侧联合目标流)。真实手柄到运动、调度尾峰及持载停止仍待现场验收。
+
+本机[时序对比工具](../../../tools/analysis/compare_session_latency.py)使用相同输入与动态限制比较冻结的旧方案和新目标流，仅覆盖相应本机软件／内存设备替身。结果不能代替ROS/DDS和硬件验收。
 
 原生消费者可`add_subdirectory(path/to/native)`并链接`bindu::execution_native`；独立安装后也可`find_package(bindu_execution_native CONFIG REQUIRED)`。Python包会将同一份源码与CMake入口安装到`share/bindu_execution/native`，避免servo另写插值器。独立构建不需要ROS、Python或设备SDK：
 
@@ -165,6 +169,6 @@ python3 -m tools.analysis.compare_interpolators --legacy-root 历史代码/legs_
 | 手柄位姿滤波 | 共用Snowbot配方已启用One Euro；普通双臂分别滤波手柄，扫雪滤波合成中点／姿态。按键与时效使用原始输入，参数及重置规则见[遥操作模块](../../capabilities/bindu_teleoperation/README.md#vr-位姿-one-euro-滤波) |
 | 共享位置执行 | `DelegatedPositionExecutor.prepare_path`保留直接位置目标，不调用通用执行器的原生自适应／S曲线生成；profile中的`joint_target_interpolation=adaptive`不能据此证明此路径使用了自适应插值 |
 | 当前PhysX设备 | 腰与双臂共用一个限速向量进度，生成一致的位置／速度参考；实际关节由物理驱动跟随，头部与夹爪独立 |
-| 真实设备 | `legacy_guard/session_v1`委托底层跟随；`session_v2`由适配层准备联合曲线并由servo采样，实际配置和同步性能仍需按现场记录与实测核对 |
+| 真实设备 | `legacy_guard/session_v1`委托底层跟随；`session_v3`由servo后台生成联合曲线并统一采样，实际配置和同步性能仍需按现场记录与实测核对 |
 
-原有插值路径仍由通用`Executor`使用；`PreparedSegment`已供`session_v2`适配层的非实时准备复用，见[snowbot_position_session.py](../../integration/bindu_runtime/bindu_runtime/snowbot_position_session.py)。软件接入与现场已加载版本、真实周期及停止验收分别核对。输入滤波保持独立。
+原有插值路径仍由通用`Executor`使用；`PreparedSegment`供`session_v3`执行侧非实时生成复用，见[snowbot_position_session.py](../../integration/bindu_runtime/bindu_runtime/snowbot_position_session.py)。软件接入与现场已加载版本、真实周期及停止验收分别核对。输入滤波保持独立。

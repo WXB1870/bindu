@@ -26,7 +26,7 @@ def assemble(context):
     execution_mode=value('execution_mode','position')
     if execution_mode not in ('position','impedance'):
         raise ValueError('SNOWBOT_EXECUTION_MODE')
-    if execution_mode=='impedance' and (mode!='real' or value('position_protocol') not in ('session_v1','session_v2') or not position_contract):
+    if execution_mode=='impedance' and (mode!='real' or value('position_protocol') != 'session_v1' or not position_contract):
         raise ValueError('IMPEDANCE_REQUIRES_REAL_SESSION')
     if position_contract and value('device_backend') not in ('kinematic','snowbot_vendor','external_simulation'):
         raise ValueError('POSITION_CONTRACT_BACKEND')
@@ -98,8 +98,6 @@ def assemble(context):
         pose = json.loads(robot.tool_config.read_text())['demo']['initial_positions_rad']
         execution['kinematic_initial_positions'] = ParameterValue(json.dumps(pose), value_type=str)
     if mode=='real' or position_contract:
-        execution.update(trajectory_lead_ms=ParameterValue(value('trajectory_lead_ms','60.0'), value_type=float),
-                         trajectory_fast_receipt=enabled('trajectory_fast_receipt','true'))
         execution.update(command_enabled=enabled('command_enabled','false'),
             **{key:value(key,default) for key,default in (
                 ('execution_mode','position'),('gripper_config',''),('vendor_namespace','/snowbot'),('position_protocol','legacy_guard'),('arm_receiver_node',''),
