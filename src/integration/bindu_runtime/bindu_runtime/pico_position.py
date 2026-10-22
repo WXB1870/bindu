@@ -6,7 +6,7 @@ import time
 from pathlib import Path
 from bindu_interfaces.msg import GripperState
 from bindu_interfaces.srv import GripperControl, Lease
-from bindu_hardware.snowbot_gripper import SIDES, GROUPS, JOINTS, validate_config
+from bindu_hardware.snowbot_gripper import SIDES, GROUPS, JOINTS, validate_config, target_position_tolerance
 from .common import seconds, stamp
 
 
@@ -168,7 +168,7 @@ class PositionOperations:
                                       'TRIGGERS_CONTROL_INDIVIDUAL_GRIPPERS')
                 reached={side:(s.position_reached and s.epoch==lease.epoch and
                     s.control_sequence>=expected[side][1] and seconds(s.feedback_stamp)>expected[side][2] and
-                    abs(s.measured_position-expected[side][0])<=self.config['position_tolerance'])
+                    abs(s.measured_position-expected[side][0])<=target_position_tolerance(self.config,direct=direct))
                     for side,s in states.items()}
                 if reached and not failed and all(reached.values()):
                     return

@@ -3,6 +3,7 @@
   "calibrated": false,
   "allow_uncalibrated_direct": true,
   "position_tolerance": 0.003,
+  "direct_position_tolerance": 0.03,
   "velocity_tolerance": 0.01,
   "settle_time": 0.1,
   "motion_timeout": 5.0,

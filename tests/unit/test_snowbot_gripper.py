@@ -9,7 +9,7 @@ import asyncio
 from types import SimpleNamespace as S
 from bindu_contracts.profile import Profile
 from bindu_contracts.teleoperation import VRFrame
-from bindu_hardware.snowbot_gripper import GripperController, JOINTS, GROUPS, SIDES, validate_config, native_command
+from bindu_hardware.snowbot_gripper import GripperController, JOINTS, GROUPS, SIDES, validate_config, native_command, target_position_tolerance
 
 CONFIG = ROOT/'src/integration/bindu_runtime/config/robots/snowbot'
 
@@ -74,6 +74,46 @@ class Rig:
 
 
 class GripperTests(unittest.TestCase):
+    def test_manual_endpoint_residuals_finish_after_hold_without_claiming_grasp(self):
+        r=Rig();r.config['calibrated']=False
+        for side,value in (('left',-.024568),('right',.010498)):
+            r.q[JOINTS[side]]=value
+        r.step(track=False);r.acquire();r.command('authorize_direct')
+        for side in SIDES:r.command('close',side)
+        r.step(20,track=False)
+        for side in SIDES:
+            state=r.core.snapshot(side)
+            self.assertTrue(state['position_reached'])
+            self.assertEqual(state['grasp_state'],'unknown')
+            self.assertFalse(state['calibrated'])
+            self.assertEqual(state['target_position'],0.)
+            self.assertEqual(r.goals[side],r.q[JOINTS[side]])
+
+    def test_manual_accuracy_does_not_relax_hold_or_calibrated_grasp(self):
+        r=Rig(stop_timeout=.3);r.q[JOINTS['left']]=-.024568;r.step(track=False)
+        r.acquire();r.command('authorize_direct');r.command('close','left')
+        for _ in range(10):
+            r.step(track=False)
+            if r.core.channels['left']['state']=='STOPPING':break
+        self.assertEqual(r.core.channels['left']['state'],'STOPPING')
+        r.q[JOINTS['left']]+=.006  # Inside manual accuracy, outside fixed hold tolerance.
+        r.step(20,track=False)
+        self.assertIn('HOLD_TIMEOUT',r.core.fault)
+        r=Rig(motion_timeout=.3);r.q[JOINTS['right']]=.010498;r.step(track=False)
+        r.acquire();r.authorize();r.command('close','right');r.step(30,track=False)
+        self.assertEqual(r.core.channels['right']['code'],'POSITION_TIMEOUT')
+        self.assertFalse(r.core.snapshot('right')['position_reached'])
+
+    def test_direct_tolerance_is_optional_validated_and_does_not_accept_larger_error(self):
+        for tolerance in (0.,float('nan'),True,.2):
+            with self.subTest(tolerance=tolerance),self.assertRaisesRegex(ValueError,'DIRECT_TOLERANCE'):
+                Rig(direct_position_tolerance=tolerance)
+        cfg=copy.deepcopy(self.r.config);cfg.pop('direct_position_tolerance')
+        self.assertEqual(target_position_tolerance(validate_config(cfg,self.r.profile),direct=True),.003)
+        r=Rig(motion_timeout=.3);r.q[JOINTS['right']]=.04;r.step(track=False)
+        r.acquire();r.command('authorize_direct');r.command('close','right');r.step(30,track=False)
+        self.assertEqual(r.core.channels['right']['code'],'POSITION_TIMEOUT')
+
     def test_direct_retarget_does_not_interrupt_other_channel_or_renew_its_budget(self):
         r=Rig();r.acquire();r.command('authorize_direct')
         r.command('close','left');left=dict(r.core.channels['left'])
@@ -380,6 +420,29 @@ class NativeGripperTests(unittest.TestCase):
 
 class DirectOperationTests(unittest.TestCase):
     """Run the real async coordinator and gripper core without ROS or hardware."""
+    def test_coordinator_accepts_same_manual_accuracy_only_after_device_completion(self):
+        from bindu_teleoperation.pico import PicoIntent
+        source=ROOT/'src/integration/bindu_runtime/bindu_runtime/pico_position.py'
+        cls=next(n for n in ast.parse(source.read_text()).body if isinstance(n,ast.ClassDef))
+        method=next(n for n in cls.body if getattr(n,'name','')=='move_grippers')
+        ns=dict(time=__import__('time'),SIDES=SIDES,GROUPS=GROUPS,
+                Lease=S(Request=lambda **kw:S(**kw)),seconds=lambda v:v,
+                target_position_tolerance=target_position_tolerance)
+        exec(compile(ast.Module(body=[method],type_ignores=[]),str(source),'exec'),ns)
+        intent=PicoIntent(1,'manual_grippers',('closed',None))
+        control=S(pending=intent,load='unknown',reason='',gripper_update_token=None)
+        released=[]
+        async def wait(value):return value
+        async def request(*args,**kwargs):pass
+        async def release():released.append(True)
+        state=S(state='SUCCEEDED',position_reached=True,epoch=1,control_sequence=2,
+                stamp=11.,feedback_stamp=11.,measured_position=-.024568)
+        node=S(control=control,instance_id='offline',now=lambda:10.,current=lambda _:None,wait=wait)
+        ops=S(node=node,reading=lambda _:state,leases=S(call_async=lambda _:S(ok=True,epoch=1)),
+              config=Rig().config,request=request,release=release)
+        asyncio.run(ns['move_grippers'](ops,intent,direct=True))
+        self.assertEqual(released,[True])
+
     def test_stop_during_command_reply_keeps_exit_reason_and_releases(self):
         from bindu_teleoperation.pico import PicoIntent
         source=ROOT/'src/integration/bindu_runtime/bindu_runtime/pico_position.py'
@@ -440,13 +503,14 @@ class DirectOperationTests(unittest.TestCase):
 
     def run_case(self, interrupt=None):
         from bindu_teleoperation.pico import PicoIntent
-        r=Rig(require_driver_ack=False)
+        r=Rig(require_driver_ack=False,direct_position_tolerance=.003)
         r.q[JOINTS['right']]=.010666;r.step(track=False)
         source=ROOT/'src/integration/bindu_runtime/bindu_runtime/pico_position.py'
         cls=next(n for n in ast.parse(source.read_text()).body if isinstance(n,ast.ClassDef))
         method=next(n for n in cls.body if getattr(n,'name','')=='move_grippers')
         ns=dict(time=S(monotonic=lambda:r.steady),SIDES=SIDES,GROUPS=GROUPS,json=json,
-                Lease=S(Request=lambda **kw:S(**kw)),seconds=lambda value:value)
+                Lease=S(Request=lambda **kw:S(**kw)),seconds=lambda value:value,
+                target_position_tolerance=target_position_tolerance)
         exec(compile(ast.Module(body=[method],type_ignores=[]),str(source),'exec'),ns)
         control=S(pending=PicoIntent(1,'manual_grippers',(None,'closed')),load='unknown',
                   supported=False,gripper_update_token=None,reason='')

@@ -17,6 +17,11 @@ def native_command(position, config):
     return values
 
 
+def target_position_tolerance(config, *, direct=False):
+    """Manual endpoint accuracy is independent of hold and calibrated grasp checks."""
+    return config.get('direct_position_tolerance', config['position_tolerance']) if direct else config['position_tolerance']
+
+
 def validate_config(config, profile):
     if type(config.get('schema_version')) is not int or config['schema_version'] != 1 or type(config.get('calibrated')) is not bool:
         raise ValueError('GRIPPER_CONFIG_SCHEMA')
@@ -31,6 +36,9 @@ def validate_config(config, profile):
         raise ValueError('GRIPPER_CONFIG_FRESHNESS')
     if config['settle_time'] > config['motion_timeout'] or config['stop_timeout'] > 5 or config['motion_timeout'] > 30:
         raise ValueError('GRIPPER_CONFIG_TIMEOUT')
+    direct_tolerance=target_position_tolerance(config,direct=True)
+    if type(direct_tolerance) not in (int,float) or not math.isfinite(direct_tolerance) or direct_tolerance<=0:
+        raise ValueError('GRIPPER_CONFIG_DIRECT_TOLERANCE')
     for side in SIDES:
         item = config['grippers'][side]
         if profile.groups[GROUPS[side]] != [JOINTS[side]]:
@@ -41,6 +49,8 @@ def validate_config(config, profile):
             raise ValueError('GRIPPER_CONFIG_VALUE')
         if not lo <= item['open'] <= hi or not lo <= item['closed'] <= hi or item['open'] == item['closed']:
             raise ValueError('GRIPPER_CONFIG_LIMIT')
+        if 'direct_position_tolerance' in config and 2*direct_tolerance>=abs(item['open']-item['closed']):
+            raise ValueError('GRIPPER_CONFIG_DIRECT_TOLERANCE')
         if not 0 < item['kp'] <= 1000 or not 0 <= item['kd'] <= 1000:
             raise ValueError('GRIPPER_CONFIG_GAIN')
         if not .001 <= item['max_speed'] <= 1:
@@ -255,6 +265,7 @@ class GripperController:
         health = self.require_feedback()
         ack = self._send(side, target, False)
         c.update(state='MOVING', code='TARGET_SENT', touched=True, target=target, ack=ack,
+                 arrival_tolerance=target_position_tolerance(self.cfg,direct=self.direct_authorized and not grasp),
                  sent_at=self.now(), sample=health['sample'], settled=None, feedback_sequence=self.feedback_stamp,
                  deadline=self.now()+self.cfg['motion_timeout'], steady_deadline=self.steady()+self.cfg['motion_timeout'])
 
@@ -334,10 +345,11 @@ class GripperController:
                 target = c['hold'] if c['state'] == 'STOPPING' else c['target']
                 if self.require_driver_ack and c['state'] == 'STOPPING':
                     target = health['gripper_hold_position'][SIDES.index(side)]
+                tolerance=c['arrival_tolerance'] if c['state']=='MOVING' else self.cfg['position_tolerance']
                 arrived = (health['sample'] > c['sample']
                     and health.get('operation_enabled_mask', 0) & MASKS[side]
                     and self.feedback_stamp > c['sent_at']
-                    and abs(self.q[JOINTS[side]]-target) <= self.cfg['position_tolerance']
+                    and abs(self.q[JOINTS[side]]-target) <= tolerance
                     and abs(self.v[JOINTS[side]]) <= self.cfg['velocity_tolerance'])
                 if self.require_driver_ack:
                     i = SIDES.index(side)

@@ -4,8 +4,25 @@
   "mapping": "pico_snowbot_v1",
   "initial_teleop_mode": "independent_arms",
   "initial_load_state": "unknown",
-  "prepare_duration": 8.0,
-  "prepare_positions_rad": null,
+  "prepare_duration": 12.0,
+  "prepare_positions_rad": {
+    "body_joint_1": 0.11854734088355395,
+    "body_joint_2": 0.06670601088026042,
+    "arm_l_joint_1": 0.08319824481706696,
+    "arm_l_joint_2": 0.34747107534971666,
+    "arm_l_joint_3": 0.3598080980756058,
+    "arm_l_joint_4": -0.40365238607947634,
+    "arm_l_joint_5": -0.9242173099194144,
+    "arm_l_joint_6": 0.11455462309468209,
+    "arm_l_joint_7": -1.1216991813508184,
+    "arm_r_joint_1": -0.017841109583066388,
+    "arm_r_joint_2": -0.6954558752045735,
+    "arm_r_joint_3": -0.35873860354919834,
+    "arm_r_joint_4": 0.3838661557416227,
+    "arm_r_joint_5": 0.007394726406845764,
+    "arm_r_joint_6": 0.39310896958095465,
+    "arm_r_joint_7": 1.4199999992848775
+  },
   "pose_jump_translation_m": 0.35,
   "pose_jump_rotation_rad": 1.2
 }
