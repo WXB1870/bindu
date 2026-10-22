@@ -150,6 +150,10 @@ class X86DeploymentTests(unittest.TestCase):
                 self.assertIn('--check', execute.call_args.args[1])
                 self.assertIn('--check-robot', execute.call_args.args[1])
                 execute.reset_mock()
+                self.assertEqual(x86_real.main(['start', '--workspace', tmp, '--enable-commands']), 0)
+                self.assertIn('--enable-commands', execute.call_args.args[1])
+                self.assertNotIn('--check', execute.call_args.args[1])
+                execute.reset_mock()
                 self.assertEqual(x86_real.main(['start', '--workspace', tmp, '--physics']), 2)
                 execute.assert_not_called()
 

@@ -309,6 +309,26 @@ class SimulationEntryTests(unittest.TestCase):
         self.assertEqual(display[display.index('--runtime-mode')+1],'real')
         self.assertEqual(display[display.index('--device-backend')+1],'snowbot_vendor')
 
+    def test_explicit_real_write_enable_keeps_preflight_and_recipe(self):
+        recipe=ROOT/'src/integration/bindu_runtime/config/deployments/snowbot_vr_real.json'
+        before=recipe.read_bytes()
+        args=entry.parse_args(['--config',str(recipe),'--enable-commands'])
+        self.assertEqual(args.deployment['command_enabled'],'true')
+        self.assertIn('command_enabled:=true',entry.commands(args)[0])
+        with patch.object(entry,'check',side_effect=RuntimeError('online check rejected')), \
+                patch.object(entry.subprocess,'Popen') as start:
+            with self.assertRaisesRegex(RuntimeError,'online check rejected'):entry.run(args)
+            start.assert_not_called()
+        self.assertEqual(recipe.read_bytes(),before)
+
+    def test_write_enable_rejects_simulation_physics_and_load_declaration(self):
+        recipe=ROOT/'src/integration/bindu_runtime/config/deployments/snowbot_vr_real.json'
+        for argv in (['--enable-commands'],
+                     ['--config',str(recipe),'--enable-commands','--physics'],
+                     ['--config',str(recipe),'--enable-commands','--declare-load','empty']):
+            with self.subTest(argv=argv),patch('sys.stderr'),self.assertRaises(SystemExit):
+                entry.parse_args(argv)
+
     def test_partial_start_failure_stops_already_started_control(self):
         with tempfile.TemporaryDirectory() as directory:
             args = entry.parse_args(['--output', str(Path(directory)/'run'), '--no-diagnostics',
