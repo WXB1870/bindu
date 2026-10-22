@@ -27,6 +27,7 @@ class PositionSessionIO(SnowbotIO):
     requesting_pause = False
     trajectory_reference = False
     servo_reference = None
+    captured_pause_request = None
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -38,7 +39,9 @@ class PositionSessionIO(SnowbotIO):
     def capture(self, groups):
         if set(groups) != CONTROL_GROUPS:
             raise RuntimeError('SNOWBOT_POSITION_SESSION_RESOURCE_LAYOUT')
+        previous_pause = getattr(self, 'pause_request', None) or self.captured_pause_request
         super().capture(groups)
+        self.captured_pause_request = previous_pause
         self.pause_request = self.pause_targets = None
         self.servo_reference = None
         self.after_capture()
@@ -154,6 +157,34 @@ class PositionSessionDevices:
                 lambda msg, l=layer, t=topic, r=receiver: self.receive_state(l, t, r, msg), 1)
         if self.health.reference_mode:
             node.create_subscription(PositionSessionState, '/bindu/position/servo_receipt', self.receive_receipt, 1)
+        if self.health.reference_mode == 2:
+            from std_srvs.srv import Trigger
+            node.create_service(Trigger, 'execution/held_reference', self.read_held_reference)
+
+    def read_held_reference(self, request, reply):
+        """Read the confirmed PAUSE point without acquiring or sending anything."""
+        engine = self.node.engine
+        try:
+            if (self.node.closing or not engine.lease_id or engine.active or
+                    engine.stopping or engine.stop_fault or self.io.stop_failures):
+                raise RuntimeError('SNOWBOT_HELD_REFERENCE_REQUIRES_STOPPED_LEASE')
+            identity = getattr(self.io, 'pause_request', None) or self.io.captured_pause_request
+            targets = self.health.confirmed_hold(identity)
+            if targets is None:
+                raise RuntimeError('SNOWBOT_HELD_REFERENCE:'+self.health.hold_failure(identity))
+            if any(not self.io.profile.limits[n][0] <= q <= self.io.profile.limits[n][1]
+                   for n, q in targets.items()):
+                raise RuntimeError('SNOWBOT_HELD_REFERENCE_LIMIT')
+            obs = self.health.observation
+            reply.success, reply.message = True, json.dumps(dict(
+                instance_id=self.node.instance_id, profile_hash=self.io.profile.digest,
+                lease_id=engine.lease_id, epoch=engine.epoch, revision=engine.revision,
+                stamp=obs.header.stamp.sec+obs.header.stamp.nanosec*1e-9-obs.pdo_age,
+                positions=targets, boot_id=obs.boot_id, session=obs.session,
+                sequence=obs.command_sequence))
+        except RuntimeError as exc:
+            reply.success, reply.message = False, str(exc)
+        return reply
 
     def receive_receipt(self, msg):
         """Takeover ACK opens its initial barrier; ordinary targets/PAUSE never wait."""

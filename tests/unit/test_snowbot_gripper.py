@@ -380,6 +380,35 @@ class NativeGripperTests(unittest.TestCase):
 
 class DirectOperationTests(unittest.TestCase):
     """Run the real async coordinator and gripper core without ROS or hardware."""
+    def test_uncalibrated_manual_entry_does_not_claim_tool_grasp(self):
+        from bindu_teleoperation.pico import loading_guide
+        path=ROOT/'src/integration/bindu_runtime/bindu_runtime/pico_node.py'
+        cls=next(n for n in ast.parse(path.read_text()).body if isinstance(n,ast.ClassDef) and n.name=='PicoNode')
+        method=next(n for n in cls.body if isinstance(n,ast.AsyncFunctionDef) and n.name=='confirm_tool')
+        ns={};exec(compile(ast.Module(body=[method],type_ignores=[]),str(path),'exec'),ns)
+        mode_code='PICO_TOOL_GRASP_UNCONFIRMED_UNCALIBRATED'
+        async def wait(value):return value
+        node=S(feedback=lambda:S(healthy=True,stopped=True,modes=('unknown','unknown')),
+            position_ops=S(config={'calibrated':False,'allow_uncalibrated_direct':True}),
+            arms_ready_client=S(service_is_ready=lambda:True,call_async=lambda _:S(success=True)),
+            tool_cfg={},current=lambda _:None,wait=wait)
+        ns.update(time=__import__('time'),Trigger=S(Request=lambda:None))
+        with self.assertRaisesRegex(RuntimeError,mode_code):
+            asyncio.run(ns['confirm_tool'](node,None,'bimanual_tool'))
+        asyncio.run(ns['confirm_tool'](node,None,'independent_arms'))
+        guide=loading_guide(dict(phase='standby',reason='RuntimeError:'+mode_code),('unknown','unknown'))
+        self.assertIn('免标定手动开合',guide['detail'])
+        self.assertNotIn('尚未闭合停稳',guide['detail'])
+        node.feedback=lambda:S(healthy=True,stopped=False,modes=('unknown','unknown'))
+        with self.assertRaisesRegex(RuntimeError,'PICO_MODE_REQUIRES_STOPPED'):
+            asyncio.run(ns['confirm_tool'](node,None,'independent_arms'))
+        r=Rig(allow_uncalibrated_direct=True,require_driver_ack=False)
+        r.core.cfg['calibrated']=False
+        r.acquire();r.command('authorize_direct');r.command('open','left')
+        r.step(150)
+        self.assertEqual(r.core.snapshot('left')['grasp_state'],'unknown')
+        self.assertFalse(r.core.snapshot('left')['calibrated'])
+
     def run_case(self, interrupt=None):
         from bindu_teleoperation.pico import PicoIntent
         r=Rig(require_driver_ack=False)

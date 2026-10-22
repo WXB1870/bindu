@@ -452,6 +452,7 @@ class TargetWireTests(unittest.TestCase):
     def setUp(self):
         self.rig = rig = PauseHandoffTests(); rig.setUp()
         self.d = d = rig.devices
+        d.grippers=None
         d.health.reference_mode = 2
         for _, state in d.health.states.values(): state.wire_version = 4
         d.health.states['servo'][1].reference_mode = 2
@@ -524,6 +525,39 @@ class TargetWireTests(unittest.TestCase):
         self.assertEqual(self.d.publishers['arms'].publish.call_count, 2)
         for _ in range(10): self.d.advance_startup_hold(self.rig.engine)
         self.assertEqual(self.d.publishers['arms'].publish.call_count, 2)
+
+    def test_read_held_reference_survives_new_lease_without_publishing(self):
+        pause=self.start_powered_hold()
+        hold=[self.rig.q[n] for n in CONTROL_NAMES]
+        hold[0]-=.018
+        for _ in range(24):
+            self.update_target_feedback(hold=hold,reference_mode=2,segment_id=pause.meta.sequence,
+                trajectory_phase=4,hold_basis=0,reference_valid=True,output_valid=True)
+            self.rig.engine.tick(self.rig.now)
+            self.d.advance_startup_hold(self.rig.engine)
+        self.assertIsNone(self.rig.engine.stopping)
+        self.d.node.engine=self.rig.engine
+        self.d.node.instance_id='adapter'
+        sent=self.d.publishers['arms'].publish.call_count
+        old_request=self.d.io.pause_request
+        lease,epoch=self.rig.engine.acquire('follow',tuple(CONTROL_GROUPS),2.,self.rig.now)
+        self.assertIsNone(self.d.io.pause_request)
+        self.assertEqual(self.d.io.captured_pause_request,old_request)
+        result=self.d.read_held_reference(None,S())
+        self.assertTrue(result.success,result.message)
+        value=json.loads(result.message)
+        self.assertEqual((value['lease_id'],value['epoch']),(lease,epoch))
+        self.assertEqual(value['positions'],dict(zip(CONTROL_NAMES,hold)))
+        self.assertNotEqual(value['positions'][CONTROL_NAMES[0]],self.rig.q[CONTROL_NAMES[0]])
+        obs=self.d.health.observation
+        for field,bad in [('boot_id',999),('session',999),('command_sequence',999),
+                          ('trajectory_phase',3),('hold_valid',False)]:
+            before=getattr(obs,field);setattr(obs,field,bad)
+            self.assertFalse(self.d.read_held_reference(None,S()).success,field)
+            setattr(obs,field,before)
+        self.rig.now+=.3;self.rig.steady+=.3
+        self.assertFalse(self.d.read_held_reference(None,S()).success)
+        self.assertEqual(self.d.publishers['arms'].publish.call_count,sent)
 
     def test_startup_failure_or_disabled_writes_never_retry_enable(self):
         self.d.node.closing = False
@@ -605,7 +639,8 @@ class TargetWireTests(unittest.TestCase):
             return S(value=parameters[key])
         node = S(runtime_mode='real', snowbot_execution_mode='position', snowbot_reference_mode=2,
             now=lambda: 10., declare_parameter=declare, get_parameter=lambda key: S(value=parameters[key]),
-            create_subscription=Mock(), create_publisher=Mock())
+            create_subscription=Mock(), create_publisher=Mock(), create_service=Mock())
+        modules['std_srvs.srv']=S(Trigger=object)
         with patch.dict('sys.modules', modules):
             created = PositionSessionDevices(node, self.rig.profile)
         self.assertEqual(created.envelopes.pause_valid_for, 2.)
@@ -664,6 +699,7 @@ class TargetWireTests(unittest.TestCase):
         self.assertEqual(self.d.io.pause_request[:2],(pause.meta.session,2))
 
     def test_pause_from_executor_never_waits_and_keeps_original_stop_budget(self):
+        self.rig.enable_rest_window()
         hold = self.rig.start_stop()
         self.assertEqual(self.d.publishers['arms'].publish.call_count,2)
         pause = self.d.publishers['arms'].publish.call_args.args[0]
@@ -674,10 +710,10 @@ class TargetWireTests(unittest.TestCase):
         self.assertEqual(budget,(self.rig.engine.stop_deadline,self.rig.engine.stop_steady_deadline))
         self.assertTrue(self.rig.engine.stopping)
         self.assertIsNone(self.rig.io.confirmed_stop_targets())
-        self.rig.update(hold=hold,reference_mode=2,segment_id=2,trajectory_phase=4,hold_basis=0,reference_valid=True,output_valid=True)
-        for _,state in self.d.health.states.values():state.wire_version=4
-        self.d.health.states['servo'][1].reference_mode=2
-        self.rig.engine.tick(self.rig.now)
+        for _ in range(24):
+            self.update_target_feedback(hold=hold,reference_mode=2,segment_id=2,
+                trajectory_phase=4,hold_basis=0,reference_valid=True,output_valid=True)
+            self.rig.engine.tick(self.rig.now)
         self.assertIsNone(self.rig.engine.stopping)
 
     def test_applied_requires_actual_valid_servo_sample_and_is_distinct_from_accepted(self):

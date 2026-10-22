@@ -99,6 +99,8 @@ class BimanualToolNode(RuntimeNode):
         self.lease_client=self.create_client(Lease,'execution/lease',callback_group=group)
         self.submit_client=self.create_client(SubmitMotion,'execution/submit',callback_group=group)
         self.control_client=self.create_client(ControlExecution,'execution/control',callback_group=group)
+        self.held_reference_client=(self.create_client(Trigger,'execution/held_reference',callback_group=group)
+                                    if self.trajectory_reference else None)
         # Keep paired input ordered without sharing the worker/state timer lock.
         # Otherwise one hand can starve while the other keeps arriving.
         self.create_subscription(VRInput,'teleop/vr/input',self.on_frame,5,
@@ -307,6 +309,18 @@ class BimanualToolNode(RuntimeNode):
                 return s.revision
             await self.pause()
         raise RuntimeError('BIMANUAL_EXECUTION_REVISION_UNAVAILABLE')
+
+    async def held_reference(self,lease,revision):
+        reply=await self.wait(self.held_reference_client.call_async(Trigger.Request()))
+        if not reply.success:raise RuntimeError(reply.message)
+        data=json.loads(reply.message)
+        if (data['instance_id']!=self.state.instance_id or data['profile_hash']!=self.profile.digest or
+                data['lease_id']!=lease.lease_id or data['epoch']!=lease.epoch or data['revision']!=revision or
+                not 0<=self.now()-data['stamp']<=self.cfg['feedback_max_age'] or
+                set(data['positions'])!=set(self.names) or
+                not all(math.isfinite(q) for q in data['positions'].values())):
+            raise RuntimeError('BIMANUAL_HELD_REFERENCE_CHANGED')
+        return tuple(data['positions'][n] for n in self.names)
 
     async def stop_pending(self,lease,pending,revision):
         # Sending hold precedes every await. Stop increments Executor.revision;
@@ -577,6 +591,8 @@ class BimanualToolNode(RuntimeNode):
                             trajectory_sample_at=None
                             self.event('BIMANUAL_CAPTURED',json.dumps({'tool_pose':value.tolist(),
                                 'feedback':work_feedback,
+                                'capture_reference':dict(zip(self.names,work_positions)),
+                                'capture_basis':'confirmed_hold' if work_reference is not None else 'measured',
                                 'input_stamp':session.stamp,'input_seq':session.seq,'grasp_mode':session.grasp_mode,
                                 'controller_pose':session.anchor_input.tolist(),
                                 'raw_controller_pose':session.raw_input.tolist() if self.input_source=='vr' else None,
@@ -680,6 +696,13 @@ class BimanualToolNode(RuntimeNode):
                         trajectory_sample_at=actual_stamp
                         trajectory_reference_deadline=None
                     baseline,dt=reference.step(sampled_at) if operation=='solve' else (None,None)
+                    if operation=='capture' and self.trajectory_reference and isinstance(session,IndependentArmsSession):
+                        baseline=await self.held_reference(lease,submit_revision)
+                        # The request yields: use current measured feedback and
+                        # retain all normal input/feedback checks before capture.
+                        self.check()
+                        measured=dict(zip(self.state.joints.name,self.state.joints.position))
+                        sampled_at=self.now()
                     if self.worker.submit(operation,worker_token,measured,session.target,
                                           reference=baseline,dt=dt,grasp_mode=session.grasp_mode,
                                           target_stamp=session.stamp):
@@ -687,7 +710,8 @@ class BimanualToolNode(RuntimeNode):
                         work_seq,work_stamp=session.seq,session.stamp
                         work_sampled_at,work_dt=sampled_at,dt
                         work_gap=gap
-                        work_positions=tuple(measured[n] for n in self.names)
+                        work_positions=(baseline if operation=='capture' and baseline is not None else
+                                        tuple(measured[n] for n in self.names))
                         work_feedback,work_reference=measured,baseline
                         work_target=None if session.target is None else session.target.ravel().tolist()
                 goal.publish_feedback(TeleopAction.Feedback(session_id=session.identity,

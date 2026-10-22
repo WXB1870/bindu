@@ -431,7 +431,10 @@ class PicoNode(RuntimeNode):
     async def confirm_tool(self,intent,mode='bimanual_tool'):
         f=self.feedback()
         if not f.healthy:raise RuntimeError('PICO_FEEDBACK_UNAVAILABLE')
-        if not f.stopped or mode=='bimanual_tool' and (f.modes[0]!='closed' or f.modes[1] not in ('closed','virtual')):
+        if not f.stopped:raise RuntimeError('PICO_MODE_REQUIRES_STOPPED')
+        if mode=='bimanual_tool' and self.position_ops and not self.position_ops.config['calibrated']:
+            raise RuntimeError('PICO_TOOL_GRASP_UNCONFIRMED_UNCALIBRATED')
+        if mode=='bimanual_tool' and (f.modes[0]!='closed' or f.modes[1] not in ('closed','virtual')):
             raise RuntimeError('PICO_GRIPPER_CONFIRMATION_REQUIRED')
         client=self.arms_ready_client if mode=='independent_arms' else self.ready_client
         end=time.monotonic()+self.tool_cfg.get('worker_startup_timeout',30.)

@@ -531,15 +531,24 @@ class BimanualQP:
                                                 np.any(measured > self.posture_upper+1e-9)):
             raise ValueError('BIMANUAL_MEASURED_POSTURE_ERROR')
 
-    def capture_independent(self, feedback):
+    def capture_independent(self, feedback, *, reference=None):
         self.captured=False;self.independent_abi()
         q=self._q(feedback);poses=np.empty((2,4,4),dtype=np.float64)
+        measured=np.array([feedback[n] for n in self.names])
+        if reference is not None:
+            reference=np.asarray(reference,dtype=float)
+            if reference.shape!=measured.shape or not np.isfinite(reference).all():
+                raise ValueError('BIMANUAL_REFERENCE_LAYOUT')
+            if np.max(np.abs(reference-measured))>self.max_reference_error:
+                raise ValueError('BIMANUAL_REFERENCE_TRACKING_ERROR')
+            self._check_measured_limits(measured)
+            q=q.copy();q[[self.model_names.index(n) for n in self.names]]=reference
         if (not self.lib.bq_capture_independent(self.handle,self._ptr(q),self.nq,c.byref(self.native_config)) or
                 not self.lib.bq_flange_poses(self.handle,self._ptr(q),self.nq,
                                              self._ptr(poses[0]),self._ptr(poses[1]))):
             raise ValueError('INDEPENDENT_ARMS_CAPTURE:'+self._error())
         self._apply_shared_motion_weight()
-        self.check_independent_path(feedback,[feedback[n] for n in self.names])
+        self.check_independent_path(feedback,measured if reference is None else reference)
         self.grasp_mode='independent';self.captured=True
         return poses
 

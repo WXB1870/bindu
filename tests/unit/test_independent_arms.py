@@ -221,5 +221,37 @@ class IndependentNativeTests(unittest.TestCase):
             self.solver.solve_independent(self.feedback,poses,active_mask=1,
                                          reference=[0.]*len(self.solver.names),dt=.01)
 
+    def test_recapture_preserves_held_reference_with_stationary_measured_offset(self):
+        from bindu_runtime.teleop_deployment import apply_execution_tracking
+        cfg=apply_execution_tracking(self.cfg,real=True,position_contract=True,trajectory_reference=True)
+        profile=Profile.load(ROOT/'src/integration/bindu_runtime/config/robots/snowbot/snowbot_real_position.json')
+        solver=BimanualQP(cfg,profile);self.addCleanup(solver.close)
+        solver.empty_collision_check=self.solver.empty_collision_check
+        held=np.array([self.feedback[n] for n in solver.names])
+        measured=dict(self.feedback)
+        measured['arm_l_joint_1']=-.018
+        measured['arm_r_joint_1']=-.016
+        expected=solver.capture_independent(self.feedback)
+        for active in (1,2,1,3,2):
+            targets=solver.capture_independent(measured,reference=held)
+            np.testing.assert_allclose(targets,expected,atol=1e-12)
+            out,_=solver.solve_independent(measured,targets,active_mask=active,reference=held,dt=.02)
+            np.testing.assert_allclose(out,held,atol=1e-8)
+            targets[0 if active&1 else 1,2,3]+=.005
+            out,_=solver.solve_independent(measured,targets,active_mask=active,reference=held,dt=.02)
+            inactive=[i for i,n in enumerate(solver.names) if n in profile.groups['waist'] or
+                      (not active&1 and n in profile.groups['left_arm']) or
+                      (not active&2 and n in profile.groups['right_arm'])]
+            np.testing.assert_array_equal(np.asarray(out)[inactive],held[inactive])
+            self.assertGreater(np.max(np.abs(np.asarray(out)-held)),1e-6)
+        with self.assertRaisesRegex(ValueError,'REFERENCE_TRACKING_ERROR'):
+            solver.capture_independent(measured,reference=held+.2)
+        invalid=dict(measured);invalid['arm_l_joint_1']=profile.limits['arm_l_joint_1'][0]-.001
+        with self.assertRaisesRegex(ValueError,'MEASURED_POSITION_LIMIT'):
+            solver.capture_independent(invalid,reference=[invalid[n] for n in solver.names])
+        solver.empty_collision_check=lambda _:(_ for _ in ()).throw(ValueError('SELF_COLLISION'))
+        with self.assertRaisesRegex(ValueError,'SELF_COLLISION'):
+            solver.capture_independent(measured,reference=held)
+
 
 if __name__=='__main__':unittest.main()

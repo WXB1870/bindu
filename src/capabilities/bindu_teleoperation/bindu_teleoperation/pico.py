@@ -556,7 +556,9 @@ def loading_guide(view, modes):
         if reason.startswith(('RuntimeError:','ValueError:')) or reason.startswith('PREPARE_REQUIRES_'):
             detail=next((label for code,label in (
                 ('BIMANUAL_GRASP_POSE','双臂姿态不满足工具握点几何，请核对姿态与工具配置'),
-                ('PICO_GRIPPER_CONFIRMATION_REQUIRED','夹爪尚未闭合停稳，请检查实际反馈'),
+                ('PICO_MODE_REQUIRES_STOPPED','运动尚未停稳，停稳后再切换模式'),
+                ('PICO_TOOL_GRASP_UNCONFIRMED_UNCALIBRATED','夹爪可免标定手动开合，但尚无工具夹持确认；可继续用侧握控制各侧手臂'),
+                ('PICO_GRIPPER_CONFIRMATION_REQUIRED','尚未确认两侧夹爪处于工具要求的闭合位置；请检查实际位置反馈'),
                 ('PREPARE_TOOL_COUPLING','回准备位路径不能保持双手握持关系，已拒绝运动'),
                 ('SELF_COLLISION','候选姿态存在自碰撞，已拒绝运动'),
                 ('PICO_PREPARE_PRESET_REQUIRED','尚未配置现场准备位，可继续检查当前位置接合条件'))
