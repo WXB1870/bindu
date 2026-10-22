@@ -660,7 +660,7 @@ class PicoNode(RuntimeNode):
                 physical_gripper_confirmed=None,actuator_feedback='joint_position',
                 capabilities=dict(prepare=self.prepare_positions is not None,
                     independent_arms=self.position_contract,mode_switch=self.position_contract,
-                    grippers=bool(self.position_ops.config['calibrated']) if self.position_ops else True,
+                    grippers=bool(self.position_ops.config['calibrated'] or self.position_ops.config.get('allow_uncalibrated_direct', False)) if self.position_ops else True,
                     axial_grasp=self.position_ops.axial_available if self.position_ops else True),
                 execution_state=self.state.state if self.state is not None else 'unavailable',
                 feedback_age_s=self.now()-seconds(self.state.feedback_stamp) if self.state is not None else None)

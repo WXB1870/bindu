@@ -202,7 +202,13 @@ class PositionSessionDevices:
         try:
             self.identity(self.feedback_topic, self.receivers['head'], 'snowbot_ctl_msgs/msg/PositionObservation')
             q, v, stamp = self.health.observe(msg)
-            self.io.observe(q, v, stamp, self.node.now(), sample=msg.pdo_sample)
+            advanced = self.io.observe(q, v, stamp, self.node.now(), sample=msg.pdo_sample)
+            if advanced and self.grippers and self.grippers.core:
+                try:
+                    self.grippers.core.observe(q, v, {'left': float(msg.current[7]),
+                        'right': float(msg.current[15])}, stamp)
+                except ValueError as exc:
+                    self.grippers.core.invalid = str(exc)
             if msg.session_selected and msg.session == self.envelopes.session:
                 self.takeover_previous_hold = None
             if self.health.reference_mode:

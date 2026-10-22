@@ -35,7 +35,7 @@ class PositionOperations:
         n = self.node
         msg = self.states.get(side)
         if (msg is None or n.state is None or msg.instance_id != n.state.instance_id or
-                not msg.feedback_valid or not msg.calibrated or
+                not msg.feedback_valid or not (msg.calibrated or self.config.get('allow_uncalibrated_direct', False)) or
                 not 0 <= n.now()-seconds(msg.stamp) <= .2 or
                 not 0 <= n.now()-seconds(msg.feedback_stamp) <= .2 or
                 not all(math.isfinite(v) for v in (msg.measured_position, msg.measured_velocity))):
@@ -45,6 +45,8 @@ class PositionOperations:
         return msg
 
     def modes(self, *, require_stationary=True):
+        if not self.config['calibrated']:
+            return ('unknown', 'unknown')  # Manual endpoints do not confirm a tool grasp.
         result = []
         for side in SIDES:
             try:

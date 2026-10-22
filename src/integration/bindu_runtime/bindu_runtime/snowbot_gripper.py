@@ -1,10 +1,11 @@
 """Native Snowbot gripper commands; measured state comes from RetInformation."""
 import json
 import hashlib
+import time
 from pathlib import Path
 from rcl_interfaces.msg import ParameterDescriptor
 from rclpy.qos import qos_profile_sensor_data
-from bindu_hardware.snowbot_gripper import GripperController, SIDES, GROUPS, native_command
+from bindu_hardware.snowbot_gripper import GripperController, SIDES, GROUPS, JOINTS, MASKS, native_command
 from bindu_contracts.teleoperation import VRFrame
 from bindu_interfaces.msg import GripperState, VRInput
 from bindu_interfaces.srv import GripperControl, Lease
@@ -26,9 +27,12 @@ class SnowbotGrippers:
             raise ValueError('REAL_GRIPPER_CONFIG_REQUIRED')
         prefix = node.get_parameter('vendor_namespace').value.rstrip('/')
         self.topics = {side: prefix+'/gripper/'+side+'_cmd' for side in SIDES}
+        self.session_protocol = hasattr(devices, 'envelopes')
+        self.sent_positions = {}
         self.publishers = ({side: node.create_publisher(devices.array_type, topic, 1)
                             for side, topic in self.topics.items()}
-                           if node.robot_io.command_enabled and cfg.get('calibrated') else {})
+                           if node.robot_io.command_enabled and (cfg.get('calibrated') or
+                               cfg.get('allow_uncalibrated_direct', False)) else {})
         self.core = GripperController(node.profile, cfg, self.send, self.health, node.now, self.arms_idle,
                                       enabled=node.robot_io.command_enabled, require_driver_ack=False)
         self.bind_services()
@@ -46,7 +50,15 @@ class SnowbotGrippers:
 
     def health(self):
         self.devices.io.require_feedback()
-        self.devices.check_health(set(self.core.groups))
+        if self.session_protocol:
+            from bindu_hardware.snowbot_session import CONTROL_GROUPS
+            self.devices.health.require(CONTROL_GROUPS, acquiring=True)
+            obs = self.devices.health.observation
+            for side, slot in (('left', 7), ('right', 15)):
+                if not obs.valid_mask & MASKS[side] or obs.status[slot] & 8:
+                    raise RuntimeError('GRIPPER_DRIVER_FEEDBACK_OR_FAULT:'+side)
+        else:
+            self.devices.check_health(set(self.core.groups))
         for side in SIDES:
             topic = self.topics[side]
             if side not in self.publishers or self.node.count_publishers(topic) != 1:
@@ -58,13 +70,28 @@ class SnowbotGrippers:
         if 'gripper_control_enabled' in self.devices.health.messages['servo']:
             # The historical custom-wire guard explicitly rejects native topics.
             raise RuntimeError('GRIPPER_NATIVE_PROTOCOL_GUARD_MISMATCH')
-        return self.devices.health.messages['servo']
+        result = dict(self.devices.health.messages['servo'])
+        if self.session_protocol:
+            result['sample'] = obs.pdo_sample
+        return result
 
     def send(self, side, position, hold, sequence):
         self.health()
         cfg = self.core.cfg['grippers'][side]
-        values = self.devices.guarded_array(native_command(position, cfg), hold)
+        if self.session_protocol:
+            # Native servo topics interpolate each target but have no speed cap.
+            # Bound target increments here; a delivery gap cannot create a large step.
+            now = time.monotonic()
+            previous, when = self.sent_positions.get(side, (self.core.q[JOINTS[side]], now))
+            if not hold:
+                step = cfg['max_speed']*min(max(now-when, 0.), self.node.profile.control_period)
+                position = previous+max(-step, min(step, position-previous))
+            values = native_command(position, cfg)
+        else:
+            values = self.devices.guarded_array(native_command(position, cfg), hold)
         self.publishers[side].publish(self.devices.array_type(data=values))
+        if self.session_protocol:
+            self.sent_positions[side] = (position, now)
 
     def observe(self, msg, q, v, when):
         if self.core is None:

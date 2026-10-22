@@ -20,6 +20,8 @@ def native_command(position, config):
 def validate_config(config, profile):
     if type(config.get('schema_version')) is not int or config['schema_version'] != 1 or type(config.get('calibrated')) is not bool:
         raise ValueError('GRIPPER_CONFIG_SCHEMA')
+    if type(config.get('allow_uncalibrated_direct', False)) is not bool:
+        raise ValueError('GRIPPER_CONFIG_DIRECT_POLICY')
     for key in ('position_tolerance', 'velocity_tolerance', 'settle_time', 'motion_timeout',
                 'stop_timeout', 'feedback_max_age', 'command_ttl'):
         value = config[key]
@@ -125,7 +127,7 @@ class GripperController:
     def require_write(self):
         if not self.enabled:
             raise RuntimeError('GRIPPER_COMMANDS_DISABLED')
-        if not self.cfg['calibrated']:
+        if not (self.cfg['calibrated'] or self.cfg.get('allow_uncalibrated_direct', False)):
             raise RuntimeError('GRIPPER_CALIBRATION_REQUIRED')
         if self.fault:
             raise RuntimeError(self.fault)
@@ -173,12 +175,15 @@ class GripperController:
                 load_state='unknown', external_support=False):
         self.check_lease(lease_id, epoch)
         self.require_write()
+        if not self.cfg['calibrated'] and (operation not in ('authorize_direct','open','close','hold') or
+                operation in ('open','close') and not self.direct_authorized):
+            raise RuntimeError('GRIPPER_UNCALIBRATED_DIRECT_ONLY')
         if (type(sequence) is not int or sequence <= self.sequence or not math.isfinite(stamp)
                 or stamp < self.command_stamp or not math.isfinite(valid_for) or not 0 < valid_for <= .4 or not 0 <= self.now()-stamp < valid_for):
             raise RuntimeError('GRIPPER_STALE_COMMAND')
         if operation == 'authorize_direct':
             # Explicit stopped-arm trigger operation, independent of a load
-            # declaration. It permits only the calibrated open/closed endpoints.
+            # declaration. It permits only the configured open/closed endpoints.
             if side or load_state not in ('empty','held','unknown') or external_support is not False:
                 raise RuntimeError('GRIPPER_DIRECT_CONTEXT')
             self.load,self.supported,self.authorized=load_state,False,True
