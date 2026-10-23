@@ -200,6 +200,16 @@ class BimanualToolNode(RuntimeNode):
             self.worker_error=str(exc)
             self.event('BIMANUAL_WORKER_FAILED',self.worker_error)
 
+    def startup_input_ready(self, after):
+        # A new Action must never consume a STOP projection left by the previous
+        # handoff. Wait for an actual subsequent paired input; do not restamp it.
+        # Fresh STOP/invalid input still reaches the ordinary rejection guards.
+        if self.input_source != 'vr':
+            return True
+        left,right=self.frames.get('left'),self.frames.get('right')
+        return bool(left and right and left.source_id==right.source_id and
+                    left.seq==right.seq and min(left.stamp,right.stamp)>after)
+
     def ready(self,request,reply):
         return self.preflight(reply,'bimanual_tool')
 
@@ -504,11 +514,16 @@ class BimanualToolNode(RuntimeNode):
                 raise RuntimeError('PROFILE_MISMATCH')
             # Service round-trips can span a DDS scheduling gap. Wait for
             # fresh mode, input, feedback and recorder samples before moving.
+            startup_input_after=self.now()
             startup_deadline=time.monotonic()+.7
             while True:
                 if self.mode_state and self.mode_state.generation!=session.generation:
                     raise RuntimeError('BIMANUAL_MODE_GENERATION_CHANGED')
-                try: self.check();break
+                try:
+                    self.check()
+                    if not self.startup_input_ready(startup_input_after):
+                        raise RuntimeError('BIMANUAL_START_INPUT_PENDING')
+                    break
                 except RuntimeError:
                     if time.monotonic()>=startup_deadline: raise
                     await self.pause()

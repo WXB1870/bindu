@@ -277,6 +277,19 @@ class AbiLoadingTests(unittest.TestCase):
 
 
 class CandidateGeometryBacktracking(unittest.TestCase):
+    def test_reference_validation_is_budgeted_and_always_clears_deadline(self):
+        from bindu_kinematics.tool_geometry import GeometryBudgetExceeded
+        qp=object.__new__(BimanualQP);qp.geometry_step_backtracking=True
+        observed=[]
+        def check(*args):
+            observed.append(qp._geometry_deadline)
+            raise GeometryBudgetExceeded('GEOMETRY_VALIDATION_BUDGET')
+        qp.check_path=check
+        with self.assertRaises(GeometryBudgetExceeded):
+            qp.checked_geometry_step({},np.array([0.]),np.array([.01]),deadline=100.)
+        self.assertEqual(observed,[99.997])
+        self.assertIsNone(qp._geometry_deadline)
+
     @classmethod
     def setUpClass(cls):
         cls.config=json.loads((ROOT/'src/integration/bindu_runtime/config/robots/snowbot/bimanual_snowbot_real.json').read_text())
@@ -290,6 +303,9 @@ class CandidateGeometryBacktracking(unittest.TestCase):
         cls.profile=Profile.load(ROOT/'src/integration/bindu_runtime/config/robots/snowbot/snowbot_real_position.json')
         recorded=json.loads((ROOT/'tests/config/teleoperation/snowbot_candidate_steps.json').read_text())
         cls.config.update(recorded['recorded_config'])
+        # Preserve the original geometry fixtures independently of live thresholds.
+        cls.config['grasp_position_tolerance_m']=.01
+        cls.config['grasp_rotation_tolerance_rad']=.02
         cls.profile=replace(cls.profile,max_speed=recorded['recorded_joint_speed'],joint_dynamics={})
         cls.cases=recorded['cases']
 
@@ -431,6 +447,26 @@ class CandidateGeometryBacktracking(unittest.TestCase):
                         with self.assertRaisesRegex(ValueError,'BIMANUAL_MEASURED_GRASP_ERROR'):
                             self.step(qp,self.cases[0])
             finally:qp.close()
+
+    def test_real_grasp_boundary_is_three_cm_and_budget_is_fifty_ms(self):
+        cfg=json.loads((ROOT/'src/integration/bindu_runtime/config/robots/snowbot/bimanual_snowbot_real.json').read_text())
+        self.assertEqual(cfg['grasp_position_tolerance_m'],.03)
+        self.assertEqual(cfg['grasp_rotation_tolerance_rad'],.04)
+        self.assertEqual(cfg['max_relative_error'],.06)
+        self.assertEqual(cfg['solve_timeout_us'],50000)
+        self.assertEqual(cfg['demo']['acceptance']['min_tool_robot_clearance_m'],.02)
+        for displacement,passes in ((.0299,True),(.0301,False)):
+            qp=self.solver(self.cases[0]);self.addCleanup(qp.close)
+            qp.grasp_position_tolerance=cfg['grasp_position_tolerance_m']
+            qp.grasp_rotation_tolerance=cfg['grasp_rotation_tolerance_rad']
+            relative=qp.expected_relative.copy();relative[0,3]+=displacement
+            def measured(handle,q,nq,out):
+                np.ctypeslib.as_array(out,shape=(16,))[:]=relative.ravel();return 1
+            with patch.object(qp.lib,'bq_relative_pose',side_effect=measured):
+                if passes:self.step(qp,self.cases[0])
+                else:
+                    with self.assertRaisesRegex(ValueError,'BIMANUAL_MEASURED_GRASP_ERROR'):
+                        self.step(qp,self.cases[0])
 
     def test_solver_and_hand_line_mapping_use_same_point_without_moving_cad(self):
         from bindu_teleoperation.bimanual_session import BimanualSession

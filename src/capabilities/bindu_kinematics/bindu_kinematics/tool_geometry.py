@@ -3,6 +3,7 @@
 All positions are in the fixed robot base frame. The bin is an open box, not a
 solid obstacle across its mouth. Robot geometry dependencies are loaded lazily.
 """
+import time
 import numpy as np
 
 
@@ -326,7 +327,7 @@ def make_collision_checker(urdf, recipe, conservative_convex=False, *, tool_pres
     contacts = recipe['shaft_contacts']
     if not set(contacts).issubset(names):
         raise ValueError('UNKNOWN_SHAFT_CONTACT_LINK')
-    def shaft_queries(contact_bands):
+    def shaft_queries(contact_bands, *, measured_centers=False):
         segments = {}
         segment_cache = {}
         for name in set(names):
@@ -334,8 +335,14 @@ def make_collision_checker(urdf, recipe, conservative_convex=False, *, tool_pres
             if name in contact_bands:
                 center, half_length = contact_bands[name]['center_m'], contact_bands[name]['half_length_m']
                 if (not np.isfinite([center, half_length]).all() or half_length <= 0 or
-                        center-half_length < ends[0]-1e-9 or center+half_length > ends[1]+1e-9):
+                        center < ends[0]-1e-9 or center > ends[1]+1e-9 or
+                        (not measured_centers and (center-half_length < ends[0]-1e-9 or
+                                                   center+half_length > ends[1]+1e-9))):
                     raise ValueError('INVALID_SHAFT_CONTACT_BAND')
+                # A measured grip can shift slightly toward a physical rod end.
+                # Intersect its fixed-width exemption with the actual rod;
+                # no geometry exists beyond that end, and no extra rod is skipped.
+                # Static recipe bands are still required to fit in full.
                 # Cylinder cut faces bound each allowed contact band precisely;
                 # unlike skipping a hand mesh this still checks the rest of the rod.
                 if not check_grasp_contacts:
@@ -392,7 +399,7 @@ def make_collision_checker(urdf, recipe, conservative_convex=False, *, tool_pres
             raise ValueError('UNKNOWN_SHAFT_CONTACT_LINK')
         updated={name:dict(band,center_m=centers.get(name,band['center_m']))
                  for name,band in contacts.items()}
-        layout=shaft_queries(updated)  # Validate before changing the active layout.
+        layout=shaft_queries(updated,measured_centers=True)  # Validate before changing the active layout.
         for _,shape,_ in tool_parts:
             bounds.pop(id(shape),None)
         contacts=updated
@@ -440,10 +447,9 @@ def make_collision_checker(urdf, recipe, conservative_convex=False, *, tool_pres
                 validated.move_to_end(key)
                 continue
             if deadline is not None:
-                import time
                 if time.perf_counter() >= deadline:
                     raise GeometryBudgetExceeded('GEOMETRY_VALIDATION_BUDGET')
-            pin.computeCollisions(model, data, geometry, geometry_data, q, False)
+            pin.computeCollisions(model, data, geometry, geometry_data, q, fast)
             failure = None
             initial_contacts={}
             for pair, result in zip(geometry.collisionPairs, geometry_data.collisionResults):
@@ -512,9 +518,14 @@ def make_collision_checker(urdf, recipe, conservative_convex=False, *, tool_pres
                 grasp_query = check_grasp_contacts and name in contacts and parts[part_index][0] == 'SHAFT'
                 limit = -grasp_penetration if grasp_query else clearance_limit
                 current_minimum = grasp_minimum if grasp_query else minimum
-                if lower_bound >= max(limit, current_minimum):
+                # AABB separation cannot bound penetration depth: an overlapping
+                # grasp pair must still run the inner-cylinder intersection test.
+                threshold=(0. if grasp_query else limit) if fast else max(limit,current_minimum)
+                if lower_bound >= threshold:
                     bounded_queries += 1
                     continue
+                if deadline is not None and time.perf_counter() >= deadline:
+                    raise GeometryBudgetExceeded('GEOMETRY_VALIDATION_BUDGET')
                 exact_queries += 1
                 name, body_shape, body_pose, _ = bodies[body_index]
                 part, shape, pose = parts[part_index]
@@ -558,8 +569,10 @@ def make_collision_checker(urdf, recipe, conservative_convex=False, *, tool_pres
                     wall_halves[:, None]-scene_halves, 0.), axis=2)-1e-9
                 for (wall, box, box_pose), lower_bounds in zip(bin_parts, bin_lower_bounds):
                     for (name, shape, pose, _), bound in zip(scene_parts, lower_bounds):
-                        if bound >= max(bin_limit, bin_minimum):
+                        if bound >= (bin_limit if fast else max(bin_limit, bin_minimum)):
                             continue
+                        if deadline is not None and time.perf_counter() >= deadline:
+                            raise GeometryBudgetExceeded('GEOMETRY_VALIDATION_BUDGET')
                         distance = float(fcl.distance(shape,pose,box,box_pose,distance_request,fcl.DistanceResult()))
                         if not np.isfinite(distance):
                             raise ValueError('NONFINITE_BIN_DISTANCE')
@@ -583,6 +596,8 @@ def make_collision_checker(urdf, recipe, conservative_convex=False, *, tool_pres
                 'tool_body_representation':'convex_outer' if conservative_convex else 'cad_mesh',
                 'mesh_pairs': len(geometry.collisionPairs),
                 'excluded_tree_distance': 2, 'shaft_contacts': contacts,
+                'shaft_contact_intervals_m':{name:[max(float(ends[0]),band['center_m']-band['half_length_m']),
+                    min(float(ends[1]),band['center_m']+band['half_length_m'])] for name,band in contacts.items()},
                 'grasp_contact_checked': check_grasp_contacts,
                 'grasp_contact_test': 'inner_cylinder_mesh_intersection' if check_grasp_contacts else 'legacy_band_exemption',
                 'grasp_penetration_limit_m': grasp_penetration if check_grasp_contacts else None,

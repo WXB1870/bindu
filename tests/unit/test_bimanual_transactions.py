@@ -90,7 +90,7 @@ class Rig:
                 self.commits.append((rig.clock,self.positions,self.sampled_at))
         tree = ast.parse(SOURCE.read_text())
         node = next(n for n in tree.body if isinstance(n,ast.ClassDef) and n.name=='BimanualToolNode')
-        names = {'execute','goal','check','wait','begin_stop','stop','stop_pending','execution_revision','cleanup_event'}
+        names = {'execute','goal','check','startup_input_ready','wait','begin_stop','stop','stop_pending','execution_revision','cleanup_event'}
         methods = [n for n in node.body if getattr(n,'name','') in names]
         namespace = dict(time=S(monotonic=lambda:self.steady),json=json,math=__import__('math'),
             stop_feedback_matches=stop_feedback_matches,
@@ -271,6 +271,31 @@ class Rig:
 
 
 class BimanualTransactions(unittest.IsolatedAsyncioTestCase):
+    async def test_restart_waits_for_new_pair_instead_of_consuming_old_stop_projection(self):
+        rig=Rig();original=rig.update
+        def update():
+            original()
+            if rig.step<2:
+                rig.node.frames={side:replace(f,stamp=9.9,stop=True)
+                                 for side,f in rig.node.frames.items()}
+            elif rig.step<4:
+                rig.node.frames={side:replace(f,grip=0.) for side,f in rig.node.frames.items()}
+        rig.update=update;update()
+        result=await rig.run()
+        self.assertNotEqual(result.code,'VR_PAIR_INVALID')
+        self.assertTrue(rig.commands)
+        self.assertTrue(all(c.stamp>10. for c in rig.commands))
+
+    async def test_new_stop_projection_still_rejects_without_motion(self):
+        rig=Rig();original=rig.update
+        def update():
+            original()
+            rig.node.frames={side:replace(f,stop=True) for side,f in rig.node.frames.items()}
+        rig.update=update;update()
+        result=await rig.run()
+        self.assertEqual(result.code,'VR_PAIR_INVALID')
+        self.assertFalse(rig.commands)
+
     async def test_replacement_before_final_stop_cannot_confirm_old_execution(self):
         rig=Rig()
         original_engine,original_update=rig.engine,rig.update

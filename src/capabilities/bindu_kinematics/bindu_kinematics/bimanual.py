@@ -374,7 +374,7 @@ class BimanualQP:
         try:
             self.check_path(feedback, [feedback[n] for n in self.names])
             self.set_shared_targets(self.cfg.get('shared_targets'))
-        except (ValueError, TypeError):
+        except (ValueError, TypeError, TimeoutError):
             self.captured = False
             raise
         # Retain only a successfully captured preference across grasp changes;
@@ -448,11 +448,11 @@ class BimanualQP:
             return candidate,1.
         # Validate a safe fallback BEFORE spending time on candidate search.
         # Actual collisions and an unsafe reference still fail this operation.
-        check(feedback,reference)
         delta=candidate-reference
         limited=reference.copy();accepted_scale=0.;budget_limited=False;reason=None
         self._geometry_deadline=None if deadline is None else deadline-.003
         try:
+            check(feedback,reference)
             for scale in (1.,.5,.25,.125,.0625,.03125):
                 if self._geometry_deadline is not None and time.perf_counter()>=self._geometry_deadline:
                     budget_limited=True;break
@@ -656,7 +656,7 @@ class BimanualQP:
             return tuple(float(v) for v in out),tuple(float(v) for v in metrics)
         except DeferredSolve:
             raise
-        except (ValueError,TypeError):
+        except (ValueError,TypeError,TimeoutError):
             self.captured=False
             raise
 
@@ -683,7 +683,7 @@ class BimanualQP:
             return self._solve(feedback, target, reference, float(dt), target_stamp, tool_feedback)
         except DeferredSolve:
             raise
-        except (ValueError, TypeError):
+        except (ValueError, TypeError, TimeoutError):
             self.captured = False
             raise
 

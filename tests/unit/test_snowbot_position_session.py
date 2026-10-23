@@ -1053,16 +1053,18 @@ class TargetWireTests(unittest.TestCase):
         self.assertEqual(first.meta.expires_at_ns-first.meta.source_stamp_ns, 200_000_000)
         self.assertEqual(pause.meta.expires_at_ns-pause.meta.source_stamp_ns, 2_000_000_000)
 
-    def test_requested_half_rad_speed_and_one_point_five_acceleration_reach_wire(self):
+    def test_real_arms_and_waist_keep_distinct_limits_through_target_and_pause_wire(self):
         from bindu_contracts.profile import Profile
         from tests.support.paths import ROOT
         self.d.io.profile=Profile.load(ROOT/'src/integration/bindu_runtime/config/robots/snowbot/snowbot_real_position.json')
         self.d.trajectory_limits=dict(trajectory_max_velocity=.5,trajectory_max_acceleration=1.5)
         self.d.new_session()
-        packet=self.send()
-        self.assertEqual(list(packet.trajectory.max_velocity),[.5]*16)
-        self.assertEqual(list(packet.trajectory.max_acceleration),[1.5]*16)
-        self.assertEqual(packet.meta.expires_at_ns-packet.meta.source_stamp_ns,200_000_000)
+        for pause in (False,True):
+            packet=self.send(pause=pause)
+            self.assertEqual(list(packet.trajectory.max_velocity),[.5]*14+[.25]*2)
+            self.assertEqual(list(packet.trajectory.max_acceleration),[1.5]*14+[.5]*2)
+            self.assertEqual(packet.meta.expires_at_ns-packet.meta.source_stamp_ns,
+                             2_000_000_000 if pause else 200_000_000)
 
     def test_targets_keep_joint_order_identity_original_expiry_and_no_curve(self):
         first = self.send(stamp=self.rig.now-.01, valid_for=.15)

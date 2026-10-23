@@ -49,7 +49,7 @@
   "max_relative_error": 0.06,
   "max_linear_speed": 1.2,
   "max_angular_speed": 2.4,
-  "solve_timeout_us": 30000,
+  "solve_timeout_us": 50000,
   "demo": {
     "description": "Virtual tool proxy: 0.34 m grip spacing with 0.10 m overhang at each end; shared display and collision geometry. Physical tool geometry requires onsite calibration.",
     "display_urdf": "snowbot_display.urdf",
@@ -162,7 +162,7 @@
     0.0,
     1.0
   ],
-  "grasp_position_tolerance_m": 0.02,
+  "grasp_position_tolerance_m": 0.03,
   "grasp_rotation_tolerance_rad": 0.04,
   "tool_gain": 10.0,
   "posture_gain": 0.1,

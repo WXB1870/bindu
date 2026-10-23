@@ -84,6 +84,45 @@ class ShovelGeometryTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'CLEARANCE|COLLISION|GROUND'):
             checker([bad])
 
+    def test_measured_band_intersects_physical_rod_without_widening_contact(self):
+        from bindu_kinematics.tool_geometry import make_collision_checker
+        cfg=json.loads((ROOT/'src/integration/bindu_runtime/config/robots/snowbot/bimanual_snowbot_real.json').read_text())
+        recipe=cfg['demo'];recipe['left_grip_in_tool_m']=self.recipe['left_grip_in_tool_m']
+        checker=make_collision_checker(self.urdf,recipe,conservative_convex=True)
+        right=[n for n,b in recipe['shaft_contacts'].items() if b['grip']=='right']
+        for center in (-.3431461409,-.3404773576):
+            checker.set_contact_centers(dict.fromkeys(right,center))
+            report=checker([self.sample],collect_failures=True)
+            for name in right:
+                self.assertEqual(report['shaft_contact_intervals_m'][name],[recipe['shaft_from_left_grip_m'][0],center+.1])
+                self.assertEqual(report['shaft_contacts'][name]['half_length_m'],.1)
+            bad=copy.deepcopy(self.sample);bad['tool'][0][3]-=.5
+            with self.assertRaisesRegex(ValueError,'CLEARANCE|COLLISION|GROUND'):
+                checker([bad])
+        before=report['shaft_contacts']
+        for center in (-.441,float('nan'),100.):
+            with self.assertRaisesRegex(ValueError,'INVALID_SHAFT_CONTACT_BAND'):
+                checker.set_contact_centers(dict.fromkeys(right,center))
+        self.assertEqual(checker([self.sample],collect_failures=True)['shaft_contacts'],before)
+
+    def test_fast_validation_matches_full_geometry_gate_and_reduces_exact_queries(self):
+        from unittest.mock import patch
+        import coal as fcl
+        from bindu_kinematics.tool_geometry import make_collision_checker
+        slow=make_collision_checker(self.urdf,self.recipe,conservative_convex=True)
+        fast=make_collision_checker(self.urdf,self.recipe,conservative_convex=True,validation_only=True)
+        with patch.object(fcl,'distance',wraps=fcl.distance) as distance:
+            slow([self.sample]);full_count=distance.call_count
+        with patch.object(fcl,'distance',wraps=fcl.distance) as distance:
+            fast([self.sample]);fast_count=distance.call_count
+        self.assertLessEqual(fast_count,full_count)
+        for offset in (-.5,-.2,.0,.2):
+            sample=copy.deepcopy(self.sample);sample['tool'][0][3]+=offset
+            report=slow([sample],collect_failures=True)
+            if report['violations']:
+                with self.assertRaises(ValueError):fast([sample])
+            else:fast([sample])
+
     def coupling_sample(self,t,right=None,world=None):
         world=np.eye(4) if world is None else world
         left=np.linalg.inv(np.array(self.config['left_to_tool']).reshape(4,4))
@@ -230,6 +269,9 @@ class ShovelGeometryTests(unittest.TestCase):
         sample['tool'] = tool.tolist()
         with self.assertRaisesRegex(ValueError,'GRASP_PENETRATION'):
             collision_check(self.urdf,[sample],recipe)
+        from bindu_kinematics.tool_geometry import make_collision_checker
+        fast=make_collision_checker(self.urdf,recipe,conservative_convex=True,validation_only=True)
+        with self.assertRaisesRegex(ValueError,'GRASP_PENETRATION'):fast([sample])
         recipe['check_grasp_contacts'] = False
         recipe['acceptance']['ground_policy'] = 'disabled'
         result = collision_check(self.urdf,[sample],recipe)
