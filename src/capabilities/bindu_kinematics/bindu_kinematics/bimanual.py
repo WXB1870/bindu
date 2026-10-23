@@ -10,6 +10,10 @@ from ament_index_python.packages import get_package_prefix
 ABI_VERSION = 1
 
 
+class DeferredSolve(ValueError):
+    """No candidate: retain capture only for a freshly validated safe reference."""
+
+
 class NativeConfig(c.Structure):
     """Layout from bindu_bimanual_qp/c_api.h; defaults belong to the native core."""
     _fields_ = [('abi_version', c.c_uint32), ('struct_size', c.c_uint32)] + [
@@ -604,11 +608,13 @@ class BimanualQP:
             left,right=(self._transform(pose) for pose in poses)
             out=np.empty(len(self.names));metrics=np.empty(3)
             native_at=time.perf_counter()
-            if not self.lib.bq_solve_independent(self.handle,self._ptr(q),self.nq,
+            ok=self.lib.bq_solve_independent(self.handle,self._ptr(q),self.nq,
                     self._ptr(reference),len(self.names),self._ptr(left),self._ptr(right),active_mask,
-                    dt,self._ptr(out),self._ptr(metrics)):
-                raise ValueError('INDEPENDENT_ARMS_QP:'+self._error())
+                    dt,self._ptr(out),self._ptr(metrics))
             native_us=(time.perf_counter()-native_at)*1e6
+            if not ok:
+                self._native_failure(feedback,reference,started,cpu_started,native_us,
+                                     independent=True)
             if not np.isfinite(out).all() or not np.isfinite(metrics).all():
                 raise ValueError('BIMANUAL_NONFINITE_RESULT')
             delta=out-reference;lead=reference-measured;moving=np.abs(delta)>1e-12
@@ -629,6 +635,8 @@ class BimanualQP:
             self._check_solve_budget('independent',started,cpu_started,native_us,metrics[0],
                                      (time.perf_counter()-geometry_at)*1e6)
             return tuple(float(v) for v in out),tuple(float(v) for v in metrics)
+        except DeferredSolve:
+            raise
         except (ValueError,TypeError):
             self.captured=False
             raise
@@ -653,6 +661,8 @@ class BimanualQP:
         self.last_geometry_step = None
         try:
             return self._solve(feedback, target, reference, float(dt), target_stamp, tool_feedback)
+        except DeferredSolve:
+            raise
         except (ValueError, TypeError):
             self.captured = False
             raise
@@ -745,7 +755,7 @@ class BimanualQP:
             ok = self.lib.bq_solve(*args, dt, self._ptr(out), self._ptr(metrics))
         native_us = (time.perf_counter()-native_started)*1e6
         if not ok:
-            raise ValueError('BIMANUAL_QP:'+self._error())
+            self._native_failure(feedback,reference,started,cpu_started,native_us)
         self._check_solve_budget('native', started, cpu_started, native_us, metrics[0])
         if not np.isfinite(out).all() or not np.isfinite(metrics).all():
             raise ValueError('BIMANUAL_NONFINITE_RESULT')
@@ -789,15 +799,30 @@ class BimanualQP:
             self.target_sample = next_target_sample
         return result
 
+    def _native_failure(self, feedback, reference, started, cpu_started, native_us, *, independent=False):
+        reason=self._error()
+        if reason!='QP_ITERATION_LIMIT_ZERO_FEASIBLE':
+            raise ValueError(('INDEPENDENT_ARMS_QP:' if independent else 'BIMANUAL_QP:')+reason)
+        self._check_solve_budget('deferred_native',started,cpu_started,native_us,None)
+        geometry_at=time.perf_counter()
+        check=self.check_independent_path if independent else self.check_path
+        check(feedback,reference)
+        self._check_solve_budget('deferred_validation',started,cpu_started,native_us,None,
+                                 (time.perf_counter()-geometry_at)*1e6)
+        # No output or feedforward history is committed, and no old command is
+        # refreshed. The runtime may wait for a new sample under existing TTLs.
+        raise DeferredSolve('BIMANUAL_QP_DEFERRED')
+
     def _check_solve_budget(self, stage, started, cpu_started, native_us, qp_us, geometry_us=0.):
         # Read the deadline after building diagnostics/output, so a collection
         # during result packing cannot turn a late result into an accepted one.
         timing = dict(stage=stage, wall_us=0., thread_cpu_us=0., native_wall_us=native_us,
-                      qp_internal_us=float(qp_us), geometry_wall_us=geometry_us)
+                      qp_internal_us=None if qp_us is None else float(qp_us), geometry_wall_us=geometry_us)
         timing['thread_cpu_us'] = (time.thread_time()-cpu_started)*1e6
         timing['wall_us'] = (time.perf_counter()-started)*1e6
         self.last_timing = timing
         if timing['wall_us'] > float(self.cfg['solve_timeout_us']):
+            qp_text='unknown' if qp_us is None else f'{qp_us:.0f}'
             raise ValueError(f"BIMANUAL_QP_TIMEOUT:{stage}:wall_us={timing['wall_us']:.0f}:"
                              f"cpu_us={timing['thread_cpu_us']:.0f}:native_us={native_us:.0f}:"
-                             f"qp_us={timing['qp_internal_us']:.0f}:geometry_us={geometry_us:.0f}")
+                             f"qp_us={qp_text}:geometry_us={geometry_us:.0f}")

@@ -32,7 +32,7 @@ SOURCE = Path(__file__).resolve().parents[2]/'src/integration/bindu_runtime/bind
 class Rig:
     def __init__(self, *, ack_delay=.02, reject=False, drop=False, input_gap=False,
                  transition=None, delivery_gap=None, send_failure=False, state_delay=0.,
-                 duplicate_window=0.):
+                 duplicate_window=0., solve_errors=()):
         self.clock = 10.
         self.step = 0
         self.ack_delay, self.reject, self.drop = ack_delay, reject, drop
@@ -41,6 +41,9 @@ class Rig:
         self.send_failure=send_failure
         self.state_delay,self.state_history=state_delay,[]
         self.duplicate_window,self.frozen_frames=duplicate_window,None
+        self.solve_errors=iter(solve_errors)
+        self.solve_attempts=[]
+        self.clutch=0
         self.futures=[]
         self.transitioned = False
         self.receipts, self.commands, self.references, self.events = [], [], [], []
@@ -146,6 +149,16 @@ class Rig:
             self.node.frames=(self.frozen_frames if self.frozen_frames and
                               self.clock<=self.commands[0].stamp+self.duplicate_window
                               else self.frame(self.step,0. if self.step<2 else 1.))
+        if self.commands and self.transition=='regrip':
+            elapsed=self.clock-self.commands[0].stamp
+            released=.06<=elapsed<.22
+            if elapsed>=.06:self.clutch=1
+            self.node.frames=self.frame(self.step,0. if released else 1.,clutch=self.clutch)
+            if elapsed>=.06:
+                # Move both hands while released, then engage at that new pose.
+                for side,frame in self.node.frames.items():
+                    pose=np.array(frame.pose).reshape(4,4);pose[0,3]+=.2
+                    self.node.frames[side]=replace(frame,pose=tuple(pose.ravel()))
 
     def done(self,value):
         future=asyncio.get_running_loop().create_future();future.set_result(value)
@@ -173,6 +186,12 @@ class Rig:
         if operation=='capture':
             value=np.eye(4)
         else:
+            error=next(self.solve_errors,None)
+            self.solve_attempts.append((self.clock,token,self.node.frames['left'].seq,
+                                        kwargs['reference'],kwargs['dt'],error))
+            if error:
+                self.node.worker_result=('error',token,error)
+                return True
             # Deterministic already-validated candidate. Reference and execution
             # integration below are actual production code, not solver models.
             value=(tuple(q+.001 for q in kwargs['reference']),(1.,0.,1.))
@@ -219,6 +238,67 @@ class Rig:
 
 
 class BimanualTransactions(unittest.IsolatedAsyncioTestCase):
+    async def test_release_regrip_uses_new_baselines_without_process_restart(self):
+        rig=Rig(transition='regrip')
+        result=await rig.run()
+        self.assertTrue(result.success,result.code)
+        captures=[json.loads(e[1]) for e in rig.events if e[0]=='BIMANUAL_CAPTURED']
+        self.assertEqual(len(captures),2)
+        self.assertGreater(np.linalg.norm(np.array(captures[1]['controller_pose'])-
+                                         np.array(captures[0]['controller_pose'])),.1)
+        second=captures[1]
+        attempts=[a for a in rig.solve_attempts if a[0]>=second['capture_completed_at']]
+        np.testing.assert_allclose(attempts[0][3],list(second['capture_reference'].values()))
+        self.assertEqual(len(rig.references),1)
+        self.assertTrue(all(c.stamp<rig.commands[0].stamp+.06 or
+                            c.stamp>=rig.commands[0].stamp+.22 for c in rig.commands))
+
+    async def test_one_guarded_iteration_failure_keeps_reference_and_uses_only_new_input(self):
+        rig=Rig(solve_errors=['BIMANUAL_QP_DEFERRED'])
+        result=await rig.run()
+        self.assertTrue(result.success,result.code)
+        first,second=rig.solve_attempts[:2]
+        self.assertEqual(first[3],second[3])
+        self.assertGreater(second[2],first[2])
+        self.assertGreater(second[4],first[4])
+        self.assertFalse(any(c.command_id.endswith('_'+str(first[1])) for c in rig.commands))
+        self.assertGreater(len(rig.references[0].commits),2)
+        summaries=[json.loads(e[1]) for e in rig.events if e[0]=='BIMANUAL_SOLVE_DEFERRED_END']
+        self.assertEqual(summaries[0]['count'],1)
+        self.assertEqual(summaries[0]['outcome'],'software_acceptance')
+
+    async def test_continuous_guarded_failures_stop_with_existing_reference_budget(self):
+        rig=Rig(solve_errors=['BIMANUAL_QP_DEFERRED']*100)
+        result=await rig.run()
+        self.assertFalse(result.success)
+        self.assertTrue(result.code.startswith('BIMANUAL_INTEGRATION_INTERVAL'),result.code)
+        self.assertEqual(rig.commands,[])
+        self.assertEqual(rig.references[0].commits,[])
+        self.assertGreater(len(rig.solve_attempts),1)
+        self.assertFalse(rig.engine.lease_id)
+        self.assertEqual(len([e for e in rig.events if e[0]=='BIMANUAL_SOLVE_DEFERRED']),1)
+        self.assertEqual(len([e for e in rig.events if e[0]=='BIMANUAL_SOLVE_DEFERRED_END']),1)
+
+    async def test_deferred_samples_never_refresh_a_previously_accepted_command(self):
+        rig=Rig(solve_errors=[None,None]+['BIMANUAL_QP_DEFERRED']*100)
+        result=await rig.run()
+        self.assertFalse(result.success)
+        self.assertIn(result.code.split(':')[0],('COMMAND_TIMEOUT','BIMANUAL_INTEGRATION_INTERVAL'))
+        self.assertEqual(len(rig.commands),2)
+        self.assertEqual(len(rig.references[0].commits),2)
+        self.assertFalse(rig.engine.lease_id)
+
+    async def test_unsafe_or_unknown_solver_failure_is_not_deferred(self):
+        for error in ('BIMANUAL_QP:joint bounds infeasible','BIMANUAL_NONFINITE_RESULT',
+                      'BIMANUAL_QP_TIMEOUT:native','SELF_COLLISION:arm',
+                      'BIMANUAL_QP_DEFERRED:unknown'):
+            with self.subTest(error=error):
+                rig=Rig(solve_errors=[error]);result=await rig.run()
+                self.assertEqual(result.code,error)
+                self.assertFalse(result.success)
+                self.assertEqual(len(rig.solve_attempts),1)
+                self.assertEqual(rig.commands,[])
+
     def test_original_recorded_packets_keep_source_time_and_reject_stale_replay(self):
         fixture=json.loads((Path(__file__).resolve().parents[2]/'tests/config/teleoperation/snowbot_input_gap.json').read_text())
         pairs=fixture['pairs']

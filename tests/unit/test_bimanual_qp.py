@@ -449,6 +449,53 @@ class NativeBimanual(unittest.TestCase):
         self.feedback=dict.fromkeys(self.qp.model_names,0.)
         self.feedback.update(self.pose)
 
+    def test_iteration_limit_retains_capture_only_after_checking_unchanged_reference(self):
+        target=self.qp.capture(self.feedback)
+        reference=tuple(self.feedback[n] for n in self.qp.names)
+        name='bq_solve_tracking' if self.qp.tracking else 'bq_solve'
+        check=self.qp.check_path
+        with patch.object(self.qp.lib,name,return_value=0), \
+                patch.object(self.qp,'_error',return_value='QP_ITERATION_LIMIT_ZERO_FEASIBLE'), \
+                patch.object(self.qp,'check_path',wraps=check) as guard:
+            with self.assertRaisesRegex(ValueError,'^BIMANUAL_QP_DEFERRED$'):
+                self.qp.solve(self.feedback,target,reference=reference,dt=.01,target_stamp=1.)
+        self.assertTrue(self.qp.captured)
+        self.assertIsNone(self.qp.target_sample)
+        self.assertEqual(guard.call_count,1)
+        np.testing.assert_array_equal(guard.call_args.args[1],reference)
+        # Next call uses the actual native solver and the same accepted reference.
+        out,_=self.qp.solve(self.feedback,target,reference=reference,dt=.02,target_stamp=1.02)
+        np.testing.assert_allclose(out,reference,atol=1e-7)
+
+    def test_deferred_native_failure_still_fails_on_geometry_or_wall_budget(self):
+        for reason in ('SELF_COLLISION:measured','timeout'):
+            with self.subTest(reason=reason):
+                target=self.qp.capture(self.feedback)
+                reference=[self.feedback[n] for n in self.qp.names]
+                name='bq_solve_tracking' if self.qp.tracking else 'bq_solve'
+                def guard(*args):
+                    if reason=='timeout':time.sleep(.04)
+                    else:raise ValueError(reason)
+                with patch.object(self.qp.lib,name,return_value=0), \
+                        patch.object(self.qp,'_error',return_value='QP_ITERATION_LIMIT_ZERO_FEASIBLE'), \
+                        patch.object(self.qp,'check_path',side_effect=guard), \
+                        self.assertRaisesRegex(ValueError,'QP_TIMEOUT' if reason=='timeout' else reason):
+                    self.qp.solve(self.feedback,target,reference=reference,dt=.01)
+                self.assertFalse(self.qp.captured)
+
+    def test_other_native_rejections_invalidate_capture_without_deferral(self):
+        for reason in ('joint bounds infeasible','nonfinite QP input','QP exception:injected',
+                       'QP infeasible after closure recovery scaling (status 2, zero feasible yes)',
+                       'QP infeasible after closure recovery scaling (status 0, zero feasible yes)'):
+            with self.subTest(reason=reason):
+                target=self.qp.capture(self.feedback)
+                name='bq_solve_tracking' if self.qp.tracking else 'bq_solve'
+                with patch.object(self.qp.lib,name,return_value=0), \
+                        patch.object(self.qp,'_error',return_value=reason), \
+                        self.assertRaisesRegex(ValueError,'^BIMANUAL_QP:'):
+                    propose(self.qp,self.feedback,target)
+                self.assertFalse(self.qp.captured)
+
     def test_preparation_native_and_geometry_timeout_have_separate_diagnostics(self):
         for component,stage in (('input','native'),('native','native'),('geometry','validation')):
             with self.subTest(component=component):
@@ -614,6 +661,20 @@ class NativeBimanual(unittest.TestCase):
         moved=nominal.copy();moved[0,3]+=.005
         advanced,_=propose(solver,self.feedback,moved,reference=reference)
         self.assertGreater(np.linalg.norm(np.array(advanced)-reference),1e-6)
+
+    def test_bounded_measured_jitter_and_irregular_steps_do_not_chase_nominal_goal(self):
+        solver=BimanualQP(dict(self.config,reference_kinematics=True,
+            tracking_feedback='reference',posture_gain=0.),self.profile)
+        self.addCleanup(solver.close)
+        target=solver.capture(self.feedback)
+        reference=np.array([self.feedback[n] for n in solver.names])
+        initial=reference.copy()
+        for i in range(120):
+            measured=dict(self.feedback)
+            measured[solver.names[-2]]+=.0005*np.sin(i)
+            reference,_=solver.solve(measured,target,reference=reference,dt=(.01,.035,.02)[i%3])
+            self.assertTrue(solver.captured)
+            np.testing.assert_allclose(reference,initial,atol=1e-8)
 
     def test_nominal_tool_tracking_validates_observation_without_chasing_sag(self):
         solver=BimanualQP(dict(self.config,reference_kinematics=True,tracking_feedback='reference',

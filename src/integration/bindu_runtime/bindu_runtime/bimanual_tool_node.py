@@ -425,6 +425,14 @@ class BimanualToolNode(RuntimeNode):
         trajectory_sample_at=None
         last_mode='idle'
         last_grasp_generation=0
+        deferral=None
+        def end_deferral(outcome):
+            nonlocal deferral
+            if deferral is not None:
+                self.event('BIMANUAL_SOLVE_DEFERRED_END',json.dumps(dict(deferral,
+                    outcome=outcome,duration_s=time.monotonic()-deferral['started_at'],
+                    session_code=getattr(result,'code',''))),goal.request.task_id)
+                deferral=None
         self.worker_result=None
         self.preflight_status=''
         try:
@@ -489,6 +497,7 @@ class BimanualToolNode(RuntimeNode):
                         lease_id=lease.lease_id,epoch=lease.epoch))
                     renewal_at,next_renewal=now,now+.3
                 if self.pause_control.phase == 'pausing':
+                    end_deferral('intent_interrupted')
                     worker_token+=1
                     self.worker_result=None
                     awaiting=''
@@ -529,6 +538,7 @@ class BimanualToolNode(RuntimeNode):
                         continue
                     session.ingest(left,right,self.now())
                 if session.grasp_generation != last_grasp_generation:
+                    end_deferral('grasp_changed')
                     worker_token+=1
                     self.worker_result=None
                     awaiting=''
@@ -549,6 +559,7 @@ class BimanualToolNode(RuntimeNode):
                     continue
                 if session.mode != last_mode:
                     if session.mode == 'idle':
+                        end_deferral('clutch_released')
                         worker_token+=1
                         self.worker_result=None
                         awaiting=''
@@ -572,6 +583,7 @@ class BimanualToolNode(RuntimeNode):
                         if not work_stamp<=self.now()<work_stamp+self.cfg['command_max_age']:
                             raise RuntimeError('BIMANUAL_SUBMIT_EXPIRED')
                         reference.accept(*pending_reference)
+                        end_deferral('software_acceptance')
                         submit_revision=max(submit_revision,reply.revision)
                         if self.trajectory_reference:
                             trajectory_bootstrap=False
@@ -599,6 +611,24 @@ class BimanualToolNode(RuntimeNode):
                             self.event('BIMANUAL_GEOMETRY_STEP',json.dumps(dict(geometry,
                                 input_seq=work_seq,control_sampled_at=work_sampled_at)),goal.request.task_id)
                         if kind=='error':
+                            if awaiting=='solve' and value=='BIMANUAL_QP_DEFERRED':
+                                if deferral is None:
+                                    deferral=dict(count=0,started_at=now,first_input_seq=work_seq)
+                                    self.event('BIMANUAL_SOLVE_DEFERRED',json.dumps({
+                                        'code':value,'input_seq':work_seq,'input_stamp':work_stamp,
+                                        'control_sampled_at':work_sampled_at,'integration_dt':work_dt,
+                                        'sample_gap_s':work_gap,'grasp_mode':session.grasp_mode,
+                                        'feedback':work_feedback,'joint_names':self.names,
+                                        'reference':work_reference,'target':work_target}),goal.request.task_id)
+                                deferral['count']+=1
+                                deferral['last_input_seq']=work_seq
+                                awaiting=''
+                                # Keep the accepted reference/time unchanged.
+                                # work_seq requires a fresh frame; source TTL,
+                                # execution failure and sample-gap budgets all
+                                # continue to run. Never resubmit an old hold.
+                                await self.pause()
+                                continue
                             self.event('BIMANUAL_WORK_REJECTED',json.dumps({
                                 'code':value,'operation':awaiting,'input_seq':work_seq,'input_stamp':work_stamp,
                                 'control_sampled_at':work_sampled_at,'integration_dt':work_dt,'sample_gap_s':work_gap,
@@ -757,6 +787,7 @@ class BimanualToolNode(RuntimeNode):
                     'age':self.now()-seconds(mode.stamp) if mode else None}),
                     goal.request.task_id)
         finally:
+            end_deferral('session_ended')
             if lease is not None and lease.ok:
                 stopped=await self.stop(lease,release=True)
             if pending is not None:

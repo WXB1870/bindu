@@ -96,6 +96,20 @@ class IndependentNativeTests(unittest.TestCase):
             conservative_convex=True,tool_present=False,validation_only=True)
         self.feedback={n:0. for n in self.solver.model_names}
 
+    def test_guarded_iteration_failure_keeps_both_arm_references_without_candidate(self):
+        target=self.solver.capture_independent(self.feedback)
+        reference=[0.]*len(self.solver.names)
+        check=self.solver.check_independent_path
+        with patch.object(self.solver.lib,'bq_solve_independent',return_value=0), \
+                patch.object(self.solver,'_error',return_value='QP_ITERATION_LIMIT_ZERO_FEASIBLE'), \
+                patch.object(self.solver,'check_independent_path',wraps=check) as guard:
+            with self.assertRaisesRegex(ValueError,'^BIMANUAL_QP_DEFERRED$'):
+                self.solver.solve_independent(self.feedback,target,active_mask=1,reference=reference,dt=.01)
+        self.assertTrue(self.solver.captured)
+        self.assertEqual(guard.call_count,1)
+        out,_=self.solver.solve_independent(self.feedback,target,active_mask=1,reference=reference,dt=.02)
+        np.testing.assert_allclose(out,reference,atol=1e-12)
+
     def test_recorded_collision_candidates_shrink_without_ending_control(self):
         data=json.loads((ROOT/'tests/config/teleoperation/snowbot_candidate_steps.json').read_text())
         cfg=dict(self.cfg,**data['recorded_config'])

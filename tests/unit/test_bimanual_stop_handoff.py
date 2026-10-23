@@ -209,7 +209,7 @@ class BimanualStopHandoff(unittest.IsolatedAsyncioTestCase):
                     '    return accepted,submit_revision,worker_token,awaiting,pending,pending_reference\n')
                 prefix.body[0].body[-2].body = body
                 namespace = {'IndependentArmsSession':type('IndependentArmsSession',(),{}),
-                             'json':__import__('json')}
+                             'json':__import__('json'),'end_deferral':Mock()}
                 exec(compile(ast.fix_missing_locations(prefix),str(SOURCE),'exec'),namespace)
                 session = S(reanchor=Mock(),grasp_mode='tool',grasp_generation=1,mode='idle')
                 reference = S(reset=Mock())
