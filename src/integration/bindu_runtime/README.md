@@ -252,6 +252,8 @@ ros2 topic echo /bindu/servo_health
 
 真实腰臂通过`position_protocol=session_v3`显式选择目标流，须与servo只读参数`position_reference_mode=target_stream`配对（wire 5／reference 2／目标配方version 2），消息及使用方成套重建。上层只发送16轴联合目标和源身份／期限，servo非实时后台复用`PreparedSegment`生成；仅首次／恢复接管有一次真实接纳握手；正常更新不等待上一目标接纳，PAUSE立即绕过等待，由执行侧从已采用名义参考制动。适配器已移除旧`session_v2`曲线准备、ACK串行依赖及跨层提前量配置；`ExecutionState.reference`来自有效servo采样的q／dq／ddq及采样时刻，缺失时为空。
 
+当前真实VR配方显式选择0.5 rad/s、1.5 rad/s²，并在腰臂16轴profile与发送参数配对；这不会改变已有部署中的覆盖profile。servo须加载[Snowbot目标流配方](../../../../../snowbot/tools/deployment/snowbot_vendor/position_session/target_stream.yaml)中的同名上限；任一层仍有更低限制时取其更小值。此组参数仅完成离线验证，不代表实体跟踪或停止验收。
+
 目标轴序为左臂J1～J7、右臂J1～J7、腰J1～J2，rad。动态界逐轴取profile与发送端只读启动参数`trajectory_max_velocity`（默认0.25 rad/s）、`trajectory_max_acceleration`（默认0.5 rad/s²）及固定162 rad/s³的较小值，servo默认帽一致。配置20 ms执行tick／servo名义1 ms采样保持；submit也可触发执行tick，50 Hz不是发送硬限频，实际频率与抖动须现场记录。普通目标最多200 ms，新PAUSE独立固定2 s停止期限，详见[执行时间语义](../../control/bindu_execution/README.md)；沿途不续期。此新路径只支持`execution_mode=position`，与阻抗组合明确拒绝；既有可选阻抗入口的控制和暂停语义保持，其兼容性不属于本轮验证；含可选阻抗的准备器候选不应用目标流补丁，也不接受`target_stream`配置。真实腰臂配方为`session_v3`、`position`、`command_enabled=false`；servo默认仍`follower`／`unconfirmed`，必须显式成套选择新路径。版本、离线证据与现场未完成项见[Snowbot当前进度](../../../../../snowbot/当前进度.md)。
 
 真实`session_v3`配方的`arguments`可设置这两个速度／加速度参数，统一遥操与独立适配器launch均透传；只接受有限正值，其他协议／仿真配方显式设置时拒绝。servo已有同名只读启动参数，必须允许下发的逐轴有效值，超出接收帽仍拒收；不自动远程修改servo参数。同一会话内动态界不得改变。提高发送帽不会自动提高QP使用的profile速度，profile更低时仍受其限制；调参须成套选择启动值和逐轴profile，尤其不要借全局参数提高腰部等不打算调整的轴。当前默认配方与profile未提速，急动度、超前预算、参考超差保护、TTL和PAUSE期限均保持。
