@@ -2,7 +2,7 @@
 import json
 import math
 
-from bindu_hardware.snowbot import SnowbotIO, GROUPS
+from bindu_hardware.snowbot import CommandNotSent, SnowbotIO, GROUPS
 from bindu_hardware.snowbot_session import CONTROL_GROUPS, CONTROL_NAMES, ROS_FEEDBACK_TIMEOUT_S, SessionHealth, SourceEnvelope, new_session_id
 
 
@@ -34,6 +34,9 @@ class PositionSessionIO(SnowbotIO):
         self.coupled_group_sets = (CONTROL_GROUPS,)
         # One atomic envelope and one PAUSE identity for waist and both arms.
         self.stop_group_sets = (('waist', 'left_arm', 'right_arm'),)
+
+    def validate_motion(self, motion, now):
+        SourceEnvelope.validate_motion(motion, now)
 
     def capture(self, groups):
         if set(groups) != CONTROL_GROUPS:
@@ -452,6 +455,17 @@ class PositionSessionDevices:
                 engine.halt(self.node.now(), 'COMMAND_TIMEOUT', revoke=True)
 
     def send(self, groups, target):
+        # This adapter has one atomic publisher. Before that call, failure is
+        # provably unsent; once called, even an exception leaves delivery unknown.
+        self.publish_attempted = False
+        try:
+            return self._send_packet(groups, target)
+        except RuntimeError as exc:
+            if not self.publish_attempted:
+                raise CommandNotSent(str(exc)) from exc
+            raise
+
+    def _send_packet(self, groups, target):
         if set(groups) != CONTROL_GROUPS:
             raise RuntimeError('SNOWBOT_POSITION_SESSION_RESOURCE_LAYOUT')
         # Validate before minting an envelope, so rejected requests cannot renew.
@@ -516,6 +530,7 @@ class PositionSessionDevices:
             self.sent[metadata['sequence']] = (metadata, instance, msg.meta.source_command_id)
             while len(self.sent) > 32:
                 del self.sent[next(iter(self.sent))]
+        self.publish_attempted = True
         self.publishers['arms'].publish(msg)
         if self.health.reference_mode:
             mapping = {k: metadata[k] for k in ('session', 'sequence', 'source_stamp_ns', 'expires_at_ns')}

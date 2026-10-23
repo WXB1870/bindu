@@ -13,6 +13,177 @@ from bindu_teleoperation.bimanual_session import BimanualSession
 from tests.support.pico import Rig
 
 
+class ScenarioRuntimeTests(unittest.IsolatedAsyncioTestCase):
+    @staticmethod
+    def production(*names):
+        # Execute production methods with ROS/service/process boundaries inert.
+        import ast
+        from types import SimpleNamespace as S
+        path=Path(__file__).resolve().parents[2]/'src/integration/bindu_runtime/bindu_runtime/pico_node.py'
+        node=next(n for n in ast.parse(path.read_text()).body if isinstance(n,ast.ClassDef) and n.name=='PicoNode')
+        methods=[n for n in node.body if getattr(n,'name','') in names]
+        module=ast.Module(body=[ast.ClassDef(name='Actual',bases=[],keywords=[],body=methods,decorator_list=[])],type_ignores=[])
+        namespace=dict(json=json,math=__import__('math'),time=S(monotonic=lambda:0.),
+            joints_at_rest=lambda joints,names,tol:all(abs(v)<=tol for n,v in zip(joints.name,joints.velocity) if n in names),
+            Trigger=S(Request=lambda:S()),Superseded=type('Superseded',(RuntimeError,),{}))
+        reference=next(n for n in ast.parse(path.read_text()).body if getattr(n,'name','')=='prepare_reference')
+        exec(compile(ast.Module(body=[reference],type_ignores=[]),str(path),'exec'),namespace)
+        exec(compile(ast.fix_missing_locations(module),str(path),'exec'),namespace)
+        return namespace['Actual']()
+
+    def test_unheld_policy_is_explicit_and_defaults_to_physical_grasp_checks(self):
+        import ast
+        from types import SimpleNamespace as S
+        path=Path(__file__).resolve().parents[2]/'src/integration/bindu_runtime/bindu_runtime/pico_node.py'
+        node=next(n for n in ast.parse(path.read_text()).body if isinstance(n,ast.ClassDef) and n.name=='PicoNode')
+        init=next(n for n in node.body if getattr(n,'name','')=='__init__')
+        begin=next(i for i,n in enumerate(init.body) if isinstance(n,ast.Assign) and isinstance(n.targets[0],ast.Name) and n.targets[0].id=='policy')
+        end=next(i for i,n in enumerate(init.body) if isinstance(n,ast.Assign) and isinstance(n.targets[0],ast.Subscript) and getattr(n.targets[0].slice,'value','')=='urdf')
+        code=compile(ast.Module(body=init.body[begin:end],type_ignores=[]),str(path),'exec')
+        for config,unheld in (({},False),({'measured_grasp_policy':'unheld_test'},True)):
+            owner=S(tool_cfg=dict(right_axial_grasp={'configured':True},
+                collision_scope='configured_tool_geometry',**config),position_contract=True)
+            exec(code,{'self':owner})
+            self.assertIs(owner.unheld_test,unheld)
+        for policy in (None,False,'disabled','unheld'):
+            with self.subTest(policy=policy),self.assertRaisesRegex(ValueError,'MEASURED_GRASP_POLICY'):
+                exec(code,{'self':S(tool_cfg={'measured_grasp_policy':policy})})
+
+    async def test_explicit_unheld_confirmation_uses_no_physical_grasp_or_calibration(self):
+        from types import SimpleNamespace as S
+        from unittest.mock import Mock,AsyncMock
+        for unheld in (False,True):
+            node=self.production('confirm_tool');node.unheld_test=unheld;node.operator_grasp=False
+            node.control=S(load='unknown',virtual=True);node.operator_grasp_positions={'left':.1}
+            node.feedback=lambda:PicoFeedback(0.,True,('unknown','unknown'))
+            node.position_ops=S(config={'calibrated':False},reading=Mock(side_effect=AssertionError('physical grasp queried')))
+            node.ready_client=S(service_is_ready=lambda:True,call_async=lambda _:S(success=True))
+            node.current=Mock();node.wait=AsyncMock(side_effect=lambda value:value);node.event=Mock();node.tool_cfg={}
+            intent=S(operation='select_mode')
+            if not unheld:
+                with self.assertRaisesRegex(RuntimeError,'UNCONFIRMED_UNCALIBRATED'):await node.confirm_tool(intent)
+                continue
+            await node.confirm_tool(intent)
+            node.position_ops.reading.assert_not_called()
+            self.assertFalse(node.control.virtual);self.assertEqual(node.operator_grasp_positions,{})
+            evidence=json.loads(node.event.call_args.args[1])
+            self.assertFalse(evidence['physical_grasp_confirmed']);self.assertFalse(evidence['grasp_sensor_confirmed'])
+            node.control.load='held'
+            with self.assertRaisesRegex(RuntimeError,'UNHELD_TEST_WITH_HELD_LOAD'):await node.confirm_tool(intent)
+            node.control.load='unknown';node.feedback=lambda:PicoFeedback(0.,False)
+            with self.assertRaisesRegex(RuntimeError,'REQUIRES_STOPPED'):await node.confirm_tool(intent)
+            node.feedback=lambda:PicoFeedback(0.,True,healthy=False)
+            with self.assertRaisesRegex(RuntimeError,'FEEDBACK_UNAVAILABLE'):await node.confirm_tool(intent)
+
+    async def test_operator_grasp_declares_held_only_after_success_and_keeps_intent_fence(self):
+        from types import SimpleNamespace as S
+        from unittest.mock import Mock,AsyncMock
+        for success in (False,True):
+            r=Rig('unknown',guided=True,dual=True);r.click(1,1)
+            intent=r.core.pending;generation=r.core.generation
+            node=self.production('confirm_tool','current');node.unheld_test=False;node.operator_grasp=True;node.control=r.core
+            node.feedback=lambda:PicoFeedback(r.now,True,('unknown','unknown'))
+            node.position_ops=S(reading=lambda _:S(measured_position=.02))
+            node.ready_client=S(service_is_ready=lambda:True,call_async=lambda _:S(success=success,message='BIMANUAL_GRASP_POSE'))
+            node.wait=AsyncMock(side_effect=lambda value:value);node.event=Mock();node.tool_cfg={};node.now=lambda:r.now
+            if not success:
+                with self.assertRaisesRegex(RuntimeError,'GRASP_POSE'):await node.confirm_tool(intent)
+                self.assertEqual(r.core.load,'unknown');self.assertEqual(r.core.load_source,'unknown')
+                self.assertEqual(r.core.generation,generation);continue
+            await node.confirm_tool(intent)
+            self.assertEqual((r.core.load,r.core.load_source),('held','operator_tool_confirmation'))
+            self.assertEqual(r.core.generation,generation+1);self.assertIs(r.core.pending,intent)
+            self.assertEqual(r.core.pending.token,intent.token);node.current(intent)
+            self.assertEqual(r.core.context_at,r.now)
+            declaration=next(c for c in node.event.call_args_list if c.args[0]=='PICO_LOAD_OPERATOR_CONFIRMED')
+            self.assertFalse(json.loads(declaration.args[1])['grasp_sensor_confirmed'])
+            # Reconfirming an already-held load does not consume a new generation.
+            await node.confirm_tool(intent)
+            self.assertEqual(r.core.generation,generation+1);node.current(intent)
+            self.assertTrue(r.core.complete(intent.token,True,now=r.now))
+            with self.assertRaisesRegex(ValueError,'PICO_CONTEXT_STALE_OR_INVALID'):
+                r.core.context(r.core.source,generation,'empty',False,r.now)
+            self.assertEqual(r.core.load,'held')
+            r.step();r.click(1,1)
+            self.assertIsNone(r.core.pending)
+            self.assertEqual(r.core.reason,'PICO_TOOL_HELD_REQUIRES_TOOL_MODE')
+
+    async def test_prepare_scenarios_keep_loaded_tool_guard_and_empty_path_separate(self):
+        from types import SimpleNamespace as S
+        from unittest.mock import Mock
+        for load in ('empty','held','unknown'):
+            for unheld in (False,True):
+                with self.subTest(load=load,unheld=unheld):
+                    node=self.production('validate_prepare');node.unheld_test=unheld;node.position_contract=True
+                    node.control=S(load=load);node.prepare_positions={'joint':.2};node.names=('joint',)
+                    node.tool_cfg={'resource_groups':['arm']};node.cfg={'prepare_collision_recovery':{'configured':True}}
+                    node.current=Mock();node.event=Mock()
+                    node.profile=S(groups={'arm':['joint']},limits={'joint':(-1.,1.)},feedback_tolerances={'joint_position':.002})
+                    node.reading=lambda:(S(joints=S(name=['joint'],velocity=[0.])),{'joint':0.})
+                    def submit(*args,**kwargs):node.validation_result=('result',1,{});return True
+                    node.validator=S(ready=True,busy=False,startup_timeout=1.,submit=Mock(side_effect=submit))
+                    intent=S(operation='prepare',token=1)
+                    if load=='held' and unheld:
+                        with self.assertRaisesRegex(RuntimeError,'UNHELD_TEST_WITH_HELD_LOAD'):await node.validate_prepare(intent)
+                        node.validator.submit.assert_not_called();continue
+                    await node.validate_prepare(intent)
+                    loaded=not unheld and load!='empty'
+                    operation='loaded_prepare_path' if loaded else 'prepare_recovery_path'
+                    node.validator.submit.assert_called_once_with(operation,1,{'joint':0.},{'joint':.2} if loaded else [.2])
+                    event=json.loads(node.event.call_args.args[1])
+                    self.assertEqual(event['tool_present'],loaded);self.assertEqual(event['coupling_checked'],loaded)
+                    if loaded:
+                        node.reading=lambda:(S(joints=S(name=['joint'],velocity=[0.])),{'joint':-1.00007})
+                        with self.assertRaisesRegex(RuntimeError,'PREPARE_START_JOINT_LIMIT'):await node.validate_prepare(intent)
+
+    async def test_unheld_ignores_gripper_drift_while_loaded_operator_guard_remains(self):
+        from types import SimpleNamespace as S
+        from unittest.mock import Mock
+        for unheld in (False,True):
+            node=self.production('tick');node.unheld_test=unheld;node.operator_grasp=True
+            node.last_tick_at=None;node.waiters=set();node.validator=S(poll=lambda:None)
+            node.state=None;node.tool_result=None;node.pending_intent=None;node.record_future=None;node.running=None
+            node.now=lambda:0.;node.last_status=0.;node.last_context_at=0.
+            node.control=S(teleop_mode='bimanual_tool',phase='following',context_at=0.,
+                lock=Mock(),update_feedback=Mock(),tick=Mock(),drain=lambda:[])
+            node.feedback=lambda:PicoFeedback(0.,True)
+            node.operator_grasp_positions={'left':0.}
+            node.position_ops=S(config={'position_tolerance':.003},reading=Mock(return_value=S(state='IDLE',measured_position=.01)))
+            node.tick()
+            self.assertEqual(node.control.lock.call_count,0 if unheld else 1)
+            if unheld:node.position_ops.reading.assert_not_called()
+
+    async def test_unheld_rejects_axial_switch_before_any_gripper_command(self):
+        from types import SimpleNamespace as S
+        from unittest.mock import Mock,AsyncMock
+        node=self.production('perform');node.unheld_test=True;node.operator_grasp=False
+        node.position_contract=True;node.position_ops=S(axial_available=True,grasp_target=Mock())
+        node.cancel_tool=AsyncMock();node.current=Mock();node.now=lambda:0.;node.event=Mock();node.simulation=False
+        node.control=S(complete=Mock())
+        await node.perform(S(operation='switch_grasp',token=1,value=True))
+        node.position_ops.grasp_target.assert_not_called()
+        args=node.control.complete.call_args.args
+        self.assertFalse(args[1]);self.assertIn('PICO_AXIAL_GRASP_UNAVAILABLE',args[2])
+
+    async def test_prepared_residual_inside_its_band_does_not_acquire_or_move_again(self):
+        from types import SimpleNamespace as S
+        from unittest.mock import Mock,AsyncMock
+        for error in (.0284,.03501):
+            with self.subTest(error=error):
+                node=self.production('perform');node.position_contract=True;node.prepare_position_tolerance=.035
+                node.control=S(complete=Mock());node.current=Mock();node.cancel_tool=AsyncMock()
+                node.validate_prepare=AsyncMock(return_value={'joint':.2});node.reading=lambda:(None,{'joint':.2-error})
+                node.prepare_recovery=None;node.cfg={'prepare_duration':12.};node.simulation_demo=False
+                node.move=AsyncMock();node.now=lambda:0.;node.event=Mock();node.simulation=False
+                await node.perform(S(operation='prepare',token=1))
+                self.assertEqual(node.move.await_count,0 if error<.035 else 1)
+                self.assertTrue(node.control.complete.call_args.args[1])
+                if error<.035:
+                    event=next(c for c in node.event.call_args_list if c.args[0]=='PICO_PREPARE_ALREADY_REACHED')
+                    self.assertEqual(json.loads(event.args[1])['position_tolerance_rad'],.035)
+                node.validate_prepare.assert_awaited_once()
+
+
 class PrepareReturnPathTests(unittest.IsolatedAsyncioTestCase):
     async def arrival(self,operation='prepare',error=.0284,velocity=0.,fresh=True,stop_error=None):
         from types import SimpleNamespace as S
@@ -57,7 +228,7 @@ class PrepareReturnPathTests(unittest.IsolatedAsyncioTestCase):
     def node(self, load='unknown', mode='bimanual_tool', *, error=None, changed=False):
         from types import SimpleNamespace as S
         from unittest.mock import Mock
-        node=S(control=S(load=load,teleop_mode=mode),position_contract=True,
+        node=S(control=S(load=load,teleop_mode=mode),position_contract=True,unheld_test=False,
             prepare_positions={'joint':.2},names=('joint',),cfg={},
             tool_cfg={'resource_groups':['arm']},profile=S(groups={'arm':('joint',)},
                 limits={'joint':(-1.,1.)},feedback_tolerances={'joint_position':.002}),
@@ -71,18 +242,26 @@ class PrepareReturnPathTests(unittest.IsolatedAsyncioTestCase):
         node.validator=S(ready=True,busy=False,startup_timeout=1.,submit=Mock(side_effect=submit))
         return node
 
-    async def test_return_does_not_preserve_captured_grasp_in_either_mode_or_any_load_state(self):
+    async def test_return_routes_held_and_unknown_through_tool_and_coupling_guard(self):
         from bindu_runtime.pico_node import PicoNode
         from bindu_teleoperation.pico import PicoIntent
         for load in ('empty','held','unknown'):
             for mode in ('independent_arms','bimanual_tool'):
-                with self.subTest(load=load,mode=mode):
-                    node=self.node(load,mode)
-                    self.assertEqual(await PicoNode.validate_prepare(node,PicoIntent(1,'prepare')),{'joint':.2})
-                    node.validator.submit.assert_called_once_with('prepare_path',1,{'joint':0.},[.2])
-                    self.assertEqual((node.control.load,node.control.teleop_mode),(load,mode))
-                    event=json.loads(node.event.call_args.args[1])
-                    self.assertFalse(event['load_state_checked']);self.assertFalse(event['coupling_checked'])
+                for unheld in (False,True):
+                    with self.subTest(load=load,mode=mode,unheld=unheld):
+                        node=self.node(load,mode);node.unheld_test=unheld
+                        if unheld and load=='held':
+                            with self.assertRaisesRegex(RuntimeError,'UNHELD_TEST_WITH_HELD_LOAD'):
+                                await PicoNode.validate_prepare(node,PicoIntent(1,'prepare'))
+                            node.validator.submit.assert_not_called();continue
+                        self.assertEqual(await PicoNode.validate_prepare(node,PicoIntent(1,'prepare')),{'joint':.2})
+                        loaded=not unheld and load!='empty'
+                        node.validator.submit.assert_called_once_with('loaded_prepare_path' if loaded else 'prepare_path',
+                            1,{'joint':0.},{'joint':.2} if loaded else [.2])
+                        self.assertEqual((node.control.load,node.control.teleop_mode),(load,mode))
+                        event=json.loads(node.event.call_args.args[1])
+                        self.assertTrue(event['load_state_checked']);self.assertEqual(event['coupling_checked'],loaded)
+                        self.assertEqual(event['tool_present'],loaded)
 
     async def test_return_still_propagates_robot_collision_limits_and_changed_feedback(self):
         from bindu_runtime.pico_node import PicoNode
@@ -97,7 +276,7 @@ class PrepareReturnPathTests(unittest.IsolatedAsyncioTestCase):
         from bindu_runtime.pico_node import PicoNode
         from bindu_teleoperation.pico import PicoIntent
         from types import SimpleNamespace as S
-        node=self.node();measured={'joint':-1.00007}
+        node=self.node('empty');measured={'joint':-1.00007}
         state=S(joints=S(name=['joint'],velocity=[0.]))
         node.reading.side_effect=[(state,measured),(state,measured)]
         await PicoNode.validate_prepare(node,PicoIntent(1,'prepare'))

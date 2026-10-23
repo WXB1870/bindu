@@ -42,6 +42,7 @@ def _run(config, profile, requests, results, preload_path_checks=False):
             if item is None: return
             operation,token,feedback,target,reference,dt,grasp_mode,target_stamp=item
             try:
+                solver.last_constraint=solver.last_timing=None
                 independent=isinstance(grasp_mode,str) and grasp_mode.startswith('independent:')
                 if operation=='independent_capture' or operation=='capture' and independent:
                     value=solver.capture_independent(feedback,reference=reference)
@@ -112,6 +113,9 @@ def _run(config, profile, requests, results, preload_path_checks=False):
                     results.put(('diagnostic',token,diagnostic))
                 results.put(('result',token,value))
             except (ValueError,RuntimeError) as exc:
+                results.put(('diagnostic',token,dict(scale=1.,operation=operation,
+                    constraint=getattr(solver,'last_constraint',None),
+                    timing=getattr(solver,'last_timing',None) if operation=='solve' else None)))
                 results.put(('error',token,str(exc)))
     except Exception as exc:
         results.put(('fatal',0,type(exc).__name__+': '+str(exc)))

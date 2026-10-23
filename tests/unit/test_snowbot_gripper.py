@@ -4,6 +4,7 @@ import copy
 import json
 from pathlib import Path
 import unittest
+from unittest.mock import Mock
 import ast
 import asyncio
 from types import SimpleNamespace as S
@@ -418,6 +419,15 @@ class NativeGripperTests(unittest.TestCase):
         self.assertEqual(rig.core.channels['left']['state'], 'SUCCEEDED')
 
 
+async def coordinator_acquire(ops, resources):
+    # Existing operation tests isolate command/retarget behavior. The real
+    # acquisition and release barriers are exercised separately below.
+    lease = await ops.node.wait(ops.leases.call_async(S(operation='acquire',
+        owner=ops.node.instance_id, resources=resources)))
+    ops.lease, ops.sequence = lease, 0
+    return lease
+
+
 class DirectOperationTests(unittest.TestCase):
     """Run the real async coordinator and gripper core without ROS or hardware."""
     def test_coordinator_accepts_same_manual_accuracy_only_after_device_completion(self):
@@ -440,6 +450,7 @@ class DirectOperationTests(unittest.TestCase):
         node=S(control=control,instance_id='offline',now=lambda:10.,current=lambda _:None,wait=wait)
         ops=S(node=node,reading=lambda _:state,leases=S(call_async=lambda _:S(ok=True,epoch=1)),
               config=Rig().config,request=request,release=release)
+        ops.acquire=lambda resources:coordinator_acquire(ops,resources)
         asyncio.run(ns['move_grippers'](ops,intent,direct=True))
         self.assertEqual(released,[True])
 
@@ -466,6 +477,7 @@ class DirectOperationTests(unittest.TestCase):
         ops=S(node=node,reading=lambda _:None,leases=S(call_async=lambda _:S(ok=True)),
               config={'grippers':{'left':{'open':-.4}},'motion_timeout':5.},
               request=request,release=release)
+        ops.acquire=lambda resources:coordinator_acquire(ops,resources)
         with self.assertRaisesRegex(RuntimeError,'SUPERSEDED'):
             asyncio.run(ns['move_grippers'](ops,intent,direct=True))
         self.assertEqual(control.reason,'GRIPPER_CONTROL_EXIT_REQUESTED')
@@ -483,7 +495,7 @@ class DirectOperationTests(unittest.TestCase):
         node=S(feedback=lambda:S(healthy=True,stopped=True,modes=('unknown','unknown')),
             position_ops=S(config={'calibrated':False,'allow_uncalibrated_direct':True}),
             arms_ready_client=S(service_is_ready=lambda:True,call_async=lambda _:S(success=True)),
-            tool_cfg={},operator_grasp=False,current=lambda _:None,wait=wait)
+            tool_cfg={},operator_grasp=False,unheld_test=False,current=lambda _:None,wait=wait)
         ns.update(time=__import__('time'),Trigger=S(Request=lambda:None))
         with self.assertRaisesRegex(RuntimeError,mode_code):
             asyncio.run(ns['confirm_tool'](node,None,'bimanual_tool'))
@@ -572,6 +584,7 @@ class DirectOperationTests(unittest.TestCase):
                pause=pause,event=lambda kind,body:events.append((kind,json.loads(body))))
         ops=S(node=node,config=r.config,reading=reading,leases=S(call_async=lease),request=request,
               release=release,sequence=0)
+        ops.acquire=lambda resources:coordinator_acquire(ops,resources)
         async def run():await ns['move_grippers'](ops,control.pending,direct=True)
         if interrupt:
             with self.assertRaisesRegex(RuntimeError,'SUPERSEDED' if interrupt=='stop' else 'OPERATION_FAILED'):
@@ -598,6 +611,178 @@ class DirectOperationTests(unittest.TestCase):
         r,_=self.run_case('fault')
         self.assertTrue(r.core.fault)
         self.assertFalse(r.core.direct_authorized)
+
+
+class CoordinatorStopBarrierTests(unittest.TestCase):
+    def rig(self):
+        source=ROOT/'src/integration/bindu_runtime/bindu_runtime/pico_position.py'
+        cls=next(n for n in ast.parse(source.read_text()).body if isinstance(n,ast.ClassDef))
+        clock=S(value=100.)
+        ns=dict(time=S(monotonic=lambda:clock.value),SIDES=SIDES,GROUPS=GROUPS,
+            Lease=S(Request=lambda **kw:S(**kw)),seconds=lambda v:v,math=__import__('math'))
+        exec(compile(ast.Module(body=[cls],type_ignores=[]),str(source),'exec'),ns)
+        ops=ns['PositionOperations'].__new__(ns['PositionOperations'])
+        async def wait(value,**kwargs):return value
+        async def pause():clock.value+=.1
+        n=S(state=S(instance_id='original'),now=lambda:10.,wait=wait,pause=pause,
+            instance_id='pico',profile=S(digest='profile'))
+        ops.node=n;ops.lease=S(lease_id='lease',epoch=4)
+        ops.lease_instance='original';ops.acquire_future=None;ops.release_pending=False;ops.stop_unconfirmed=False
+        ops.config=dict(stop_timeout=.2,allow_uncalibrated_direct=True,velocity_tolerance=.01)
+        ops.states={side:S(instance_id='original',feedback_valid=True,calibrated=False,
+            stamp=10.,feedback_stamp=10.01,measured_position=0.,measured_velocity=0.,
+            state='CANCELED',epoch=5,lease_active=False) for side in SIDES}
+        n.now=lambda:10.02+clock.value-100.
+        async def pause():
+            clock.value+=.1
+            for state in ops.states.values():
+                state.stamp=state.feedback_stamp=n.now()
+        n.pause=pause
+        ops.leases=S(call_async=lambda _:S(ok=True,profile_hash='profile',epoch=5))
+        return ops,clock
+
+    def test_same_instance_exact_epoch_fresh_hold_allows_next_acquire(self):
+        ops,_=self.rig()
+        asyncio.run(ops.release())
+        self.assertIsNone(ops.lease);self.assertFalse(ops.stop_unconfirmed)
+        self.assertTrue(ops.stopped())
+        def acquire_reply(req):
+            for state in ops.states.values():
+                state.epoch=6;state.lease_active=True;state.owner='pico'
+            return S(ok=True,lease_id='next',epoch=6,profile_hash='profile')
+        ops.leases.call_async=acquire_reply
+        lease=asyncio.run(ops.acquire(GROUPS.values()))
+        self.assertEqual(lease.lease_id,'next')
+
+    def test_replacement_idle_cannot_confirm_original_gripper_stop(self):
+        ops,_=self.rig();ops.node.state.instance_id='replacement'
+        for state in ops.states.values():state.instance_id='replacement'
+        with self.assertRaisesRegex(RuntimeError,'STOP_UNCONFIRMED'):
+            asyncio.run(ops.release())
+        self.assertEqual(ops.lease.lease_id,'lease');self.assertFalse(ops.stopped())
+        for state in ops.states.values():state.instance_id='original'
+        ops.node.state.instance_id='original'
+        with self.assertRaisesRegex(RuntimeError,'STOP_UNCONFIRMED'):
+            asyncio.run(ops.acquire(GROUPS.values()))
+
+    def test_newer_epoch_and_old_feedback_cannot_confirm_release(self):
+        for change in ('epoch','feedback_stamp'):
+            ops,clock=self.rig()
+            for state in ops.states.values():setattr(state,change,6 if change=='epoch' else 10.02)
+            if change=='feedback_stamp':
+                async def pause():clock.value+=.1
+                ops.node.pause=pause
+            with self.assertRaisesRegex(RuntimeError,'STOP_UNCONFIRMED'):
+                asyncio.run(ops.release())
+            self.assertTrue(ops.stop_unconfirmed)
+
+    def test_rpc_time_consumes_original_stop_deadline(self):
+        ops,clock=self.rig()
+        async def wait(value,**kwargs):clock.value+=1.;return value
+        ops.node.wait=wait
+        with self.assertRaisesRegex(RuntimeError,'STOP_UNCONFIRMED'):
+            asyncio.run(ops.release())
+        self.assertTrue(ops.stop_unconfirmed)
+
+    def test_lost_acquire_reply_remains_fenced_after_late_success(self):
+        ops,_=self.rig();ops.lease=None;ops.lease_instance=None
+        future=S(ok=True,lease_id='late',epoch=6,profile_hash='profile')
+        calls=[]
+        ops.leases.call_async=lambda req:(calls.append(req),future)[1]
+        async def wait(value):raise RuntimeError('RPC_TIMEOUT')
+        ops.node.wait=wait
+        with self.assertRaisesRegex(RuntimeError,'ACQUIRE_RESULT_UNKNOWN'):
+            asyncio.run(ops.acquire(GROUPS.values()))
+        self.assertIs(ops.acquire_future,future);self.assertFalse(ops.stopped())
+        async def wait(value,**kwargs):return value
+        ops.node.wait=wait
+        with self.assertRaisesRegex(RuntimeError,'STOP_UNCONFIRMED'):
+            asyncio.run(ops.acquire(GROUPS.values()))
+        self.assertEqual(len(calls),1)
+
+    def test_waiting_release_reply_is_not_a_confirmed_stop(self):
+        ops,_=self.rig()
+        async def wait(value,**kwargs):
+            self.assertFalse(ops.stopped())
+            return value
+        ops.node.wait=wait
+        asyncio.run(ops.release())
+        self.assertTrue(ops.stopped())
+
+    def test_missing_stale_or_moving_feedback_never_reports_stopped(self):
+        for condition in ('empty','one_side','stale','moving'):
+            ops,clock=self.rig();ops.lease=None;ops.lease_instance=None
+            if condition=='empty':ops.states={}
+            elif condition=='one_side':ops.states.pop('right')
+            elif condition=='stale':clock.value+=.3
+            else:ops.states['left'].measured_velocity=.5
+            self.assertFalse(ops.stopped(),condition)
+
+    def test_stationary_state_label_without_rest_does_not_confirm_release(self):
+        ops,_=self.rig();ops.states['right'].measured_velocity=.5
+        with self.assertRaisesRegex(RuntimeError,'STOP_UNCONFIRMED'):
+            asyncio.run(ops.release())
+        self.assertTrue(ops.stop_unconfirmed)
+
+    def test_new_lease_requires_matching_observed_authority_before_any_request(self):
+        for condition in ('epoch','active','owner'):
+            ops,clock=self.rig();ops.lease=None;ops.lease_instance=None
+            responses=[]
+            def reply(req):
+                responses.append(req.operation)
+                if req.operation=='acquire':
+                    for state in ops.states.values():
+                        state.epoch=6;state.lease_active=True;state.owner='pico'
+                    state=ops.states['left']
+                    if condition=='epoch':state.epoch=5
+                    elif condition=='active':state.lease_active=False
+                    else:state.owner='other'
+                    return S(ok=True,lease_id='new',epoch=6,profile_hash='profile')
+                for state in ops.states.values():state.epoch=7;state.lease_active=False
+                return S(ok=True,epoch=7,profile_hash='profile')
+            ops.leases.call_async=reply
+            ops.config['stop_timeout']=.5
+            with self.assertRaisesRegex(RuntimeError,'LEASE_FEEDBACK_TIMEOUT'):
+                asyncio.run(ops.acquire(GROUPS.values()))
+            self.assertEqual(responses,['acquire','release'])
+            self.assertFalse(ops.stop_unconfirmed)
+
+    def test_late_acquire_and_matching_feedback_do_not_erase_deadline(self):
+        ops,clock=self.rig();ops.lease=None;ops.lease_instance=None
+        def reply(req):
+            acquire=req.operation=='acquire'
+            for state in ops.states.values():
+                state.epoch=6 if acquire else 7
+                state.lease_active=acquire;state.owner='pico' if acquire else ''
+            return S(ok=True,lease_id='new' if acquire else '',epoch=6 if acquire else 7,profile_hash='profile')
+        ops.leases.call_async=reply
+        async def wait(value,**kwargs):
+            if value.epoch==6:
+                clock.value+=2.1
+                for state in ops.states.values():state.stamp=state.feedback_stamp=ops.node.now()
+            return value
+        ops.node.wait=wait
+        with self.assertRaisesRegex(RuntimeError,'LEASE_FEEDBACK_TIMEOUT'):
+            asyncio.run(ops.acquire(GROUPS.values()))
+        self.assertIsNone(ops.lease);self.assertFalse(ops.stop_unconfirmed)
+
+    def test_command_rechecks_authority_after_acquisition(self):
+        ops,_=self.rig();ops.control=S(call_async=Mock())
+        for state in ops.states.values():
+            state.epoch=4;state.lease_active=True;state.owner='pico'
+        ops.states['right'].owner='other'
+        with self.assertRaisesRegex(RuntimeError,'LEASE_FEEDBACK_MISMATCH'):
+            asyncio.run(ops.request('open','right'))
+        ops.control.call_async.assert_not_called()
+
+    def test_rpc_failure_and_fault_preserve_original_lease(self):
+        for failed in ('reply','fault'):
+            ops,_=self.rig()
+            if failed=='reply':ops.leases.call_async=lambda _:S(ok=False,code='INVALID_LEASE')
+            else:ops.states['left'].state='FAULT';ops.states['left'].code='DRIVE_FAULT'
+            with self.assertRaisesRegex(RuntimeError,'STOP_UNCONFIRMED'):
+                asyncio.run(ops.release())
+            self.assertEqual(ops.lease.lease_id,'lease')
 
 
 if __name__ == '__main__':

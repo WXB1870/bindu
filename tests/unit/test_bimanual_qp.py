@@ -219,7 +219,9 @@ class AbiLoadingTests(unittest.TestCase):
             _run(cfg,profile,requests,S(put=results.append),True)
         self.assertEqual(constructed,[{'conservative_convex':True,'tool_present':False,'validation_only':True},
                                      {'conservative_convex':True,'tool_present':True,'validation_only':True}])
-        self.assertEqual([r[0] for r in results],['ready','result','result','error'])
+        self.assertEqual([r[0] for r in results],['ready','result','result','diagnostic','error'])
+        self.assertEqual(results[-2][1],results[-1][1])
+        self.assertEqual(results[-2][2]['operation'],'gripper_path')
         self.assertIn('GRASP_PENETRATION',results[-1][2])
         self.assertEqual([p[0]['q']['joint'] for p in paths],[0.,.01,.02])
         self.assertEqual(solver.capture.call_count,3)
@@ -379,6 +381,19 @@ class CandidateGeometryBacktracking(unittest.TestCase):
         self.assertFalse(worker.busy)
         self.assertEqual(worker.diagnostic[0],3)
         self.assertEqual(worker.diagnostic[1]['scale'],.5)
+        # Error diagnostics cross the actual spawned worker with the original
+        # code and token; a small hard-bound excess is never a posture failure.
+        measured=dict(case['feedback']);name=self.profile.groups['right_arm'][2]
+        measured[name]=self.profile.limits[name][0]-8.88e-5
+        reference=[measured[n] for g in self.config['resource_groups'] for n in self.profile.groups[g]]
+        self.assertTrue(worker.submit('solve',4,measured,case['target'],
+            reference=reference,dt=case['dt'],target_stamp=case['target_stamp']))
+        self.assertEqual(result(),('error',4,'BIMANUAL_MEASURED_POSITION_LIMIT:'+name))
+        self.assertEqual(worker.diagnostic[0],4)
+        diagnostic=worker.diagnostic[1]['constraint']
+        self.assertEqual(diagnostic['stage'],'measured_joint_limits')
+        self.assertEqual(diagnostic['joint'],name)
+        self.assertAlmostEqual(diagnostic['violation_rad'],8.88e-5)
 
     def test_budget_exhaustion_can_only_hold_a_freshly_checked_reference(self):
         from bindu_kinematics.tool_geometry import GeometryBudgetExceeded
@@ -753,6 +768,54 @@ class NativeBimanual(unittest.TestCase):
                     solver.solve(self.feedback,target,reference=[self.feedback[n] for n in solver.names],dt=.01,tool_feedback=observed)
                 self.assertFalse(solver.captured)
 
+    def test_actual_hard_bounds_precede_task_posture_in_all_tracking_modes(self):
+        for tracking in ('measured','reference'):
+            with self.subTest(tracking=tracking):
+                solver=BimanualQP(dict(self.config,reference_kinematics=True,
+                    tracking_feedback=tracking,posture_policy={
+                        'reference':'initial_capture','position_bounds':{}}),self.profile)
+                self.addCleanup(solver.close)
+                target=solver.capture(self.feedback)
+                name=solver.names[0];lo,hi=solver.limits[name]
+                damaged=dict(self.feedback);damaged[name]=lo-8.88e-5
+                with self.assertRaisesRegex(ValueError,'^BIMANUAL_MEASURED_POSITION_LIMIT:'+name+'$'):
+                    solver.solve(damaged,target,reference=[damaged[n] for n in solver.names],dt=.01)
+                diagnostic=solver.last_constraint
+                self.assertEqual(diagnostic['stage'],'measured_joint_limits')
+                self.assertEqual(diagnostic['joint'],name)
+                self.assertAlmostEqual(diagnostic['violation_rad'],8.88e-5)
+                self.assertEqual(diagnostic['lower_rad'],lo)
+                self.assertEqual(diagnostic['upper_rad'],hi)
+                self.assertFalse(solver.captured)
+
+    def test_recorded_grasp_crossings_keep_codes_and_quantitative_diagnostics(self):
+        cases=((.010071,.020438),(.0,.020232),(.010024,.0),(.0,.020035),(.0,.020210),(.04,.0))
+        for distance,angle in cases:
+            with self.subTest(distance=distance,angle=angle):
+                solver=BimanualQP(dict(self.config,reference_kinematics=True,
+                    max_relative_error=.03),self.profile)
+                self.addCleanup(solver.close)
+                target=solver.capture(self.feedback)
+                solver.measured_rigid_grasp=True
+                solver.expected_relative=solver.grasp_reference.copy()
+                solver.grasp_position_tolerance=.01;solver.grasp_rotation_tolerance=.02
+                error=np.eye(4);error[0,3]=distance
+                error[:2,:2]=[[np.cos(angle),-np.sin(angle)],[np.sin(angle),np.cos(angle)]]
+                relative=solver.grasp_reference @ error
+                def measured(handle,q,nq,out):
+                    np.ctypeslib.as_array(out,shape=(16,))[:]=relative.ravel();return 1
+                with patch.object(solver.lib,'bq_relative_pose',side_effect=measured):
+                    with self.assertRaisesRegex(ValueError,'^BIMANUAL_MEASURED_GRASP_ERROR$'):
+                        solver.solve(self.feedback,target,reference=[self.feedback[n] for n in solver.names],dt=.01)
+                diagnostic=solver.last_constraint
+                self.assertAlmostEqual(diagnostic['position_error_m'],distance)
+                self.assertAlmostEqual(diagnostic['rotation_error_rad'],angle)
+                self.assertEqual(diagnostic['stage'],'measured_relative' if distance==.04 else 'measured_grasp_points')
+                if distance!=.04:
+                    self.assertEqual(diagnostic['position_limit_m'],.01)
+                    self.assertEqual(diagnostic['rotation_limit_rad'],.02)
+                self.assertFalse(solver.captured)
+
     def test_actual_posture_guard_is_independent_of_reference_jacobians(self):
         name=self.qp.names[0];value=self.feedback[name]
         solver=BimanualQP(dict(self.config,reference_kinematics=True,posture_policy={
@@ -762,6 +825,9 @@ class NativeBimanual(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'BIMANUAL_MEASURED_POSTURE_ERROR'):
             solver.solve(damaged,target,reference=[self.feedback[n] for n in solver.names],dt=.01)
         self.assertFalse(solver.captured)
+        self.assertEqual(solver.last_constraint['stage'],'measured_task_posture')
+        self.assertEqual(solver.last_constraint['joint'],name)
+        self.assertAlmostEqual(solver.last_constraint['violation_rad'],.001)
 
     def test_integration_uses_accepted_reference_and_variable_interval(self):
         tool = self.qp.capture(self.feedback)

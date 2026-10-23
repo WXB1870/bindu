@@ -108,6 +108,34 @@ class WorkerReceiptTests(unittest.TestCase):
         owner.event.assert_called_once_with('BIMANUAL_WORKER_FAILED', 'BIMANUAL_WORKER_TIMEOUT')
         self.assertEqual(worker.results.qsize(), 1)
 
+    def test_worker_errors_transport_diagnostics_and_never_reuse_previous_constraint(self):
+        from bindu_kinematics.bimanual_worker import _run
+        requests,results=queue.Queue(),queue.Queue()
+        requests.put(('solve',7,{},None,[],.01,'rigid',None))
+        requests.put(('capture',8,{},None,None,None,'rigid',None))
+        requests.put(None)
+        solver=SimpleNamespace(last_constraint=None,last_timing={'stage':'measured'},close=Mock())
+        def solve(*args,**kw):
+            solver.last_constraint=dict(code='BIMANUAL_MEASURED_GRASP_ERROR',
+                stage='measured_grasp_points',position_error_m=.010024,position_limit_m=.01)
+            raise ValueError('BIMANUAL_MEASURED_GRASP_ERROR')
+        solver.solve=solve
+        solver.capture=Mock(side_effect=ValueError('UNKNOWN_CAPTURE_FAILURE'))
+        with patch('bindu_kinematics.bimanual.BimanualQP',return_value=solver),                patch('bindu_kinematics.bimanual_worker.gc.collect'),                patch('bindu_kinematics.bimanual_worker.gc.freeze'):
+            _run({},None,requests,results)
+        self.assertEqual(results.get_nowait(),('ready',0,None))
+        first,reply=results.get_nowait(),results.get_nowait()
+        self.assertEqual(reply,('error',7,'BIMANUAL_MEASURED_GRASP_ERROR'))
+        worker=self.worker();worker.results.put(first);worker.results.put(reply)
+        self.assertEqual(self.poll(worker,10.1),reply)
+        self.assertEqual(worker.diagnostic[1]['constraint']['position_error_m'],.010024)
+        second,reply=results.get_nowait(),results.get_nowait()
+        self.assertEqual(second[1],8)
+        self.assertIsNone(second[2]['constraint'])
+        self.assertIsNone(second[2]['timing'])
+        self.assertEqual(reply,('error',8,'UNKNOWN_CAPTURE_FAILURE'))
+        self.assertTrue(results.empty());solver.close.assert_called_once()
+
     def test_dead_process_or_fatal_cannot_advertise_ready_or_accept_work(self):
         for cause in ('exit', 'fatal'):
             with self.subTest(cause=cause):

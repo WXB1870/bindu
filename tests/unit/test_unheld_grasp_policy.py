@@ -42,6 +42,43 @@ class UnheldGraspPolicyTests(unittest.TestCase):
         return s.solve({'joint':0.} if feedback is None else feedback,np.eye(4),
             reference=[0.] if reference is None else reference,dt=.01,**kw)
 
+    def test_unheld_capture_uses_actual_relative_pose_without_nominal_grasp_gate(self):
+        for policy in ('enforce','unheld_test'):
+            s=self.solver(policy,.04,.05);s.handle=object();s.axial=None
+            s.cfg.update(flange_distance_range=[0.,1.],left_to_tool=np.eye(4).ravel().tolist())
+            s.tool=np.eye(4);s.measured_rigid_grasp=False;s.native_config=NS['NativeConfig']()
+            s.tracking_point=np.zeros(3);s.posture_reference=None;s.collision_check=None
+            s.lib.bq_capture=Mock(return_value=1);s.lib.bq_destroy=Mock();s._apply_shared_motion_weight=Mock()
+            s.check_path=Mock();s.set_shared_targets=Mock()
+            if policy=='enforce':
+                with self.assertRaisesRegex(ValueError,'BIMANUAL_GRASP_POSE'):s.capture({'joint':0.})
+                s.lib.bq_capture.assert_not_called()
+            else:
+                s.capture({'joint':0.})
+                s.lib.bq_capture.assert_called_once();s.check_path.assert_called_once_with({'joint':0.},[0.])
+                self.assertAlmostEqual(s.grasp_reference[0,3],.04)
+                self.assertAlmostEqual(s.grasp_reference[0,0],math.cos(.05))
+                self.assertTrue(s.captured)
+                s.axial={}
+                with self.assertRaisesRegex(ValueError,'REQUIRES_RIGID'):s.capture({'joint':0.},'right_axial')
+
+    def test_collision_factory_omits_only_explicitly_absent_tool(self):
+        from unittest.mock import patch
+        init=next(n for n in next(n for n in ast.parse(SOURCE.read_text()).body if getattr(n,'name','')=='BimanualQP').body if getattr(n,'name','')=='__init__')
+        begin=next(i for i,n in enumerate(init.body) if isinstance(n,ast.Assign) and isinstance(n.targets[0],ast.Attribute) and n.targets[0].attr=='collision_check')
+        end=next(i for i,n in enumerate(init.body) if isinstance(n,ast.Assign) and isinstance(n.targets[0],ast.Attribute) and n.targets[0].attr=='limits')
+        code=compile(ast.Module(body=init.body[begin:end],type_ignores=[]),str(SOURCE),'exec')
+        config=dict(collision_scope='configured_tool_geometry',urdf='/fixture/robot.urdf',
+                    demo=dict(display_urdf='display.urdf',grip_offset_m=[0.,0.,0.]))
+        for policy in ('enforce','unheld_test'):
+            owner=S(measured_grasp_policy=policy,tool=np.eye(4),close=Mock())
+            with patch('bindu_kinematics.tool_geometry.make_collision_checker',return_value=Mock()) as factory:
+                exec(code,dict(self=owner,config=config,np=np,Path=Path,math=math,__package__='bindu_kinematics'))
+            self.assertIs(factory.call_args.kwargs['tool_present'],policy!='unheld_test')
+            self.assertTrue(factory.call_args.kwargs['conservative_convex'])
+            self.assertTrue(factory.call_args.kwargs['validation_only'])
+            self.assertIsNotNone(owner.collision_check)
+
     def test_default_and_invalid_policy_fail_closed(self):
         # Missing policy keeps the existing guard; bad values reject before IO.
         s=QP.__new__(QP)

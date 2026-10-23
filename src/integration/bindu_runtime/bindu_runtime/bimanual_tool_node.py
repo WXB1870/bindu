@@ -705,6 +705,8 @@ class BimanualToolNode(RuntimeNode):
                                 continue
                             self.event('BIMANUAL_WORK_REJECTED',json.dumps({
                                 'code':value,'operation':awaiting,'input_seq':work_seq,'input_stamp':work_stamp,
+                                'constraint':geometry.get('constraint') if geometry else None,
+                                'timing':geometry.get('timing') if geometry else None,
                                 'control_sampled_at':work_sampled_at,'integration_dt':work_dt,'sample_gap_s':work_gap,
                                 'grasp_mode':session.grasp_mode,'feedback':work_feedback,
                                 'joint_names':self.names,'reference':work_reference,'target':work_target}),goal.request.task_id)

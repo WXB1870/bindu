@@ -67,12 +67,16 @@ class PicoNode(RuntimeNode):
                                      ('kinematic',) if self.simulation else ('snowbot_vendor',))):
             raise ValueError('PICO_ACTUATOR_BACKEND_UNAVAILABLE:'+self.backend)
         self.tool_cfg=json.loads(Path(self.get_parameter('tool_config').value).read_text())
+        policy=self.tool_cfg.get('measured_grasp_policy','enforce')
+        if policy not in ('enforce','unheld_test'):
+            raise ValueError('PICO_MEASURED_GRASP_POLICY')
+        self.unheld_test=policy=='unheld_test'
         confirmation=self.tool_cfg.get('tool_grasp_confirmation','calibrated')
         if confirmation not in ('calibrated','operator'):
             raise ValueError('PICO_TOOL_GRASP_CONFIRMATION_CONFIG')
         self.operator_grasp=confirmation=='operator'
         self.operator_grasp_positions={}
-        if self.operator_grasp and (not self.position_contract or
+        if self.operator_grasp and not self.unheld_test and (not self.position_contract or
                 self.tool_cfg.get('grasp_reference_source')!='measured_rigid'):
             raise ValueError('PICO_OPERATOR_GRASP_REQUIRES_MEASURED_RIGID')
         if (not self.tool_cfg.get('right_axial_grasp') or self.tool_cfg.get('collision_scope')!='configured_tool_geometry' or
@@ -541,6 +545,9 @@ class PicoNode(RuntimeNode):
             raise RuntimeError('PICO_PREPARE_PRESET_REQUIRED')
         if not joints_at_rest(s.joints,self.names,.005 if self.position_contract else 1e-6):raise RuntimeError('PREPARE_REQUIRES_STATIONARY_START')
         gripper_move=targets is not None
+        if self.unheld_test and self.control.load=='held':
+            raise RuntimeError('PICO_UNHELD_TEST_WITH_HELD_LOAD')
+        loaded=not gripper_move and not self.unheld_test and self.control.load!='empty'
         target=targets if gripper_move else {n:self.prepare_positions[n]
                 for g in self.tool_cfg['resource_groups'] for n in self.profile.groups[g]}
         end=time.monotonic()+self.validator.startup_timeout
@@ -552,22 +559,23 @@ class PicoNode(RuntimeNode):
         reference=prepare_reference(self.profile,names,q) if self.position_contract and not gripper_move else q
         extra={}
         if reference!=q:
+            if loaded:raise RuntimeError('PREPARE_START_JOINT_LIMIT')
             extra['reference']=reference
             self.event('PICO_PREPARE_BOUNDARY_REFERENCE',json.dumps(dict(
                 measured={n:q[n] for n in names if q[n]!=reference[n]},
                 reference={n:reference[n] for n in names if q[n]!=reference[n]},
                 tolerance_rad=self.profile.feedback_tolerances['joint_position'])))
         self.validation_result=None
-        # Explicit A return is independent of load metadata and the captured
-        # two-hand grasp. The operator observes the tool; robot CAD, joint
-        # limits, fresh stopped feedback and cancellation remain mandatory.
-        operation='gripper_path' if gripper_move else 'prepare_path'
+        # Unknown load uses the tool/coupling guard unless this immutable
+        # configuration explicitly declares an empty-hand test.
+        operation='gripper_path' if gripper_move else 'loaded_prepare_path' if loaded else 'prepare_path'
         if allow_recovery and operation=='prepare_path' and self.cfg.get('prepare_collision_recovery'):
             operation='prepare_recovery_path'
         self.event('PICO_PREPARE_VALIDATION',json.dumps(dict(operation=operation,load_state=self.control.load,
-            load_state_checked=False,tool_present=gripper_move,coupling_checked=False)))
+            load_state_checked=True,tool_present=gripper_move or loaded,coupling_checked=loaded,
+            measured_grasp_policy='unheld_test' if self.unheld_test else 'enforce')))
         if not self.validator.submit(operation,intent.token,q,
-                                     target if gripper_move else [target[n] for n in names],**extra):
+                                     target if gripper_move or loaded else [target[n] for n in names],**extra):
             raise RuntimeError('PICO_PREPARE_VALIDATOR_BUSY')
         end=time.monotonic()+30.
         while self.validation_result is None:
@@ -587,7 +595,14 @@ class PicoNode(RuntimeNode):
         f=self.feedback()
         if not f.healthy:raise RuntimeError('PICO_FEEDBACK_UNAVAILABLE')
         if not f.stopped:raise RuntimeError('PICO_MODE_REQUIRES_STOPPED')
-        if mode=='bimanual_tool' and self.operator_grasp:
+        if mode=='bimanual_tool' and self.unheld_test:
+            if self.control.load=='held':raise RuntimeError('PICO_UNHELD_TEST_WITH_HELD_LOAD')
+            self.operator_grasp_positions={}
+            self.control.virtual=False
+            self.event('PICO_UNHELD_TEST_READY',json.dumps(dict(operation=intent.operation,
+                measured_grasp_policy='unheld_test',physical_grasp_confirmed=False,
+                grasp_sensor_confirmed=False,reference_source='measured_relative')))
+        elif mode=='bimanual_tool' and self.operator_grasp:
             # Explicit tool-mode selection / two-hand engagement confirms the
             # physical grip. Keep raw modes unknown; never invent calibration.
             states={side:self.position_ops.reading(side) for side in ('left','right')}
@@ -598,7 +613,7 @@ class PicoNode(RuntimeNode):
                 reference_source='measured_rigid')))
         elif mode=='bimanual_tool' and self.position_ops and not self.position_ops.config['calibrated']:
             raise RuntimeError('PICO_TOOL_GRASP_UNCONFIRMED_UNCALIBRATED')
-        if mode=='bimanual_tool' and not self.operator_grasp and (f.modes[0]!='closed' or f.modes[1] not in ('closed','virtual')):
+        if mode=='bimanual_tool' and not self.unheld_test and not self.operator_grasp and (f.modes[0]!='closed' or f.modes[1] not in ('closed','virtual')):
             raise RuntimeError('PICO_GRIPPER_CONFIRMATION_REQUIRED')
         client=self.arms_ready_client if mode=='independent_arms' else self.ready_client
         end=time.monotonic()+self.tool_cfg.get('worker_startup_timeout',30.)
@@ -606,7 +621,20 @@ class PicoNode(RuntimeNode):
             self.current(intent)
             if client.service_is_ready():
                 reply=await self.wait(client.call_async(Trigger.Request()))
-                if reply.success:return
+                if reply.success:
+                    self.current(intent)
+                    if mode=='bimanual_tool' and self.operator_grasp and not self.unheld_test and self.control.load!='held':
+                        # Invalidate older context declarations. The in-flight
+                        # operation remains fenced by its unchanged pending token,
+                        # independently of this context generation.
+                        self.control.load,self.control.load_source='held','operator_tool_confirmation'
+                        self.control.context_at=self.now()
+                        self.control.generation+=1
+                        self.event('PICO_LOAD_OPERATOR_CONFIRMED',json.dumps(dict(
+                            load_state='held',load_source=self.control.load_source,
+                            generation=self.control.generation,operation=intent.operation,
+                            physical_grasp_confirmed_by='operator',grasp_sensor_confirmed=False)))
+                    return
                 if reply.message not in ('BIMANUAL_WORKER_NOT_READY','BIMANUAL_PREFLIGHT_PENDING'):
                     raise RuntimeError(reply.message)
             await self.pause()
@@ -678,14 +706,15 @@ class PicoNode(RuntimeNode):
             self.current(intent)
             read_only=intent.operation in ('prepare','confirm_tool','follow','select_mode')
             if intent.operation=='prepare':
-                # A return validates the measured robot path without making a
-                # load declaration or preserving the previous coupled grasp.
+                # A preserves tool/coupling checks for held or unknown loads;
+                # only an explicit empty scenario uses the robot-only path.
                 if not self.position_contract and self.control.load!='empty':raise RuntimeError('PICO_PREPARE_REQUIRES_EMPTY')
                 target=await self.validate_prepare(intent)
                 _,measured=self.reading()
                 error=max(abs(measured[n]-q) for n,q in target.items())
-                if self.position_contract and error<.002 and not self.prepare_recovery:
-                    self.event('PICO_PREPARE_ALREADY_REACHED',json.dumps(dict(max_joint_error_rad=error)))
+                if self.position_contract and error<self.prepare_position_tolerance and not self.prepare_recovery:
+                    self.event('PICO_PREPARE_ALREADY_REACHED',json.dumps(dict(max_joint_error_rad=error,
+                        position_tolerance_rad=self.prepare_position_tolerance)))
                 else:
                     read_only=False
                     recovery=self.prepare_recovery
@@ -720,7 +749,7 @@ class PicoNode(RuntimeNode):
                 await self.select_tool_mode(intent,intent.value)
             elif intent.operation=='switch_grasp':
                 if self.position_contract:
-                    if self.operator_grasp or not self.position_ops.axial_available:
+                    if self.unheld_test or self.operator_grasp or not self.position_ops.axial_available:
                         raise RuntimeError('PICO_AXIAL_GRASP_UNAVAILABLE')
                     target=self.position_ops.grasp_target(intent.value)
                     await self.validate_prepare(intent,target)
@@ -795,7 +824,7 @@ class PicoNode(RuntimeNode):
         feedback=self.feedback()
         if self.state and not self.state.lease_active and feedback.healthy and feedback.stopped:
             self.handoff_complete=True
-        if self.position_ops and self.control.teleop_mode=='bimanual_tool' and feedback.healthy:
+        if self.position_ops and not self.unheld_test and self.control.teleop_mode=='bimanual_tool' and feedback.healthy:
             if (not self.operator_grasp and not self.control.pending and feedback.stopped and
                     self.control.phase in ('checking','standby','tool_standby') and
                     feedback.modes[1] in ('closed','virtual')):
@@ -852,8 +881,9 @@ class PicoNode(RuntimeNode):
                 capabilities=dict(prepare=self.prepare_positions is not None,
                     independent_arms=self.position_contract,mode_switch=self.position_contract,
                     grippers=bool(self.position_ops.config['calibrated'] or self.position_ops.config.get('allow_uncalibrated_direct', False)) if self.position_ops else True,
-                    axial_grasp=not self.operator_grasp and self.position_ops.axial_available if self.position_ops else True),
-                tool_grasp_confirmation='operator' if self.operator_grasp else 'calibrated',
+                    axial_grasp=not self.unheld_test and (not self.operator_grasp and self.position_ops.axial_available if self.position_ops else True)),
+                measured_grasp_policy='unheld_test' if self.unheld_test else 'enforce',
+                tool_grasp_confirmation='unheld_test' if self.unheld_test else 'operator' if self.operator_grasp else 'calibrated',
                 execution_state=self.state.state if self.state is not None else 'unavailable',
                 feedback_age_s=self.now()-seconds(self.state.feedback_stamp) if self.state is not None else None)
             raw=tuple(self.frames.values())

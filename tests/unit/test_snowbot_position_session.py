@@ -804,6 +804,132 @@ class TargetWireTests(unittest.TestCase):
         for _ in range(10): self.d.brake_before_source_expiry(self.rig.engine)
         self.assertEqual(self.d.publishers['arms'].publish.call_count, 2)
 
+    def production_readiness(self):
+        from bindu_runtime.snowbot_position_session import PositionSessionDevices
+        self.d.receivers = dict(head='/servo_node', middle='/dual_arm_control_node', arms='/robot_upperMonitor')
+        self.d.node.count_publishers = lambda topic: int(topic == '/bindu/position/command')
+        self.d.check_ready = PositionSessionDevices.check_ready.__get__(self.d)
+        self.rig.io.check_ready = self.d.check_ready
+
+    def source_motion(self, command_id='move', *, age=0., valid_for=.4):
+        from bindu_contracts.contracts import Motion
+        engine = self.rig.engine
+        groups = ('waist', 'left_arm', 'right_arm')
+        if not engine.lease_id:
+            engine.acquire('test', groups, 2., self.rig.now)
+        names = tuple(n for group in groups for n in GROUPS[group])
+        return Motion(command_id, engine.lease_id, engine.epoch, self.rig.profile.digest,
+            'test', '', 'joint_target', '', self.rig.now-age, valid_for, names=names,
+            positions=tuple(self.target[n] for n in names), schema_version=2,
+            resource_groups=groups, runtime_mode='real')
+
+    def test_old_layer_state_preserves_newer_health_without_renewing_its_age(self):
+        from copy import deepcopy
+        old = deepcopy(self.d.health.states['servo'][1])
+        self.rig.now += .01; self.rig.steady += .01
+        current = deepcopy(old); current.header = observation(self.rig.now).header
+        self.d.receive_state('servo', '/bindu/position/servo_state', 'head', current)
+        received = self.d.health.received['servo']
+        for frame in (current, old):
+            self.rig.now += .01; self.rig.steady += .01
+            self.d.receive_state('servo', '/bindu/position/servo_state', 'head', frame)
+            self.assertIs(self.d.health.states['servo'][1], current)
+            self.assertEqual(self.d.health.received['servo'], received)
+        # Even an older queued frame arriving after the original layer timeout
+        # cannot refresh current's timestamp or local receipt age.
+        self.rig.now += .21; self.rig.steady += .21
+        self.d.receive_state('servo', '/bindu/position/servo_state', 'head', old)
+        self.assertIs(self.d.health.states['servo'][1], current)
+        self.assertGreater(self.rig.steady-received, .2)
+        self.assertEqual(self.d.health.received['servo'], received)
+
+    def test_old_conflicting_layer_identity_or_malformed_stamp_still_invalidates(self):
+        from copy import deepcopy
+        for changes in (dict(instance_id=99), dict(wire_version=3), dict(reference_mode=0),
+                        dict(control_source='impedance'), dict(feedback_boot_id=99),
+                        dict(stop_policy='unconfirmed'), dict(header=S(stamp=S(sec=10, nanosec=-1))),
+                        dict(header=S(stamp=S(sec=0, nanosec=0)))):
+            with self.subTest(changes=changes):
+                self.setUp()
+                old = deepcopy(self.d.health.states['servo'][1])
+                for key, value in changes.items(): setattr(old, key, value)
+                self.d.receive_state('servo', '/bindu/position/servo_state', 'head', old)
+                self.assertNotIn('servo', self.d.health.states)
+
+    def test_layer_state_bad_clock_cannot_be_accepted_as_old_healthy_telemetry(self):
+        current = self.d.health.states['servo'][1]
+        for now in (float('nan'), float('inf'), 9.):
+            with self.subTest(now=now):
+                self.rig.now = now
+                self.d.receive_state('servo', '/bindu/position/servo_state', 'head', current)
+                self.assertNotIn('servo', self.d.health.states)
+
+    def test_effective_source_deadline_rejects_before_acceptance_without_stop_footprint(self):
+        from bindu_execution.executor import Rejected
+        for age, valid_for in ((.2, .4), (.21, .4), (.1, .1)):
+            with self.subTest(age=age, valid_for=valid_for):
+                self.setUp(); self.production_readiness()
+                motion = self.source_motion(age=age, valid_for=valid_for)
+                with self.assertRaisesRegex(Rejected, 'SOURCE_COMMAND_EXPIRED'):
+                    self.rig.engine.submit(motion, self.rig.now)
+                self.assertIsNone(self.rig.engine.active)
+                self.assertIsNone(self.rig.io.source_motion)
+                self.assertFalse(self.rig.io.targets)
+                self.assertFalse(self.d.sent)
+                self.assertEqual(self.d.envelopes.sequence, 0)
+                self.rig.engine.halt(self.rig.now, revoke=True)
+                self.assertFalse(self.rig.engine.stop_fault)
+                self.d.publishers['arms'].publish.assert_not_called()
+
+    def test_expiry_between_acceptance_and_first_tick_has_no_phantom_stop(self):
+        self.production_readiness()
+        motion = self.source_motion(age=.199)
+        self.rig.engine.submit(motion, self.rig.now)
+        self.update_target_feedback()
+        self.rig.engine.tick(self.rig.now)
+        self.d.publishers['arms'].publish.assert_not_called()
+        self.assertFalse(self.rig.io.targets)
+        self.assertFalse(self.rig.io.stop_targets)
+        self.assertFalse(self.rig.engine.stop_fault)
+        self.assertIsNone(self.rig.engine.stopping)
+        # Recovery requires a fresh explicit motion and new ownership; no old
+        # candidate, source time or TTL is revived.
+        fresh = self.source_motion('fresh-after-unsent')
+        self.rig.engine.submit(fresh, self.rig.now); self.rig.engine.tick(self.rig.now)
+        packet = self.d.publishers['arms'].publish.call_args.args[0]
+        self.assertEqual(packet.meta.operation, 1)
+        self.assertEqual(packet.meta.source_command_id, fresh.command_id)
+        self.assertEqual(packet.meta.expires_at_ns-packet.meta.source_stamp_ns, 200_000_000)
+
+    def test_unsent_expired_candidate_preserves_prior_real_send_for_pause(self):
+        self.production_readiness()
+        first = self.source_motion('first', age=.1995)
+        self.rig.engine.submit(first, self.rig.now); self.rig.engine.tick(self.rig.now)
+        self.d.receive_receipt(self.receipt(self.d.publishers['arms'].publish.call_args.args[0]))
+        previous = dict(self.rig.io.targets)
+        for name in self.target: self.target[name] += .001
+        late = self.source_motion('late-next', age=.199)
+        self.rig.engine.submit(late, self.rig.now)
+        self.update_target_feedback(); self.rig.engine.tick(self.rig.now)
+        self.assertEqual(self.d.publishers['arms'].publish.call_count, 2)
+        self.assertEqual(self.d.publishers['arms'].publish.call_args.args[0].meta.operation, 2)
+        self.assertEqual(self.rig.io.stop_targets, previous)
+        self.assertTrue(self.rig.engine.stopping)
+        self.assertFalse(self.rig.engine.stop_fault)
+
+    def test_transport_call_exception_retains_unknown_delivery_stop_footprint(self):
+        self.production_readiness()
+        publisher = self.d.publishers['arms'].publish
+        publisher.side_effect = [RuntimeError('delivery_unknown'), None]
+        motion = self.source_motion()
+        self.rig.engine.submit(motion, self.rig.now); self.rig.engine.tick(self.rig.now)
+        self.assertEqual(publisher.call_count, 2)  # Unknown target followed by PAUSE.
+        self.assertEqual([call.args[0].meta.operation for call in publisher.call_args_list], [1, 2])
+        self.assertEqual(set(self.rig.io.stop_targets), set(CONTROL_NAMES))
+        self.assertTrue(self.rig.engine.stopping)
+        self.assertIsNone(self.rig.io.confirmed_stop_targets())
+        self.assertFalse(self.rig.engine.lease_id)
+
     def test_old_wire_three_cannot_pass_target_stream_readiness(self):
         self.d.health.require(CONTROL_GROUPS)
         for layer in ('upper', 'middle', 'servo'):

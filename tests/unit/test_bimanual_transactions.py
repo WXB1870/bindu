@@ -324,6 +324,31 @@ class BimanualTransactions(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(rig.node.goal(rig.goal.request),'REJECT')
         self.assertEqual(len(rig.commands),count)
 
+    async def test_grasp_rejection_logs_quantitative_evidence_and_can_reengage_after_stop(self):
+        rig=Rig(solve_errors=['BIMANUAL_MEASURED_GRASP_ERROR'])
+        original_solve=rig.solve
+        diagnostic=dict(code='BIMANUAL_MEASURED_GRASP_ERROR',stage='measured_grasp_points',
+            position_error_m=.010024,rotation_error_rad=.0,position_limit_m=.01,rotation_limit_rad=.02)
+        def solve(operation,token,*args,**kw):
+            submitted=original_solve(operation,token,*args,**kw)
+            if rig.node.worker_result and rig.node.worker_result[0]=='error':
+                rig.node.worker.diagnostic=(token,dict(scale=1.,constraint=diagnostic,timing=None))
+            return submitted
+        rig.node.worker.submit=solve
+        result=await rig.run()
+        self.assertEqual(result.code,'BIMANUAL_MEASURED_GRASP_ERROR')
+        self.assertFalse(rig.node.stop_unconfirmed)
+        event=json.loads(next(e[1] for e in rig.events if e[0]=='BIMANUAL_WORK_REJECTED'))
+        self.assertEqual(event['constraint'],diagnostic)
+        self.assertFalse(any(e[0]=='BIMANUAL_SOLVE_DEFERRED' for e in rig.events))
+        self.assertFalse(rig.engine.lease_id)
+        rig.step=0;rig.update()
+        self.assertEqual(rig.node.goal(rig.goal.request),'ACCEPT')
+        rig.goal.request.duration=.3
+        result=await rig.run()
+        self.assertTrue(result.success,result.code)
+        self.assertEqual(rig.releases,2)
+
     async def test_confirmed_stop_allows_explicit_new_action_without_restart(self):
         rig=Rig()
         result=await rig.run()

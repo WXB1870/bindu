@@ -59,6 +59,7 @@ class BimanualQP:
         self.target_sample = None
         self.last_timing = None
         self.last_geometry_step = None
+        self.last_constraint = None
         self.geometry_step_backtracking=config.get('geometry_step_backtracking',False)
         if type(self.geometry_step_backtracking) is not bool:
             raise ValueError('BIMANUAL_GEOMETRY_BACKTRACKING_CONFIG')
@@ -245,7 +246,8 @@ class BimanualQP:
                     np.r_[recipe['grip_offset_m'],1.])[:3].tolist()
                 self.collision_check = make_collision_checker(
                     Path(config['urdf']).parent/recipe['display_urdf'],recipe,
-                    conservative_convex=True,validation_only=True)
+                    conservative_convex=True,tool_present=self.measured_grasp_policy!='unheld_test',
+                    validation_only=True)
                 self.collision_step = float(config.get('collision_joint_step_rad',.01))
                 if not math.isfinite(self.collision_step) or not 0 < self.collision_step <= .01:
                     raise ValueError('BIMANUAL_COLLISION_STEP')
@@ -302,7 +304,7 @@ class BimanualQP:
             raise ValueError('BIMANUAL_CLOSED')
         if grasp_mode not in ('rigid', 'right_axial') or grasp_mode == 'right_axial' and self.axial is None:
             raise ValueError('BIMANUAL_GRASP_MODE')
-        if self.measured_rigid_grasp and grasp_mode!='rigid':
+        if (self.measured_rigid_grasp or self.measured_grasp_policy=='unheld_test') and grasp_mode!='rigid':
             raise ValueError('BIMANUAL_MEASURED_GRASP_REQUIRES_RIGID')
         q = self._q(feedback)
         measured = np.empty((4,4), dtype=np.float64)
@@ -312,7 +314,8 @@ class BimanualQP:
         low, high = self.cfg['flange_distance_range']
         if self.axial is None and not low <= distance <= high:
             raise ValueError('BIMANUAL_GRASP_GEOMETRY')
-        if self.expected_relative is not None and not self.measured_rigid_grasp:
+        if (self.expected_relative is not None and not self.measured_rigid_grasp and
+                self.measured_grasp_policy!='unheld_test'):
             error = np.linalg.inv(self.expected_relative) @ measured
             angle = math.acos(float(np.clip((np.trace(error[:3,:3])-1.)/2., -1., 1.)))
             distance_error = np.linalg.norm(error[:3,3])
@@ -549,16 +552,32 @@ class BimanualQP:
         if self.shared_motion_weight > 0 and not self.lib.bq_shared_motion_weight(self.handle,self.shared_motion_weight):
             raise ValueError('BIMANUAL_SHARED_MOTION_WEIGHT:'+self._error())
 
+    def _reject_constraint(self, code, **diagnostic):
+        # Keep established error codes stable; the worker transports bounded
+        # quantitative evidence separately under the same request token.
+        self.last_constraint=dict(code=code,**diagnostic)
+        raise ValueError(code)
+
     def _check_measured_limits(self, measured):
-        # Reference-based tasks must not hide actual joint/posture violations
-        # when native kinematics are evaluated at the nominal configuration.
+        # Hard profile/model bounds take precedence over task posture bounds.
+        # posture_lower/upper also contain unchanged hard bounds on other axes.
         for name, value in zip(self.names, measured):
             lo, hi = self.limits[name]
             if not lo-1e-9 <= value <= hi+1e-9:
-                raise ValueError('BIMANUAL_MEASURED_POSITION_LIMIT:'+name)
-        if self.posture_policy is not None and (np.any(measured < self.posture_lower-1e-9) or
-                                                np.any(measured > self.posture_upper+1e-9)):
-            raise ValueError('BIMANUAL_MEASURED_POSTURE_ERROR')
+                self._reject_constraint('BIMANUAL_MEASURED_POSITION_LIMIT:'+name,
+                    stage='measured_joint_limits',joint=name,measured_rad=float(value),
+                    lower_rad=float(lo),upper_rad=float(hi),
+                    violation_rad=float(max(lo-value,value-hi)))
+        if self.posture_policy is not None:
+            violated=np.flatnonzero((measured<self.posture_lower-1e-9) |
+                                    (measured>self.posture_upper+1e-9))
+            if len(violated):
+                j=int(violated[0]);value=measured[j]
+                lo,hi=self.posture_lower[j],self.posture_upper[j]
+                self._reject_constraint('BIMANUAL_MEASURED_POSTURE_ERROR',
+                    stage='measured_task_posture',joint=self.names[j],measured_rad=float(value),
+                    lower_rad=float(lo),upper_rad=float(hi),
+                    violation_rad=float(max(lo-value,value-hi)))
 
     def capture_independent(self, feedback, *, reference=None):
         self.captured=False;self.independent_abi()
@@ -586,7 +605,7 @@ class BimanualQP:
         if not self.captured or self.grasp_mode!='independent':
             raise ValueError('INDEPENDENT_ARMS_NOT_CAPTURED')
         started=time.perf_counter();cpu_started=time.thread_time()
-        self.last_geometry_step=self.last_timing=None
+        self.last_geometry_step=self.last_timing=self.last_constraint=None
         try:
             if not math.isfinite(dt) or not 0<dt<=self.max_interval:
                 raise ValueError('BIMANUAL_INTEGRATION_INTERVAL')
@@ -597,10 +616,10 @@ class BimanualQP:
             measured=np.array([feedback[n] for n in self.names])
             if reference.shape!=measured.shape or not np.isfinite(reference).all():
                 raise ValueError('BIMANUAL_REFERENCE_LAYOUT')
+            self._check_measured_limits(measured)
             if np.max(np.abs(reference-measured))>self.max_reference_error:
                 raise ValueError('BIMANUAL_REFERENCE_TRACKING_ERROR')
             if self.tracking_feedback == 'reference':
-                self._check_measured_limits(measured)
                 q = q.copy()
                 q[[self.model_names.index(n) for n in self.names]] = reference
             poses=np.asarray(targets,dtype=float)
@@ -659,6 +678,7 @@ class BimanualQP:
             raise ValueError('BIMANUAL_NOT_CAPTURED')
         self.last_timing = None
         self.last_geometry_step = None
+        self.last_constraint = None
         try:
             return self._solve(feedback, target, reference, float(dt), target_stamp, tool_feedback)
         except DeferredSolve:
@@ -677,13 +697,9 @@ class BimanualQP:
         if reference.shape != (len(self.names),) or not np.isfinite(reference).all():
             raise ValueError('BIMANUAL_REFERENCE_LAYOUT')
         measured = np.array([feedback[n] for n in self.names])
-        if self.posture_policy is not None and (np.any(measured<self.posture_lower-1e-9) or
-                                                np.any(measured>self.posture_upper+1e-9)):
-            raise ValueError('BIMANUAL_MEASURED_POSTURE_ERROR')
+        self._check_measured_limits(measured)
         if np.max(np.abs(reference-measured)) > self.max_reference_error:
             raise ValueError('BIMANUAL_REFERENCE_TRACKING_ERROR')
-        if self.tracking_feedback == 'reference':
-            self._check_measured_limits(measured)
         measured_tool = None
         if self.reference_kinematics:
             measured_tool = np.empty((4,4), dtype=np.float64)
@@ -702,14 +718,23 @@ class BimanualQP:
                 angle = math.acos(float(np.clip(actual[:3,2] @ self.tool_grip[:3,2],-1.,1.)))
             if (self.measured_grasp_policy == 'enforce' and
                     math.hypot(distance,angle) > self.cfg['max_relative_error']):
-                raise ValueError('BIMANUAL_MEASURED_GRASP_ERROR')
+                self._reject_constraint('BIMANUAL_MEASURED_GRASP_ERROR',
+                    stage='measured_relative',position_error_m=float(distance),
+                    rotation_error_rad=float(angle),mixed_error=float(math.hypot(distance,angle)),
+                    mixed_limit=float(self.cfg['max_relative_error']))
             if self.measured_grasp_policy == 'enforce' and self.expected_relative is not None:
                 # Enforce the configured measured grip-point acceptance
                 # separately from CAD contact tolerance and mixed QP residuals.
                 point_error,angle=self._grip_error(relative)
                 if (point_error>self.grasp_position_tolerance or
                         angle>self.grasp_rotation_tolerance):
-                    raise ValueError('BIMANUAL_MEASURED_GRASP_ERROR')
+                    self._reject_constraint('BIMANUAL_MEASURED_GRASP_ERROR',
+                        stage='measured_grasp_points',position_error_m=float(point_error),
+                        rotation_error_rad=float(angle),
+                        position_limit_m=float(self.grasp_position_tolerance),
+                        rotation_limit_rad=float(self.grasp_rotation_tolerance),
+                        position_excess_m=float(max(0.,point_error-self.grasp_position_tolerance)),
+                        rotation_excess_rad=float(max(0.,angle-self.grasp_rotation_tolerance)))
             if tool_feedback is not None:
                 observed = self._transform(tool_feedback)
                 position_bound = float(self.cfg.get('max_tool_feedback_translation_m',0.))
