@@ -233,12 +233,59 @@ void continuous_streams() {
         require(rejected,"invalid stream target accepted");
     }
 }
+void velocity_aware_targets() {
+    auto ls=limits(3);
+    for(auto& l:ls) {l.velocity=.5;l.acceleration=1.5;l.jerk=162.;}
+    const auto initial=rest({0.,0.,0.});
+    auto old=PreparedSegment::target(ls,initial,initial.q,0.,20.,5.);
+    auto track=PreparedSegment::tracking_target(ls,initial,initial.q,{0.,0.,0.},0.,20.,5.);
+    double old_error=0.,track_error=0.;std::vector<double> goal(3),hint(3);
+    for(int tick=0;tick<6000;++tick) {
+        const double t=tick*.001;const auto a=old.sample(t),b=track.sample(t);
+        bounded(ls,b);
+        if(tick%20==0) {
+            goal[0]=t<2.?.15*t:t<4.?.3-.15*(t-2.):0.;
+            hint[0]=t<2.?.15:t<4.?-.15:0.;
+            old=PreparedSegment::target(ls,a,goal,t,20.,5.);
+            track=PreparedSegment::tracking_target(ls,b,goal,hint,t,20.,5.);
+            continuous(b,track.sample(t));
+        }
+        if(t>.3&&t<4.) {old_error+=std::pow(a.q[0]-goal[0],2);track_error+=std::pow(b.q[0]-goal[0],2);}
+        close(b.q[1],0.);close(b.q[2],0.);
+    }
+    require(track_error<old_error*.7,"velocity hint lost ramp response benefit");
+    close(track.sample(5.999).q[0],0.,1e-5);
+
+    // Losing the stream leaves a finite certified path to the last actual
+    // goal, never a moving endpoint or a frozen reference with nonzero v/a.
+    track=PreparedSegment::tracking_target(ls,initial,{.03,-.02,0.},{.1,-.08,0.},0.,20.,5.);
+    for(int k=0;k<=2000;++k) bounded(ls,track.sample(track.end()*k/2000.));
+    const auto final=track.sample(track.end()+1.);
+    close(final.q[0],.03);close(final.q[1],-.02);
+    for(size_t i=0;i<3;++i) {close(final.v[i],0.);close(final.a[i],0.);}
+    std::array<double,3> q{},v{},a{},j{};bool ok=true;
+    allocations=deallocations=0;count_allocations=true;
+    for(int k=0;k<10000;++k) ok=track.sample_into(k*.001,q.data(),v.data(),a.data(),j.data(),3)&&ok;
+    count_allocations=false;
+    require(ok&&!allocations&&!deallocations,"tracking sampler allocated/freed");
+
+    // An outward trend at the boundary must use the ordinary safe curve.
+    const auto edge=rest({2.,0.,0.});
+    track=PreparedSegment::tracking_target(ls,edge,edge.q,{.1,0.,0.},0.,20.,5.);
+    continuous(edge,track.sample(track.end()+1.));
+    for(const auto& bad:std::vector<std::vector<double>>{{},{.6,0.,0.},{NAN,0.,0.}}) {
+        bool rejected=false;
+        try {PreparedSegment::tracking_target(ls,initial,initial.q,bad,0.,20.,5.);}catch(const std::invalid_argument&){rejected=true;}
+        require(rejected,"invalid velocity hint accepted");
+    }
+}
 }
 int main() {
     try {
         synchronized_and_no_allocations();moving_retargets_and_stop();stopped_and_rejected_layouts();
         wire_roundtrip_and_source_pieces();
         continuous_streams();
+        velocity_aware_targets();
         std::cout<<"prepared segment: synchronized/moving/retarget/stop/buffer tests passed; zero sampling allocations\n";
     }catch(const std::exception& e) {std::cerr<<e.what()<<'\n';return 1;}
 }

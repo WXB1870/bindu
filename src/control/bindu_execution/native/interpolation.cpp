@@ -344,6 +344,45 @@ PreparedSegment PreparedSegment::stream_target(const JointLimits& limits,const J
     }
     return target(limits,initial,goal,start,horizon,stop_timeout);
 }
+PreparedSegment PreparedSegment::tracking_target(const JointLimits& limits,const JointState& initial,
+        const std::vector<double>& goal,const std::vector<double>& velocity_hint,
+        double start,double horizon,double stop_timeout) {
+    validate(limits,initial);
+    auto final=rest(goal);final.v=velocity_hint;validate(final,limits.size());
+    check(std::isfinite(start)&&std::isfinite(horizon)&&horizon>0.&&
+          std::isfinite(stop_timeout)&&stop_timeout>0.,"INVALID_TRACKING_TIME");
+    double duration=.02;bool moving_goal=false;
+    for(size_t i=0;i<limits.size();++i) {
+        check(goal[i]>=limits[i].lower&&goal[i]<=limits[i].upper,"JOINT_LIMIT");
+        check(std::abs(velocity_hint[i])<=limits[i].velocity,"TARGET_VELOCITY_LIMIT");
+        duration=std::max(duration,std::abs(goal[i]-initial.q[i])/limits[i].velocity);
+        moving_goal=moving_goal||std::abs(velocity_hint[i])>1e-8;
+    }
+    if(moving_goal) {
+        for(int attempt=0;attempt<70&&duration<horizon;++attempt,duration*=1.12) {
+            // Extrapolate only a short target trend, never an entire long
+            // catch-up interval. Every axis uses the same connection clock.
+            for(size_t i=0;i<goal.size();++i) final.q[i]=goal[i]+velocity_hint[i]*std::min(duration,.2);
+            bool inside=true;
+            for(size_t i=0;i<goal.size();++i)
+                inside=inside&&final.q[i]>=limits[i].lower&&final.q[i]<=limits[i].upper;
+            if(!inside) break;
+            auto curve=std::make_shared<Curve>(start,duration,initial,final);
+            if(!curve->valid(limits)) continue;
+            try {
+                // A lost or stationary stream must never freeze at a moving
+                // endpoint. The ordinary target tail certifies the full return
+                // to this goal; the caller's original TTL still gates execution.
+                auto curves=fit_target(limits,final,goal,curve->end(),horizon-duration,stop_timeout);
+                curves.insert(curves.begin(),std::move(curve));
+                return from_curves(curves,limits);
+            } catch(const std::invalid_argument&) {
+                break; // An unsafe terminal hint does not relax any limit.
+            }
+        }
+    }
+    return target(limits,initial,goal,start,horizon,stop_timeout);
+}
 PreparedSegment PreparedSegment::stop(const JointLimits& limits,const JointState& initial,double start,double timeout) {
     return from_curves(fit_stop(limits,initial,start,timeout),limits);
 }
