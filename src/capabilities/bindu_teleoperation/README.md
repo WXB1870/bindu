@@ -323,6 +323,12 @@ python3 -m tests integration pico --websocket-input --shovel-cycle \
 
 首次接实体头显先运行独立输入诊断，再做机器人仿真跟随。该入口复用正式的 Vuer／`CONTROLLER_MOVE` 解码与 PICO 按键计数，但不加载 ROS、IK、执行器或驱动，也不发布运动命令。头显直接使用**自带 PICO 浏览器**，与电脑在可互通的局域网；不需要 XRoboToolkit 或 pico-ros2-bridge。
 
+现场输入取证优先用这个独立入口，复用已有可信证书，不运行 `--make-cert`，不启动或恢复任何机器人作业。它不接受 `--config`／`--enable-commands`，`BINDU_VR_CONFIG`也不会切入控制；即使握住手柄或按下按钮，仍只有输入诊断。它能核对上游输入，不能单独证明ROS发布／协调器段的时序。
+
+需要完整分段日志时，只能在现场人员已经核实的禁写装配中加 `--input-timing`。禁写不是“松握”约定，须同时核对：新实例使用布尔 `command_enabled=false`，没有 `--enable-commands`或launch覆写；执行节点该参数为只读且实际值为false；目标流／旧位置接口／腰头／夹爪硬件命令及心跳没有Bindu发布者，`startup_hold_state=disabled`。离线回归已验证写入返回 `SNOWBOT_COMMANDS_DISABLED`／`GRIPPER_COMMANDS_DISABLED`；现场只读查参数与图，不以试发运动命令检验闸门。配置、解释器与实际模块路径／哈希应记录。
+
+这些闸门只限制该Bindu实例，不能阻止另一进程或旧底层自身的启动回位；不得为取证启动驱动，也不能用命令话题无发布者替代实体停稳核验。发现其他写者或现场状态不明时，先停留在独立输入诊断，不自行启停作业。完整禁写模式仍允许状态／诊断发布，它们不等于硬件运动输出。
+
 下面以电脑地址 `192.168.1.116` 为例。选择已装有 Vuer、NumPy、Pillow 的 Python 环境（依赖见 `tools/requirements/requirements-teleop.txt`）；生成证书还需 `cryptography`。本机已存在的 `bindu` 环境可用，其他电脑须改为自己的 Python 路径。已有可信的服务器证书时直接跳过生成步骤，指定原证书和私钥。
 
 ```bash

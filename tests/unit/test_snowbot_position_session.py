@@ -728,6 +728,11 @@ class TargetWireTests(unittest.TestCase):
         modules['std_srvs.srv']=S(Trigger=object)
         with patch.dict('sys.modules', modules):
             created = PositionSessionDevices(node, self.rig.profile)
+        self.assertIs(parameters['command_enabled'],False)
+        self.assertTrue(descriptors['command_enabled'].read_only)
+        self.assertFalse(created.io.command_enabled)
+        self.assertEqual(created.startup_hold_state,'disabled')
+        self.assertFalse(created.heartbeat_running)
         self.assertEqual(created.envelopes.pause_valid_for, 2.)
         created.new_session()
         self.assertEqual(created.envelopes.pause_valid_for, 2.)
