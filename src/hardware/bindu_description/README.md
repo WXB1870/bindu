@@ -60,7 +60,7 @@ python3 -c "from xml.etree import ElementTree as ET; print(ET.parse('src/hardwar
 
 | 模型 | 用途与派生关系 | 网格位置 |
 |---|---|---|
-| [`snowbot.urdf`](urdf/snowbot.urdf) | 完整导入：修复两个力传感器固定关节重名，重写网格 URI；保留四轮转动及视觉、碰撞几何，共 24 个活动关节 | `bindu_description/meshes/snowbot/` |
+| [`snowbot.urdf`](urdf/snowbot.urdf) | 原CAD几何与扩展帧，叠加用户提供的20轴关节参数；修复两个力传感器固定关节重名，重写网格 URI；保留四轮转动及视觉、碰撞几何，共 24 个活动关节 | `bindu_description/meshes/snowbot/` |
 | [`snowbot_display.urdf`](urdf/snowbot_display.urdf) | 从完整模型固定四轮，保留几何与其余 20 轴；供静止底盘显示及 `robot_state_publisher` 使用 | 与完整模型共用同一目录 |
 | [`snowbot_control.urdf`](urdf/snowbot_control.urdf) | 从 display 模型移除视觉、碰撞几何，保留相同的 20 轴运动学结构；供 IK／双臂 QP 使用 | 无网格引用 |
 | [`g1_provisional.urdf`](urdf/g1_provisional.urdf) | 上游 G1 的临时 20 轴运动学派生模型；省略轮子和手爪子树、视觉及碰撞几何，供运动学模拟／IK 使用 | 无网格引用 |
@@ -70,6 +70,12 @@ python3 -c "from xml.etree import ElementTree as ET; print(ET.parse('src/hardwar
 | `artifacts/g1-physics-model/g1_physics.urdf` | 从G1显示模型增加合成差速轮与支撑；供Isaac物理仿真使用，需按当前来源重新生成 | 引用资产包的`meshes/g1/`和`usd/g1/`，不再复制原始资产 |
 
 Snowbot 的三份 URDF 是同一机器人针对不同用途的生成结果。31 个 STL 仅保存一份，完整模型与显示模型通过 `package://bindu_description/meshes/snowbot/…` 引用；`bindu_description` 的安装规则一起安装 `urdf/` 与 `meshes/`。文件存在不等于几何可用于碰撞：源资产中的 `head_link_1.STL` 为空网格，相关检查边界见[雪铲几何验证](#单杆雪铲的握姿与工作空间2026-10-08)。
+
+**用户提供模型更新（2026-10-23）。** [`sources/snowbot.urdf`](sources/snowbot.urdf)逐字保存用户本次提供的文件，SHA256为`3024f5e3b45b188db7f3c0d1e13eaabb86ef726bd75b3c61d9984ced84c00798`。三份运行模型的共有20个活动关节以它为当前参数源；连接、安装变换和轴向与旧模型一致，头部及双臂J6/J7/J8限位已同步，仿真profile收窄到新模型内，真机已有的更窄任务范围不自动放大。R6上限1.274 rad，R7上限仍1.449 rad；R7目标1.42 rad在此模型范围内，更新模型不能据此认定昨天约1.27457 rad停点的根因已解决。
+
+输入文件是简化的world／躯干模型，未包含当前底盘、F/T与TCP扩展，并引用未随本次提供的雷达网格；相机惯量／固定姿态也与原CAD不同。因此本次采用共有活动关节参数，原底盘、固定传感器／相机帧及配套网格作为一组保留，没有用缺少配套资产的子树替换当前显示和碰撞模型。三份运行模型均由同一脚本再生成；这不证明真实轴绑定、零偏或电机实际软限位已校验。
+
+后面的2026-10-21差异表保留为历史核对，当前共有活动关节参数以上述新来源为准；profile仍可取更窄区间。已有网格不变时，运行`python3 -m tools.models.prepare_snowbot_description`即可同步三份URDF；`--output /tmp/bindu-snowbot-description`仅输出URDF，不复制网格或生成独立资产包。首次从原ZIP导入仍可使用下方命令，并自动叠加同一关节参数源。
 
 **118 现场模型差异与限位依据（2026-10-21）。** 用户确认118现场模型更准确；当前位置限位以118的 `/home/cc/snowbot_ws/src/dual_arm/urdf/snowbot.urdf` 为约束依据。Bindu的规划、遥操作及执行所用有效关节区间必须包含于118对应区间内，允许进一步收窄，不能因Bindu导入模型的范围更宽而放宽现场限位。
 
@@ -88,13 +94,13 @@ Snowbot 的三份 URDF 是同一机器人针对不同用途的生成结果。31 
 | `arm_l_joint_8` | [−1.484, 0.524] | [−1.57, 0.94] |
 | `arm_r_joint_8` | [−0.524, 1.484] | [−0.94, 1.57] |
 
-当前[真机位置profile](../../integration/bindu_runtime/config/robots/snowbot/snowbot_real_position.json)的20轴位置范围均未超过118：除头J2取两模型交集±0.79 rad，其余19轴与118一致。本次仅记录差异和约束依据，未修改生成URDF或运行配置。
+当时的[真机位置profile](../../integration/bindu_runtime/config/robots/snowbot/snowbot_real_position.json)的20轴位置范围均未超过118：除头J2取两模型交集±0.79 rad，其余19轴与118一致。该次仅记录差异和约束依据，未修改生成URDF或运行配置。
 
 **静态复核结论（2026-10-21）**：以118安装模型快照为基准（SHA256前缀`9b406b17`，与当日部署清单一致，未重新读取在线文件），三份Bindu模型共有20轴的关节类型、父子关系、`origin`和`axis`全部一致；20轴profile位置限位均未越界，QP实际采用profile与URDF区间的交集。可将“共有轴运动学结构与位置限位静态核对”记为通过。
 
 **仍需单列确认**：Bindu新增的`car_base_link → body_base_link`平移为`[0.296, 0, 0.326] m`，两侧`arm_*_link_7 → arm_*_ft_sensor`为沿局部X轴平移`0.076 m`；这些变换及真实工具/TCP不由118原URDF共同轴的一致性证明。实物零点、物理轴绑定与工具安装标定仍未据此验收。
 
-Snowbot 来源及压缩包 SHA256 在 [`SNOWBOT_ASSETS_NOTICE`](SNOWBOT_ASSETS_NOTICE) 中维护；[`prepare_snowbot_description.py`](../../../tools/models/prepare_snowbot_description.py) 校验该指纹并一次生成三份 URDF 和共享网格。原 ZIP 由用户提供，不随仓库分发。重新生成命令：
+Snowbot 来源及压缩包 SHA256 在 [`SNOWBOT_ASSETS_NOTICE`](SNOWBOT_ASSETS_NOTICE) 中维护；[`prepare_snowbot_description.py`](../../../tools/models/prepare_snowbot_description.py) 校验原ZIP及当前关节参数源指纹，并一次生成三份URDF；提供ZIP时同时导入共享网格。原 ZIP 由用户提供，不随仓库分发。重新生成命令：
 
 ```bash
 python3 -m tools.models.prepare_snowbot_description /path/to/snowbot_20260728_首次全身.zip
