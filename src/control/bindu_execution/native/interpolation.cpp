@@ -358,11 +358,15 @@ PreparedSegment PreparedSegment::tracking_target(const JointLimits& limits,const
         duration=std::max(duration,std::abs(goal[i]-initial.q[i])/limits[i].velocity);
         moving_goal=moving_goal||std::abs(velocity_hint[i])>1e-8;
     }
+    auto fallback=target(limits,initial,goal,start,horizon,stop_timeout);
     if(moving_goal) {
         for(int attempt=0;attempt<70&&duration<horizon;++attempt,duration*=1.12) {
             // Extrapolate only a short target trend, never an entire long
             // catch-up interval. Every axis uses the same connection clock.
-            for(size_t i=0;i<goal.size();++i) final.q[i]=goal[i]+velocity_hint[i]*std::min(duration,.2);
+            for(size_t i=0;i<goal.size();++i) {
+                final.v[i]=velocity_hint[i]*std::min(1.,.2/duration);
+                final.q[i]=goal[i]+final.v[i]*duration;
+            }
             bool inside=true;
             for(size_t i=0;i<goal.size();++i)
                 inside=inside&&final.q[i]>=limits[i].lower&&final.q[i]<=limits[i].upper;
@@ -375,13 +379,29 @@ PreparedSegment PreparedSegment::tracking_target(const JointLimits& limits,const
                 // to this goal; the caller's original TTL still gates execution.
                 auto curves=fit_target(limits,final,goal,curve->end(),horizon-duration,stop_timeout);
                 curves.insert(curves.begin(),std::move(curve));
-                return from_curves(curves,limits);
+                auto candidate=from_curves(curves,limits);
+                // A moving endpoint can require a longer connection. Reject
+                // it if any axis predicts worse tracking over the next 40 ms.
+                // This is a local model check, not a guarantee about new input.
+                std::vector<double> next_error(goal.size()),old_error(goal.size());
+                for(int step=1;step<=4;++step) {
+                    const double dt=step*.01;
+                    const auto next=candidate.sample(start+dt),old=fallback.sample(start+dt);
+                    for(size_t i=0;i<goal.size();++i) {
+                        const double predicted=goal[i]+velocity_hint[i]*dt;
+                        next_error[i]+=std::pow(next.q[i]-predicted,2);
+                        old_error[i]+=std::pow(old.q[i]-predicted,2);
+                    }
+                }
+                for(size_t i=0;i<goal.size();++i)
+                    if(next_error[i]>old_error[i]+1e-14) return fallback;
+                return candidate;
             } catch(const std::invalid_argument&) {
                 break; // An unsafe terminal hint does not relax any limit.
             }
         }
     }
-    return target(limits,initial,goal,start,horizon,stop_timeout);
+    return fallback;
 }
 PreparedSegment PreparedSegment::stop(const JointLimits& limits,const JointState& initial,double start,double timeout) {
     return from_curves(fit_stop(limits,initial,start,timeout),limits);

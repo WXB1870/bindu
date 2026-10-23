@@ -39,6 +39,32 @@ class MeasuredJointVelocity:
         return velocity
 
 
+def joint_drive_parameters(names, limits, cfg):
+    """Optional per-joint simulation calibration; never hardware drive gains.
+
+    Keep the original global defaults and URDF effort ceilings. Overrides let
+    identical reference replays use different arm/waist damping assumptions.
+    """
+    overrides = cfg.get('joint_drive_overrides', {})
+    if not isinstance(overrides, dict) or set(overrides)-set(names):
+        raise ValueError('PHYSICS_DRIVE_JOINTS')
+    keys = ('stiffness_nm_rad', 'damping_nm_s_rad', 'max_effort_nm')
+    kp, kd, effort = [], [], []
+    for name in names:
+        entry = overrides.get(name, {})
+        if not isinstance(entry, dict) or set(entry)-set(keys):
+            raise ValueError('PHYSICS_DRIVE_FIELDS:'+name)
+        ceiling = float(limits[name].get('effort'))
+        values = [float(entry.get(keys[0], cfg['joint_stiffness_nm_rad'])),
+                  float(entry.get(keys[1], cfg['joint_damping_nm_s_rad'])),
+                  float(entry.get(keys[2], ceiling))]
+        if (not np.isfinite([ceiling, *values]).all() or ceiling <= 0 or
+                min(values) <= 0 or values[2] > ceiling):
+            raise ValueError('PHYSICS_DRIVE_LIMIT:'+name)
+        kp.append(values[0]); kd.append(values[1]); effort.append(values[2])
+    return np.array(kp), np.array(kd), np.array(effort)
+
+
 def load_motion(path):
     path = Path(path).resolve()
     motion = json.loads(path.read_text())

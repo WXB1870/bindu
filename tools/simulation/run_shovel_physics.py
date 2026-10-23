@@ -20,7 +20,7 @@ import xml.etree.ElementTree as ET
 import numpy as np
 from scipy.spatial.transform import Rotation
 
-from tools.simulation.shovel_physics import load_motion, wooden_parts, compound_mass, grip_wrench, internal_wrench, MeasuredJointVelocity
+from tools.simulation.shovel_physics import load_motion, wooden_parts, compound_mass, grip_wrench, internal_wrench, MeasuredJointVelocity, joint_drive_parameters
 
 from tools import ROOT
 sys.path.insert(0, str(ROOT/'src/capabilities/bindu_kinematics'))
@@ -244,16 +244,16 @@ def build_scene(motion, cfg, output):
     if set(names) != set(limits):
         raise ValueError('PHYSICS_JOINT_LAYOUT')
     controller = body.get_articulation_controller()
-    controller.set_gains(np.full(len(names), cfg['joint_stiffness_nm_rad']),
-                         np.full(len(names), cfg['joint_damping_nm_s_rad']))
-    controller.set_max_efforts(np.array([float(limits[n].get('effort')) for n in names]))
+    kp, kd, drive_efforts = joint_drive_parameters(names, limits, cfg)
+    controller.set_gains(kp, kd)
+    controller.set_max_efforts(drive_efforts)
     gains = controller.get_gains()
-    if not np.allclose(gains[0], cfg['joint_stiffness_nm_rad']) or not np.allclose(gains[1], cfg['joint_damping_nm_s_rad']):
+    if not np.allclose(gains[0], kp) or not np.allclose(gains[1], kd):
         raise ValueError('DRIVE_GAIN_READBACK')
     if contact_grasp:
         settings = cfg['contact_grasp']
         kp, kd = np.array(gains[0]), np.array(gains[1])
-        efforts = np.array([float(limits[n].get('effort')) for n in names])
+        efforts = drive_efforts.copy()
         for n in settings['closed_positions_rad']:
             i = names.index(n)
             for key in ('closed_positions_rad','open_positions_rad'):
@@ -271,7 +271,7 @@ def build_scene(motion, cfg, output):
     source = dict(joint_limit_inset_rad=inset,physical_joint_limits_rad=physical_limits,
                   mass_kg=mass, center_of_mass_in_tool_m=com.tolist(), inertia_at_com_kg_m2=inertia.tolist(),
                   parts=[dict(name=p['name'], mass_kg=p['mass']) for p in parts],
-                  dof_names=names, drive_effort_limits_nm=[float(limits[n].get('effort')) for n in names],
+                  dof_names=names, drive_effort_limits_nm=drive_efforts.tolist(),
                   gains_readback=[g.tolist() for g in gains],
                   articulation_root=str(roots[0].GetPath()), flanges=[str(p.GetPath()) for p in flanges],
                   flange_from_physical_body=[m.tolist() for m in flange_mounts],
