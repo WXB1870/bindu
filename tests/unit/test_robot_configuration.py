@@ -93,7 +93,8 @@ class RobotConfigurationTests(unittest.TestCase):
     def test_real_position_input_cannot_actuate_unadapted_pico_operations(self):
         from bindu_interfaces.msg import VRInput, ToolPoseInput
         from bindu_runtime.bimanual_tool_node import BimanualToolNode
-        node=SimpleNamespace(simulation=False,matches_mode=lambda _:True,frames={},input_source='tool_pose',busy=False)
+        node=SimpleNamespace(simulation=False,matches_mode=lambda _:True,frames={},input_source='tool_pose',busy=False,
+                             axial_position_ready=lambda:False)
         for side in ('left','right'):
             msg=VRInput(side=side,mapping='pico_snowbot_v1',grip=1.,valid=True)
             BimanualToolNode.on_frame(node,msg)
@@ -126,7 +127,7 @@ class RobotConfigurationTests(unittest.TestCase):
         from launch import LaunchContext
         from bindu_runtime.teleop_assembly import assemble
         _,args=load_deployment(CONFIG/'deployments/snowbot_real_teleop.json',RUNTIME)
-        for changes,code in (({'pico_enabled':'true'},'REAL_REQUIRES'),
+        for changes,code in (({'pico_enabled':'true'},'PICO_REQUIRES_SNOWBOT_KINEMATIC_VR'),
                              ({'robot_config':str(CONFIG/'robots/snowbot/robot_snowbot.json')},'CONFIG_RUNTIME_MODE_MISMATCH')):
             context=LaunchContext();context.launch_configurations.update({**args,**changes})
             with self.subTest(changes=changes),self.assertRaisesRegex(ValueError,code):

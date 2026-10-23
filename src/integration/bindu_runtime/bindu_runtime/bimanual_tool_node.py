@@ -474,6 +474,17 @@ class BimanualToolNode(RuntimeNode):
                 deferral=None
         self.worker_result=None
         self.preflight_status=''
+        acquisition_epoch=None
+        def rejected_acquisition_code(reply):
+            if (not reply.lease_id and reply.epoch==acquisition_epoch and
+                    reply.profile_hash==self.profile.digest and self.state is not None and
+                    self.state.instance_id==self.execution_instance_id):
+                # The same Action result carries explicit no-grant evidence;
+                # its coordinator must still observe fresh baseline-epoch rest.
+                return 'BIMANUAL_LEASE_NOT_ACQUIRED:'+json.dumps(dict(
+                    instance_id=self.execution_instance_id,epoch=reply.epoch,
+                    profile_hash=reply.profile_hash,reason=reply.code))
+            return reply.code
         try:
             if getattr(self,'stop_unconfirmed',False):
                 raise RuntimeError('BIMANUAL_EXECUTION_STOP_UNCONFIRMED')
@@ -482,12 +493,13 @@ class BimanualToolNode(RuntimeNode):
                 raise RuntimeError('BIMANUAL_EXECUTION_REVISION_UNAVAILABLE')
             # Even a transport exception may follow request dispatch.
             stopped=False
+            acquisition_epoch=self.state.lease_epoch
             acquisition=self.lease_client.call_async(Lease.Request(operation='acquire',
                 owner=session.identity,resources=list(self.groups)))
             lease=await self.wait(acquisition)
             if not lease.ok:
                 stopped=True  # Explicit rejection did not grant this session control.
-                raise RuntimeError(lease.code)
+                raise RuntimeError(rejected_acquisition_code(lease))
             if lease.profile_hash != self.profile.digest:
                 raise RuntimeError('PROFILE_MISMATCH')
             # Service round-trips can span a DDS scheduling gap. Wait for
@@ -883,6 +895,9 @@ class BimanualToolNode(RuntimeNode):
                         try:
                             lease=await self.wait(acquisition)
                             stopped=not lease.ok
+                            if stopped:
+                                code=rejected_acquisition_code(lease)
+                                if code.startswith('BIMANUAL_LEASE_NOT_ACQUIRED:'):result.code=code
                         except Exception as exc:
                             self.cleanup_event('BIMANUAL_LEASE_UNCONFIRMED',
                                 session.identity+':'+str(exc),goal.request.task_id)

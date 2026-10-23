@@ -166,7 +166,11 @@ class PositionOperations:
             response = await n.wait(self.leases.call_async(Lease.Request(
                 operation='release', lease_id=lease.lease_id, epoch=lease.epoch)),
                 timeout=max(0., min(2., end-time.monotonic())))
-            if not response.ok or response.profile_hash != n.profile.digest or response.epoch != lease.epoch+1:
+            already_revoked=(not response.ok and response.code=='GRIPPER_STALE_LEASE' and
+                not response.lease_id and response.profile_hash==n.profile.digest and
+                response.epoch==lease.epoch+1)
+            if ((not response.ok and not already_revoked) or
+                    response.profile_hash != n.profile.digest or response.epoch != lease.epoch+1):
                 raise RuntimeError('PICO_GRIPPER_RELEASE_AUTHORITY_UNKNOWN')
             while time.monotonic() < end:
                 states = [self.reading(s) for s in SIDES]

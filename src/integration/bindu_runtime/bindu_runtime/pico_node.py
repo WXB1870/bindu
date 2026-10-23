@@ -391,8 +391,20 @@ class PicoNode(RuntimeNode):
                 await self.wait(goal.cancel_goal_async(),min(2.,max(0.,request['deadline']-time.monotonic())))
                 if result is None:self.stop_unconfirmed(request,'TOOL_RESULT_MISSING')
                 ended=await self.wait(result,min(7.,max(0.,request['deadline']-time.monotonic())))
-                if 'STOP_UNCONFIRMED' in ended.result.code:
+                code=ended.result.code
+                if 'STOP_UNCONFIRMED' in code:
                     self.stop_unconfirmed(request,'TOOL_STOP_UNCONFIRMED')
+                prefix='BIMANUAL_LEASE_NOT_ACQUIRED:'
+                if code.startswith(prefix):
+                    try:proof=json.loads(code[len(prefix):])
+                    except (ValueError,TypeError):
+                        self.stop_unconfirmed(request,'TOOL_NO_GRANT_EVIDENCE_INVALID')
+                    if (context is None or not isinstance(proof,dict) or
+                            proof.get('instance_id')!=context['instance_id'] or
+                            proof.get('profile_hash')!=self.profile.digest or
+                            type(proof.get('epoch')) is not int or proof['epoch']!=context['epoch']-1):
+                        self.stop_unconfirmed(request,'TOOL_NO_GRANT_EVIDENCE_MISMATCH')
+                    request['epoch']=proof['epoch']
                 if (self.tool_goal is not goal or self.tool_result is not result or
                         self.tool_request is not context):
                     self.stop_unconfirmed(request,'TOOL_GOAL_CHANGED')

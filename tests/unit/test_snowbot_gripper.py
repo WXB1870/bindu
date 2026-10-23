@@ -775,6 +775,40 @@ class CoordinatorStopBarrierTests(unittest.TestCase):
             asyncio.run(ops.request('open','right'))
         ops.control.call_async.assert_not_called()
 
+    def test_explicit_auto_revocation_still_requires_exact_fresh_original_rest(self):
+        for change in ('none','instance','epoch','profile','lease_id','code','fault','moving','stale','deadline'):
+            with self.subTest(change=change):
+                ops,clock=self.rig()
+                reply=S(ok=False,code='GRIPPER_STALE_LEASE',lease_id='',epoch=5,profile_hash='profile')
+                if change=='epoch':reply.epoch=6
+                elif change=='profile':reply.profile_hash='other'
+                elif change=='lease_id':reply.lease_id='other-owner'
+                elif change=='code':reply.code='UNKNOWN'
+                elif change=='instance':
+                    ops.node.state.instance_id='replacement'
+                    for state in ops.states.values():state.instance_id='replacement'
+                elif change=='fault':
+                    ops.states['right'].state='FAULT';ops.states['right'].code='DRIVE_FAULT'
+                elif change=='moving':ops.states['right'].measured_velocity=.5
+                async def wait(value,**kwargs):
+                    clock.value+=1. if change=='deadline' else .02
+                    for state in ops.states.values():state.stamp=state.feedback_stamp=ops.node.now()
+                    return value
+                ops.node.wait=wait
+                if change=='stale':
+                    async def pause():clock.value+=.1
+                    ops.node.pause=pause
+                    async def stale_wait(value,**kwargs):return value
+                    ops.node.wait=stale_wait
+                ops.leases.call_async=lambda _:reply
+                if change=='none':
+                    asyncio.run(ops.release())
+                    self.assertIsNone(ops.lease);self.assertTrue(ops.stopped())
+                else:
+                    with self.assertRaisesRegex(RuntimeError,'STOP_UNCONFIRMED'):
+                        asyncio.run(ops.release())
+                    self.assertTrue(ops.stop_unconfirmed);self.assertIsNotNone(ops.lease)
+
     def test_rpc_failure_and_fault_preserve_original_lease(self):
         for failed in ('reply','fault'):
             ops,_=self.rig()

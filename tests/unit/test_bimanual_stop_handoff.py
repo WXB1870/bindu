@@ -389,6 +389,108 @@ class PicoStopEvidence(unittest.IsolatedAsyncioTestCase,ExecutionFixture):
             future=self.future(goal),canceling=False)
         return goal,result
 
+    async def rejected_acquisition_code(self,reply,*,instance_id='original',epoch=None,late=False,replacement=False):
+        # Execute the complete production Action method, stopping at its actual
+        # explicit acquire rejection. No ROS Action server or hardware endpoint.
+        method=next(n for n in NODE.body if getattr(n,'name','')=='execute')
+        namespace=dict(json=__import__('json'),time=S(monotonic=lambda:self.clock),
+            seconds=lambda stamp:stamp,ToolPoseSession=lambda *a,**kw:S(identity='session'),
+            AcceptedReference=lambda *a,**kw:S(),
+            TeleopAction=S(Result=lambda **kw:S(code='',success=False,**kw)),
+            Lease=S(Request=lambda **kw:S(**kw)))
+        exec(compile(ast.fix_missing_locations(ast.Module(body=[ast.ClassDef(
+            name='ActualAction',bases=[],keywords=[],body=[method],decorator_list=[])],
+            type_ignores=[])),str(SOURCE),'exec'),namespace)
+        n=namespace['ActualAction']()
+        n.mode_state=S(mode='bimanual_tool',generation=1,changed_at=self.clock)
+        n.grasp_continuation=None;n.input_source='tool_pose';n.cfg={}
+        n.profile=self.p;n.simulation=True;n.groups=['arm'];n.stop_unconfirmed=False
+        n.state=S(instance_id=instance_id,lease_epoch=self.e.epoch if epoch is None else epoch)
+        n.lease_client=S(call_async=lambda _:reply);n.cleanup_event=Mock()
+        waits=0
+        async def wait(value):
+            nonlocal waits
+            waits+=1
+            if replacement:n.state.instance_id='replacement'
+            if late and waits==1:raise RuntimeError('BIMANUAL_SERVICE_TIMEOUT')
+            return value
+        n.wait=wait
+        goal=S(request=S(task_id='denied'),succeed=Mock(),abort=Mock(),canceled=Mock())
+        result=await n.execute(goal)
+        goal.abort.assert_called_once()
+        return result.code
+
+    async def denied_tool(self,*,code=None,delay=0.):
+        await self.node.release_lease();await self.pause()
+        epoch=self.e.epoch
+        reply=S(ok=False,code='COMMANDS_DISABLED',lease_id='',epoch=epoch,profile_hash=self.p.digest)
+        if code is None:code=await self.rejected_acquisition_code(reply)
+        result=self.future(S(result=S(code=code)),delay)
+        goal=S(accepted=True,get_result_async=lambda:result,
+               cancel_goal_async=lambda:self.future(S()))
+        self.node.tool_goal,self.node.tool_result=goal,result
+        self.node.tool_request=dict(instance_id='original',epoch=epoch+1,token=1,
+            future=self.future(goal),canceling=False)
+        return epoch
+
+    async def test_accepted_action_explicit_no_grant_confirms_original_baseline_rest(self):
+        epoch=await self.denied_tool()
+        self.assertTrue(self.node.tool_result.result().result.code.startswith('BIMANUAL_LEASE_NOT_ACQUIRED:'))
+        await self.node.cancel_tool()
+        self.assertEqual(self.e.epoch,epoch)
+        self.assertIsNone(self.node.stop_request);self.assertIsNone(self.node.tool_request)
+        self.assertTrue(self.node.feedback().stopped)
+
+    async def test_no_grant_marker_only_emitted_for_explicit_empty_matching_reply(self):
+        for change in ('lease_id','epoch','profile_hash'):
+            reply=S(ok=False,code='DENIED',lease_id='',epoch=self.e.epoch,profile_hash=self.p.digest)
+            setattr(reply,change,{'lease_id':'other','epoch':self.e.epoch+1,'profile_hash':'other'}[change])
+            code=await self.rejected_acquisition_code(reply)
+            self.assertEqual(code,'DENIED')
+
+    async def test_late_explicit_denial_emits_proof_but_replacement_cannot(self):
+        reply=S(ok=False,code='DENIED',lease_id='',epoch=self.e.epoch,profile_hash=self.p.digest)
+        code=await self.rejected_acquisition_code(reply,late=True)
+        self.assertTrue(code.startswith('BIMANUAL_LEASE_NOT_ACQUIRED:'))
+        code=await self.rejected_acquisition_code(reply,replacement=True)
+        self.assertEqual(code,'DENIED')
+
+    async def test_no_grant_proof_mismatch_and_plain_rejection_do_not_clear_stop(self):
+        for change in ('plain','malformed','instance_id','epoch','profile_hash'):
+            with self.subTest(change=change):
+                self.setUp()
+                epoch=await self.denied_tool()
+                proof=dict(instance_id='original',epoch=epoch,profile_hash=self.p.digest,reason='DENIED')
+                if change=='plain':code='DENIED'
+                elif change=='malformed':code='BIMANUAL_LEASE_NOT_ACQUIRED:bad-json'
+                else:
+                    proof[change]=epoch+1 if change=='epoch' else 'other'
+                    code='BIMANUAL_LEASE_NOT_ACQUIRED:'+__import__('json').dumps(proof)
+                self.node.tool_result=self.future(S(result=S(code=code)))
+                with self.assertRaisesRegex(RuntimeError,'PICO_STOP_UNCONFIRMED'):
+                    await self.node.cancel_tool()
+                self.assertTrue(self.node.stop_request['failed'])
+
+    async def test_valid_no_grant_proof_cannot_replace_fresh_same_instance_rest(self):
+        for changes in (dict(instance_id='replacement'),dict(feedback_stamp=0.),
+                        dict(lease_epoch=99),dict(state='STOPPING'),dict(stop_failures=['hold'])):
+            with self.subTest(changes=changes):
+                self.setUp();await self.denied_tool()
+                self.overrides=changes;self.update()
+                with self.assertRaisesRegex(RuntimeError,'PICO_STOP_UNCONFIRMED'):
+                    await self.node.cancel_tool()
+                self.assertIsNotNone(self.node.tool_request)
+
+    async def test_late_no_grant_result_cannot_extend_original_stop_deadline(self):
+        await self.denied_tool(delay=7.)
+        started=self.clock
+        with self.assertRaisesRegex(RuntimeError,'PICO_STOP_UNCONFIRMED'):
+            await self.node.cancel_tool()
+        self.assertEqual(self.node.stop_request['deadline'],started+6.)
+        self.assertTrue(self.node.stop_request['failed'])
+        while self.clock<started+7.1:await self.pause()
+        self.assertFalse(self.node.feedback().healthy)
+
     async def test_normal_hold_release_and_explicit_new_lease_need_no_restart(self):
         await self.node.release_lease()
         self.assertIsNone(self.node.lease)
