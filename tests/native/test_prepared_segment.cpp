@@ -173,11 +173,72 @@ void wire_roundtrip_and_source_pieces() {
         bounded(fast,actual);
     }
 }
+void continuous_streams() {
+    constexpr size_t n=16;auto ls=limits(n);
+    for(auto& l:ls) {l.velocity=.25;l.acceleration=.5;l.jerk=162.;}
+    auto initial=rest(std::vector<double>(n));
+    auto old=PreparedSegment::target(ls,initial,initial.q,0.,20.,5.);
+    auto fast=PreparedSegment::stream_target(ls,initial,initial.q,0.,20.,5.);
+    double old_error=0.,fast_error=0.;std::vector<double> goal(n);
+    for(int tick=0;tick<6000;++tick) {
+        const double t=tick*.001;
+        auto a=old.sample(t),b=fast.sample(t);bounded(ls,a);bounded(ls,b);
+        if(tick%20==0) {
+            // A ramp followed by reversal, then a fixed repeated endpoint.
+            goal[0]=t<2.?.15*t:t<4.?.3-.15*(t-2.):0.;
+            old=PreparedSegment::target(ls,a,goal,t,20.,5.);
+            fast=PreparedSegment::stream_target(ls,b,goal,t,20.,5.);
+            continuous(b,fast.sample(t));
+            require(fast.pieces()<=PreparedSegment::max_pieces,"unbounded stream layout");
+        }
+        if(t>.3&&t<4.) {
+            old_error+=std::pow(a.q[0]-goal[0],2);
+            fast_error+=std::pow(b.q[0]-goal[0],2);
+        }
+        // Inactive axes do not acquire motion from another axis's target.
+        for(size_t i=1;i<n;++i) {close(b.q[i],0.);close(b.v[i],0.);}
+    }
+    require(fast_error<old_error*.7,"stream reference lost response benefit");
+    const auto settled=fast.sample(5.999);
+    close(settled.q[0],goal[0],1e-5);
+    const auto stopped=PreparedSegment::stop(ls,settled,6.,2.);
+    continuous(settled,stopped.sample(6.));
+    for(int k=0;k<=1000;++k) bounded(ls,stopped.sample(6.+(stopped.end()-6.)*k/1000.));
+
+    // Exercise phase splitting and finite convergence on a
+    // moving, non-collinear seed with different axes' brake boundaries.
+    initial=rest(std::vector<double>(n,.1));
+    for(size_t i=0;i<n;++i) {initial.v[i]=(i%2?-.08:.1);initial.a[i]=(i%3?-.2:.3);goal[i]=(i%2?-.1:.3);}
+    fast=PreparedSegment::stream_target(ls,initial,goal,10.,20.,5.);
+    require(fast.pieces()>2,"stream prefix missing");
+    continuous(initial,fast.sample(10.));
+    for(int k=0;k<=2000;++k) {
+        const double t=10.+(fast.end()-10.)*k/2000.;
+        bounded(ls,fast.sample(t));
+    }
+    const auto final=fast.sample(fast.end()+1.);
+    for(size_t i=0;i<n;++i) {close(final.q[i],goal[i]);close(final.v[i],0.);close(final.a[i],0.);}
+    std::array<double,n> q{},v{},a{},j{};
+    bool ok=true;allocations=deallocations=0;count_allocations=true;
+    for(int k=0;k<10000;++k) ok=fast.sample_into(10.+k*.001,q.data(),v.data(),a.data(),j.data(),n)&&ok;
+    count_allocations=false;
+    require(ok&&!allocations&&!deallocations,"stream sampler allocated/freed");
+
+    const auto one=limits(1);const auto at_limit=rest({one[0].upper});
+    const auto hold=PreparedSegment::stream_target(one,at_limit,at_limit.q,0.,20.,5.);
+    continuous(at_limit,hold.sample(hold.end()+1.));
+    for(const auto& bad:std::vector<std::vector<double>>{{},{3.},{std::nan("")}}) {
+        bool rejected=false;
+        try {PreparedSegment::stream_target(one,at_limit,bad,0.,20.,5.);}catch(const std::invalid_argument&){rejected=true;}
+        require(rejected,"invalid stream target accepted");
+    }
+}
 }
 int main() {
     try {
         synchronized_and_no_allocations();moving_retargets_and_stop();stopped_and_rejected_layouts();
         wire_roundtrip_and_source_pieces();
+        continuous_streams();
         std::cout<<"prepared segment: synchronized/moving/retarget/stop/buffer tests passed; zero sampling allocations\n";
     }catch(const std::exception& e) {std::cerr<<e.what()<<'\n';return 1;}
 }

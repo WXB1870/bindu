@@ -105,13 +105,15 @@ ROS_LOCALHOST_ONLY=1 ROS_DOMAIN_ID=209 python3 -m tests.integration.validate_exe
 
 `PreparedSegment`为联合轨迹提供预备与周期采样分离的接口：非实时侧调用`PreparedSegment::target(limits, initial, goal, start, horizon, stop_timeout)`或`stop(limits, initial, start, timeout)`，复用`fit_target`／`fit_stop`的共同时间曲线及整段位置、速度、加速度和jerk限制。静止P2P保持共同路径进度；非零初速和非共线换目标从当前生效参考的`q/v/a`接续，允许计划曲线转弯，不通过逐轴截断改变曲线。首次接管／恢复才从新鲜实测播种。此接口不承诺闭链误差或jerk连续，也不改变原有`Online`策略。
 
+连续位置目标另用`PreparedSegment::stream_target(...)`：非实时侧复用`AdaptiveStream`生成30 ms受限前缀，按所有轴的急动度相位边界拆成共同时间片段，再接原`fit_target`的有限静止尾段。接近静止终点时直接使用原收敛曲线，避免重复目标一直推迟捕获；前缀无法认证时，原整段规划仍须独立通过全部检查。周期侧继续使用同一不可变预备段采样器，不运行在线生成器、不分配或释放内存。此策略允许各轴进度不同，不保证刚性握持或碰撞约束；工具模式须核对生成曲线上的实际几何。它供servo目标流本地规划调用，不通过旧整段轨迹wire导出／重建这些短片段；原`target`、`stop`及旧整段轨迹入口保持原义。
+
 周期仅调用`segment.sample_into(now, q, v, a, j, capacity) noexcept`；四个互不重叠的`double`缓冲须预分配且容量不小于`axes()`。失败不写输出；端点后保持最终位置并返回零`v/a/j`。最多256轴、1024片段，以二分选择片段和固定6元素栈上求值，采样不规划、不分配或释放内存。段创建、验证和对象回收留在非实时侧，调用方须保证采样期间对象存活，不能在周期内销毁最后一个引用。`sample()`及Python对象／缓冲接口仍有分配或解释器开销，不能据此宣称硬实时。
 
 `describe()`导出每个真实片段的`(start, duration, source_duration, source_elapsed, controls[axis])`；位置控制点采用Bernstein基，每轴4个（cubic）或6个（quintic）。`source_duration==0`时按`elapsed/duration`求值，否则按`(elapsed+source_elapsed)/source_duration`保留原曲线裁剪区间。`from_description(description, limits)`只在非实时侧重建导数、核验片段时间／`q/v/a`接续、动态限制及最终静止条件，不拟合、重排或重定时。轴序、源身份、原期限、时钟异常和真实停止确认由调用方管理；取样、派生帧和心跳都不能续期。到达采样端点也不能报告机器人实际到达。Python同名类提供`target`／`stop`／`describe`／`from_description`／`sample_into`。
 
 `session_v3`是纯位置目标流协议（wire 5、reference 2、目标配方version 2）。上层退休曲线发送及跨层提前量配置；旧`session_v2`配方拒绝加载。目标轴序为左臂J1～J7、右臂J1～J7、腰部J1～J2，单位rad；动态界逐轴取profile与0.25 rad/s、0.5 rad/s²、162 rad/s³的较小值。消息同时保留session、源command／lease／epoch／profile身份、sequence、源时间及原始期限；中层只透传，派生帧、接纳、采样和心跳不续期。普通目标原始TTL最多200 ms；纯目标流PAUSE作为独立停止命令，由源端一次生成固定2 s原始期限，须在该期限内完成制动参考并转入固定保持，不续期旧目标或授权恢复运动。旧follower／trajectory及阻抗PAUSE仍最多200 ms；新停止命令须与更新后的三层配对。
 
-servo在非实时后台从已采用名义轨迹的未来`q/v/a`快照生成联合曲线，周期线程验证版本、期限和接续条件后共同切换。普通在途生成不因更新取消，待处理普通目标只保留最新一份；PAUSE及控制权／故障边界使旧结果失效。首次从失能接管用新鲜实测播种；已带电暂停后的重新接管延续原固定参考，避免跟随偏差变成参考跳变，正常更新不逐帧用实测重置。整段动态限制保留，不再串联旧B样条或逐轴非线性限幅；共同采样不承诺任意换目标的共同标量进度、闭链几何或jerk连续。
+servo在非实时后台从已采用名义轨迹的未来`q/v/a`快照调用`stream_target`生成曲线，周期线程验证版本、期限和接续条件后共同切换。普通在途生成不因更新取消，待处理普通目标只保留最新一份；PAUSE及控制权／故障边界使旧结果失效，仍调用原`stop`。首次从失能接管用新鲜实测播种；已带电暂停后的重新接管延续原固定参考，避免跟随偏差变成参考跳变，正常更新不逐帧用实测重置。整段动态限制保留，不再串联旧B样条或周期内逐轴非线性限幅；共同采样不承诺任意换目标的共同标量进度、闭链几何或jerk连续。此处描述本机源码，现场仍须核对选定版本是否已构建并加载。
 
 纯位置PAUSE在原期限内完成制动参考后，由servo复用本地固定参考保持；不再接收运动点也不因2 s到期撤使能。原source时间与期限保持不变，仅继续新鲜的本地采样，普通运动断流及反馈／Fault／撤权／采样超时保护保留。Bindu仍先核对同一PAUSE的有效保持回执，再要求100 ms内新鲜、持续推进的实测满足原速度界及固定实测锚点的位置变化界；名义到位误差单独诊断，不作为target_stream暂停停稳的前提。回执缺失、速度超界或窗口内漂移不能报告停稳，原停止总预算不延长。下发保持、实测停稳与运动目标到达分别判定。
 

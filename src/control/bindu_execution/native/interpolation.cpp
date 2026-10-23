@@ -29,6 +29,66 @@ bool moving(const JointState& s) {
     for(double a:s.a) if(std::abs(a)>1e-8) return true;
     return false;
 }
+State advance_cubic(State s,double t) {
+    return {s.q+s.v*t+s.a*t*t/2+s.j*t*t*t/6,
+            s.v+s.a*t+s.j*t*t/2,s.a+s.j*t,s.j};
+}
+// The adaptive primitive allocates and certifies brakes: use it only while
+// preparing. Split the group at every axis's exact phase boundary, so the
+// periodic sampler evaluates the planned cubics without fitting/clipping them.
+bool stream_prefix(const JointLimits& limits,const JointState& initial,
+        const std::vector<double>& goal,double start,Curves& curves,JointState& final) {
+    constexpr int steps=30;
+    constexpr double period=.001;
+    std::vector<AdaptiveStream> streams;streams.reserve(limits.size());
+    for(size_t i=0;i<limits.size();++i) {
+        auto l=limits[i];
+        // Endpoint capture belongs to the finite tail, not the short prefix.
+        l.capture_wait=std::max(l.capture_wait,(steps+1)*period);
+        streams.emplace_back(l);
+        if(!streams.back().reset(0.,{initial.q[i],initial.v[i],initial.a[i],0.}) ||
+           !streams.back().target(0.,goal[i],std::numeric_limits<double>::max())) return false;
+    }
+    for(int tick=0;tick<steps;++tick) {
+        std::vector<double> knots{0.,period};
+        for(auto& stream:streams) {
+            if(!stream.step((tick+1)*period)) return false;
+            double elapsed=0.;
+            for(const auto& piece:stream.pieces()) {
+                if(!piece.controls.empty()) return false;
+                elapsed+=piece.duration;
+                if(elapsed>0.&&elapsed<period) knots.push_back(elapsed);
+            }
+        }
+        std::sort(knots.begin(),knots.end());
+        knots.erase(std::unique(knots.begin(),knots.end(),
+            [](double a,double b){return std::abs(a-b)<1e-12;}),knots.end());
+        for(size_t k=1;k<knots.size();++k) {
+            // Leave bounded room for the certified convergence/stop tail.
+            if(curves.size()>=PreparedSegment::max_pieces/2) return false;
+            const double begin=knots[k-1],duration=knots[k]-begin;
+            std::shared_ptr<Curve> joint;
+            for(const auto& stream:streams) {
+                double elapsed=0.;const Piece* selected=nullptr;
+                for(const auto& piece:stream.pieces()) {
+                    if(begin+duration/2<elapsed+piece.duration) {selected=&piece;break;}
+                    elapsed+=piece.duration;
+                }
+                if(!selected) return false;
+                const auto first=advance_cubic(selected->initial,begin-elapsed);
+                const Piece clipped{first,advance_cubic(first,duration),duration,{},0.,0.};
+                auto axis=std::make_shared<Curve>(start+tick*period+begin,clipped);
+                if(!joint) joint=std::move(axis);else joint->append_axis(*axis);
+            }
+            curves.push_back(std::move(joint));
+        }
+    }
+    for(const auto& stream:streams) {
+        const auto s=stream.state();
+        final.q.push_back(s.q);final.v.push_back(s.v);final.a.push_back(s.a);
+    }
+    return true;
+}
 }
 Curve::Curve(double begin,double dt,const JointState& initial,const JointState& final):start(begin),duration(dt) {
     check(std::isfinite(start)&&std::isfinite(dt)&&dt>0.&&std::isfinite(start+dt),"INVALID_CURVE_TIME");
@@ -255,6 +315,34 @@ PreparedSegment PreparedSegment::from_curves(const Curves& curves,const JointLim
 PreparedSegment PreparedSegment::target(const JointLimits& limits,const JointState& initial,
         const std::vector<double>& goal,double start,double horizon,double stop_timeout) {
     return from_curves(fit_target(limits,initial,goal,start,horizon,stop_timeout),limits);
+}
+PreparedSegment PreparedSegment::stream_target(const JointLimits& limits,const JointState& initial,
+        const std::vector<double>& goal,double start,double horizon,double stop_timeout) {
+    validate(limits,initial);validate(rest(goal),limits.size());
+    check(std::isfinite(start)&&std::isfinite(horizon)&&horizon>0.&&
+          std::isfinite(stop_timeout)&&stop_timeout>0.,"INVALID_STREAM_TIME");
+    for(size_t i=0;i<goal.size();++i)
+        check(goal[i]>=limits[i].lower&&goal[i]<=limits[i].upper,"JOINT_LIMIT");
+    // Repeated updates must not indefinitely postpone endpoint capture. This
+    // selects the existing exact convergence curve, never a position deadband.
+    bool near_rest=true;
+    for(size_t i=0;i<goal.size();++i)
+        near_rest=near_rest&&std::abs(goal[i]-initial.q[i])<=1e-6&&std::abs(initial.v[i])<=1e-4;
+    if(!near_rest&&horizon>.03) {
+        try {
+            Curves curves;JointState next;
+            if(stream_prefix(limits,initial,goal,start,curves,next)) {
+                auto tail=fit_target(limits,next,goal,start+.03,horizon-.03,stop_timeout);
+                curves.insert(curves.end(),tail.begin(),tail.end());
+                return from_curves(curves,limits);
+            }
+        } catch(const std::invalid_argument&) {
+            // A short prefix may have no certifiable continuation (e.g. near
+            // a joint boundary). The original full curve must still pass all
+            // original limits; never clip axes or substitute a measured seed.
+        }
+    }
+    return target(limits,initial,goal,start,horizon,stop_timeout);
 }
 PreparedSegment PreparedSegment::stop(const JointLimits& limits,const JointState& initial,double start,double timeout) {
     return from_curves(fit_stop(limits,initial,start,timeout),limits);

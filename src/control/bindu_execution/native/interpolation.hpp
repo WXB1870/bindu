@@ -52,6 +52,11 @@ public:
     PreparedSegment()=default; // Empty mailbox/slot; sampling returns false.
     static PreparedSegment target(const JointLimits&,const JointState&,
         const std::vector<double>& goal,double start,double horizon,double stop_timeout);
+    // Continuous position stream: prepare a short adaptive prefix and a
+    // certified finite target tail off the sampling thread. Axes share clocks,
+    // not a scalar path progress. Ordinary target/stop APIs stay unchanged.
+    static PreparedSegment stream_target(const JointLimits&,const JointState&,
+        const std::vector<double>& goal,double start,double horizon,double stop_timeout);
     static PreparedSegment stop(const JointLimits&,const JointState&,double start,double timeout);
     // Deep-copy already certified curves; no mutable Curve aliases escape.
     static PreparedSegment from_curves(const Curves&,const JointLimits&);
