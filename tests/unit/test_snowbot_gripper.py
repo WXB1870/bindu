@@ -430,6 +430,62 @@ async def coordinator_acquire(ops, resources):
 
 class DirectOperationTests(unittest.TestCase):
     """Run the real async coordinator and gripper core without ROS or hardware."""
+    def test_automatic_close_uses_fixed_targets_and_releases_on_timeout(self):
+        from unittest.mock import AsyncMock
+        source=ROOT/'src/integration/bindu_runtime/bindu_runtime/pico_position.py'
+        cls=next(n for n in ast.parse(source.read_text()).body if isinstance(n,ast.ClassDef))
+        method=next(n for n in cls.body if getattr(n,'name','')=='move_grippers')
+        ns=dict(time=__import__('time'),SIDES=SIDES,GROUPS=GROUPS,Lease=S(Request=lambda **kw:S(**kw)),
+                seconds=lambda v:v,target_position_tolerance=target_position_tolerance)
+        exec(compile(ast.Module(body=[method],type_ignores=[]),str(source),'exec'),ns)
+        for failed in (False,True):
+            with self.subTest(failed=failed):
+                control=S(pending=S(value='bimanual_tool'),load='unknown',supported=False,
+                          gripper_update_token=None,reason='closing')
+                node=S(control=control,current=lambda _:None,now=lambda:10.)
+                lease=S(epoch=1);state=S(state='FAILED' if failed else 'SUCCEEDED',code='POSITION_TIMEOUT',
+                    epoch=1,control_sequence=20,stamp=11.,feedback_stamp=11.,position_reached=not failed,measured_position=0.)
+                ops=S(node=node,config=Rig().config,sequence=0,acquire=AsyncMock(return_value=lease),
+                    request=AsyncMock(),reading=lambda _:state,release=AsyncMock())
+                intent=S(token=1,operation='select_mode',value='bimanual_tool')
+                async def run():
+                    await ns['move_grippers'](ops,intent,direct=True,targets=dict.fromkeys(SIDES,'closed'))
+                if failed:
+                    with self.assertRaisesRegex(RuntimeError,'left:POSITION_TIMEOUT'):asyncio.run(run())
+                else:asyncio.run(run())
+                self.assertEqual([c.args for c in ops.request.await_args_list],
+                    [('authorize_direct',),('close','left'),('close','right')])
+                ops.release.assert_awaited_once()
+                self.assertEqual(control.load,'unknown');self.assertIsNone(control.gripper_update_token)
+
+    def test_close_gate_requires_fresh_stationary_endpoints_and_released_trigger(self):
+        from unittest.mock import AsyncMock,Mock
+        source=ROOT/'src/integration/bindu_runtime/bindu_runtime/pico_position.py'
+        cls=next(n for n in ast.parse(source.read_text()).body if isinstance(n,ast.ClassDef))
+        method=next(n for n in cls.body if getattr(n,'name','')=='close_grippers')
+        ns=dict(SIDES=SIDES,json=json,target_position_tolerance=target_position_tolerance)
+        exec(compile(ast.Module(body=[method],type_ignores=[]),str(source),'exec'),ns)
+        for fault in ('none','moving','invalid','trigger','unclosed','failed_close'):
+            with self.subTest(fault=fault):
+                state=S(state='IDLE',measured_position=.2,measured_velocity=0.)
+                node=S(current=Mock(),feedback=lambda:S(healthy=True,stopped=fault!='moving'),
+                    control=S(frames=[S(trigger=1. if fault=='trigger' else 0.)],reason=''),event=Mock())
+                def reading(_):
+                    if fault=='invalid':raise RuntimeError('PICO_GRIPPER_FEEDBACK_OR_CALIBRATION_REQUIRED:left')
+                    return state
+                async def move(*a,**kw):
+                    if fault!='failed_close':state.measured_position=0.
+                ops=S(node=node,config=Rig().config,reading=reading,move_grippers=AsyncMock(side_effect=move))
+                intent=S(operation='select_mode',token=1)
+                async def run():await ns['close_grippers'](ops,intent,allow_command=fault!='unclosed')
+                if fault=='none':
+                    asyncio.run(run());ops.move_grippers.assert_awaited_once()
+                    self.assertFalse(json.loads(node.event.call_args.args[1])['grasp_sensor_confirmed'])
+                    asyncio.run(run());self.assertEqual(ops.move_grippers.await_count,1)
+                else:
+                    with self.assertRaises(RuntimeError):asyncio.run(run())
+                    if fault!='failed_close':ops.move_grippers.assert_not_called()
+
     def test_coordinator_accepts_same_manual_accuracy_only_after_device_completion(self):
         from bindu_teleoperation.pico import PicoIntent
         source=ROOT/'src/integration/bindu_runtime/bindu_runtime/pico_position.py'

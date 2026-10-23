@@ -97,6 +97,61 @@ class ControllerSocketTests(unittest.TestCase):
 
 
 class ControllerWebSocketTests(unittest.IsolatedAsyncioTestCase):
+    async def test_controller_transport_reply_is_bounded_and_does_not_emit_input(self):
+        import asyncio, struct
+        from types import SimpleNamespace as S
+        from unittest.mock import AsyncMock
+        from bindu_teleoperation.vr.receiver import acknowledge_controller
+        ws=S(ping=AsyncMock())
+        await acknowledge_controller(ws,1976)
+        ws.ping.assert_awaited_once_with(struct.pack('!Q',1976))
+        async def stalled(_):await asyncio.Future()
+        ws.ping=stalled
+        await asyncio.wait_for(acknowledge_controller(ws,1977),.1)
+        ws.ping=AsyncMock(side_effect=ConnectionResetError('disconnected'))
+        await acknowledge_controller(ws,1978)
+
+    async def test_actual_handler_delivers_input_before_reply_and_bounds_pending_replies(self):
+        import asyncio,queue,numpy as np
+        from types import SimpleNamespace as S,ModuleType
+        from unittest.mock import AsyncMock,patch
+        from bindu_teleoperation.vr.receiver import _serve
+        apps=[]
+        async def stalled(_):await asyncio.Future()
+        ws=S(ping=AsyncMock(side_effect=stalled))
+        class Vuer:
+            def __init__(self,**kw):self.ws={'offline':ws};self.handlers={};apps.append(self)
+            def add_handler(self,name,fn):self.handlers[name]=fn
+            def spawn(self,*a,**kw):pass
+            def run(self):pass
+        vuer=ModuleType('vuer');vuer.Vuer=Vuer
+        schemas=ModuleType('vuer.schemas')
+        schemas.MotionControllers=schemas.Scene=schemas.Grid=object
+        font=ModuleType('PIL.ImageFont');font.load_default=lambda **kw:S(font_bytes=b'font')
+        pil=ModuleType('PIL');pil.ImageFont=font
+        output=queue.Queue(2);health=queue.Queue(128)
+        with patch.dict('sys.modules',{'vuer':vuer,'vuer.schemas':schemas,'PIL':pil,'PIL.ImageFont':font}):
+            _serve(dict(host='127.0.0.1',port=0,cert_file=None,key_file=None,side='both',
+                mapping='pico_snowbot_v1'),output,queue.Queue(1),health)
+            self.assertTrue(apps,list(output.queue))
+            app=apps[0];handler=app.handlers['CONTROLLER_MOVE'];session=S(CURRENT_WS_ID='offline')
+            state=dict(squeezeValue=0.,triggerValue=0.,aButton=False,bButton=False,thumbstick=False)
+            event=S(value=dict(left=np.eye(4).ravel().tolist(),right=np.eye(4).ravel().tolist(),
+                leftState=state,rightState=state))
+            await handler(event,session)
+            first=output.get_nowait()[1]
+            self.assertEqual({f.seq for f in first},{1})
+            await asyncio.sleep(0)
+            await handler(event,session)
+            second=output.get_nowait()[1]
+            self.assertEqual({f.seq for f in second},{2})
+            await asyncio.sleep(0)
+            self.assertEqual(ws.ping.await_count,1)
+            self.assertTrue(all(f.valid for f in first+second))
+            self.assertTrue(all(f.stamp==first[0].stamp for f in first))
+            await asyncio.sleep(.02)
+            self.assertTrue(output.empty())  # Timeout/pong never mints input.
+
     async def test_vuer_none_return_preserves_the_prepared_response_on_disconnect(self):
         from types import ModuleType
         from unittest.mock import AsyncMock, patch

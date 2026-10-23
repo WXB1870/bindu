@@ -100,6 +100,19 @@ def quick_ack(sock):
     except OSError:return False
 
 
+async def acknowledge_controller(ws, sequence):
+    """Flush a transport reply for real input; never generate or renew a frame.
+
+    WebSocket control replies are independent of scene rendering. In particular,
+    the peer need not wait for the next display update to receive a TCP reply.
+    Wireless loss can still exhaust the unchanged source TTL.
+    """
+    try:
+        await asyncio.wait_for(ws.ping(struct.pack('!Q', sequence)), timeout=.005)
+    except (OSError, RuntimeError, asyncio.TimeoutError):
+        pass  # Input freshness and the native watchdog remain authoritative.
+
+
 def controller_socket_status(sock):
     """Read kernel evidence separately from browser and server-loop clocks."""
     if sock is None:return {}
@@ -141,6 +154,7 @@ def _serve(config, output, feedback, health):
         from vuer.schemas import MotionControllers, Scene, Grid
 
         controller_sockets={}
+        controller_ack=None
 
         class LocalVuer(Vuer):
             if config.get('input_timing_enabled',False):
@@ -242,7 +256,7 @@ def _serve(config, output, feedback, health):
         connectivity = VRConnectivity() if config.get('connectivity_check') else None
 
         async def on_controller(event, session):
-            nonlocal owner, identity, seq, clutch_seq, previous_grip, stop_latched, counters, last_event
+            nonlocal owner, identity, seq, clutch_seq, previous_grip, stop_latched, counters, last_event, controller_ack
             if owner is None or owner.CURRENT_WS_ID not in app.ws:
                 owner, identity = session, uuid.uuid4().hex
                 clutch_seq = {'left': 0, 'right': 0}
@@ -282,6 +296,10 @@ def _serve(config, output, feedback, health):
                 packet+= (dict(handler_started=handler_started,frame_ready=time.monotonic(),
                                dispatched=getattr(event,'bindu_dispatched_monotonic',None)),)
             _latest_put(output,packet)
+            if config.get('mapping')=='pico_snowbot_v1' and (controller_ack is None or controller_ack.done()):
+                ws=app.ws.get(session.CURRENT_WS_ID)
+                if ws is not None and hasattr(ws,'ping'):
+                    controller_ack=asyncio.create_task(acknowledge_controller(ws,seq))
 
         async def display(session):
             nonlocal owner, latest_display, display_received

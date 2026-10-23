@@ -432,6 +432,10 @@ function explainReason(reason){
   }
   if((reason||'').includes('joint position outside hard limits'))return '实测关节位置超出本次配方的允许边界，接管已拒绝；请核对下方关节名、位置与范围。';
   if((reason||'').includes('PICO_AXIAL_GRASP_UNAVAILABLE'))return '夹爪尚未标定或未配置虚握开度。';
+  if((reason||'').includes('PICO_GRIPPER_OPERATION_FAILED'))return '夹爪开合未完成（'+(reason.includes(':left:')?'左侧':reason.includes(':right:')?'右侧':'待核对侧别')+'），工具跟随未启动；请核对实测开度和反馈。';
+  if((reason||'').includes('PICO_GRIPPERS_CLOSING'))return '双臂已停稳，正在闭合夹爪并等待实测到位。';
+  if((reason||'').includes('PICO_AUTO_CLOSE_REQUIRES_RELEASED_TRIGGER'))return '自动闭爪前请松开左右扳机。';
+  if((reason||'').includes('PICO_GRIPPERS_CLOSE_BEFORE_TOOL_MODE'))return '夹爪尚未闭合到位；请停稳后重新选择工具模式。';
   if((reason||'').includes('PICO_GRASP_POSITION_CHANGED'))return '夹爪开度偏离当前握持方式，已停止跟随。';
   if((reason||'').includes('LEFT_GRIPPER_NOT_CLOSED')||(reason||'').includes('LEFT_NOT_CLOSED_STATIONARY'))return '左夹爪尚未闭合停稳，无法换握。';
   if((reason||'').includes('PREPARE_TOOL_COUPLING'))return '回准备位的候选路径会改变双手握持关系，已拒绝执行。';

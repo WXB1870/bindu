@@ -190,22 +190,50 @@ class PositionOperations:
             # reply nor a reconnect may turn an unknown stop into permission.
             raise RuntimeError('PICO_GRIPPER_STOP_UNCONFIRMED:'+str(exc)) from exc
 
-    async def move_grippers(self, intent, *, direct=False):
+    async def close_grippers(self, intent, *, allow_command=True):
+        """Confirm configured closed endpoints; this is not contact/force evidence."""
         n = self.node
-        targets={s:m for s,m in zip(SIDES,intent.value) if not direct or m is not None}
+        n.current(intent)
+        if not n.feedback().healthy or not n.feedback().stopped:
+            raise RuntimeError('PICO_AUTO_CLOSE_REQUIRES_STOPPED')
+        tolerance = target_position_tolerance(self.config, direct=True)
+        def closed():
+            return all(s.state not in ('MOVING', 'STOPPING', 'FAILED') and
+                abs(s.measured_position-self.config['grippers'][side]['closed']) <= tolerance and
+                abs(s.measured_velocity) <= self.config['velocity_tolerance']
+                for side in SIDES for s in (self.reading(side),))
+        if not closed():
+            if not allow_command:
+                raise RuntimeError('PICO_GRIPPERS_CLOSE_BEFORE_TOOL_MODE')
+            if not n.control.frames or any(f.trigger >= .3 for f in n.control.frames):
+                raise RuntimeError('PICO_AUTO_CLOSE_REQUIRES_RELEASED_TRIGGER')
+            n.control.reason = 'PICO_GRIPPERS_CLOSING'
+            n.event('PICO_AUTO_CLOSE_STARTED', json.dumps(dict(operation=intent.operation)))
+            await self.move_grippers(intent, direct=True, targets=dict.fromkeys(SIDES, 'closed'))
+            n.current(intent)
+            if not closed():
+                raise RuntimeError('PICO_GRIPPERS_CLOSED_FEEDBACK_REQUIRED')
+        n.event('PICO_AUTO_CLOSE_READY', json.dumps(dict(operation=intent.operation,
+            measured={side:self.reading(side).measured_position for side in SIDES},
+            calibrated=self.config['calibrated'], grasp_sensor_confirmed=False)))
+
+    async def move_grippers(self, intent, *, direct=False, targets=None):
+        n = self.node
+        automatic = targets is not None
+        targets = dict(targets) if automatic else {s:m for s,m in zip(SIDES,intent.value) if not direct or m is not None}
         if not targets or any(m not in ('open','closed') for m in targets.values()):
             raise RuntimeError('PICO_GRIPPER_TARGET_INVALID')
         lease = await self.acquire([GROUPS[s] for s in (SIDES if direct else targets)])
         try:
             n.current(intent)
-            if direct:
+            if direct and not automatic:
                 n.control.gripper_update_token=intent.token
             await self.request('authorize_direct' if direct else 'authorize_loading', load_state=n.control.load,
                                external_support=False if direct else n.control.supported)
             expected, sent_modes, failed, renew_at = {}, {}, {}, 0.
             while True:
                 n.current(intent)
-                if direct:
+                if direct and not automatic:
                     targets={s:m for s,m in zip(SIDES,n.control.pending.value) if m is not None}
                 for side, mode in targets.items():
                     if sent_modes.get(side)==mode:
@@ -226,8 +254,8 @@ class PositionOperations:
                     if (s.state=='FAILED' and s.epoch==lease.epoch and
                             s.control_sequence>=expected[side][1] and
                             seconds(s.stamp)>expected[side][2]):
-                        if not direct or s.code!='POSITION_TIMEOUT':
-                            raise RuntimeError('PICO_GRIPPER_OPERATION_FAILED')
+                        if automatic or not direct or s.code!='POSITION_TIMEOUT':
+                            raise RuntimeError('PICO_GRIPPER_OPERATION_FAILED:'+side+':'+s.code)
                         # FAILED/POSITION_TIMEOUT follows confirmed local hold.
                         # Keep the partner's command/lease and await a NEW input
                         # for this side. Never retry or report this target reached.
@@ -237,7 +265,7 @@ class PositionOperations:
                                 measured=s.measured_position,epoch=s.epoch,
                                 control_sequence=s.control_sequence)))
                         failed[side]=s.code
-                if direct:
+                if direct and not automatic:
                     n.control.reason=('GRIPPER_POSITION_TIMEOUT:'+','.join(sorted(failed)) if failed else
                                       'TRIGGERS_CONTROL_INDIVIDUAL_GRIPPERS')
                 reached={side:(s.position_reached and s.epoch==lease.epoch and
@@ -257,7 +285,7 @@ class PositionOperations:
                     renew_at = time.monotonic()+.2
                 await n.pause()
         finally:
-            if direct:
+            if direct and not automatic:
                 n.control.gripper_update_token=None
             await self.release()
 

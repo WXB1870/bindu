@@ -67,6 +67,9 @@ class PicoNode(RuntimeNode):
                                      ('kinematic',) if self.simulation else ('snowbot_vendor',))):
             raise ValueError('PICO_ACTUATOR_BACKEND_UNAVAILABLE:'+self.backend)
         self.tool_cfg=json.loads(Path(self.get_parameter('tool_config').value).read_text())
+        self.automatic_close_grippers=self.cfg.get('automatic_close_grippers',False)
+        if type(self.automatic_close_grippers) is not bool or (self.automatic_close_grippers and not self.position_contract):
+            raise ValueError('PICO_AUTO_CLOSE_CONFIG')
         policy=self.tool_cfg.get('measured_grasp_policy','enforce')
         if policy not in ('enforce','unheld_test'):
             raise ValueError('PICO_MEASURED_GRASP_POLICY')
@@ -636,6 +639,9 @@ class PicoNode(RuntimeNode):
         f=self.feedback()
         if not f.healthy:raise RuntimeError('PICO_FEEDBACK_UNAVAILABLE')
         if not f.stopped:raise RuntimeError('PICO_MODE_REQUIRES_STOPPED')
+        if mode=='bimanual_tool' and not self.unheld_test and getattr(self,'automatic_close_grippers',False):
+            await self.position_ops.close_grippers(intent,allow_command=intent.operation in ('select_mode','confirm_tool'))
+            self.current(intent)
         if mode=='bimanual_tool' and self.unheld_test:
             if self.control.load=='held':raise RuntimeError('PICO_UNHELD_TEST_WITH_HELD_LOAD')
             self.operator_grasp_positions={}
@@ -746,6 +752,9 @@ class PicoNode(RuntimeNode):
             await self.cancel_tool()
             self.current(intent)
             read_only=intent.operation in ('prepare','confirm_tool','follow','select_mode')
+            if (getattr(self,'automatic_close_grippers',False) and not self.unheld_test and
+                    (intent.operation=='confirm_tool' or intent.operation=='select_mode' and intent.value=='bimanual_tool')):
+                read_only=False
             if intent.operation=='prepare':
                 # A is the operator's explicit empty-hand return request.
                 if not self.position_contract and self.control.load!='empty':raise RuntimeError('PICO_PREPARE_REQUIRES_EMPTY')
@@ -767,6 +776,10 @@ class PicoNode(RuntimeNode):
                         self.current(intent)
                         target=await self.validate_prepare(intent,allow_recovery=False)
                     await self.move(intent,target,self.cfg['prepare_duration'],fit_duration=self.simulation_demo)
+                if getattr(self,'automatic_close_grippers',False) and not self.unheld_test:
+                    read_only=False
+                    await self.position_ops.close_grippers(intent)
+                    self.current(intent)
             elif intent.operation=='manual_grippers':
                 if (not self.position_ops or self.control.phase!='gripper_control' or
                         not self.control.frames or any(f.grip>=.3 for f in self.control.frames)):
