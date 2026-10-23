@@ -18,7 +18,7 @@ NODE = next(n for n in TREE.body if isinstance(n, ast.ClassDef) and n.name == 'B
 
 
 def actual_methods(clock):
-    names = {'wait', 'begin_stop', 'execution_revision', 'stop_pending', 'stop'}
+    names = {'wait', 'begin_stop', 'execution_revision', 'stop_pending', 'stop','cleanup_event'}
     methods = [n for n in NODE.body if getattr(n, 'name', '') in names]
     namespace = {'time':clock, 'seconds':lambda stamp:stamp,
                  'stop_feedback_matches':stop_feedback_matches,
@@ -48,6 +48,7 @@ class BimanualStopHandoff(unittest.IsolatedAsyncioTestCase):
         self.lease = S(lease_id='lease', epoch=3)
         self.calls = []
         self.steps = []
+        self.node.execution_instance_id='executor-instance'
         self.node.state = self.state(7, 'RUNNING')
         self.node.worker_result = ('solve', 41, 'old')
         self.node.control_client = S(call_async=self.hold)
@@ -130,6 +131,13 @@ class BimanualStopHandoff(unittest.IsolatedAsyncioTestCase):
         self.node.state = self.state(8,lease_epoch=2)
         self.assertEqual(await self.node.stop_pending(self.lease,None,7),(False,0,7))
 
+    async def test_replacement_before_stop_cannot_rebind_original_identity(self):
+        self.node.state=self.state(9,instance_id='replacement')
+        self.assertFalse(await self.node.stop(self.lease))
+        diagnostic=__import__('json').loads(self.node.event.call_args.args[1])
+        self.assertEqual(diagnostic['requested_instance_id'],'executor-instance')
+        self.assertEqual(diagnostic['observed_instance_id'],'replacement')
+
     async def test_restart_during_pending_submit_cannot_confirm_old_stop(self):
         pending = self.pending()
         self.node.state = self.state(7, 'RUNNING')
@@ -153,6 +161,22 @@ class BimanualStopHandoff(unittest.IsolatedAsyncioTestCase):
         self.steps = [lambda:setattr(self.node,'state',self.state(9,instance_id='new-executor'))]
         with self.assertRaisesRegex(RuntimeError,'REVISION_UNAVAILABLE'):
             await self.node.execution_revision(self.lease,8)
+
+    async def test_rejected_stop_reply_records_the_original_failure(self):
+        def rejected(request):
+            future=self.pending()
+            future.set_result(S(ok=False,code='STOP_REQUEST_FAILED'))
+            return future
+        self.node.control_client=S(call_async=rejected)
+        self.assertFalse(await self.node.stop(self.lease))
+        diagnostic=__import__('json').loads(self.node.event.call_args.args[1])
+        self.assertEqual(diagnostic['reason'],'BIMANUAL_STOP_REPLY_REJECTED:STOP_REQUEST_FAILED')
+
+    async def test_failed_stop_feedback_records_the_original_failure(self):
+        self.node.state=self.state(8,code='STOP_FEEDBACK_TIMEOUT')
+        self.assertFalse(await self.node.stop(self.lease))
+        diagnostic=__import__('json').loads(self.node.event.call_args.args[1])
+        self.assertEqual(diagnostic['reason'],'BIMANUAL_EXECUTION_STOP_FAILED:STOP_FEEDBACK_TIMEOUT')
 
     async def test_release_does_not_use_idle_state_from_newer_unrelated_epoch(self):
         def unrelated_release(request):

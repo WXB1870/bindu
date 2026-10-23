@@ -97,6 +97,9 @@ class BimanualToolNode(RuntimeNode):
         self.frames={}
         self.state=self.health=self.mode_state=None
         self.busy=False
+        self.stop_unconfirmed=False
+        self.diagnostic_error=''
+        self.execution_instance_id=''
         self.grasp_continuation=None
         self.pause_control=ToolPause()
         group=ReentrantCallbackGroup()
@@ -204,7 +207,8 @@ class BimanualToolNode(RuntimeNode):
         return self.preflight(reply,'independent_arms')
 
     def preflight(self,reply,mode):
-        reason=self.worker_error or ('' if self.worker.ready else 'BIMANUAL_WORKER_NOT_READY')
+        reason=('BIMANUAL_EXECUTION_STOP_UNCONFIRMED' if getattr(self,'stop_unconfirmed',False) else
+                self.worker_error or ('' if self.worker.ready else 'BIMANUAL_WORKER_NOT_READY'))
         s=self.state
         if not reason and (self.busy or s is None or s.profile_hash!=self.profile.digest or
                 s.simulated != self.simulation or not 0<=self.now()-seconds(s.feedback_stamp)<=self.cfg['feedback_max_age']):
@@ -233,6 +237,8 @@ class BimanualToolNode(RuntimeNode):
         return reply
 
     def check(self, require_input=True):
+        if getattr(self,'stop_unconfirmed',False):
+            raise RuntimeError('BIMANUAL_EXECUTION_STOP_UNCONFIRMED')
         now=self.now()
         m=self.mode_state
         if (m is None or m.profile_hash != self.profile.digest or
@@ -304,7 +310,9 @@ class BimanualToolNode(RuntimeNode):
         return future.result()
 
     def begin_stop(self,lease,release=False):
-        instance_id=self.state.instance_id if self.state else ''
+        # This identity is captured before acquire is dispatched. An idle
+        # replacement executor cannot attest to the original executor's stop.
+        instance_id=self.execution_instance_id
         requested=self.now()
         deadline=time.monotonic()+self.profile.stop_timeout+.5
         if release:
@@ -318,7 +326,7 @@ class BimanualToolNode(RuntimeNode):
     async def execution_revision(self,lease,minimum=0,*,instance_id=None):
         """Read a fresh revision for this lease; late state cannot move it back."""
         if instance_id is None:
-            instance_id=self.state.instance_id if self.state else ''
+            instance_id=self.execution_instance_id
         deadline=time.monotonic()+.7
         while time.monotonic()<deadline:
             s=self.state
@@ -364,11 +372,25 @@ class BimanualToolNode(RuntimeNode):
             raise RuntimeError(rejection)
         return True,accepted,revision
 
+    def cleanup_event(self,name,detail,task_id=''):
+        # Cleanup and its stop barrier must survive a failed diagnostic sink.
+        try:
+            self.event(name,detail,task_id)
+        except Exception as exc:
+            self.diagnostic_error=name+':'+type(exc).__name__+':'+str(exc)
+            try:
+                self.get_logger().warning(self.diagnostic_error,throttle_duration_sec=5.)
+            except Exception:
+                pass  # The retained field remains inspectable if logging also fails.
+
     async def stop(self,lease,release=False,*,request=None):
-        future,requested,deadline,instance_id=request or self.begin_stop(lease,release)
+        instance_id=self.execution_instance_id
+        requested=self.now()
         expected_epoch=lease.epoch+1 if release else lease.epoch
         revoked_epoch=None
+        reason='DEADLINE_EXPIRED'
         try:
+            future,requested,deadline,instance_id=request or self.begin_stop(lease,release)
             reply=await self.wait(future)
             if not reply.ok:
                 # A timeout may already have revoked this lease and begun braking.
@@ -376,12 +398,12 @@ class BimanualToolNode(RuntimeNode):
                 if not (release and reply.code=='INVALID_LEASE' and instance_id and
                         not reply.lease_id and reply.epoch==lease.epoch+1 and
                         reply.profile_hash==self.profile.digest):
-                    return False
+                    raise RuntimeError('BIMANUAL_STOP_REPLY_REJECTED:'+reply.code)
                 revoked_epoch=reply.epoch
             while time.monotonic()<deadline:
                 s=self.state
                 if s and ('EMERGENCY_STOP' in s.code or s.code == 'STOP_FEEDBACK_TIMEOUT'):
-                    return False
+                    raise RuntimeError('BIMANUAL_EXECUTION_STOP_FAILED:'+s.code)
                 if revoked_epoch is not None and not (s and
                         s.instance_id==instance_id and s.lease_epoch==revoked_epoch and
                         s.profile_hash==self.profile.digest and s.simulated==self.simulation and
@@ -394,10 +416,12 @@ class BimanualToolNode(RuntimeNode):
                         at_rest=lambda joints:joints_at_rest(joints,self.names,.005)):
                     return True
                 await self.pause()
-        except RuntimeError:
-            pass
+        except Exception as exc:
+            reason=type(exc).__name__+':'+str(exc) if not isinstance(exc,RuntimeError) else str(exc)
+        self.stop_unconfirmed=True
         s=self.state
-        self.event('BIMANUAL_STOP_UNCONFIRMED',json.dumps({
+        self.cleanup_event('BIMANUAL_STOP_UNCONFIRMED',json.dumps({
+            'reason':reason,
             'state':s.state if s else '', 'code':s.code if s else '',
             'requested_instance_id':instance_id,'observed_instance_id':s.instance_id if s else '',
             'expected_epoch':expected_epoch,'observed_epoch':s.lease_epoch if s else None,
@@ -418,7 +442,7 @@ class BimanualToolNode(RuntimeNode):
         reference=AcceptedReference(self.cfg.get('max_integration_interval',.1),
             max_sample_gap=self.cfg.get('integration_max_sample_gap'))
         result=TeleopAction.Result(simulated=self.simulation)
-        lease=pending=renewal=None
+        lease=acquisition=pending=renewal=None
         accepted=0
         stopped=True
         canceled=False
@@ -451,10 +475,21 @@ class BimanualToolNode(RuntimeNode):
         self.worker_result=None
         self.preflight_status=''
         try:
-            lease=await self.wait(self.lease_client.call_async(Lease.Request(operation='acquire',
-                owner=session.identity,resources=list(self.groups))))
-            if not lease.ok or lease.profile_hash != self.profile.digest:
-                raise RuntimeError(lease.code if not lease.ok else 'PROFILE_MISMATCH')
+            if getattr(self,'stop_unconfirmed',False):
+                raise RuntimeError('BIMANUAL_EXECUTION_STOP_UNCONFIRMED')
+            self.execution_instance_id=self.state.instance_id if self.state else ''
+            if not self.execution_instance_id:
+                raise RuntimeError('BIMANUAL_EXECUTION_REVISION_UNAVAILABLE')
+            # Even a transport exception may follow request dispatch.
+            stopped=False
+            acquisition=self.lease_client.call_async(Lease.Request(operation='acquire',
+                owner=session.identity,resources=list(self.groups)))
+            lease=await self.wait(acquisition)
+            if not lease.ok:
+                stopped=True  # Explicit rejection did not grant this session control.
+                raise RuntimeError(lease.code)
+            if lease.profile_hash != self.profile.digest:
+                raise RuntimeError('PROFILE_MISMATCH')
             # Service round-trips can span a DDS scheduling gap. Wait for
             # fresh mode, input, feedback and recorder samples before moving.
             startup_deadline=time.monotonic()+.7
@@ -466,7 +501,7 @@ class BimanualToolNode(RuntimeNode):
                     if time.monotonic()>=startup_deadline: raise
                     await self.pause()
             submit_revision=await self.execution_revision(lease)
-            execution_instance_id=self.state.instance_id
+            execution_instance_id=self.execution_instance_id
             self.event('BIMANUAL_STARTED',json.dumps({'session_id':session.identity,
                 'teleop_mode':mode.mode,
                 'mode_generation':session.generation,'resource_groups':self.groups,
@@ -820,32 +855,58 @@ class BimanualToolNode(RuntimeNode):
                     accepted_commands=accepted))
                 await self.pause()
             result.code='CANCELED' if canceled else 'TELEOP_SESSION_COMPLETE'
-        except (RuntimeError,ValueError,KeyError) as exc:
+        except Exception as exc:
             result.code=str(exc)
             if result.code=='BIMANUAL_MODE_NOT_SELECTED':
                 mode=self.mode_state
-                self.event('BIMANUAL_MODE_DIAGNOSTIC',json.dumps({
+                self.cleanup_event('BIMANUAL_MODE_DIAGNOSTIC',json.dumps({
                     'mode':mode.mode if mode else '', 'phase':mode.phase if mode else '',
                     'generation':mode.generation if mode else None,
                     'age':self.now()-seconds(mode.stamp) if mode else None}),
                     goal.request.task_id)
         finally:
-            end_deferral('session_ended')
-            if lease is not None and lease.ok:
-                stopped=await self.stop(lease,release=True)
-            if pending is not None:
+            try:
                 try:
-                    if (await self.wait(pending)).accepted: accepted+=1
-                except RuntimeError:
-                    self.event('BIMANUAL_SUBMIT_UNCONFIRMED',session.identity,goal.request.task_id)
-            if not stopped: result.code+=':STOP_UNCONFIRMED'
-            if canceled and stopped and result.code=='CANCELED' and isinstance(session,BimanualSession):
-                self.grasp_continuation=session.stopped_continuation(self.now())
-            result.accepted_commands=accepted
-            result.success=result.code=='TELEOP_SESSION_COMPLETE'
-            self.event('BIMANUAL_ENDED',json.dumps({'session_id':session.identity,
-                'code':result.code,'accepted':accepted}),goal.request.task_id)
-            self.busy=False
+                    end_deferral('session_ended')
+                except Exception as exc:
+                    if getattr(result,'code','') in ('','TELEOP_SESSION_COMPLETE','CANCELED'):
+                        result.code='BIMANUAL_DIAGNOSTIC_FAILED:'+str(exc)
+                    self.cleanup_event('BIMANUAL_DIAGNOSTIC_FAILED',str(exc),goal.request.task_id)
+            finally:
+                try:
+                    if acquisition is not None and lease is None:
+                        # Settle the exact unknown request without inferring its
+                        # outcome from an idle/replacement executor snapshot.
+                        stopped=False
+                        try:
+                            lease=await self.wait(acquisition)
+                            stopped=not lease.ok
+                        except Exception as exc:
+                            self.cleanup_event('BIMANUAL_LEASE_UNCONFIRMED',
+                                session.identity+':'+str(exc),goal.request.task_id)
+                    if lease is not None and lease.ok:
+                        stopped=await self.stop(lease,release=True)
+                    if pending is not None:
+                        try:
+                            if (await self.wait(pending)).accepted: accepted+=1
+                        except Exception as exc:
+                            self.cleanup_event('BIMANUAL_SUBMIT_UNCONFIRMED',
+                                session.identity+':'+str(exc),goal.request.task_id)
+                except Exception as exc:
+                    stopped=False
+                    self.cleanup_event('BIMANUAL_CLEANUP_FAILED',str(exc),goal.request.task_id)
+                finally:
+                    stopped=stopped and not getattr(self,'stop_unconfirmed',False)
+                    if not stopped:
+                        self.stop_unconfirmed=True
+                        result.code+=':STOP_UNCONFIRMED'
+                    self.busy=False
+                    result.accepted_commands=accepted
+                    result.success=result.code=='TELEOP_SESSION_COMPLETE'
+                if canceled and stopped and result.code=='CANCELED' and isinstance(session,BimanualSession):
+                    self.grasp_continuation=session.stopped_continuation(self.now())
+                self.cleanup_event('BIMANUAL_ENDED',json.dumps({'session_id':session.identity,
+                    'code':result.code,'accepted':accepted}),goal.request.task_id)
         if result.success: goal.succeed()
         elif canceled and stopped: goal.canceled()
         else: goal.abort()

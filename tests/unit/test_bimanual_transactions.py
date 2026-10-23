@@ -90,7 +90,7 @@ class Rig:
                 self.commits.append((rig.clock,self.positions,self.sampled_at))
         tree = ast.parse(SOURCE.read_text())
         node = next(n for n in tree.body if isinstance(n,ast.ClassDef) and n.name=='BimanualToolNode')
-        names = {'execute','check','wait','begin_stop','stop','stop_pending','execution_revision'}
+        names = {'execute','goal','check','wait','begin_stop','stop','stop_pending','execution_revision','cleanup_event'}
         methods = [n for n in node.body if getattr(n,'name','') in names]
         namespace = dict(time=S(monotonic=lambda:self.steady),json=json,math=__import__('math'),
             stop_feedback_matches=stop_feedback_matches,
@@ -99,8 +99,9 @@ class Rig:
                     t.id=='WORKER_POLL_PERIOD' for t in n.targets)),
             seconds=lambda x:x,stamp=lambda x:x,MODE_STATE_MAX_AGE=.5,
             AcceptedReference=Reference,BimanualSession=BimanualSession,
-            ToolPoseSession=ToolPoseSession,IndependentArmsSession=IndependentArmsSession,
+            ToolPoseSession=ToolPoseSession,IndependentArmsSession=IndependentArmsSession,ToolPause=ToolPause,
             TeleopAction=S(Result=lambda **kw:S(**kw),Feedback=lambda **kw:S(**kw)),
+            GoalResponse=S(ACCEPT='ACCEPT',REJECT='REJECT'),
             MotionCommand=self.motion_command,SubmitMotion=S(Request=lambda **kw:S(**kw)),
             Lease=S(Request=lambda **kw:S(**kw)),ControlExecution=S(Request=lambda **kw:S(**kw)),
             joints_at_rest=lambda joints,names,tol:all(abs(v)<=tol for v in joints.velocity))
@@ -125,6 +126,8 @@ class Rig:
         node.grasp_continuation=None
         node.pause_control=ToolPause()
         node.busy=True
+        node.stop_unconfirmed=False
+        node.execution_instance_id=''
         node.event=lambda *args:self.events.append(args)
         node.now=lambda:self.clock
         node.pause=self.pause
@@ -133,6 +136,8 @@ class Rig:
         node.submit_client=S(call_async=self.submit)
         self.goal=S(is_cancel_requested=False,request=S(task_id='transaction',duration=.9,
             resource_group='bimanual_tool'),publish_feedback=Mock(),succeed=Mock(),canceled=Mock(),abort=Mock())
+        for client in (node.lease_client,node.control_client,node.submit_client):
+            client.service_is_ready=lambda:True
         self.update()
 
     def frame(self,seq,grip,*,source='headset',stamp=None,clutch=0):
@@ -266,6 +271,264 @@ class Rig:
 
 
 class BimanualTransactions(unittest.IsolatedAsyncioTestCase):
+    async def test_replacement_before_final_stop_cannot_confirm_old_execution(self):
+        rig=Rig()
+        original_engine,original_update=rig.engine,rig.update
+        replaced=False
+        def update():
+            nonlocal replaced
+            if rig.commands and not replaced:
+                replaced=True
+                drivers={g:SimJointDriver(names,.5) for g,names in rig.profile.groups.items()}
+                rig.io=RobotIO(rig.profile,drivers,SimBaseDriver())
+                rig.engine=Executor(rig.profile,rig.io,steady=lambda:rig.steady)
+                rig.engine.acquire('other',list(rig.profile.groups),2.,rig.clock)
+                rig.engine.halt(rig.clock,revoke=True)
+                rig.services.engine,rig.services.robot_io=rig.engine,rig.io
+            original_update()
+            if replaced:rig.node.state.instance_id='replacement'
+        rig.update=update
+        result=await rig.run()
+        self.assertIn('STOP_UNCONFIRMED',result.code)
+        self.assertTrue(rig.node.stop_unconfirmed)
+        self.assertIsNotNone(original_engine.active)
+        diagnostic=json.loads(next(e[1] for e in rig.events if e[0]=='BIMANUAL_STOP_UNCONFIRMED'))
+        self.assertEqual(diagnostic['requested_instance_id'],'executor')
+        self.assertEqual(diagnostic['observed_instance_id'],'replacement')
+
+    async def test_lost_release_reply_latches_across_idle_restart_and_late_ack(self):
+        rig=Rig()
+        original_lease=rig.lease
+        lost=[]
+        def lease(request):
+            completed=original_lease(request)
+            if request.operation=='release':
+                future=asyncio.get_running_loop().create_future()
+                lost.append((future,completed.result()))
+                return future
+            return completed
+        rig.node.lease_client.call_async=lease
+        result=await rig.run()
+        self.assertIn('STOP_UNCONFIRMED',result.code)
+        self.assertFalse(rig.node.busy)
+        self.assertTrue(rig.node.stop_unconfirmed)
+        count=len(rig.commands)
+        for identity in ('executor','replacement'):
+            rig.update()
+            rig.node.state.instance_id=identity
+            self.assertEqual(rig.node.goal(rig.goal.request),'REJECT')
+            with self.assertRaisesRegex(RuntimeError,'STOP_UNCONFIRMED'):
+                rig.node.check(require_input=False)
+        lost[0][0].set_result(lost[0][1])
+        rig.update()
+        self.assertEqual(rig.node.goal(rig.goal.request),'REJECT')
+        self.assertEqual(len(rig.commands),count)
+
+    async def test_confirmed_stop_allows_explicit_new_action_without_restart(self):
+        rig=Rig()
+        result=await rig.run()
+        self.assertTrue(result.success,result.code)
+        self.assertFalse(rig.node.stop_unconfirmed)
+        rig.step=0;rig.update()
+        self.assertEqual(rig.node.goal(rig.goal.request),'ACCEPT')
+        rig.goal.request.duration=.3
+        result=await rig.run()
+        self.assertTrue(result.success,result.code)
+        self.assertEqual(len(rig.references),2)
+        self.assertEqual(rig.releases,2)
+
+    async def test_acquire_timeout_settles_exact_late_grant_before_release(self):
+        rig=Rig()
+        original_lease=rig.lease
+        def lease(request):
+            completed=original_lease(request)
+            if request.operation=='acquire':
+                future=asyncio.get_running_loop().create_future()
+                rig.receipts.append((rig.clock+.8,future,completed.result()))
+                return future
+            return completed
+        rig.node.lease_client.call_async=lease
+        result=await rig.run()
+        self.assertEqual(result.code,'BIMANUAL_SERVICE_TIMEOUT')
+        self.assertEqual(rig.commands,[])
+        self.assertEqual(rig.releases,1)
+        self.assertFalse(rig.node.stop_unconfirmed)
+        self.assertFalse(rig.engine.lease_id)
+
+    async def test_unknown_acquire_latches_even_after_lease_auto_expires_to_idle(self):
+        rig=Rig()
+        original_lease=rig.lease
+        pending=[]
+        def lease(request):
+            completed=original_lease(request)
+            if request.operation=='acquire':
+                future=asyncio.get_running_loop().create_future()
+                pending.append((future,completed.result()))
+                return future
+            return completed
+        rig.node.lease_client.call_async=lease
+        result=await rig.run()
+        self.assertEqual(result.code,'BIMANUAL_SERVICE_TIMEOUT:STOP_UNCONFIRMED')
+        self.assertEqual(rig.commands,[])
+        while rig.engine.lease_id:await rig.pause()
+        # Expiry alone cannot settle an unknown RPC.
+        self.assertTrue(rig.node.stop_unconfirmed)
+        self.assertEqual(rig.node.goal(rig.goal.request),'REJECT')
+        self.assertTrue(any(e[0]=='BIMANUAL_LEASE_UNCONFIRMED' for e in rig.events))
+        self.assertFalse(pending[0][0].cancelled())
+        pending[0][0].set_result(pending[0][1])
+        rig.update()
+        self.assertTrue(rig.node.stop_unconfirmed)
+        self.assertEqual(rig.node.goal(rig.goal.request),'REJECT')
+
+    async def test_deferral_end_diagnostic_failure_cannot_prevent_release(self):
+        rig=Rig(solve_errors=['BIMANUAL_QP_DEFERRED']*100)
+        rig.goal.request.duration=.12
+        original_event=rig.node.event
+        def event(name,*args):
+            if name=='BIMANUAL_SOLVE_DEFERRED_END':
+                raise RuntimeError('INJECTED_DEFERRAL_LOG_FAILURE')
+            original_event(name,*args)
+        rig.node.event=event
+        result=await rig.run()
+        self.assertFalse(result.success,result.code)
+        self.assertIn('INJECTED_DEFERRAL_LOG_FAILURE',result.code)
+        self.assertEqual(rig.releases,1)
+        self.assertFalse(rig.engine.lease_id)
+        self.assertFalse(rig.node.busy)
+        self.assertTrue(any(e[0]=='BIMANUAL_DIAGNOSTIC_FAILED' for e in rig.events))
+
+    async def test_unconfirmed_stop_diagnostic_failure_cannot_skip_latch_or_finish(self):
+        for logger_fails in (False,True):
+            with self.subTest(logger_fails=logger_fails):
+                rig=Rig()
+                original_lease,original_event=rig.lease,rig.node.event
+                logger=Mock()
+                if logger_fails:logger.warning.side_effect=RuntimeError('LOGGER_UNAVAILABLE')
+                rig.node.get_logger=lambda:logger
+                def lease(request):
+                    completed=original_lease(request)
+                    return (asyncio.get_running_loop().create_future()
+                            if request.operation=='release' else completed)
+                def event(name,*args):
+                    if name=='BIMANUAL_STOP_UNCONFIRMED':
+                        raise RuntimeError('INJECTED_STOP_LOG_FAILURE')
+                    original_event(name,*args)
+                rig.node.event=event
+                rig.node.lease_client.call_async=lease
+                result=await rig.run()
+                self.assertIn('STOP_UNCONFIRMED',result.code)
+                self.assertTrue(rig.node.stop_unconfirmed)
+                self.assertFalse(rig.node.busy)
+                self.assertEqual(rig.node.goal(rig.goal.request),'REJECT')
+                self.assertIn('BIMANUAL_STOP_UNCONFIRMED',rig.node.diagnostic_error)
+                self.assertIn('INJECTED_STOP_LOG_FAILURE',rig.node.diagnostic_error)
+                logger.warning.assert_called_once()
+
+    async def test_runtime_diagnostic_failure_ends_control_before_another_command(self):
+        rig=Rig()
+        original_event=rig.node.event
+        def event(name,*args):
+            if name=='BIMANUAL_QP_RESULT':
+                raise ValueError('INJECTED_RUNTIME_LOG_FAILURE')
+            original_event(name,*args)
+        rig.node.event=event
+        result=await rig.run()
+        self.assertEqual(result.code,'INJECTED_RUNTIME_LOG_FAILURE')
+        self.assertEqual(len(rig.commands),1)
+        self.assertEqual(rig.releases,1)
+        self.assertFalse(rig.engine.lease_id)
+        self.assertIsNone(rig.engine.active)
+        self.assertFalse(rig.node.busy)
+
+    async def test_non_runtime_service_errors_cannot_bypass_unknown_stop_latch(self):
+        for operation in ('acquire','release'):
+            for failure in ('dispatch','future'):
+                with self.subTest(operation=operation,failure=failure):
+                    rig=Rig()
+                    original_lease=rig.lease
+                    def lease(request):
+                        completed=original_lease(request)
+                        if request.operation!=operation:return completed
+                        error=ValueError('INJECTED_'+operation.upper()+'_FAILURE')
+                        if failure=='dispatch':raise error
+                        future=asyncio.get_running_loop().create_future()
+                        future.set_exception(error)
+                        return future
+                    rig.node.lease_client.call_async=lease
+                    result=await rig.run()
+                    self.assertIn('STOP_UNCONFIRMED',result.code)
+                    self.assertTrue(rig.node.stop_unconfirmed)
+                    self.assertFalse(rig.node.busy)
+                    self.assertEqual(rig.node.goal(rig.goal.request),'REJECT')
+
+    async def test_ended_diagnostic_failure_cannot_leave_action_busy(self):
+        rig=Rig()
+        original_event=rig.node.event
+        logger=Mock()
+        rig.node.get_logger=lambda:logger
+        def event(name,*args):
+            if name=='BIMANUAL_ENDED':raise RuntimeError('INJECTED_ENDED_LOG_FAILURE')
+            original_event(name,*args)
+        rig.node.event=event
+        result=await rig.run()
+        self.assertTrue(result.success,result.code)
+        self.assertFalse(rig.node.busy)
+        self.assertFalse(rig.engine.lease_id)
+        self.assertIn('INJECTED_ENDED_LOG_FAILURE',rig.node.diagnostic_error)
+        logger.warning.assert_called_once()
+
+    async def test_release_dispatch_failure_latches_and_preserves_first_cause(self):
+        rig=Rig()
+        original_lease=rig.lease
+        def lease(request):
+            completed=original_lease(request)
+            if request.operation=='release':
+                raise RuntimeError('INJECTED_RELEASE_TRANSPORT_FAILURE')
+            return completed
+        rig.node.lease_client.call_async=lease
+        result=await rig.run()
+        self.assertIn('STOP_UNCONFIRMED',result.code)
+        self.assertTrue(rig.node.stop_unconfirmed)
+        self.assertFalse(rig.node.busy)
+        diagnostic=json.loads(next(e[1] for e in rig.events if e[0]=='BIMANUAL_STOP_UNCONFIRMED'))
+        self.assertEqual(diagnostic['reason'],'INJECTED_RELEASE_TRANSPORT_FAILURE')
+        self.assertEqual(rig.node.goal(rig.goal.request),'REJECT')
+
+    async def test_acquire_dispatch_error_cannot_claim_stopped(self):
+        rig=Rig()
+        original_lease=rig.lease
+        def lease(request):
+            original_lease(request)
+            raise RuntimeError('INJECTED_ACQUIRE_TRANSPORT_FAILURE')
+        rig.node.lease_client.call_async=lease
+        result=await rig.run()
+        self.assertEqual(result.code,'INJECTED_ACQUIRE_TRANSPORT_FAILURE:STOP_UNCONFIRMED')
+        self.assertEqual(rig.commands,[])
+        self.assertTrue(rig.node.stop_unconfirmed)
+        self.assertEqual(rig.node.goal(rig.goal.request),'REJECT')
+
+    async def test_replaced_instance_during_acquire_never_bootstraps_or_confirms(self):
+        rig=Rig()
+        original_lease,original_update=rig.lease,rig.update
+        def lease(request):
+            completed=original_lease(request)
+            if request.operation=='acquire':
+                future=asyncio.get_running_loop().create_future()
+                rig.receipts.append((rig.clock+.02,future,completed.result()))
+                return future
+            return completed
+        def update():
+            original_update()
+            rig.node.state.instance_id='replacement'
+        rig.node.lease_client.call_async=lease
+        rig.update=update
+        result=await rig.run()
+        self.assertIn('STOP_UNCONFIRMED',result.code)
+        self.assertTrue(result.code.startswith('BIMANUAL_EXECUTION_REVISION_UNAVAILABLE'))
+        self.assertEqual(rig.commands,[])
+        self.assertTrue(rig.node.stop_unconfirmed)
+
     async def test_release_regrip_uses_new_baselines_without_process_restart(self):
         rig=Rig(transition='regrip')
         result=await rig.run()

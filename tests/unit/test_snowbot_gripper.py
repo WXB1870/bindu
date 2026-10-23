@@ -483,7 +483,7 @@ class DirectOperationTests(unittest.TestCase):
         node=S(feedback=lambda:S(healthy=True,stopped=True,modes=('unknown','unknown')),
             position_ops=S(config={'calibrated':False,'allow_uncalibrated_direct':True}),
             arms_ready_client=S(service_is_ready=lambda:True,call_async=lambda _:S(success=True)),
-            tool_cfg={},current=lambda _:None,wait=wait)
+            tool_cfg={},operator_grasp=False,current=lambda _:None,wait=wait)
         ns.update(time=__import__('time'),Trigger=S(Request=lambda:None))
         with self.assertRaisesRegex(RuntimeError,mode_code):
             asyncio.run(ns['confirm_tool'](node,None,'bimanual_tool'))

@@ -1,5 +1,6 @@
 """Position-session source identity, independent PDO freshness and resource scope."""
 from types import SimpleNamespace as S
+import ast
 from dataclasses import replace
 import json
 import unittest
@@ -680,6 +681,107 @@ class TargetWireTests(unittest.TestCase):
             self.assertEqual(self.rig.engine.lease_id, lease)
             self.assertIsNone(self.rig.engine.stopping)
         self.assertEqual(self.d.publishers['arms'].publish.call_count, 3)
+
+    def test_powered_hold_lifecycle_reuses_pause_until_explicit_fresh_motion(self):
+        from bindu_contracts.contracts import Motion
+        from bindu_execution.executor import Rejected
+        self.test_startup_enables_once_then_confirms_powered_hold_without_vr()
+        engine, publisher = self.rig.engine, self.d.publishers['arms'].publish
+        # Exercise the same hold/release handlers used by PICO and tool finally,
+        # without importing rclpy or creating a node or publisher.
+        from tests.support.paths import ROOT
+        source = ROOT/'src/integration/bindu_runtime/bindu_runtime/execution_node.py'
+        node = next(n for n in ast.parse(source.read_text()).body
+                    if isinstance(n, ast.ClassDef) and n.name == 'ExecutionNode')
+        methods = [n for n in node.body if getattr(n, 'name', '') in ('lease', 'control')]
+        namespace = {'Rejected': Rejected}
+        module = ast.Module(body=[ast.ClassDef(name='Services', bases=[], keywords=[],
+            body=methods, decorator_list=[])], type_ignores=[])
+        exec(compile(ast.fix_missing_locations(module), str(source), 'exec'), namespace)
+        services = namespace['Services']()
+        services.engine, services.robot_io, services.profile = engine, self.rig.io, self.rig.profile
+        services.now, services.closing = lambda: self.rig.now, False
+        groups = ('waist', 'left_arm', 'right_arm')
+        names = tuple(n for group in groups for n in GROUPS[group])
+
+        def follow(command_id):
+            lease, epoch = engine.acquire('teleop', groups, 2., self.rig.now)
+            # Acquiring authority alone preserves the already confirmed hold.
+            before = publisher.call_count
+            motion = Motion(command_id, lease, epoch, self.rig.profile.digest,
+                'test', '', 'joint_target', '', self.rig.now, .2, names=names,
+                positions=tuple(self.target[n] for n in names), schema_version=2,
+                resource_groups=groups, runtime_mode='real')
+            engine.submit(motion, self.rig.now); engine.tick(self.rig.now)
+            self.assertEqual(publisher.call_count, before+1)
+            packet = publisher.call_args.args[0]
+            self.assertEqual(packet.meta.operation, 1)
+            self.d.receive_receipt(self.receipt(packet))
+            return motion
+
+        self.assertEqual(publisher.call_count, 2)  # Startup TAKEOVER and PAUSE.
+        motion = follow('explicit-follow')
+        self.assertEqual(publisher.call_count, 3)
+        hold_request = S(operation='hold', lease_id=motion.lease_id, epoch=motion.epoch)
+        self.assertTrue(services.control(hold_request, S()).ok)
+        pause = publisher.call_args.args[0]
+        request, requested_at = self.rig.io.pause_request, self.rig.io.stop_requested_at
+        budget = (engine.stop_deadline, engine.stop_steady_deadline)
+        self.assertEqual((publisher.call_count, pause.meta.operation), (4, 2))
+        for _ in range(3):
+            self.assertTrue(services.control(hold_request, S()).ok)
+            self.rig.io.stop()  # Repeated cleanup shares the original PAUSE.
+        self.assertEqual(publisher.call_count, 4)
+        self.assertEqual(self.rig.io.pause_request, request)
+        self.assertEqual(self.rig.io.stop_requested_at, requested_at)
+        self.assertEqual((engine.stop_deadline, engine.stop_steady_deadline), budget)
+        hold = [self.rig.q[n] for n in CONTROL_NAMES]
+        for _ in range(24):
+            self.update_target_feedback(hold=hold, reference_mode=2, segment_id=pause.meta.sequence,
+                trajectory_phase=4, hold_basis=0, reference_valid=True, output_valid=True)
+            engine.tick(self.rig.now)
+        self.assertIsNone(engine.stopping)
+        release = S(operation='release', lease_id=motion.lease_id, epoch=motion.epoch)
+        self.assertTrue(services.lease(release, S()).ok)
+        self.assertEqual(services.lease(release, S()).code, 'INVALID_LEASE')
+        self.rig.io.stop()
+        self.assertEqual(publisher.call_count, 4)
+        self.assertEqual(self.rig.io.pause_request, request)
+        self.assertFalse(engine.stop_fault)
+        with self.assertRaisesRegex(Rejected, 'INVALID_LEASE'):
+            engine.submit(motion, self.rig.now)
+        self.assertEqual(publisher.call_count, 4)
+        engine.acquire('no-motion', groups, 2., self.rig.now)
+        engine.halt(self.rig.now, revoke=True)
+        self.assertEqual(publisher.call_count, 4)  # Empty lease emits no takeover or pause.
+        fresh = follow('explicit-reengage')
+        self.assertNotEqual(fresh.lease_id, motion.lease_id)
+        self.assertGreater(fresh.epoch, motion.epoch)
+        engine.tick(self.rig.now)
+        self.assertEqual(publisher.call_count, 5)
+        self.assertEqual([call.args[0].meta.operation for call in publisher.call_args_list],
+                         [1, 2, 1, 2, 1])
+
+    def test_unconfirmed_hold_cleanup_never_retries_takeover_or_releases_barrier(self):
+        from bindu_execution.executor import Rejected
+        self.rig.enable_rest_window()
+        self.rig.start_stop()
+        engine, publisher = self.rig.engine, self.d.publishers['arms'].publish
+        request, budget = self.rig.io.pause_request, (engine.stop_deadline, engine.stop_steady_deadline)
+        for _ in range(5):
+            engine.halt(self.rig.now, revoke=True, emergency=True)
+            self.rig.io.stop()
+        self.assertEqual(publisher.call_count, 2)
+        self.assertEqual(self.rig.io.pause_request, request)
+        self.assertEqual((engine.stop_deadline, engine.stop_steady_deadline), budget)
+        self.rig.now += .51; self.rig.steady += .51
+        engine.halt(self.rig.now, revoke=True)
+        self.assertIn('STOP_UNCONFIRMED', engine.stop_fault)
+        with self.assertRaisesRegex(Rejected, 'STOP_UNCONFIRMED'):
+            engine.acquire('reengage', tuple(CONTROL_GROUPS), 2., self.rig.now)
+        self.assertEqual(publisher.call_count, 2)
+        self.assertEqual(self.rig.io.pause_request, request)
+        self.assertEqual((engine.stop_deadline, engine.stop_steady_deadline), budget)
 
     def test_target_loss_requests_one_pause_before_original_source_expiry(self):
         self.rig.enable_rest_window()

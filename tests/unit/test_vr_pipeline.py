@@ -49,6 +49,83 @@ class TimingSummaries(unittest.TestCase):
         self.assertIn('command_enabled:=false',control)
         self.assertNotIn('input_timing_enabled',args.deployment)
 
+    def test_launch_routes_cli_timing_to_actual_input_initialization(self):
+        # Execute production launch/assembly/receiver code with inert launch,
+        # ROS and process boundaries. No listener or control node is started.
+        from tools.teleop.run_vr import commands
+        runtime=ROOT/'src/integration/bindu_runtime'
+        def load_definition(path,name,namespace):
+            source=ast.parse(path.read_text())
+            definition=next(n for n in source.body if getattr(n,'name','')==name)
+            exec(compile(ast.Module(body=[definition],type_ignores=[]),str(path),'exec'),namespace)
+            return namespace[name]
+        class Configuration:
+            def __init__(self,name,default=''):self.name,self.default=name,default
+            def perform(self,context):return context.get(self.name,self.default)
+        class Parameter:
+            def __init__(self,value,value_type):self.value,self.type=value,value_type
+            def evaluate(self,context):
+                value=self.value.perform(context)
+                if self.type is bool:
+                    if value not in ('true','false'):raise ValueError(value)
+                    return value=='true'
+                return self.type(value)
+        config=runtime/'config/robots/snowbot'
+        robot=S(robot_id='snowbot',single_arm={},
+                tool_config=config/'bimanual_snowbot_sim.json',base_frame='base_link',
+                active_joints=(),context_joints=(),profile_path=Path('profile'),
+                path=Path('robot'),digest='offline',urdf=Path('model/robot.urdf'))
+        # Use the production selection's tool path; no invented tool settings.
+        selection=json.loads((config/'robot_snowbot.json').read_text())
+        robot.tool_config=config/selection['teleop']['tool']
+        assembly=load_definition(runtime/'bindu_runtime/teleop_assembly.py','assemble',
+            dict(Path=Path,json=json,LaunchConfiguration=Configuration,ParameterValue=Parameter,
+                 IfCondition=lambda v:v,LogInfo=lambda **kw:kw,Node=lambda **kw:kw,
+                 RobotSetup=S(load=lambda *args,**kw:robot),resolve_mode=lambda mode:mode))
+        launch=load_definition(runtime/'launch/robot_teleop.launch.py','generate_launch_description',
+            dict(Path=Path,uuid=S(uuid4=lambda:S(hex='offline')),
+                 get_package_share_directory=lambda _:str(runtime),LaunchDescription=lambda x:x,
+                 DeclareLaunchArgument=lambda name,default_value:(name,default_value),
+                 OpaqueFunction=lambda **kw:kw,assemble=assembly))
+        defaults=dict(item for item in launch() if isinstance(item,tuple))
+        self.assertEqual(defaults['input_timing_enabled'],'false')
+        for timing in (False,True):
+            with self.subTest(timing=timing):
+                args=S(deployment=dict(robot_config='fixture',runtime_mode='simulation',
+                    device_backend='kinematic',command_enabled='false',single_arm_enabled='false',
+                    recorder_enabled='false',recording_mode='off',tool_input_source='vr'),
+                    launch='robot_teleop.launch.py',run_id='offline',namespace='fixture',port=8013,
+                    output=Path('/tmp/not-created'),startup_timeout=30.,diagnostics=False,input_timing=timing)
+                command=commands(args)[0]
+                context=dict(defaults)
+                context.update(part.split(':=',1) for part in command if ':=' in part)
+                nodes={node['executable']:node for node in assembly(context) if 'executable' in node}
+                self.assertNotIn('input_timing_enabled',nodes['teleop_tool']['parameters'][0])
+                params={key:(value.evaluate(context) if isinstance(value,Parameter) else value)
+                        for key,value in nodes['vr_input']['parameters'][0].items()}
+                self.assertIs(params['input_timing_enabled'],timing)
+                self.assertIs(nodes['execution']['parameters'][0].get('command_enabled',False),False)
+                class RuntimeBoundary:
+                    def __init__(self,*args,**kw):self.simulation=True;self.runtime_mode='simulation'
+                    def declare_parameter(self,key,value,**kw):params.setdefault(key,value)
+                    def get_parameter(self,key):return S(value=params.get(key,''))
+                    def create_publisher(self,*args):return S()
+                    def create_timer(self,*args):return S()
+                    def create_subscription(self,*args):return S()
+                    def resolve_topic_name(self,name):return name
+                received=[]
+                node_type=load_definition(runtime/'bindu_runtime/vr_input_node.py','VRInputNode',
+                    dict(RuntimeNode=RuntimeBoundary,ParameterDescriptor=lambda **kw:S(**kw),
+                         VuerReceiver=lambda cfg:received.append(cfg),VRInput=S,String=S,
+                         QoSProfile=lambda **kw:S(**kw),ReliabilityPolicy=S(BEST_EFFORT=1),
+                         mp=S(get_context=lambda _:S(Queue=lambda **kw:S(),
+                             Process=lambda **kw:S(start=lambda:None))),_publish_health=lambda:None))
+                node=node_type()
+                self.assertIs(received[0]['input_timing_enabled'],timing)
+                self.assertEqual(isinstance(node.input_timing,InputPipelineTiming),timing)
+                self.assertEqual(args.deployment['command_enabled'],'false')
+                self.assertNotIn('input_timing_enabled',args.deployment)
+
     def test_coordinator_gap_labels_ros_clock_separately_from_monotonic(self):
         from bindu_contracts.teleoperation import VRFrame
         from bindu_teleoperation.pico import PicoControl,PicoFeedback,PICO_MAPPING
