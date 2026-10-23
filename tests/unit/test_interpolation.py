@@ -73,6 +73,22 @@ class Interpolation(unittest.TestCase):
         self.assertEqual(stop.sample(stop.end+1.).v,(0.,)*16)
         self.assertEqual(stop.sample(stop.end+1.).a,(0.,)*16)
 
+    def test_stream_target_binding_preserves_state_limits_and_finite_stop_tail(self):
+        names=('a',)
+        segment=PreparedSegment.stream_target(self.p,names,State.rest((0.,)),(.4,),0.)
+        for step in range(1,20):
+            now=step*.01;state=segment.sample(now)
+            target=.4 if step%4 else -.2
+            segment=PreparedSegment.stream_target(self.p,names,state,(target,),now)
+            self.assertEqual(segment.sample(now).q,state.q)
+            self.assertEqual(segment.sample(now).v,state.v)
+            self.assertEqual(segment.sample(now).a,state.a)
+            for k in range(11):self.assert_bounded(segment.sample(now+k*.001))
+        end=segment.sample(segment.end+1.)
+        self.assertEqual(end.v,(0.,));self.assertEqual(end.a,(0.,))
+        with self.assertRaises(ValueError):
+            PreparedSegment.stream_target(self.p,names,State.rest((0.,)),(float('nan'),),0.)
+
     def test_prepared_buffer_sampling_and_invalid_inputs_are_transactional(self):
         from array import array
         segment=PreparedSegment.target(self.p,('a',),State.rest((.2,)),(.6,),10.)

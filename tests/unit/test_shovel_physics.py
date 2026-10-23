@@ -15,12 +15,31 @@ import numpy as np
 from scipy.spatial.transform import Rotation
 
 sys.path.insert(0, str(ROOT))
-from tools.simulation.shovel_physics import wooden_parts, compound_mass, grip_wrench, internal_wrench, MeasuredJointVelocity, load_motion
+from tools.simulation.shovel_physics import wooden_parts, compound_mass, grip_wrench, internal_wrench, MeasuredJointVelocity, load_motion, joint_drive_parameters
 from tools.simulation.run_shovel_physics import contact_wrench, validate_grasp_config
 from tools.simulation.shovel_control import GripLoadObserver, ControlClient
 
 
 class ShovelPhysicsTests(unittest.TestCase):
+    def test_drive_calibration_preserves_defaults_and_urdf_effort_ceiling(self):
+        names = ['arm', 'waist']; limits = {n:dict(effort='80') for n in names}
+        cfg = dict(joint_stiffness_nm_rad=100000., joint_damping_nm_s_rad=2000.)
+        kp, kd, effort = joint_drive_parameters(names, limits, cfg)
+        np.testing.assert_array_equal(kp, [100000.,100000.])
+        np.testing.assert_array_equal(kd, [2000.,2000.])
+        np.testing.assert_array_equal(effort, [80.,80.])
+        cfg['joint_drive_overrides'] = {'waist':dict(stiffness_nm_rad=80000., damping_nm_s_rad=4000., max_effort_nm=60.)}
+        kp, kd, effort = joint_drive_parameters(names, limits, cfg)
+        np.testing.assert_array_equal(kp, [100000.,80000.])
+        np.testing.assert_array_equal(kd, [2000.,4000.])
+        np.testing.assert_array_equal(effort, [80.,60.])
+        for override in ({'missing':{}}, {'arm':{'velocity':.5}},
+                         {'arm':{'damping_nm_s_rad':float('nan')}},
+                         {'arm':{'stiffness_nm_rad':0.}}, {'arm':{'max_effort_nm':81.}}):
+            cfg['joint_drive_overrides'] = override
+            with self.assertRaisesRegex(ValueError, 'PHYSICS_DRIVE_'):
+                joint_drive_parameters(names, limits, cfg)
+
     def test_contact_parameters_reject_negative_effort_or_malformed_joints(self):
         cfg = copy.deepcopy(self.cfg)
         validate_grasp_config(cfg)

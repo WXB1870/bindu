@@ -59,7 +59,8 @@ class PhysicsCommandGate:
 
 class PhysicsPositionState:
     """Post-step target acceptance and separate measured stable-stop ACKs."""
-    def __init__(self, profile, simulator_id, initial, timeout=.25, settle_time=.1):
+    def __init__(self, profile, simulator_id, initial, timeout=.25, settle_time=.1,
+                 reference_generator="synchronized_velocity"):
         self.gate=PhysicsCommandGate(profile,simulator_id,timeout)
         self.profile=profile
         if not math.isfinite(settle_time) or not 0 < settle_time < profile.stop_timeout:
@@ -78,8 +79,32 @@ class PhysicsPositionState:
         self.hold_requests={}
         self.hold_candidates={}
         self.hold_acknowledgments={}
+        if reference_generator not in ('synchronized_velocity','target_stream'):
+            raise ValueError('PHYSICS_REFERENCE_GENERATOR')
+        self.reference_generator=reference_generator
+        self.stream_names=tuple(n for g in ('left_arm','right_arm','waist')
+                                for n in profile.groups.get(g,()))
+        self.stream_time=0.
+        self.stream_path=None
+        self.stream_goal=None
+        if reference_generator=='target_stream':
+            from bindu_execution.interpolation import State
+            self.stream_state=State.rest(initial[n] for n in self.stream_names)
 
     def hold(self, group, measured):
+        if (self.reference_generator=='target_stream' and
+                set(self.profile.groups[group]) & self.coupled_names and group not in self.holding):
+            from bindu_execution.interpolation import PreparedSegment
+            # The real device brakes its current reference, rather than snapping
+            # to a lagging measurement. Group messages share one waist/arm curve.
+            self.stream_path=PreparedSegment.stop(self.profile,self.stream_names,
+                                                  self.stream_state,self.stream_time)
+            end=self.stream_path.sample(self.stream_path.end)
+            for n,q in zip(self.stream_names,end.q):
+                self.targets[n]=self.hold_positions[n]=q
+            self.stream_goal=tuple(end.q)
+            self.holding.update(g for g in ('left_arm','right_arm','waist') if g in self.profile.groups)
+            return
         if group not in self.holding:
             for n in self.profile.groups[group]:
                 self.reference[n]=self.targets[n]=self.hold_positions[n]=measured[n]
@@ -147,8 +172,22 @@ class PhysicsPositionState:
         from .simulated_joints import synchronized_position_step
         if not math.isfinite(dt) or not 0<dt<=.1:
             raise ValueError('PHYSICS_REFERENCE_TIMESTEP')
-        reference,velocity,self.progress=synchronized_position_step(
-            self.reference,{n:self.targets[n] for n in self.coupled_names},self.speeds,dt)
+        if self.reference_generator=='target_stream':
+            from bindu_execution.interpolation import PreparedSegment
+            goal=tuple(self.targets[n] for n in self.stream_names)
+            if goal!=self.stream_goal:
+                self.stream_path=PreparedSegment.stream_target(self.profile,self.stream_names,
+                    self.stream_state,goal,self.stream_time)
+                self.stream_goal=goal
+            self.stream_time+=dt
+            if self.stream_path is not None:
+                self.stream_state=self.stream_path.sample(self.stream_time)
+            reference=dict(self.reference);velocity=dict.fromkeys(self.reference,0.)
+            reference.update(zip(self.stream_names,self.stream_state.q))
+            velocity.update(zip(self.stream_names,self.stream_state.v))
+        else:
+            reference,velocity,self.progress=synchronized_position_step(
+                self.reference,{n:self.targets[n] for n in self.coupled_names},self.speeds,dt)
         # Head and grippers have independent device control. Their speed must
         # neither throttle the coupled waist/arms nor depend on arm motion.
         for n in self.targets.keys()-self.coupled_names:

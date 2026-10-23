@@ -40,6 +40,12 @@ if "$bindu_ros"; then
   source "${BINDU_ISAAC_ROS_PREFIX:?VR physics requires the current bindu_interfaces install}/share/bindu_interfaces/local_setup.bash"
   set -u
   export PYTHONPATH="$bindu_root/src/shared/bindu_contracts:$bindu_root/src/hardware/bindu_hardware:$PYTHONPATH"
+  # Optional native target-stream math; use the matching existing ROS build.
+  if [ -n "${BINDU_ISAAC_EXECUTION_PREFIX:-}" ]; then
+    set +u
+    source "$BINDU_ISAAC_EXECUTION_PREFIX/share/bindu_execution/local_setup.bash"
+    set -u
+  fi
 fi
 export LD_LIBRARY_PATH="$bindu_nv_dirs${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 export PYTHONPATH="$bindu_root${PYTHONPATH:+:$PYTHONPATH}"

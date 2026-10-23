@@ -169,6 +169,12 @@ class PreparedSegment:
                          start, profile.max_transition_duration, profile.stop_timeout))
 
     @classmethod
+    def stream_target(cls, profile, names, state, target, start):
+        """The same adaptive target preparation used by the position servo."""
+        return cls._wrap(_native.prepared_stream_target(_limits(profile, names), _state(state),
+                         target, start, profile.max_transition_duration, profile.stop_timeout))
+
+    @classmethod
     def stop(cls, profile, names, state, start):
         return cls._wrap(_native.prepared_stop(_limits(profile, names), _state(state),
                                              start, profile.stop_timeout))

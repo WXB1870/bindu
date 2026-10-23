@@ -55,6 +55,88 @@ class PhysicsRealtimeTests(unittest.TestCase):
             self.module.apply_velocity_limits(body,S())
 
 
+class TargetStreamPhysicsTests(unittest.TestCase):
+    def setUp(self):
+        self.profile=Profile.load(ROOT/'src/integration/bindu_runtime/config/robots/snowbot/snowbot_real_position.json')
+        self.q=dict.fromkeys(self.profile.limits,0.)
+        self.core=PhysicsPositionState(self.profile,'boot',self.q,reference_generator='target_stream')
+
+    def test_shared_native_reference_respects_each_axis_dynamics(self):
+        self.core.targets.update(arm_l_joint_1=.2,arm_r_joint_1=-.1,body_joint_1=.08)
+        for _ in range(100):
+            q,v=self.core.reference_step(.004)
+            for i,n in enumerate(self.core.stream_names):
+                state=self.core.stream_state
+                self.assertLessEqual(abs(v[n]),self.profile.speed(n)+1e-8)
+                self.assertLessEqual(abs(state.a[i]),self.profile.acceleration(n)+1e-8)
+                self.assertLessEqual(abs(state.j[i]),self.profile.jerk(n)+1e-8)
+        self.assertEqual(self.q['arm_l_joint_1'],0.)  # References never become measurement.
+        self.assertGreater(q['arm_l_joint_1'],0.)
+        self.assertGreater(q['body_joint_1'],0.)
+
+    def test_retarget_and_brake_keep_reference_continuity_with_measured_lag(self):
+        self.core.targets['arm_l_joint_1']=.2
+        for _ in range(50):self.core.reference_step(.004)
+        before=self.core.stream_state;switch=self.core.stream_time
+        self.core.targets['arm_l_joint_1']=.3
+        self.core.reference_step(.004)
+        start=self.core.stream_path.sample(switch)
+        for lhs,rhs in zip((start.q,start.v,start.a),(before.q,before.v,before.a)):
+            for x,y in zip(lhs,rhs):self.assertAlmostEqual(x,y,places=12)
+        before=self.core.stream_state;switch=self.core.stream_time
+        self.core.hold('left_arm',self.q)
+        path=self.core.stream_path
+        start=path.sample(switch)
+        for lhs,rhs in zip((start.q,start.v,start.a),(before.q,before.v,before.a)):
+            for x,y in zip(lhs,rhs):self.assertAlmostEqual(x,y,places=12)
+        i=self.core.stream_names.index('arm_l_joint_1')
+        self.assertGreater(start.q[i],self.q['arm_l_joint_1'])
+        targets=dict(self.core.hold_positions)
+        self.core.hold('right_arm',dict(self.q,arm_l_joint_1=.15))
+        self.assertIs(self.core.stream_path,path)
+        self.assertEqual(self.core.hold_positions,targets)
+        for _ in range(500):self.core.reference_step(.004)
+        self.assertTrue(all(abs(v)<1e-10 for v in self.core.stream_state.v))
+        self.assertTrue(all(abs(a)<1e-10 for a in self.core.stream_state.a))
+        self.assertEqual(self.core.hold_acknowledgments,{})
+
+    def test_grippers_remain_independent_of_coupled_curve(self):
+        self.core.targets['arm_l_joint_1']=.2
+        self.core.reference_step(.004);path=self.core.stream_path
+        self.core.targets['arm_r_joint_8']=.2
+        q,v=self.core.reference_step(.004)
+        self.assertIs(self.core.stream_path,path)
+        self.assertAlmostEqual(q['arm_r_joint_8'],self.profile.speed('arm_r_joint_8')*.004)
+        self.core.hold('right_tool_axis',self.q)
+        self.assertIs(self.core.stream_path,path)
+        q,v=self.core.reference_step(.004)
+        self.assertEqual(q['arm_r_joint_8'],0.)
+
+    def test_source_expiry_brakes_once_and_stale_input_cannot_resume(self):
+        vector=lambda:S(x=0.,y=0.,z=0.)
+        command=S(stamp=S(sec=10,nanosec=0),simulator_id='boot',sender_id='executor',
+            sequence=1,profile_hash=self.profile.digest,valid_for=.2,operation='set',
+            resource_group='left_arm',joint_names=self.profile.groups['left_arm'],
+            positions=[.2,0.,0.,0.,0.,0.,0.],velocity=S(linear=vector(),angular=vector()))
+        self.core.accept(command,10.,self.q)
+        for _ in range(50):self.core.reference_step(.004)
+        self.assertEqual(self.core.expire(10.19,self.q),[])
+        self.assertEqual(self.core.expire(10.201,self.q),['left_arm'])
+        stop=self.core.stream_path;targets=dict(self.core.targets)
+        self.assertEqual(self.core.expire(10.3,self.q),[])
+        self.assertIs(self.core.stream_path,stop)
+        command.sequence=2
+        with self.assertRaisesRegex(ValueError,'SIM_STALE_COMMAND'):
+            self.core.accept(command,10.3,self.q)
+        self.assertEqual(self.core.targets,targets)
+        self.core.stepped()
+        self.assertEqual(self.core.hold_acknowledgments,{})
+
+    def test_invalid_mode_rejects_before_use(self):
+        with self.assertRaisesRegex(ValueError,'PHYSICS_REFERENCE_GENERATOR'):
+            PhysicsPositionState(self.profile,'boot',self.q,reference_generator='unknown')
+
+
 class PositionPhysicsTests(unittest.TestCase):
     def setUp(self):
         self.profile=Profile.load(ROOT/'src/integration/bindu_runtime/config/robots/snowbot/snowbot_real_position.json')
@@ -81,9 +163,9 @@ class PositionPhysicsTests(unittest.TestCase):
     def test_reference_uses_shared_progress_and_matching_velocity_without_faking_measurement(self):
         self.core.targets.update(arm_l_joint_1=.3,arm_r_joint_1=.15,body_joint_1=.1)
         positions,velocity=self.core.reference_step(.01)
-        self.assertAlmostEqual(positions['arm_l_joint_1'],.015)
-        self.assertAlmostEqual(positions['arm_r_joint_1'],.0075)
-        self.assertAlmostEqual(positions['body_joint_1'],.005)
+        goals={'arm_l_joint_1':.3,'arm_r_joint_1':.15,'body_joint_1':.1}
+        progress=min(self.profile.speed(n)*.01/abs(q) for n,q in goals.items())
+        for n,q in goals.items():self.assertAlmostEqual(positions[n],q*progress)
         for n in positions:
             self.assertAlmostEqual(velocity[n],positions[n]/.01)
             self.assertLessEqual(abs(velocity[n]),self.profile.speed(n)+1e-12)
@@ -107,8 +189,10 @@ class PositionPhysicsTests(unittest.TestCase):
         self.core.targets.update(arm_l_joint_1=.3,arm_r_joint_1=.15,body_joint_1=.1,
                                  arm_l_joint_8=.8,head_joint_1=.5)
         positions,velocity=self.core.reference_step(.01)
-        self.assertAlmostEqual(positions['arm_l_joint_1'],.015)
-        self.assertAlmostEqual(positions['arm_r_joint_1'],.0075)
+        progress=min(self.profile.speed(n)*.01/abs(q) for n,q in
+                     {'arm_l_joint_1':.3,'arm_r_joint_1':.15,'body_joint_1':.1}.items())
+        self.assertAlmostEqual(positions['arm_l_joint_1'],.3*progress)
+        self.assertAlmostEqual(positions['arm_r_joint_1'],.15*progress)
         for n in ('arm_l_joint_8','head_joint_1'):
             self.assertAlmostEqual(velocity[n],self.profile.speed(n))
         self.assertEqual(self.q['arm_l_joint_8'],0.)

@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Live Snowbot PhysX device. ROS position targets in; measured joints out.
 
-No VR mapping, QP, interpolation, grasp Boolean override, or hardware driver.
+No VR mapping, QP, grasp Boolean override, or hardware driver.
+An optional device reference generator reuses the production target-stream math.
 The operator's load confirmation places a tool once; subsequent motion/contact
 comes from PhysX. Jaw positions are exactly the shared gripper contract.
 """
@@ -49,6 +50,8 @@ def validate_live_config(cfg):
         if type(value) not in (int,float) or not math.isfinite(value) or not low<=value<=high:
             raise ValueError('PHYSICS_LIVE_CONFIG:'+key)
     if type(live['headless']) is not bool:raise ValueError('PHYSICS_LIVE_CONFIG:headless')
+    if live.get('reference_generator','synchronized_velocity') not in ('synchronized_velocity','target_stream'):
+        raise ValueError('PHYSICS_REFERENCE_GENERATOR')
     return live
 
 
@@ -139,7 +142,8 @@ def main():
         view.set_world_poses(np.array([[0.,0.,-10.]]),np.array([[1.,0.,0.,0.]]),indices=[2])
         for _ in range(30):world.step(render=False)
         simulator_id=uuid.uuid4().hex
-        core=PhysicsPositionState(profile,simulator_id,initial,live['command_timeout_s'],live['stop_settle_s'])
+        core=PhysicsPositionState(profile,simulator_id,initial,live['command_timeout_s'],live['stop_settle_s'],
+                                  live.get('reference_generator','synchronized_velocity'))
         rclpy.init(args=[],signal_handler_options=SignalHandlerOptions.NO)
         node=rclpy.create_node('snowbot_isaac',namespace='/'+session['namespace'].strip('/'))
         from tools.simulation.snowbot_isaac_io import PhysicsPublisher
@@ -173,6 +177,8 @@ def main():
         left_fixed=np.array(source['flange_from_physical_body'][0])
         source.update(run_id=session['run_id'],profile_hash=profile.digest,simulator_id=simulator_id,
                       physics_dt_s=dt,feedback_hz=live['feedback_hz'],grasp_model='contact',
+                      reference_generator=core.reference_generator,
+                      command_contract='SimulationCommand; not the vendor session_v3 protocol',
                       initial_positions_rad=initial,servo_and_friction_parameters='unvalidated simulation assumptions')
         (args.output/'source.json').write_text(json.dumps(source,indent=2))
         gc.collect();gc.freeze();gc.disable()

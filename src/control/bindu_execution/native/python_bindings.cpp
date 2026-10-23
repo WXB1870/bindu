@@ -144,6 +144,12 @@ PyObject* prepared_target(PyObject*,PyObject* args) {
     try {return prepared_capsule(PreparedSegment::target(limits(ls),state(s),vector(goal),start,horizon,timeout));}
     catch(...){return error();}
 }
+PyObject* prepared_stream_target(PyObject*,PyObject* args) {
+    PyObject *ls,*s,*goal;double start,horizon,timeout;
+    if(!PyArg_ParseTuple(args,"OOOddd",&ls,&s,&goal,&start,&horizon,&timeout)) return nullptr;
+    try {return prepared_capsule(PreparedSegment::stream_target(limits(ls),state(s),vector(goal),start,horizon,timeout));}
+    catch(...){return error();}
+}
 PyObject* prepared_stop(PyObject*,PyObject* args) {
     PyObject *ls,*s;double start,timeout;
     if(!PyArg_ParseTuple(args,"OOdd",&ls,&s,&start,&timeout)) return nullptr;
@@ -230,7 +236,9 @@ PyMethodDef methods[]={
     {"fit_target",target,METH_VARARGS,nullptr},{"fit_stop",stop,METH_VARARGS,nullptr},
     {"fit_timed",timed,METH_VARARGS,nullptr},{"online",online,METH_VARARGS,nullptr},
     {"online_sample",online_sample,METH_VARARGS,nullptr},
-    {"prepared_target",prepared_target,METH_VARARGS,nullptr},{"prepared_stop",prepared_stop,METH_VARARGS,nullptr},
+    {"prepared_target",prepared_target,METH_VARARGS,nullptr},
+    {"prepared_stream_target",prepared_stream_target,METH_VARARGS,nullptr},
+    {"prepared_stop",prepared_stop,METH_VARARGS,nullptr},
     {"prepared_info",prepared_info,METH_VARARGS,nullptr},{"prepared_sample",prepared_sample,METH_VARARGS,nullptr},
     {"prepared_describe",prepared_describe,METH_VARARGS,nullptr},
     {"prepared_from_description",prepared_from_description,METH_VARARGS,nullptr},
