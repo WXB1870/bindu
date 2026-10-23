@@ -805,6 +805,7 @@ class SnowbotRosBindingTests(unittest.TestCase):
         from bindu_runtime.snowbot_adapter import SnowbotDevices
         binding = SnowbotGrippers.__new__(SnowbotGrippers)
         binding.health = Mock()
+        binding.session_protocol = False
         devices = SnowbotDevices.__new__(SnowbotDevices)
         devices.node = Mock()
         devices.node.get_clock.return_value.now.return_value.nanoseconds = 10_000_000_000
