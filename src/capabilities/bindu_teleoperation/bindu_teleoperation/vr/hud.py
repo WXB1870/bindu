@@ -10,6 +10,8 @@ from pathlib import Path
 
 def hud_spec(view):
     mode, reason = view.get('mode', 'checking'), view.get('reason', '')
+    if view.get('fault_active') and view.get('first_fault'):
+        reason = view['first_fault']['code']
     confirmed = view.get('stop_confirmed') is True
     applied = view.get('grasp_applied')
     # Older observers cannot prove the applied grasp from a requested value.
@@ -54,6 +56,11 @@ def hud_spec(view):
                 notice('工具触地策略已阻断' if confirmed else '等待停稳确认',
                     '查看工具长度与场景策略；松握后按 B 恢复' if confirmed else detail)
         if confirmed:spec['action']='B 恢复待命'
+        if view.get('stop_failure') and view.get('fault_active'):
+            spec['action']='Y 保持停止'
+        if view.get('recovery_required') and view.get('fault_active'):
+            notice('设备／采样异常 · 锁定','保持松握；查看电脑端首故障与停止协议，需现场排查')
+            spec['action']='Y 保持停止'
     elif mode in ('checking','DISPLAY_WAITING'):
         spec.update(status='连接检查',grip='工具')
         notice('等待手柄与关节反馈', '保持双侧握松开，等待连接就绪')

@@ -126,6 +126,10 @@ class SessionHealth:
             return str(exc)
         obs = self.observation
         session, sequence, boot, baseline = request
+        # A disabled/interrupted session cannot acknowledge a braking PAUSE.
+        # Report the device barrier before the incidental sequence mismatch.
+        if self.reference_mode and obs.session_reason >= 3:
+            return 'SESSION_TERMINATED:'+str(obs.session_reason)
         checks = ((obs.boot_id == boot, 'BOOT_MISMATCH'),
                   (obs.session_selected, 'SESSION_NOT_SELECTED'),
                   (obs.session == session, 'SESSION_MISMATCH'),
@@ -245,7 +249,13 @@ def stop_diagnostic(health, engine, now):
     elif now >= engine.stop_deadline or steady >= engine.stop_steady_deadline:
         reason = 'STOP_BUDGET_EXPIRED'
     window = getattr(engine, 'stop_rest_window', None)
+    device_fault = bool(obs and getattr(obs, 'session_reason', 0) >= 3)
+    servo = health.states.get('servo', (None, None))[1]
     return dict(reason=reason, ack_reason=ack_reason, session=session, sequence=sequence,
+        recovery_required=('device_inspection' if device_fault else
+                           'stop_confirmation' if ack_reason or engine.stop_fault else 'measured_rest'),
+        servo_rejection={key:getattr(servo,key,None) for key in
+                         ('rejected_session','rejected_sequence','reason')},
         boot_id=boot, baseline_sample=baseline,
         observed={key:getattr(obs, key, None) for key in ('boot_id', 'pdo_sample', 'session',
             'command_sequence', 'session_reason', 'session_selected', 'hold_valid', 'hold_sample',

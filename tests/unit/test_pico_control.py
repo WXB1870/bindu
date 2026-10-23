@@ -14,6 +14,25 @@ from tests.support.pico import Rig
 
 
 class ScenarioRuntimeTests(unittest.IsolatedAsyncioTestCase):
+    def test_execution_fault_and_stop_protocol_reach_pico_without_normal_cancel_fault(self):
+        from types import SimpleNamespace as S
+        node=self.production('on_motion_event');node.run_id='run';node.runtime_mode='real';node.instance_id='test'
+        r=Rig();node.control=r.core;node.lease=('lease','instance');node.tool_request=None
+        node.now=lambda:r.now
+        def event(state,code,task='pico_test',component='execution',run='run'):
+            return S(run_id=run,runtime_mode='real',task_id=task,component=component,state=state,
+                     code=code,stamp=S(sec=1,nanosec=0))
+        node.on_motion_event(event('STOPPING','CANCELED'))
+        node.on_motion_event(event('FAILED','DEVICE_FEEDBACK_ERROR',task='another'))
+        node.on_motion_event(event('FAILED','DEVICE_FEEDBACK_ERROR',run='other'))
+        self.assertIsNone(r.core.first_fault)
+        node.on_motion_event(event('DEVICE_COMMAND_DETAIL','SNOWBOT_PDO_STALE',task=''))
+        node.on_motion_event(event('STOP_CHECK',json.dumps(dict(sequence=1932,
+            observed=dict(command_sequence=1930,session_reason=7)))))
+        self.assertEqual(r.core.first_fault['code'],'SNOWBOT_PDO_STALE')
+        self.assertEqual(r.core.recovery_required,'device_inspection')
+        self.assertEqual(node.stop_diagnostic['observed']['command_sequence'],1930)
+
     @staticmethod
     def production(*names):
         # Execute production methods with ROS/service/process boundaries inert.
@@ -24,12 +43,53 @@ class ScenarioRuntimeTests(unittest.IsolatedAsyncioTestCase):
         methods=[n for n in node.body if getattr(n,'name','') in names]
         module=ast.Module(body=[ast.ClassDef(name='Actual',bases=[],keywords=[],body=methods,decorator_list=[])],type_ignores=[])
         namespace=dict(json=json,math=__import__('math'),time=S(monotonic=lambda:0.),
+            seconds=lambda stamp:stamp.sec+stamp.nanosec*1e-9,
             joints_at_rest=lambda joints,names,tol:all(abs(v)<=tol for n,v in zip(joints.name,joints.velocity) if n in names),
             Trigger=S(Request=lambda:S()),Superseded=type('Superseded',(RuntimeError,),{}))
         reference=next(n for n in ast.parse(path.read_text()).body if getattr(n,'name','')=='prepare_reference')
         exec(compile(ast.Module(body=[reference],type_ignores=[]),str(path),'exec'),namespace)
         exec(compile(ast.fix_missing_locations(module),str(path),'exec'),namespace)
         return namespace['Actual']()
+
+    def test_display_keeps_fresh_coordinated_pair_during_one_hand_delivery(self):
+        from types import SimpleNamespace as S
+        rig=Rig();node=self.production('input_status');node.control=rig.core
+        pair=rig.core.frames
+        def raw(f):
+            return S(side=f.side,source_id=f.source_id,seq=f.seq,valid=f.valid,
+                     stamp=S(sec=int(f.stamp),nanosec=round((f.stamp-int(f.stamp))*1e9)))
+        node.frames={f.side:raw(f) for f in pair}
+        state=node.input_status(rig.now)
+        self.assertTrue(state['raw_input_valid']);self.assertFalse(state['input_pair_pending'])
+        node.frames['left']=raw(replace(pair[0],seq=pair[0].seq+1,stamp=rig.now+.01))
+        state=node.input_status(rig.now+.01)
+        self.assertTrue(state['raw_input_valid']);self.assertTrue(state['input_pair_pending'])
+        self.assertEqual(node.control.frames,pair)  # Display never ingests/executes a partial pair.
+        rig.step(.02)
+        node.frames={f.side:raw(f) for f in rig.core.frames}
+        self.assertFalse(node.input_status(rig.now)['input_pair_pending'])
+
+    def test_display_never_hides_invalid_stale_future_or_changed_source_input(self):
+        from types import SimpleNamespace as S
+        for fault in ('invalid','stale','future','source','reversed','missing','pair_stale','no_pair'):
+            with self.subTest(fault=fault):
+                rig=Rig();node=self.production('input_status');node.control=rig.core
+                node.frames={f.side:S(side=f.side,source_id=f.source_id,seq=f.seq,valid=True,
+                    stamp=S(sec=1,nanosec=round((f.stamp-1)*1e9))) for f in rig.core.frames}
+                left=node.frames['left'];now=rig.now
+                if fault=='invalid':left.valid=False
+                elif fault=='stale':now+=.251
+                elif fault=='future':left.stamp=S(sec=2,nanosec=0)
+                elif fault=='source':left.source_id='reconnected'
+                elif fault=='reversed':left.seq-=1
+                elif fault=='missing':node.frames.pop('right')
+                elif fault=='no_pair':node.control.frames=None
+                else:
+                    now+=.251
+                    for f in node.frames.values():
+                        f.stamp=S(sec=1,nanosec=round((now-1)*1e9));f.seq+=1
+                state=node.input_status(now)
+                self.assertFalse(state['raw_input_valid']);self.assertFalse(state['input_pair_pending'])
 
     def test_unheld_policy_is_explicit_and_defaults_to_physical_grasp_checks(self):
         import ast
@@ -377,6 +437,46 @@ class DualModeTests(unittest.TestCase):
 
 
 class StateTests(unittest.TestCase):
+    def test_stop_failure_and_late_request_never_replace_first_fault(self):
+        r=Rig();r.core.phase='following'
+        r.core.lock('PICO_FEEDBACK_UNAVAILABLE',r.now)
+        stop=r.core.pending
+        r.core.record_fault('SNOWBOT_PDO_STALE',r.now-.01)
+        r.core.complete(stop.token,False,'PICO_STOP_UNCONFIRMED:TOOL_STOP_UNCONFIRMED',r.now+.01)
+        r.core.record_fault('PICO_STOP_UNCONFIRMED:REQUEST_NOT_CURRENT',r.now+.02,kind='request')
+        r.core.lock('PICO_INPUT_TIMEOUT',r.now+.03)
+        view=r.core.snapshot()
+        self.assertEqual(view['first_fault']['code'],'SNOWBOT_PDO_STALE')
+        self.assertEqual(view['reason'],'PICO_FEEDBACK_UNAVAILABLE')
+        self.assertEqual(view['stop_failure']['code'],'PICO_STOP_UNCONFIRMED:TOOL_STOP_UNCONFIRMED')
+        self.assertEqual(view['request_failure']['code'],'PICO_STOP_UNCONFIRMED:REQUEST_NOT_CURRENT')
+        self.assertEqual(view['recovery_required'],'device_inspection')
+        self.assertIsNone(r.core.pending)
+        r.click(1,1)
+        self.assertEqual(r.core.phase,'locked')
+
+    def test_confirmed_stream_stop_recovers_only_on_fresh_released_b_edge(self):
+        r=Rig();r.core.phase='following'
+        r.core.lock('PICO_INPUT_TIMEOUT',r.now);r.complete()
+        self.assertFalse(r.core.recovery_required)
+        r.grips=[1.,0.];r.step();r.click(1,1)
+        self.assertEqual(r.core.phase,'locked')
+        r.grips=[0.,0.];r.step();r.click(1,1)
+        self.assertEqual(r.core.phase,'standby');self.assertFalse(r.core.fault_active)
+        self.assertEqual(r.core.first_fault['code'],'PICO_INPUT_TIMEOUT')
+        self.assertIsNone(r.core.pending)
+        r.core.record_fault('DEVICE_FEEDBACK_ERROR',r.now-.2)
+        self.assertFalse(r.core.fault_active)  # Delayed prior-episode telemetry.
+        r.core.lock('PICO_PAIR_INVALID',r.now+.01)
+        self.assertEqual(r.core.first_fault['code'],'PICO_PAIR_INVALID')
+        self.assertIsNone(r.core.stop_failure)
+
+    def test_failed_stop_cannot_recover_from_rest_only(self):
+        r=Rig();r.core.lock('PICO_INPUT_TIMEOUT',r.now)
+        r.complete(False,'PICO_STOP_UNCONFIRMED:DEADLINE_EXPIRED')
+        r.click(1,1)
+        self.assertEqual(r.core.phase,'locked')
+
     def test_timeout_keeps_triggering_old_frame_evidence_after_fresh_input_returns(self):
         rig=Rig(guided=True,dual=True);rig.grips=[1.,1.];rig.step();rig.complete()
         core=rig.core;old_stamp=core.stamp;old_seq=core.seq

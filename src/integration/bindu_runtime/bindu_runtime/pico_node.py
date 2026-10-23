@@ -234,7 +234,27 @@ class PicoNode(RuntimeNode):
 
     def on_motion_event(self,msg):
         if (msg.run_id!=self.run_id or msg.runtime_mode!=self.runtime_mode or
-                msg.task_id!='pico_'+self.instance_id):return
+                msg.component!='execution' and msg.task_id!='pico_'+self.instance_id):return
+        if msg.component=='execution':
+            owned = msg.task_id=='pico_'+self.instance_id or (not msg.task_id and
+                (self.tool_request is not None or self.lease is not None or self.control.fault_active))
+            if not owned:return
+            if msg.state=='STOP_CHECK':
+                try:detail=json.loads(msg.code)
+                except (ValueError,TypeError):return
+                if not isinstance(detail,dict):return
+                self.stop_diagnostic=detail
+                observed=detail.get('observed') or {}
+                if (isinstance(observed,dict) and type(observed.get('session_reason')) is int and
+                        observed['session_reason']>=3):
+                    code='SNOWBOT_SESSION_STOPPED:'+str(observed['session_reason'])
+                    if self.control.record_fault(code,seconds(msg.stamp),device=True):
+                        self.control.lock(code,self.now())
+            elif (msg.state in ('STOPPING','FAILED','DEVICE_FEEDBACK_DETAIL','DEVICE_COMMAND_DETAIL') and
+                    msg.code not in ('CANCELED','OK','SHUTDOWN')):
+                if self.control.record_fault(msg.code,seconds(msg.stamp)):
+                    self.control.lock(msg.code,self.now())
+            return
         if msg.state in ('BIMANUAL_CAPTURED','BIMANUAL_ENDED'):
             self.motion_limit=None
         elif msg.state=='BIMANUAL_QP_RESULT':
@@ -327,8 +347,13 @@ class PicoNode(RuntimeNode):
 
     def stop_unconfirmed(self,request,reason):
         # A delayed coroutine must not fail/clear a newer request or goal.
+        if request is self.stop_request and request['failed']:
+            raise RuntimeError('PICO_STOP_UNCONFIRMED:'+request.get('failure_reason','PREVIOUS_REQUEST_UNCONFIRMED'))
+        self.control.record_fault('PICO_STOP_UNCONFIRMED:'+reason,self.now(),
+                                  kind='request' if reason=='REQUEST_NOT_CURRENT' else 'stop')
         if request is self.stop_request and not request['failed']:
             request['failed']=True
+            request['failure_reason']=reason
             s=self.state
             self.event('PICO_STOP_UNCONFIRMED',json.dumps(dict(
                 reason=reason,requested_instance_id=request['instance_id'],expected_epoch=request['epoch'],
@@ -340,9 +365,15 @@ class PicoNode(RuntimeNode):
         raise RuntimeError('PICO_STOP_UNCONFIRMED:'+reason)
 
     async def stopped(self,request,*,clear=True):
+        if request is not self.stop_request:
+            self.stop_unconfirmed(request,'REQUEST_NOT_CURRENT')
+        if request['failed']:
+            raise RuntimeError('PICO_STOP_UNCONFIRMED:'+request.get('failure_reason','PREVIOUS_REQUEST_UNCONFIRMED'))
         while time.monotonic()<request['deadline']:
-            if request is not self.stop_request or request['failed']:
+            if request is not self.stop_request:
                 self.stop_unconfirmed(request,'REQUEST_NOT_CURRENT')
+            if request['failed']:
+                raise RuntimeError('PICO_STOP_UNCONFIRMED:'+request.get('failure_reason','PREVIOUS_REQUEST_UNCONFIRMED'))
             s=self.state
             if s and (s.stop_failures or 'EMERGENCY_STOP' in s.code or s.code=='STOP_FEEDBACK_TIMEOUT'):
                 self.stop_unconfirmed(request,'EXECUTION_STOP_FAILED')
@@ -895,7 +926,6 @@ class PicoNode(RuntimeNode):
                 tool_grasp_confirmation='unheld_test' if self.unheld_test else 'operator' if self.operator_grasp else 'calibrated',
                 execution_state=self.state.state if self.state is not None else 'unavailable',
                 feedback_age_s=self.now()-seconds(self.state.feedback_stamp) if self.state is not None else None)
-            raw=tuple(self.frames.values())
             feedback=self.feedback()
             view.update(motion_stopped=feedback.healthy and feedback.stopped,
                 tool_ground_policy=self.tool_cfg['demo']['acceptance'].get('ground_policy','required'),
@@ -910,16 +940,30 @@ class PicoNode(RuntimeNode):
                 stop_confirmed=(self.control.rest(self.now()) and self.control.pending is None and
                                 self.running is None and self.handoff_complete),
                 grasp_applied=None if self.control.teleop_mode=='independent_arms' else
-                    'right_axial' if self.control.virtual else 'rigid',
-                tracking_valid={f.side:bool(f.valid and 0<=self.now()-seconds(f.stamp)<=self.control.max_age) for f in raw})
-            view['raw_input_age_s']=max((self.now()-seconds(f.stamp) for f in raw),default=None)
-            view['raw_input_valid']=(len(raw)==2 and all(f.valid for f in raw) and
-                len({(f.source_id,f.seq) for f in raw})==1)
+                    'right_axial' if self.control.virtual else 'rigid')
+            view.update(self.input_status(self.now()))
+            view['stop_diagnostic']=getattr(self,'stop_diagnostic',None)
             self.display.publish(String(data=json.dumps(view)))
             self.operator_state.publish(String(data=json.dumps(view)))
             if self.last_phase!=(self.control.phase,self.control.reason):
                 self.last_phase=(self.control.phase,self.control.reason)
                 self.event('PICO_STATE',json.dumps(view))
+
+    def input_status(self, now):
+        """Display the coordinated pair without hiding raw tracking loss."""
+        raw = tuple(self.frames.values())
+        pair = self.control.frames or ()
+        ages = [now-seconds(f.stamp) for f in raw]
+        tracking = {f.side: bool(f.valid and 0 <= age <= self.control.max_age)
+                    for f, age in zip(raw, ages)}
+        same_source = bool(len(raw) == len(pair) == 2 and
+                           all(f.source_id == pair[0].source_id for f in raw))
+        valid = bool(same_source and all(tracking.values()) and
+                     all(f.valid and 0 <= now-f.stamp <= self.control.max_age for f in pair) and
+                     all(f.seq >= pair[0].seq for f in raw))
+        return dict(tracking_valid=tracking,
+                    raw_input_age_s=max(ages, default=None), raw_input_valid=valid,
+                    input_pair_pending=bool(valid and any(f.seq != pair[0].seq for f in raw)))
 
     def destroy_node(self):
         self.validator.close()

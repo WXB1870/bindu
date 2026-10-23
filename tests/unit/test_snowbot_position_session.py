@@ -783,6 +783,60 @@ class TargetWireTests(unittest.TestCase):
         self.assertEqual(self.rig.io.pause_request, request)
         self.assertEqual((engine.stop_deadline, engine.stop_steady_deadline), budget)
 
+    def pending_replacement_at_braking_boundary(self, *, confirm_takeover=True):
+        from bindu_contracts.contracts import Motion
+        groups=('waist','left_arm','right_arm')
+        names=tuple(n for g in groups for n in GROUPS[g])
+        engine=self.rig.engine
+        lease,epoch=engine.acquire('follow',groups,2.,self.rig.now)
+        first=Motion('old',lease,epoch,self.rig.profile.digest,'test','','joint_target','',
+            self.rig.now,.4,names=names,positions=tuple(self.target[n] for n in names),
+            schema_version=2,resource_groups=groups,runtime_mode='real')
+        engine.submit(first,self.rig.now);engine.tick(self.rig.now)
+        packet=self.d.publishers['arms'].publish.call_args.args[0]
+        if confirm_takeover:self.d.receive_receipt(self.receipt(packet))
+        # Executor/feedback continue while the target producer has no new input.
+        for _ in range(27):
+            self.update_target_feedback();engine.tick(self.rig.now)
+        self.rig.now+=.02;self.rig.steady+=.02
+        self.update_target_feedback()
+        fresh=replace(first,command_id='replacement',stamp=self.rig.now-.035)
+        engine.submit(fresh,self.rig.now)
+        self.assertEqual(self.d.publishers['arms'].publish.call_count,1)
+        return packet,fresh
+
+    def test_accepted_replacement_is_dispatched_before_old_target_prebrake(self):
+        old,motion=self.pending_replacement_at_braking_boundary()
+        self.d.brake_before_source_expiry(self.rig.engine)
+        packet=self.d.publishers['arms'].publish.call_args.args[0]
+        self.assertEqual(packet.meta.source_command_id,motion.command_id)
+        self.assertEqual(packet.meta.operation,0)
+        self.assertEqual(packet.meta.source_stamp_ns,round(motion.stamp*1e9))
+        self.assertEqual(packet.meta.expires_at_ns,round(motion.stamp*1e9)+200_000_000)
+        self.assertIsNone(self.rig.engine.stopping)
+        self.assertEqual(self.rig.engine.lease_id,motion.lease_id)
+        self.assertEqual(old.meta.expires_at_ns,old.meta.source_stamp_ns+200_000_000)
+        for _ in range(5):self.d.brake_before_source_expiry(self.rig.engine)
+        self.assertEqual(self.d.publishers['arms'].publish.call_count,2)
+
+    def test_accepted_replacement_does_not_extend_an_unconfirmed_takeover(self):
+        old,_=self.pending_replacement_at_braking_boundary(confirm_takeover=False)
+        self.d.brake_before_source_expiry(self.rig.engine)
+        packet=self.d.publishers['arms'].publish.call_args.args[0]
+        self.assertEqual(packet.meta.operation,2)
+        self.assertFalse(self.rig.engine.lease_id)
+        self.assertEqual(old.meta.expires_at_ns,old.meta.source_stamp_ns+200_000_000)
+        self.assertEqual(self.d.publishers['arms'].publish.call_count,2)
+
+    def test_replacement_still_obeys_endpoint_health_before_dispatch(self):
+        self.pending_replacement_at_braking_boundary()
+        self.d.target_fault='SNOWBOT_TARGET_INSTANCE_CHANGED_RECONNECT_REQUIRED'
+        self.d.brake_before_source_expiry(self.rig.engine)
+        self.assertFalse(self.rig.engine.lease_id)
+        self.assertIsNone(self.rig.engine.active)
+        self.assertEqual([c.args[0].meta.operation for c in self.d.publishers['arms'].publish.call_args_list],
+                         [1,2])  # Only the original takeover and protective PAUSE.
+
     def test_target_loss_requests_one_pause_before_original_source_expiry(self):
         self.rig.enable_rest_window()
         self.d.startup_hold_state = 'waiting'; self.d.node.closing = False

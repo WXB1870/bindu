@@ -449,6 +449,21 @@ class PositionSessionDevices:
             return
         sent = self.sent.get(self.envelopes.sequence)
         if sent and sent[0]['operation'] != 2:
+            # Keep the ordinary execution path to one tick. The extra dispatch
+            # is needed only when the preceding packet is about to be fenced.
+            if round(self.node.now()*1e9) < sent[0]['expires_at_ns']-60_000_000:
+                return
+            # A service can accept a replacement between executor ticks. Dispatch
+            # it through the normal feedback/lease/limit checks before fencing
+            # the old packet. Only an actual new envelope changes the deadline;
+            # a pending takeover, failed send or repeated tick cannot renew it.
+            if engine.active.command_id != sent[2]:
+                engine.tick(self.node.now())
+                if not engine.active or engine.stopping:
+                    return
+                sent = self.sent.get(self.envelopes.sequence)
+                if not sent or sent[0]['operation'] == 2:
+                    return
             # 60 ms covers two executor ticks plus the 10 ms local preparation.
             # A stalled controller still falls under the native watchdog.
             if round(self.node.now()*1e9) >= sent[0]['expires_at_ns']-60_000_000:
@@ -533,7 +548,7 @@ class PositionSessionDevices:
         self.publish_attempted = True
         self.publishers['arms'].publish(msg)
         if self.health.reference_mode:
-            mapping = {k: metadata[k] for k in ('session', 'sequence', 'source_stamp_ns', 'expires_at_ns')}
+            mapping = {k: metadata[k] for k in ('session', 'sequence', 'operation', 'source_stamp_ns', 'expires_at_ns')}
             mapping.update(lease_id=msg.meta.lease_id, epoch=msg.meta.epoch,
                            execution_mode='position', reference_mode=2)
             self.node.event('TARGET_SENT', 'SNOWBOT_TARGET:'+json.dumps(mapping, separators=(',', ':')),

@@ -294,6 +294,31 @@ PICO_SOURCE=SOURCE.with_name('pico_node.py')
 
 
 class PicoStopEvidence(unittest.IsolatedAsyncioTestCase,ExecutionFixture):
+    async def test_failed_current_request_keeps_original_failure_after_repeated_waits(self):
+        request=self.node.begin_stop_wait('original',self.lease.epoch,True)
+        with self.assertRaisesRegex(RuntimeError,'EXECUTION_STOP_FAILED'):
+            self.node.stop_unconfirmed(request,'EXECUTION_STOP_FAILED')
+        for expired in (False,True):
+            if expired:self.clock=request['deadline']+1.
+            with self.assertRaisesRegex(RuntimeError,'EXECUTION_STOP_FAILED'):
+                await self.node.stopped(request)
+        self.assertEqual(request['failure_reason'],'EXECUTION_STOP_FAILED')
+        with self.assertRaisesRegex(RuntimeError,'EXECUTION_STOP_FAILED'):
+            self.node.begin_stop_wait('replacement',self.lease.epoch,True)
+        failures=[c for c in self.node.event.call_args_list if c.args[0]=='PICO_STOP_UNCONFIRMED']
+        self.assertEqual(len(failures),1)
+
+    async def test_stale_request_remains_distinct_and_cannot_fail_new_request(self):
+        old=self.node.begin_stop_wait('original',self.lease.epoch,True)
+        current=self.node.stop_request=dict(old)
+        for expired in (False,True):
+            if expired:self.clock=old['deadline']+1.
+            with self.assertRaisesRegex(RuntimeError,'REQUEST_NOT_CURRENT'):
+                await self.node.stopped(old)
+        self.assertIs(self.node.stop_request,current);self.assertFalse(current['failed'])
+        self.node.control.record_fault.assert_called_with('PICO_STOP_UNCONFIRMED:REQUEST_NOT_CURRENT',
+                                                         self.clock,kind='request')
+
     """Actual Pico stop/feedback methods and execution service handlers, no ROS."""
     def setUp(self):
         ExecutionFixture.setUp(self)
@@ -322,7 +347,7 @@ class PicoStopEvidence(unittest.IsolatedAsyncioTestCase,ExecutionFixture):
         n.groups=tuple(self.p.groups);n.prepare_position_tolerance=.035;n.position_contract=True
         n.submit=S(call_async=Mock(side_effect=AssertionError('no motion submission expected')))
         n.position_ops=S(modes=lambda **kw:('closed','closed'),stopped=lambda:True)
-        n.control=S(phase='following',pending=S(token=1),teleop_mode='independent_arms');n.handoff_complete=True
+        n.control=S(phase='following',pending=S(token=1),teleop_mode='independent_arms',record_fault=Mock());n.handoff_complete=True
         n.current=Mock();n.instance_id='pico-memory'
         n.now=lambda:self.clock;n.pause=self.pause;n.event=Mock()
         n.stop_request=None;n.stop_deadline=None  # Old-source comparison only.
