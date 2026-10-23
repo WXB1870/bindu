@@ -1,5 +1,6 @@
 """Validate a small deployment recipe. No hardware enable or startup motion."""
 import json
+import math
 from pathlib import Path
 from bindu_contracts.runtime_mode import resolve_mode
 
@@ -17,7 +18,25 @@ COMMON.update(('position_protocol','execution_mode'))
 COMMON.update(('position_contract','physics_config'))
 EXECUTION.add('gripper_config')
 EXECUTION.update(('position_protocol','execution_mode'))
+TARGET_STREAM_LIMIT_DEFAULTS = {'trajectory_max_velocity': .25, 'trajectory_max_acceleration': .5}
+COMMON.update(TARGET_STREAM_LIMIT_DEFAULTS)
+EXECUTION.update(TARGET_STREAM_LIMIT_DEFAULTS)
 PATHS = {'profile', 'bimanual_config', 'robot_config', 'cert_file', 'key_file', 'output', 'pico_config', 'gripper_config', 'physics_config'}
+
+
+def target_stream_limits(values):
+    """Startup ceilings, paired with servo parameters; profile limits still apply."""
+    result = {}
+    for key, default in TARGET_STREAM_LIMIT_DEFAULTS.items():
+        raw = values.get(key, default)
+        try:
+            value = float(raw) if type(raw) in (int, float, str) else float('nan')
+        except (ValueError, OverflowError):
+            value = float('nan')
+        if not math.isfinite(value) or value <= 0:
+            raise ValueError('SNOWBOT_TARGET_DYNAMIC_LIMIT:'+key)
+        result[key] = value
+    return result
 
 
 def load_deployment(path, share):
@@ -38,6 +57,11 @@ def load_deployment(path, share):
         raise ValueError('TELEOP_DEPLOYMENT_ARGUMENT')
     if args.get('position_protocol', 'legacy_guard') not in ('legacy_guard', 'session_v1', 'session_v3'):
         raise ValueError('SNOWBOT_POSITION_PROTOCOL')
+    configured_limits = {key: args[key] for key in TARGET_STREAM_LIMIT_DEFAULTS if key in args}
+    if configured_limits:
+        if args.get('runtime_mode') != 'real' or args.get('position_protocol') != 'session_v3':
+            raise ValueError('SNOWBOT_TARGET_LIMITS_REQUIRE_TARGET_STREAM')
+        configured_limits = target_stream_limits(configured_limits)
     execution_mode = args.get('execution_mode', 'position')
     if execution_mode not in ('position', 'impedance'):
         raise ValueError('SNOWBOT_EXECUTION_MODE')
@@ -85,6 +109,9 @@ def load_deployment(path, share):
     if version == 2 and not execution_only:
         del result['initialize_tool_pose']
     for key, value in args.items():
+        if key in configured_limits:
+            result[key] = str(configured_limits[key])
+            continue
         if not isinstance(value, (str, bool, int)):
             raise ValueError('TELEOP_DEPLOYMENT_VALUE:'+key)
         if key.endswith('_enabled') and type(value) is not bool:

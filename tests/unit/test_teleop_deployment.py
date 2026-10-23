@@ -9,6 +9,27 @@ SHARE=ROOT/'src/integration/bindu_runtime'
 
 
 class DeploymentTests(unittest.TestCase):
+    def test_target_dynamic_limits_accept_numeric_recipe_and_reject_invalid_or_wrong_mode(self):
+        recipe=json.loads((SHARE/'config/deployments/snowbot_vr_real.json').read_text())
+        recipe['arguments'].update(trajectory_max_velocity=.4, trajectory_max_acceleration=.8)
+        with tempfile.TemporaryDirectory() as tmp:
+            path=Path(tmp)/'deploy.json'
+            path.write_text(json.dumps(recipe))
+            _,args=load_deployment(path,SHARE)
+            self.assertEqual(args['trajectory_max_velocity'],'0.4')
+            self.assertEqual(args['trajectory_max_acceleration'],'0.8')
+            for key in ('trajectory_max_velocity','trajectory_max_acceleration'):
+                for invalid in (0.,-1.,float('nan'),float('inf'),True,'bad',None,[],10**400):
+                    bad=json.loads(json.dumps(recipe));bad['arguments'][key]=invalid
+                    path.write_text(json.dumps(bad))
+                    with self.subTest(key=key,invalid=invalid),self.assertRaisesRegex(ValueError,'TARGET_DYNAMIC_LIMIT'):
+                        load_deployment(path,SHARE)
+            for key,value in (('position_protocol','session_v1'),('runtime_mode','simulation')):
+                bad=json.loads(json.dumps(recipe));bad['arguments'][key]=value
+                path.write_text(json.dumps(bad))
+                with self.assertRaisesRegex(ValueError,'TARGET_LIMITS_REQUIRE_TARGET_STREAM'):
+                    load_deployment(path,SHARE)
+
     def test_target_recipe_rejects_retired_curve_options_and_impedance_combination(self):
         recipe=json.loads((SHARE/'config/deployments/snowbot_vr_real.json').read_text())
         with tempfile.TemporaryDirectory() as tmp:

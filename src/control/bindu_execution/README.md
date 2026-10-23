@@ -111,7 +111,7 @@ ROS_LOCALHOST_ONLY=1 ROS_DOMAIN_ID=209 python3 -m tests.integration.validate_exe
 
 `describe()`导出每个真实片段的`(start, duration, source_duration, source_elapsed, controls[axis])`；位置控制点采用Bernstein基，每轴4个（cubic）或6个（quintic）。`source_duration==0`时按`elapsed/duration`求值，否则按`(elapsed+source_elapsed)/source_duration`保留原曲线裁剪区间。`from_description(description, limits)`只在非实时侧重建导数、核验片段时间／`q/v/a`接续、动态限制及最终静止条件，不拟合、重排或重定时。轴序、源身份、原期限、时钟异常和真实停止确认由调用方管理；取样、派生帧和心跳都不能续期。到达采样端点也不能报告机器人实际到达。Python同名类提供`target`／`stop`／`describe`／`from_description`／`sample_into`。
 
-`session_v3`是纯位置目标流协议（wire 5、reference 2、目标配方version 2）。上层退休曲线发送及跨层提前量配置；旧`session_v2`配方拒绝加载。目标轴序为左臂J1～J7、右臂J1～J7、腰部J1～J2，单位rad；动态界逐轴取profile与0.25 rad/s、0.5 rad/s²、162 rad/s³的较小值。消息同时保留session、源command／lease／epoch／profile身份、sequence、源时间及原始期限；中层只透传，派生帧、接纳、采样和心跳不续期。普通目标原始TTL最多200 ms；纯目标流PAUSE作为独立停止命令，由源端一次生成固定2 s原始期限，须在该期限内完成制动参考并转入固定保持，不续期旧目标或授权恢复运动。旧follower／trajectory及阻抗PAUSE仍最多200 ms；新停止命令须与更新后的三层配对。
+`session_v3`是纯位置目标流协议（wire 5、reference 2、目标配方version 2）。上层退休曲线发送及跨层提前量配置；旧`session_v2`配方拒绝加载。目标轴序为左臂J1～J7、右臂J1～J7、腰部J1～J2，单位rad；动态界逐轴取profile与发送端只读启动参数`trajectory_max_velocity`（默认0.25 rad/s）、`trajectory_max_acceleration`（默认0.5 rad/s²）及固定162 rad/s³的较小值。消息同时保留session、源command／lease／epoch／profile身份、sequence、源时间及原始期限；中层只透传，派生帧、接纳、采样和心跳不续期。普通目标原始TTL最多200 ms；纯目标流PAUSE作为独立停止命令，由源端一次生成固定2 s原始期限，须在该期限内完成制动参考并转入固定保持，不续期旧目标或授权恢复运动。旧follower／trajectory及阻抗PAUSE仍最多200 ms；新停止命令须与更新后的三层配对。
 
 servo在非实时后台从已采用名义轨迹的未来`q/v/a`快照调用`stream_target`生成曲线，周期线程验证版本、期限和接续条件后共同切换。普通在途生成不因更新取消，待处理普通目标只保留最新一份；PAUSE及控制权／故障边界使旧结果失效，仍调用原`stop`。首次从失能接管用新鲜实测播种；已带电暂停后的重新接管延续原固定参考，避免跟随偏差变成参考跳变，正常更新不逐帧用实测重置。整段动态限制保留，不再串联旧B样条或周期内逐轴非线性限幅；共同采样不承诺任意换目标的共同标量进度、闭链几何或jerk连续。此处描述本机源码，现场仍须核对选定版本是否已构建并加载。
 

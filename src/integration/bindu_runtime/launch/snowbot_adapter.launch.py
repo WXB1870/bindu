@@ -7,6 +7,7 @@ from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 from ament_index_python.packages import get_package_share_directory
 from bindu_contracts.runtime_mode import resolve_mode
+from bindu_runtime.teleop_deployment import TARGET_STREAM_LIMIT_DEFAULTS, target_stream_limits
 
 
 def assemble(context):
@@ -38,6 +39,9 @@ def assemble(context):
         parameters.update(command_enabled=enabled == 'true', vendor_namespace=value('vendor_namespace', '/snowbot'),
             position_protocol=value('position_protocol', 'legacy_guard'), execution_mode=value('execution_mode', 'position'),
             **{key: value(key) for key in ('arm_receiver_node', 'servo_receiver_node', 'mid_receiver_node', 'gripper_config')})
+        if value('position_protocol') == 'session_v3':
+            parameters.update(target_stream_limits({key:value(key,str(default))
+                for key,default in TARGET_STREAM_LIMIT_DEFAULTS.items()}))
     else:
         parameters['device_backend'] = backend
     return [Node(package='bindu_runtime', executable='snowbot_adapter' if mode == 'real' else 'execution',
@@ -52,5 +56,6 @@ def generate_launch_description():
                 'namespace': 'bindu_snowbot', 'run_id': uuid.uuid4().hex, 'vendor_namespace': '/snowbot',
                 'arm_receiver_node': '', 'servo_receiver_node': '', 'mid_receiver_node': '',
                 'command_enabled': 'false', 'recording_mode': 'off', 'output': '/tmp/bindu-runs', 'gripper_config': '', 'position_protocol': 'legacy_guard', 'execution_mode': 'position'}
+    defaults.update({key:str(value) for key,value in TARGET_STREAM_LIMIT_DEFAULTS.items()})
     return LaunchDescription([DeclareLaunchArgument(k, default_value=v) for k, v in defaults.items()]
                              + [OpaqueFunction(function=assemble)])

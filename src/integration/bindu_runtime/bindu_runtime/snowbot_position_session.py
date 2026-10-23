@@ -4,6 +4,7 @@ import math
 
 from bindu_hardware.snowbot import CommandNotSent, SnowbotIO, GROUPS
 from bindu_hardware.snowbot_session import CONTROL_GROUPS, CONTROL_NAMES, ROS_FEEDBACK_TIMEOUT_S, SessionHealth, SourceEnvelope, new_session_id
+from .teleop_deployment import TARGET_STREAM_LIMIT_DEFAULTS, target_stream_limits
 
 
 def sampled_nominal_reference(state, names, epoch, now, max_age, *, wait_until=None, steady_now=None):
@@ -126,6 +127,10 @@ class PositionSessionDevices:
             ('head', 'servo_receiver_node', '/servo_node'))}
         self.health = SessionHealth(node.now, execution_mode=node.snowbot_execution_mode,
                                    reference_mode=getattr(node, 'snowbot_reference_mode', 0))
+        if self.health.reference_mode == 2:
+            self.trajectory_limits = target_stream_limits({
+                key: node.declare_parameter(key, default, descriptor=ParameterDescriptor(read_only=True)).value
+                for key, default in TARGET_STREAM_LIMIT_DEFAULTS.items()})
         self.envelopes = SourceEnvelope(new_session_id(node.now()), node.now,
                                        target_stream=self.health.reference_mode == 2)
         self.sent = {}
@@ -520,8 +525,8 @@ class PositionSessionDevices:
             # local switching time; empty curve fields reject legacy packets.
             msg.trajectory.version = 2
             msg.trajectory.segment_id = metadata['sequence']
-            for field, getter, ceiling in (('max_velocity', self.io.profile.speed, .25),
-                    ('max_acceleration', self.io.profile.acceleration, .5),
+            for field, getter, ceiling in (('max_velocity', self.io.profile.speed, self.trajectory_limits['trajectory_max_velocity']),
+                    ('max_acceleration', self.io.profile.acceleration, self.trajectory_limits['trajectory_max_acceleration']),
                     ('max_jerk', self.io.profile.jerk, 162.)):
                 setattr(msg.trajectory, field, [min(ceiling, getter(n)) for n in CONTROL_NAMES])
         msg.command.l_arm_position = [float(target[n]) for n in GROUPS['left_arm']]

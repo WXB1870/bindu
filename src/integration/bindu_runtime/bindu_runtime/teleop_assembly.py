@@ -9,6 +9,7 @@ from launch_ros.parameter_descriptions import ParameterValue
 from ament_index_python.packages import get_package_share_directory
 from bindu_runtime.robot_setup import RobotSetup
 from bindu_contracts.runtime_mode import resolve_mode
+from bindu_runtime.teleop_deployment import TARGET_STREAM_LIMIT_DEFAULTS, target_stream_limits
 
 
 def assemble(context):
@@ -102,6 +103,9 @@ def assemble(context):
             **{key:value(key,default) for key,default in (
                 ('execution_mode','position'),('gripper_config',''),('vendor_namespace','/snowbot'),('position_protocol','legacy_guard'),('arm_receiver_node',''),
                 ('servo_receiver_node',''),('mid_receiver_node',''))})
+    if mode=='real' and value('position_protocol')=='session_v3':
+        execution.update(target_stream_limits({key:value(key,str(default))
+            for key,default in TARGET_STREAM_LIMIT_DEFAULTS.items()}))
     nodes.append(Node(package='bindu_runtime', executable='snowbot_adapter' if mode=='real' else 'snowbot_position_sim' if position_contract else 'execution', namespace=ns,
                       output='screen', parameters=[execution]))
     if recorder_enabled:
