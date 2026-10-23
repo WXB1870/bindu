@@ -21,6 +21,9 @@ from bindu_interfaces.srv import Lease, SubmitMotion, ControlExecution
 from .common import MODE_STATE_MAX_AGE, RuntimeNode, seconds, stamp, spin, joints_at_rest
 
 
+WORKER_POLL_PERIOD = .005
+
+
 class BimanualToolNode(RuntimeNode):
     def __init__(self):
         super().__init__('teleop_tool',allow_hardware=True,default_mode='simulation')
@@ -114,7 +117,7 @@ class BimanualToolNode(RuntimeNode):
             lambda m:self.store_mode_message('mode_state',m),QoSProfile(depth=1,
                 reliability=ReliabilityPolicy.RELIABLE,durability=DurabilityPolicy.TRANSIENT_LOCAL))
         self.waiters=set()
-        self.create_timer(.005,self.poll_worker)
+        self.create_timer(WORKER_POLL_PERIOD,self.poll_worker)
         self.create_service(Trigger,'teleop/tool_ready',self.ready)
         if self.independent_enabled:self.create_service(Trigger,'teleop/arms_ready',self.arms_ready)
         self.create_service(SetBool,'teleop/tool_pause',self.request_pause)
@@ -241,6 +244,19 @@ class BimanualToolNode(RuntimeNode):
         if (s is None or s.profile_hash != self.profile.digest or s.simulated != self.simulation or
                 not 0 <= now-seconds(s.feedback_stamp) <= self.cfg['feedback_max_age']):
             raise RuntimeError('BIMANUAL_FEEDBACK_STALE')
+        if s.stop_failures:
+            raise RuntimeError('BIMANUAL_EXECUTION_STOP_UNCONFIRMED')
+        if (getattr(s,'missing_feedback_groups',()) or
+                len(s.joints.name)!=len(s.joints.position) or
+                len(s.joints.name)!=len(s.joints.velocity) or
+                len(set(s.joints.name))!=len(s.joints.name) or
+                not all(math.isfinite(q) for q in (*s.joints.position,*s.joints.velocity)) or
+                not set(self.names)<=set(s.joints.name)):
+            raise RuntimeError('BIMANUAL_FEEDBACK_INVALID')
+        measured=dict(zip(s.joints.name,s.joints.position))
+        if any(not self.profile.limits[n][0]-1e-9<=measured[n]<=self.profile.limits[n][1]+1e-9
+               for n in self.names):
+            raise RuntimeError('BIMANUAL_MEASURED_POSITION_LIMIT')
         if getattr(self,'require_recording',True) and (self.health is None or not self.health.ready or not 0 <= now-seconds(self.health.stamp)<.75):
             raise RuntimeError('RECORDER_UNAVAILABLE')
         if not require_input:
@@ -414,6 +430,7 @@ class BimanualToolNode(RuntimeNode):
         work_seq=-1
         work_stamp=0.
         work_sampled_at=0.
+        work_sampled_monotonic=0.
         work_positions=None
         work_target=None
         work_dt=None
@@ -426,6 +443,7 @@ class BimanualToolNode(RuntimeNode):
         last_mode='idle'
         last_grasp_generation=0
         deferral=None
+        reference_deadline=None
         def end_deferral(outcome):
             nonlocal deferral
             if deferral is not None:
@@ -487,6 +505,8 @@ class BimanualToolNode(RuntimeNode):
                 if (pending is not None and self.pause_control.phase!='pausing' and
                         now-pending_at>.7):
                     raise RuntimeError('BIMANUAL_SUBMIT_TIMEOUT')
+                if deferral is not None and now>=reference_deadline:
+                    raise RuntimeError('BIMANUAL_SOLVE_DEFERRED_TIMEOUT')
                 if renewal is not None:
                     if renewal.done():
                         if not renewal.result().ok: raise RuntimeError('LEASE_RENEW_FAILED')
@@ -583,6 +603,7 @@ class BimanualToolNode(RuntimeNode):
                         if not work_stamp<=self.now()<work_stamp+self.cfg['command_max_age']:
                             raise RuntimeError('BIMANUAL_SUBMIT_EXPIRED')
                         reference.accept(*pending_reference)
+                        reference_deadline=work_sampled_monotonic+reference.max_sample_gap
                         end_deferral('software_acceptance')
                         submit_revision=max(submit_revision,reply.revision)
                         if self.trajectory_reference:
@@ -612,16 +633,37 @@ class BimanualToolNode(RuntimeNode):
                                 input_seq=work_seq,control_sampled_at=work_sampled_at)),goal.request.task_id)
                         if kind=='error':
                             if awaiting=='solve' and value=='BIMANUAL_QP_DEFERRED':
+                                # Zero QP velocity is not device stop evidence.
+                                # The previously accepted motion may still run
+                                # under its original interface/expiry. Nothing
+                                # below resubmits it or authorizes a hold.
+                                if (pending is not None or s.state=='STOPPING' or
+                                        s.state=='FAILED' and s.command_id.startswith(session.identity+'_')):
+                                    raise RuntimeError('BIMANUAL_SOLVE_DEFERRED_UNCONFIRMED')
+                                if (not 0<=self.now()-work_sampled_at<=reference.max_interval or
+                                        not 0<=now-work_sampled_monotonic<=reference.max_interval):
+                                    raise RuntimeError('BIMANUAL_RESULT_STALE')
+                                if reference_deadline is None or now>=reference_deadline:
+                                    raise RuntimeError('BIMANUAL_SOLVE_DEFERRED_TIMEOUT')
                                 if deferral is None:
-                                    deferral=dict(count=0,started_at=now,first_input_seq=work_seq)
+                                    deferral=dict(count=0,started_at=now,first_input_seq=work_seq,
+                                        deadline_monotonic=reference_deadline,
+                                        count_limit=math.ceil((reference_deadline-now)/WORKER_POLL_PERIOD),
+                                        count_limit_basis='remaining_reference_budget / worker_poll_period')
                                     self.event('BIMANUAL_SOLVE_DEFERRED',json.dumps({
                                         'code':value,'input_seq':work_seq,'input_stamp':work_stamp,
                                         'control_sampled_at':work_sampled_at,'integration_dt':work_dt,
                                         'sample_gap_s':work_gap,'grasp_mode':session.grasp_mode,
                                         'feedback':work_feedback,'joint_names':self.names,
-                                        'reference':work_reference,'target':work_target}),goal.request.task_id)
+                                        'reference':work_reference,'target':work_target,
+                                        'execution_state':s.state,'execution_command_id':s.command_id,
+                                        'stop_confirmed':False,'waiting_policy':'no_new_command_original_contract_expires',
+                                        'deadline_monotonic':reference_deadline,
+                                        'count_limit':deferral['count_limit']}),goal.request.task_id)
                                 deferral['count']+=1
                                 deferral['last_input_seq']=work_seq
+                                if deferral['count']>=deferral['count_limit']:
+                                    raise RuntimeError('BIMANUAL_SOLVE_DEFERRED_LIMIT')
                                 awaiting=''
                                 # Keep the accepted reference/time unchanged.
                                 # work_seq requires a fresh frame; source TTL,
@@ -642,6 +684,7 @@ class BimanualToolNode(RuntimeNode):
                             # No motion was submitted while capturing. Start the
                             # integration clock here; capture latency is not dt.
                             reference.capture(work_positions,self.now())
+                            reference_deadline=time.monotonic()+reference.max_sample_gap
                             trajectory_bootstrap=True
                             trajectory_reference_deadline=None
                             trajectory_sample_at=None
@@ -707,6 +750,7 @@ class BimanualToolNode(RuntimeNode):
                     worker_token+=1
                     operation='capture' if session.anchor_tool is None else 'solve'
                     sampled_at=self.now()
+                    sampled_monotonic=time.monotonic()
                     # A capture and this loop can share a clock tick. The next
                     # fresh controller frame will provide a positive interval.
                     if operation=='solve' and sampled_at<=reference.sampled_at:
@@ -760,12 +804,14 @@ class BimanualToolNode(RuntimeNode):
                         self.check()
                         measured=dict(zip(self.state.joints.name,self.state.joints.position))
                         sampled_at=self.now()
+                        sampled_monotonic=time.monotonic()
                     if self.worker.submit(operation,worker_token,measured,session.target,
                                           reference=baseline,dt=dt,grasp_mode=session.grasp_mode,
                                           target_stamp=session.stamp):
                         awaiting=operation
                         work_seq,work_stamp=session.seq,session.stamp
                         work_sampled_at,work_dt=sampled_at,dt
+                        work_sampled_monotonic=sampled_monotonic
                         work_gap=gap
                         work_positions=(baseline if operation=='capture' and baseline is not None else
                                         tuple(measured[n] for n in self.names))

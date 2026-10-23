@@ -32,8 +32,13 @@ SOURCE = Path(__file__).resolve().parents[2]/'src/integration/bindu_runtime/bind
 class Rig:
     def __init__(self, *, ack_delay=.02, reject=False, drop=False, input_gap=False,
                  transition=None, delivery_gap=None, send_failure=False, state_delay=0.,
-                 duplicate_window=0., solve_errors=()):
+                 duplicate_window=0., solve_errors=(),control_step=.02,steady_step=.02,
+                 after_error=None,candidate_step=.001):
         self.clock = 10.
+        self.steady=10.
+        self.control_step,self.steady_step=control_step,steady_step
+        self.after_error,self.error_injected=after_error,False
+        self.candidate_step=candidate_step
         self.step = 0
         self.ack_delay, self.reject, self.drop = ack_delay, reject, drop
         self.input_gap, self.transition = input_gap, transition
@@ -52,7 +57,7 @@ class Rig:
             {n:(-1.,1.) for n in ('w','l','r')}, .5, ('joint_position',), 'memory',stop_timeout=.3)
         drivers = {g:SimJointDriver(names,.5) for g,names in self.profile.groups.items()}
         self.io = RobotIO(self.profile,drivers,SimBaseDriver())
-        self.engine = Executor(self.profile,self.io,steady=lambda:self.clock)
+        self.engine = Executor(self.profile,self.io,steady=lambda:self.steady)
         # Use the actual service handlers as well as the actual executor.
         source=Path(__file__).resolve().parents[2]/'src/integration/bindu_runtime/bindu_runtime/execution_node.py'
         definition=next(n for n in ast.parse(source.read_text()).body
@@ -86,7 +91,10 @@ class Rig:
         node = next(n for n in tree.body if isinstance(n,ast.ClassDef) and n.name=='BimanualToolNode')
         names = {'execute','check','wait','begin_stop','stop','stop_pending','execution_revision'}
         methods = [n for n in node.body if getattr(n,'name','') in names]
-        namespace = dict(time=S(monotonic=lambda:self.clock),json=json,math=__import__('math'),
+        namespace = dict(time=S(monotonic=lambda:self.steady),json=json,math=__import__('math'),
+            WORKER_POLL_PERIOD=next(ast.literal_eval(n.value) for n in tree.body
+                if isinstance(n,ast.Assign) and any(isinstance(t,ast.Name) and
+                    t.id=='WORKER_POLL_PERIOD' for t in n.targets)),
             seconds=lambda x:x,stamp=lambda x:x,MODE_STATE_MAX_AGE=.5,
             AcceptedReference=Reference,BimanualSession=BimanualSession,
             ToolPoseSession=ToolPoseSession,IndependentArmsSession=IndependentArmsSession,
@@ -135,6 +143,11 @@ class Rig:
         self.engine.tick(self.clock)
         fb=self.engine.feedback
         event=self.engine.events[-1] if self.engine.events else S(state='IDLE',code='',command_id='')
+        if self.engine.stopping:
+            motion,code=self.engine.stopping
+            event=S(state='STOPPING',code=code,command_id=motion.command_id if motion else '')
+        elif self.engine.active:
+            event=S(state='RUNNING',code='OK',command_id=self.engine.active.command_id)
         state=S(instance_id='executor',profile_hash=self.profile.digest,simulated=True,
             feedback_stamp=fb.stamp,lease_epoch=self.engine.epoch,lease_active=bool(self.engine.lease_id),
             revision=self.engine.revision,state=event.state,code=event.code,command_id=event.command_id,
@@ -194,7 +207,7 @@ class Rig:
                 return True
             # Deterministic already-validated candidate. Reference and execution
             # integration below are actual production code, not solver models.
-            value=(tuple(q+.001 for q in kwargs['reference']),(1.,0.,1.))
+            value=(tuple(q+self.candidate_step for q in kwargs['reference']),(1.,0.,1.))
         self.node.worker_result=('result',token,value)
         return True
 
@@ -212,9 +225,11 @@ class Rig:
         return future
 
     async def pause(self):
-        self.clock=round(self.clock+.02,9);self.step+=1
+        self.clock=round(self.clock+self.control_step,9);self.step+=1
+        self.steady+=self.steady_step
         if self.commands and self.delivery_gap is not None:
             self.clock+=self.delivery_gap
+            self.steady+=self.delivery_gap
             self.delivery_gap=None
         self.update()
         for at,future,reply in list(self.receipts):
@@ -231,6 +246,17 @@ class Rig:
                 elif self.transition in ('one_arm_offline','stale_and_restart'):
                     self.node.frames['right']=replace(self.node.frames['right'],stamp=first_at-.3)
                     if self.transition=='stale_and_restart':self.node.state.instance_id='new-executor'
+        if (self.after_error and not self.error_injected and self.node.worker_result and
+                self.node.worker_result[0]=='error'):
+            self.error_injected=True
+            if self.after_error=='freeze_control_clock':self.control_step=0.
+            elif self.after_error=='release':self.node.frames=self.frame(self.step,0.,clutch=1)
+            elif self.after_error=='reconnect':self.node.frames=self.frame(self.step,1.,source='other')
+            elif self.after_error=='one_arm_offline':self.node.state.missing_feedback_groups=['right_arm']
+            elif self.after_error=='nan':self.node.state.joints.position[0]=float('nan')
+            elif self.after_error=='limit':self.node.state.joints.position[0]=1.1
+            elif self.after_error=='stop_fault':self.node.state.stop_failures=['injected']
+            elif self.after_error=='old_epoch':self.node.state.lease_epoch+=2
         await asyncio.sleep(0)
 
     async def run(self):
@@ -271,13 +297,71 @@ class BimanualTransactions(unittest.IsolatedAsyncioTestCase):
         rig=Rig(solve_errors=['BIMANUAL_QP_DEFERRED']*100)
         result=await rig.run()
         self.assertFalse(result.success)
-        self.assertTrue(result.code.startswith('BIMANUAL_INTEGRATION_INTERVAL'),result.code)
+        self.assertIn(result.code.split(':')[0],('BIMANUAL_INTEGRATION_INTERVAL',
+                      'BIMANUAL_SOLVE_DEFERRED_TIMEOUT','BIMANUAL_SOLVE_DEFERRED_LIMIT'))
         self.assertEqual(rig.commands,[])
         self.assertEqual(rig.references[0].commits,[])
         self.assertGreater(len(rig.solve_attempts),1)
         self.assertFalse(rig.engine.lease_id)
         self.assertEqual(len([e for e in rig.events if e[0]=='BIMANUAL_SOLVE_DEFERRED']),1)
         self.assertEqual(len([e for e in rig.events if e[0]=='BIMANUAL_SOLVE_DEFERRED_END']),1)
+
+    async def test_frozen_control_clock_cannot_extend_monotonic_deferral_budget(self):
+        rig=Rig(solve_errors=['BIMANUAL_QP_DEFERRED']*100,after_error='freeze_control_clock')
+        result=await rig.run()
+        self.assertEqual(result.code,'BIMANUAL_SOLVE_DEFERRED_TIMEOUT:STOP_UNCONFIRMED')
+        summary=json.loads(next(e[1] for e in rig.events if e[0]=='BIMANUAL_SOLVE_DEFERRED_END'))
+        self.assertLessEqual(summary['duration_s'],rig.node.cfg['integration_max_sample_gap']+.02)
+        self.assertEqual(rig.commands,[])
+
+    async def test_deferred_then_unknown_submit_never_advances_or_refreshes(self):
+        rig=Rig(solve_errors=['BIMANUAL_QP_DEFERRED'],drop=True)
+        result=await rig.run()
+        self.assertFalse(result.success)
+        self.assertTrue(result.code.startswith('BIMANUAL_SOLVE_DEFERRED_TIMEOUT'),result.code)
+        self.assertEqual(len(rig.commands),1)
+        self.assertEqual(rig.references[0].commits,[])
+        self.assertFalse(rig.engine.lease_id)
+
+    async def test_deferred_then_safety_or_compute_failure_stops_without_more_attempts(self):
+        for reason in ('SELF_COLLISION:injected','BIMANUAL_POSITION_LIMIT:joint',
+                       'BIMANUAL_NONFINITE_RESULT','BIMANUAL_QP_TIMEOUT:native'):
+            with self.subTest(reason=reason):
+                rig=Rig(solve_errors=['BIMANUAL_QP_DEFERRED',reason])
+                result=await rig.run()
+                self.assertEqual(result.code,reason)
+                self.assertEqual(rig.commands,[])
+                self.assertEqual(len(rig.solve_attempts),2)
+
+    async def test_fast_wakeups_cannot_exceed_derived_consecutive_count(self):
+        rig=Rig(solve_errors=['BIMANUAL_QP_DEFERRED']*1000,control_step=.0001,steady_step=.000001)
+        result=await rig.run()
+        self.assertEqual(result.code,'BIMANUAL_SOLVE_DEFERRED_LIMIT')
+        summary=json.loads(next(e[1] for e in rig.events if e[0]=='BIMANUAL_SOLVE_DEFERRED_END'))
+        self.assertEqual(summary['count'],summary['count_limit'])
+        self.assertLessEqual(summary['count'],50)  # Existing .25 s / .005 s timer.
+        self.assertEqual(rig.commands,[])
+
+    async def test_zero_qp_step_does_not_claim_or_request_physical_stop(self):
+        rig=Rig(solve_errors=[None,'BIMANUAL_QP_DEFERRED',None],candidate_step=.02)
+        result=await rig.run()
+        self.assertTrue(result.success,result.code)
+        event=json.loads(next(e[1] for e in rig.events if e[0]=='BIMANUAL_SOLVE_DEFERRED'))
+        self.assertEqual(event['execution_state'],'RUNNING')
+        self.assertFalse(event['stop_confirmed'])
+        self.assertEqual(event['execution_command_id'],rig.commands[0].command_id)
+        self.assertGreater(max(abs(q-event['feedback'][n]) for n,q in
+                               zip(event['joint_names'],event['reference'])),1e-4)
+        self.assertEqual(len({c.command_id for c in rig.commands}),len(rig.commands))
+
+    async def test_guarded_failure_combined_with_invalid_state_or_intent_cannot_continue(self):
+        for fault in ('release','reconnect','one_arm_offline','nan','limit','stop_fault','old_epoch'):
+            with self.subTest(fault=fault):
+                rig=Rig(solve_errors=['BIMANUAL_QP_DEFERRED'],after_error=fault)
+                result=await rig.run()
+                self.assertEqual(rig.commands,[],result.code)
+                self.assertEqual(rig.references[0].commits,[])
+                self.assertFalse(any(e[0]=='BIMANUAL_SOLVE_DEFERRED' for e in rig.events),result.code)
 
     async def test_deferred_samples_never_refresh_a_previously_accepted_command(self):
         rig=Rig(solve_errors=[None,None]+['BIMANUAL_QP_DEFERRED']*100)
