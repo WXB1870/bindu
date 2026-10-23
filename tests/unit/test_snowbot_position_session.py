@@ -476,6 +476,7 @@ class TargetWireTests(unittest.TestCase):
         self.d = d = rig.devices
         d.grippers=None
         d.health.reference_mode = 2
+        d.trajectory_limits = dict(trajectory_max_velocity=.25, trajectory_max_acceleration=.5)
         for _, state in d.health.states.values(): state.wire_version = 5
         d.health.states['servo'][1].reference_mode = 2
         d.sent, d.target_instance, d.source_identity, d.target_fault = {}, None, None, ''
@@ -717,6 +718,35 @@ class TargetWireTests(unittest.TestCase):
         self.assertNotIn('trajectory_lead_ms', descriptors)
         self.assertNotIn('trajectory_fast_receipt', descriptors)
         self.assertIn('/bindu/position/servo_receipt', [call.args[1] for call in node.create_subscription.call_args_list])
+        self.assertEqual(created.trajectory_limits, dict(trajectory_max_velocity=.25, trajectory_max_acceleration=.5))
+        for key in created.trajectory_limits:
+            self.assertTrue(descriptors[key].read_only)
+        parameters.update(trajectory_max_velocity=.4, trajectory_max_acceleration=.8)
+        with patch.dict('sys.modules', modules):
+            configured = PositionSessionDevices(node, self.rig.profile)
+            self.assertEqual(configured.trajectory_limits, dict(trajectory_max_velocity=.4, trajectory_max_acceleration=.8))
+            for key in configured.trajectory_limits:
+                for invalid in (0., -1., float('nan'), float('inf'), True):
+                    parameters[key] = invalid
+                    with self.subTest(key=key, invalid=invalid), self.assertRaisesRegex(ValueError, 'TARGET_DYNAMIC_LIMIT'):
+                        PositionSessionDevices(node, self.rig.profile)
+                parameters[key] = configured.trajectory_limits[key]
+        node.create_publisher.assert_not_called()
+
+    def test_configurable_limits_preserve_each_axis_profile_and_pause_deadline(self):
+        capped = CONTROL_NAMES[0]
+        self.d.io.profile = replace(self.rig.profile, max_speed=.6, max_acceleration=1.2,
+            joint_dynamics={capped: dict(velocity=.18, acceleration=.3, jerk=100.)})
+        self.d.trajectory_limits = dict(trajectory_max_velocity=.4, trajectory_max_acceleration=.8)
+        self.d.new_session()
+        first = self.send()
+        pause = self.send(pause=True)
+        for packet in (first, pause):
+            self.assertEqual(packet.trajectory.max_velocity, [.18]+[.4]*15)
+            self.assertEqual(packet.trajectory.max_acceleration, [.3]+[.8]*15)
+            self.assertEqual(packet.trajectory.max_jerk, [100.]+[162.]*15)
+        self.assertEqual(first.meta.expires_at_ns-first.meta.source_stamp_ns, 200_000_000)
+        self.assertEqual(pause.meta.expires_at_ns-pause.meta.source_stamp_ns, 2_000_000_000)
 
     def test_targets_keep_joint_order_identity_original_expiry_and_no_curve(self):
         first = self.send(stamp=self.rig.now-.01, valid_for=.15)
