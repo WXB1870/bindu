@@ -10,6 +10,7 @@ import subprocess
 import sys
 
 from tools import ROOT
+from tools.deployment.process_guard import require_stopped
 
 REQUIREMENTS = ROOT/'tools/requirements/requirements-x86-real.txt'
 TEMPLATE = ROOT/'src/integration/bindu_runtime/config/deployments/snowbot_vr_real.json'
@@ -177,6 +178,7 @@ def numeric_cmake_arguments(workspace):
 
 
 def build(workspace):
+    require_stopped()
     before = source_digest()
     info = dict(ready=False, source_sha256=before)
     (workspace/'build.json').write_text(json.dumps(info, indent=2)+'\n')

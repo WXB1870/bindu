@@ -8,10 +8,15 @@ from types import SimpleNamespace as NS
 import unittest
 from unittest.mock import Mock, patch
 
-from tools.deployment import runtime_check, x86_real
+from tools.deployment import process_guard, runtime_check, x86_real
 
 
 class X86DeploymentTests(unittest.TestCase):
+    def setUp(self):
+        self.guard = patch.object(x86_real, 'require_stopped', return_value={})
+        self.guard.start()
+        self.addCleanup(self.guard.stop)
+
     def test_real_profile_guard_runs_before_native_or_ros_checks(self):
         from bindu_contracts.profile import Profile
         from dataclasses import replace
@@ -526,6 +531,60 @@ class PositionSessionPreflightTests(unittest.TestCase):
         self.assertEqual(self.node.create_subscription.call_count, 7)
         self.node.create_publisher.assert_not_called();self.node.create_client.assert_not_called()
         self.node.destroy_node.assert_called_once();rclpy.shutdown.assert_called_once()
+
+class DeploymentProcessGuardTests(unittest.TestCase):
+    def process(self, root, pid, *argv):
+        folder = root/str(pid)
+        folder.mkdir()
+        (folder/'cmdline').write_bytes(b'\0'.join(os.fsencode(arg) for arg in argv)+b'\0')
+
+    def test_native_python_module_and_ros_wrappers_are_all_blocked(self):
+        forms = [('/prefix/servo_node',),
+                 ('/prefix/venv/bin/python3', '/prefix/lib/bindu_runtime/snowbot_adapter'),
+                 ('/usr/bin/python3', '/prefix/lib/bindu_runtime/pico_control'),
+                 ('python3', '-m', 'bindu_runtime.bimanual_tool_node'),
+                 ('python3', '-m', 'tools.teleop.run_vr'),
+                 ('/usr/bin/ros2', 'run', 'bindu_runtime', 'teleop_tool')]
+        for argv in forms:
+            with self.subTest(argv=argv), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                self.process(root, 42, *argv)
+                with self.assertRaisesRegex(ValueError, 'DEPLOYMENT_CONTROLLERS_RUNNING'):
+                    process_guard.require_stopped(root)
+
+    def test_unrelated_python_and_exited_process_do_not_block(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.process(root, 42, 'python3', '-c', 'print("servo_node")')
+            (root/'43').mkdir()  # Exited before reading its cmdline.
+            self.assertEqual(process_guard.require_stopped(root),
+                             dict(controllers=[], unreadable_pids=[]))
+
+    def test_missing_proc_and_permission_failure_cannot_report_stopped(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with self.assertRaisesRegex(ValueError, 'PROCESS_SCAN_UNAVAILABLE'):
+                process_guard.require_stopped(root/'missing')
+            self.process(root, 42, 'python3', '/unknown/script.py')
+            with patch.object(Path, 'read_bytes', side_effect=PermissionError):
+                with self.assertRaisesRegex(ValueError, 'PROCESS_STATE_UNKNOWN'):
+                    process_guard.require_stopped(root)
+
+    def test_build_guard_precedes_build_markers_and_subprocesses(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            marker = workspace/'build.json'
+            marker.write_text('{"ready":true}\n')
+            with patch.object(x86_real, 'require_stopped',
+                              side_effect=ValueError('DEPLOYMENT_CONTROLLERS_RUNNING')), \
+                    patch.object(x86_real, 'source_digest') as digest, \
+                    patch.object(x86_real, 'in_environment') as execute:
+                with self.assertRaisesRegex(ValueError, 'CONTROLLERS_RUNNING'):
+                    x86_real.build(workspace)
+                digest.assert_not_called()
+                execute.assert_not_called()
+            self.assertEqual(marker.read_text(), '{"ready":true}\n')
+
 
 if __name__ == '__main__':
     unittest.main()
