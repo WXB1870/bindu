@@ -557,9 +557,8 @@ class PicoNode(RuntimeNode):
             raise RuntimeError('PICO_PREPARE_PRESET_REQUIRED')
         if not joints_at_rest(s.joints,self.names,.005 if self.position_contract else 1e-6):raise RuntimeError('PREPARE_REQUIRES_STATIONARY_START')
         gripper_move=targets is not None
-        if self.unheld_test and self.control.load=='held':
+        if gripper_move and self.unheld_test and self.control.load=='held':
             raise RuntimeError('PICO_UNHELD_TEST_WITH_HELD_LOAD')
-        loaded=not gripper_move and not self.unheld_test and self.control.load!='empty'
         target=targets if gripper_move else {n:self.prepare_positions[n]
                 for g in self.tool_cfg['resource_groups'] for n in self.profile.groups[g]}
         end=time.monotonic()+self.validator.startup_timeout
@@ -571,23 +570,22 @@ class PicoNode(RuntimeNode):
         reference=prepare_reference(self.profile,names,q) if self.position_contract and not gripper_move else q
         extra={}
         if reference!=q:
-            if loaded:raise RuntimeError('PREPARE_START_JOINT_LIMIT')
             extra['reference']=reference
             self.event('PICO_PREPARE_BOUNDARY_REFERENCE',json.dumps(dict(
                 measured={n:q[n] for n in names if q[n]!=reference[n]},
                 reference={n:reference[n] for n in names if q[n]!=reference[n]},
                 tolerance_rad=self.profile.feedback_tolerances['joint_position'])))
         self.validation_result=None
-        # Unknown load uses the tool/coupling guard unless this immutable
-        # configuration explicitly declares an empty-hand test.
-        operation='gripper_path' if gripper_move else 'loaded_prepare_path' if loaded else 'prepare_path'
+        # Holding A explicitly requests an empty-hand return. Validate the
+        # robot path without preserving a previously captured tool grasp.
+        operation='gripper_path' if gripper_move else 'prepare_path'
         if allow_recovery and operation=='prepare_path' and self.cfg.get('prepare_collision_recovery'):
             operation='prepare_recovery_path'
         self.event('PICO_PREPARE_VALIDATION',json.dumps(dict(operation=operation,load_state=self.control.load,
-            load_state_checked=True,tool_present=gripper_move or loaded,coupling_checked=loaded,
+            load_state_checked=gripper_move,tool_present=gripper_move,coupling_checked=False,
             measured_grasp_policy='unheld_test' if self.unheld_test else 'enforce')))
         if not self.validator.submit(operation,intent.token,q,
-                                     target if gripper_move or loaded else [target[n] for n in names],**extra):
+                                     target if gripper_move else [target[n] for n in names],**extra):
             raise RuntimeError('PICO_PREPARE_VALIDATOR_BUSY')
         end=time.monotonic()+30.
         while self.validation_result is None:
@@ -718,8 +716,7 @@ class PicoNode(RuntimeNode):
             self.current(intent)
             read_only=intent.operation in ('prepare','confirm_tool','follow','select_mode')
             if intent.operation=='prepare':
-                # A preserves tool/coupling checks for held or unknown loads;
-                # only an explicit empty scenario uses the robot-only path.
+                # A is the operator's explicit empty-hand return request.
                 if not self.position_contract and self.control.load!='empty':raise RuntimeError('PICO_PREPARE_REQUIRES_EMPTY')
                 target=await self.validate_prepare(intent)
                 _,measured=self.reading()

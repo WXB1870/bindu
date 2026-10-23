@@ -118,6 +118,23 @@ def controller_socket_status(sock):
     return result
 
 
+async def _controller_websocket(request, handler):
+    # Vuer 0.0.60 closes the socket but returns None. aiohttp still needs the
+    # prepared response after the controller disconnects.
+    from vuer.server import websocket_handler
+    response = None
+
+    async def downlink(request, ws):
+        nonlocal response
+        response = ws
+        return await handler(request, ws)
+
+    await websocket_handler(request, downlink, compress=False)
+    if response is None:
+        raise RuntimeError('VR_WEBSOCKET_RESPONSE_UNAVAILABLE')
+    return response
+
+
 def _serve(config, output, feedback, health):
     try:
         from vuer import Vuer
@@ -157,8 +174,7 @@ def _serve(config, output, feedback, health):
                     return Response(text=html.replace('<head>',
                         '<head><script src="/static/client-timing.js"></script>', 1),
                         content_type='text/html', headers={'Cache-Control': 'no-store'})
-                from vuer.server import websocket_handler
-                return await websocket_handler(request,self.downlink,compress=False)
+                return await _controller_websocket(request,self.downlink)
 
             async def downlink(self, request, ws):
                 sock=request.transport.get_extra_info('socket') if request.transport else None

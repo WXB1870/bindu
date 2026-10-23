@@ -108,7 +108,7 @@ class ScenarioRuntimeTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsNone(r.core.pending)
             self.assertEqual(r.core.reason,'PICO_TOOL_HELD_REQUIRES_TOOL_MODE')
 
-    async def test_prepare_scenarios_keep_loaded_tool_guard_and_empty_path_separate(self):
+    async def test_a_return_is_empty_hand_in_every_load_and_grasp_policy(self):
         from types import SimpleNamespace as S
         from unittest.mock import Mock
         for load in ('empty','held','unknown'):
@@ -123,18 +123,11 @@ class ScenarioRuntimeTests(unittest.IsolatedAsyncioTestCase):
                     def submit(*args,**kwargs):node.validation_result=('result',1,{});return True
                     node.validator=S(ready=True,busy=False,startup_timeout=1.,submit=Mock(side_effect=submit))
                     intent=S(operation='prepare',token=1)
-                    if load=='held' and unheld:
-                        with self.assertRaisesRegex(RuntimeError,'UNHELD_TEST_WITH_HELD_LOAD'):await node.validate_prepare(intent)
-                        node.validator.submit.assert_not_called();continue
                     await node.validate_prepare(intent)
-                    loaded=not unheld and load!='empty'
-                    operation='loaded_prepare_path' if loaded else 'prepare_recovery_path'
-                    node.validator.submit.assert_called_once_with(operation,1,{'joint':0.},{'joint':.2} if loaded else [.2])
+                    node.validator.submit.assert_called_once_with('prepare_recovery_path',1,{'joint':0.},[.2])
                     event=json.loads(node.event.call_args.args[1])
-                    self.assertEqual(event['tool_present'],loaded);self.assertEqual(event['coupling_checked'],loaded)
-                    if loaded:
-                        node.reading=lambda:(S(joints=S(name=['joint'],velocity=[0.])),{'joint':-1.00007})
-                        with self.assertRaisesRegex(RuntimeError,'PREPARE_START_JOINT_LIMIT'):await node.validate_prepare(intent)
+                    self.assertFalse(event['tool_present']);self.assertFalse(event['coupling_checked'])
+                    self.assertFalse(event['load_state_checked'])
 
     async def test_unheld_ignores_gripper_drift_while_loaded_operator_guard_remains(self):
         from types import SimpleNamespace as S
@@ -242,7 +235,7 @@ class PrepareReturnPathTests(unittest.IsolatedAsyncioTestCase):
         node.validator=S(ready=True,busy=False,startup_timeout=1.,submit=Mock(side_effect=submit))
         return node
 
-    async def test_return_routes_held_and_unknown_through_tool_and_coupling_guard(self):
+    async def test_return_does_not_preserve_captured_grasp_in_either_mode_or_any_load_state(self):
         from bindu_runtime.pico_node import PicoNode
         from bindu_teleoperation.pico import PicoIntent
         for load in ('empty','held','unknown'):
@@ -250,18 +243,12 @@ class PrepareReturnPathTests(unittest.IsolatedAsyncioTestCase):
                 for unheld in (False,True):
                     with self.subTest(load=load,mode=mode,unheld=unheld):
                         node=self.node(load,mode);node.unheld_test=unheld
-                        if unheld and load=='held':
-                            with self.assertRaisesRegex(RuntimeError,'UNHELD_TEST_WITH_HELD_LOAD'):
-                                await PicoNode.validate_prepare(node,PicoIntent(1,'prepare'))
-                            node.validator.submit.assert_not_called();continue
                         self.assertEqual(await PicoNode.validate_prepare(node,PicoIntent(1,'prepare')),{'joint':.2})
-                        loaded=not unheld and load!='empty'
-                        node.validator.submit.assert_called_once_with('loaded_prepare_path' if loaded else 'prepare_path',
-                            1,{'joint':0.},{'joint':.2} if loaded else [.2])
+                        node.validator.submit.assert_called_once_with('prepare_path',1,{'joint':0.},[.2])
                         self.assertEqual((node.control.load,node.control.teleop_mode),(load,mode))
                         event=json.loads(node.event.call_args.args[1])
-                        self.assertTrue(event['load_state_checked']);self.assertEqual(event['coupling_checked'],loaded)
-                        self.assertEqual(event['tool_present'],loaded)
+                        self.assertFalse(event['load_state_checked']);self.assertFalse(event['coupling_checked'])
+                        self.assertFalse(event['tool_present'])
 
     async def test_return_still_propagates_robot_collision_limits_and_changed_feedback(self):
         from bindu_runtime.pico_node import PicoNode

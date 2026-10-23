@@ -96,6 +96,38 @@ class ControllerSocketTests(unittest.TestCase):
         self.assertEqual(controller_socket_status(None),{})
 
 
+class ControllerWebSocketTests(unittest.IsolatedAsyncioTestCase):
+    async def test_vuer_none_return_preserves_the_prepared_response_on_disconnect(self):
+        from types import ModuleType
+        from unittest.mock import AsyncMock, patch
+        from bindu_teleoperation.vr.receiver import _controller_websocket
+        request, response = object(), object()
+        server = ModuleType('vuer.server')
+
+        async def wrapper(req, handler, **options):
+            self.assertIs(req, request);self.assertEqual(options, {'compress': False})
+            await handler(req, response)
+            return None
+
+        server.websocket_handler = wrapper
+        handler = AsyncMock()
+        with patch.dict('sys.modules', {'vuer': ModuleType('vuer'), 'vuer.server': server}):
+            self.assertIs(await _controller_websocket(request, handler), response)
+        handler.assert_awaited_once_with(request, response)
+
+    async def test_failed_handshake_propagates_without_returning_none(self):
+        from types import ModuleType
+        from unittest.mock import AsyncMock, patch
+        from bindu_teleoperation.vr.receiver import _controller_websocket
+        server = ModuleType('vuer.server')
+        server.websocket_handler = AsyncMock(side_effect=ConnectionResetError('handshake failed'))
+        handler = AsyncMock()
+        with patch.dict('sys.modules', {'vuer': ModuleType('vuer'), 'vuer.server': server}):
+            with self.assertRaisesRegex(ConnectionResetError, 'handshake failed'):
+                await _controller_websocket(object(), handler)
+        handler.assert_not_called()
+
+
 class ControllerTimingTests(unittest.TestCase):
     def test_blocked_diagnostic_dds_publish_does_not_block_input_report_enqueue(self):
         import queue
