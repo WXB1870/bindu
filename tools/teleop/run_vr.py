@@ -22,8 +22,10 @@ from tools import ROOT
 
 
 def commands(args):
+    deployment=dict(args.deployment)
+    if getattr(args,'input_timing',False):deployment['input_timing_enabled']='true'
     control = ['ros2', 'launch', 'bindu_runtime', args.launch,
-               *[f'{key}:={value}' for key,value in args.deployment.items() if value!=''],
+               *[f'{key}:={value}' for key,value in deployment.items() if value!=''],
                f'run_id:={args.run_id}']
     display = [sys.executable, '-m', 'tools.teleop.snowbot_live', '--dashboard',
         '--namespace', args.namespace, '--run-id', args.run_id, '--port', str(args.port),
@@ -183,6 +185,7 @@ def run(args):
             probe=Path(receiver.__file__).with_name('client_timing.js')
             manifest=dict(schema=1,run_id=args.run_id,started_at=time.time(),domain_id=args.domain_id,
                 namespace=args.namespace,diagnostics=args.diagnostics,commands=resolved_commands,configs=configs,
+                input_timing_enabled=bool(getattr(args,'input_timing',False)),
                 client_timing_probe=dict(path=str(probe),sha256=hashlib.sha256(probe.read_bytes()).hexdigest(),
                     clock_semantics='browser monotonic send time; never used as control freshness or one-way latency'),
                 diagnostic_format='JSONL: received_at, received_monotonic_ns, data; ROS fields retained',
@@ -259,6 +262,8 @@ def parse_args(argv=None):
                         help='部署配方；默认使用 BINDU_VR_CONFIG 或仓库仿真配方')
     parser.add_argument('--diagnostics', action=argparse.BooleanOptionalAction, default=True,
                         help='默认异步记录采样输入、反馈、事件与进程输出；--no-diagnostics 关闭')
+    parser.add_argument('--input-timing',action='store_true',
+                        help='本次开启输入分段计时；沿用诊断日志，不改变控制时间戳或运动授权')
     parser.add_argument('--check', action='store_true', help='仅检查环境、证书和端口')
     parser.add_argument('--check-robot', action='store_true', help='配合 --check，只读核对机器人端点、实测反馈和保护状态')
     parser.add_argument('--enable-commands', action='store_true',

@@ -70,6 +70,16 @@ class IndependentSessionTests(unittest.TestCase):
             with self.subTest(change=change),self.assertRaisesRegex(ValueError,'PAIR_INVALID'):
                 self.session.ingest(left,replace(right,**change),self.now)
 
+    def test_one_side_stale_does_not_partially_ingest_the_fresh_side(self):
+        self.engage([1.,1.])
+        left,right=(h.frame for h in self.session.hands)
+        previous=(self.session.seq,self.session.grasp_generation,self.session.target.copy())
+        now=self.now+.26
+        with self.assertRaisesRegex(ValueError,'VR_PAIR_INVALID'):
+            self.session.ingest(replace(left,seq=left.seq+1,stamp=now),right,now)
+        self.assertEqual((self.session.seq,self.session.grasp_generation),previous[:2])
+        np.testing.assert_array_equal(self.session.target,previous[2])
+
 
 class IndependentNativeTests(unittest.TestCase):
     def setUp(self):

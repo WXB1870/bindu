@@ -64,7 +64,23 @@ def sampling_policy(stream, value):
         state = _fields(value, 'instance_id state code calibrated feedback_valid lease_active owner epoch loading_authorized trigger_armed position_reached grasp_state')
     elif stream == 'mode-state':
         state = _fields(value, 'generation mode side phase code')
-    elif stream in ('vr-health', 'physics-health', 'pdo-health'):
+    elif stream == 'vr-health':
+        # Independent stages used to share one sampler slot: a normal client
+        # report could suppress the publish stall/handler/queue evidence.
+        stage=_field(value,'stage')
+        known=('controller_timing','websocket_handler','ros_input_publish',
+               'ros_input_publish_duration','input_pipeline')
+        key=(stream,stage if stage in known else 'unknown')
+        period=1.
+        def over(name,limit):
+            v=_field(value,name)
+            return isinstance(v,(int,float)) and math.isfinite(v) and v>limit
+        state=(_field(value,'source_id'),_field(value,'client_timing_available'),
+               over('event_interval_s',.1),over('event_loop_delay_max_s',.1),
+               over('server_controller_interval_s',.1),over('client_controller_interval_s',.1),
+               over('publish_wall_s',.02),
+               _fields(value,'ready valid code reason'))
+    elif stream in ('physics-health', 'pdo-health'):
         period = 1.
         state = _fields(value, 'ready valid code reason reasons fault_mask valid_mask operation_enabled_mask')
     elif stream == 'diagnostics':

@@ -131,6 +131,7 @@ def assemble(context):
     nodes.append(Node(package='bindu_runtime', executable='teleop_tool', namespace=ns,
                       output='screen', parameters=[{**common, **model, **tool,'require_recording':recorder_enabled,
                           'simulation_demo':pico_demo,
+                          'input_timing_enabled':ParameterValue(LaunchConfiguration('input_timing_enabled',default='false'),value_type=bool),
                           'position_contract':position_contract,
                           'execution_mode':execution_mode,
                           'position_protocol':value('position_protocol','legacy_guard'),

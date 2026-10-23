@@ -278,6 +278,10 @@ python3 -m tests integration pico --websocket-input --shovel-cycle \
 
 ### VR 首次连通检查
 
+排查输入间断时，统一入口可临时加 `--input-timing`（`x86_real start`透传该选项），底层launch对应`input_timing_enabled:=true`；默认关闭，不改变运动授权、源时间或TTL。保持默认诊断开启，保存完整`vr-health.jsonl`及分卷、`session.json`、原始/投影输入和运行事件。该标志只开启观测；实际启动仍按既有人工流程及禁写/停止条件执行。先用禁写配方、松握与静止反馈验证输入，不能为取证启用运动或自动恢复故障。
+
+`PICO_INPUT_DELIVERY_GAP.interval_s`是协调器完整双手帧回调的ROS时间间隔，另记`monotonic_interval_s`，不代表设备采样或网络时延。源`VRInput.stamp`沿用服务端控制回调时刻，也不等于头显采样。分段摘要`input_pipeline`每秒记录轮询/回调最大耗时、Vuer解码后任务派发等待、控制回调处理、帧队列等待及出队到ROS轮询结束的耗时（含实际发布），带对应源/序号；无输入时仍记录轮询次数，以区分上游安静和本进程停顿。它不是硬实时性能证明；旧macOS/Python不能共享单调时钟时省略跨进程差值。浏览器`perf_ms`与服务端单调时钟只能比较间隔变化，不能相减当单向网络延迟；socket接收/解码之前的细分仍未知。归因须联合浏览器发送间隔、服务端事件循环摘要、队列/发布摘要和协调器记录，不能仅凭一条gap诊断通信故障。
+
 首次接实体头显先运行独立输入诊断，再做机器人仿真跟随。该入口复用正式的 Vuer／`CONTROLLER_MOVE` 解码与 PICO 按键计数，但不加载 ROS、IK、执行器或驱动，也不发布运动命令。头显直接使用**自带 PICO 浏览器**，与电脑在可互通的局域网；不需要 XRoboToolkit 或 pico-ros2-bridge。
 
 下面以电脑地址 `192.168.1.116` 为例。选择已装有 Vuer、NumPy、Pillow 的 Python 环境（依赖见 `tools/requirements/requirements-teleop.txt`）；生成证书还需 `cryptography`。本机已存在的 `bindu` 环境可用，其他电脑须改为自己的 Python 路径。已有可信的服务器证书时直接跳过生成步骤，指定原证书和私钥。

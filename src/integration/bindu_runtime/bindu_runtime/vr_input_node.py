@@ -38,6 +38,11 @@ class VRInputNode(RuntimeNode):
         for key, value in defaults.items():
             self.declare_parameter(key, value, descriptor=ParameterDescriptor(read_only=key=='mapping'))
         cfg = {key: self.get_parameter(key).value for key in defaults}
+        self.declare_parameter('input_timing_enabled',False,descriptor=ParameterDescriptor(read_only=True))
+        cfg['input_timing_enabled']=self.get_parameter('input_timing_enabled').value
+        if type(cfg['input_timing_enabled']) is not bool:raise ValueError('VR_INPUT_TIMING_CONFIG')
+        from bindu_teleoperation.vr.timing import InputPipelineTiming
+        self.input_timing=InputPipelineTiming() if cfg['input_timing_enabled'] else None
         self.declare_parameter('simulation_demo',False)
         demo=self.get_parameter('simulation_demo').value
         if type(demo) is not bool or (demo and (not self.simulation or cfg['mapping']!='pico_snowbot_v1')):
@@ -91,6 +96,17 @@ class VRInputNode(RuntimeNode):
         if _latest_put(self.health_reports,report):self.health_dropped+=1
 
     def poll(self):
+        timing=getattr(self,'input_timing',None)
+        if timing is None:return VRInputNode.poll_input(self)
+        self.input_publish_count=0
+        timing.begin(time.monotonic())
+        try:VRInputNode.poll_input(self)
+        finally:
+            report=timing.finish(time.monotonic(),getattr(self.receiver,'last_delivery',None),self.input_publish_count)
+            if report:self.emit_health(dict(report,run_id=self.run_id,runtime_mode=self.runtime_mode,
+                                            stamp=time.time()))
+
+    def poll_input(self):
         polled=time.monotonic()
         if self.last_poll is not None:self.poll_delay_max=max(self.poll_delay_max,polled-self.last_poll)
         self.last_poll=polled
@@ -139,6 +155,7 @@ class VRInputNode(RuntimeNode):
                 grip=item.grip, trigger=item.trigger, init=item.init, stop=item.stop,
                 valid=item.valid, clutch_seq=item.clutch_seq, mapping=item.mapping,
                 buttons=item.buttons, button_edges=list(item.button_edges), virtual_grip=item.virtual_grip))
+            if getattr(self,'input_timing',None) is not None:self.input_publish_count+=1
             duration=time.monotonic()-started
             if duration>.02:
                 self.emit_health(dict(stage='ros_input_publish_duration',stamp=time.time(),

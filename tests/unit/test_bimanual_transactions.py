@@ -6,6 +6,7 @@ physical device. No ROS module is imported or publisher constructed.
 """
 import ast
 import asyncio
+from dataclasses import replace
 import json
 from pathlib import Path
 from types import SimpleNamespace as S
@@ -208,6 +209,9 @@ class Rig:
                 elif self.transition=='restart':self.node.state.instance_id='restarted-executor'
                 elif self.transition=='unordered':self.node.frames=self.frame(self.step,1.,stamp=first_at-.01)
                 elif self.transition=='cancel':self.goal.is_cancel_requested=True
+                elif self.transition in ('one_arm_offline','stale_and_restart'):
+                    self.node.frames['right']=replace(self.node.frames['right'],stamp=first_at-.3)
+                    if self.transition=='stale_and_restart':self.node.state.instance_id='new-executor'
         await asyncio.sleep(0)
 
     async def run(self):
@@ -265,7 +269,7 @@ class BimanualTransactions(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(rig.releases,1)
 
     async def test_old_confirmation_cannot_commit_across_reconnect_unordered_release_or_restart(self):
-        for transition in ('reconnect','unordered','release','restart','cancel'):
+        for transition in ('reconnect','unordered','release','restart','cancel','one_arm_offline','stale_and_restart'):
             with self.subTest(transition=transition):
                 rig=Rig(transition=transition)
                 result=await rig.run()

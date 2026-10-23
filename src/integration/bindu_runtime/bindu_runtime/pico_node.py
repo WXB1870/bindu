@@ -236,10 +236,18 @@ class PicoNode(RuntimeNode):
         a,b=self.frames['left'],self.frames['right']
         if a.source_id!=b.source_id or a.seq!=b.seq:return
         now=self.now()
-        if self.last_pair_at is not None and now-self.last_pair_at>.1:
+        received_monotonic=time.monotonic()
+        previous_monotonic=getattr(self,'last_pair_monotonic',None)
+        monotonic_gap=None if previous_monotonic is None else received_monotonic-previous_monotonic
+        if self.last_pair_at is not None and (now-self.last_pair_at>.1 or
+                monotonic_gap is not None and monotonic_gap>.1):
             self.event('PICO_INPUT_DELIVERY_GAP',json.dumps(dict(
-                interval_s=now-self.last_pair_at,input_age_s=now-seconds(a.stamp),seq=a.seq)))
+                interval_s=now-self.last_pair_at,interval_clock='ros_callback',
+                monotonic_interval_s=monotonic_gap,
+                input_age_s=now-seconds(a.stamp),source_stamp_s=seconds(a.stamp),
+                source_id=a.source_id,seq=a.seq)))
         self.last_pair_at=now
+        self.last_pair_monotonic=received_monotonic
         pair=tuple(VRFrame(m.source_id,m.seq,seconds(m.stamp),m.side,tuple(m.pose),m.grip,m.trigger,
                           m.init,m.stop,m.valid,m.clutch_seq,m.mapping,m.buttons,tuple(int(v) for v in m.button_edges),m.virtual_grip)
                    for m in (a,b))

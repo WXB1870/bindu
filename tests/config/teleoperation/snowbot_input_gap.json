@@ -526,5 +526,30 @@
       }
     }
   ],
-  "scope": "Replay uses original reception gap with synthetic engaged frames. Original packets retained for separate source/time validation. Does not replay physical pose or drive response."
+  "scope": "Replay uses original reception gap with synthetic engaged frames. Original packets retained for separate source/time validation. Does not replay physical pose or drive response.",
+  "coordinator_callback_gap": {
+    "source_path": "/Users/xavier/Documents/galbot/bindu/artifacts/118-target-stream-20261022/gripper-speed/vr_ce97e5935a45/runtime-events.jsonl",
+    "source_sha256": "0b9c71c67ea6ebc3d528d4129b0d312e94ee023c05ae20cec92bd9a50e6dfac9",
+    "interval_s": 1.2360286712646484,
+    "clock": "ROS completed-pair callback interval, not wire or device sample time",
+    "event": {
+      "received_at": 1792698382.9956224,
+      "received_monotonic_ns": 23840038212315,
+      "data": {
+        "stamp": {
+          "sec": 1792698382,
+          "nanosec": 994159872
+        },
+        "run_id": "vr_ce97e5935a45",
+        "task_id": "",
+        "command_id": "",
+        "observation_id": "",
+        "component": "pico_control",
+        "state": "PICO_INPUT_DELIVERY_GAP",
+        "code": "{\"interval_s\": 1.2360286712646484, \"input_age_s\": 0.008307695388793945, \"seq\": 4580}",
+        "simulated": false,
+        "runtime_mode": "real"
+      }
+    }
+  }
 }
