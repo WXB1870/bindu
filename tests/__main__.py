@@ -5,7 +5,8 @@ import sys
 
 from tests.support.paths import ROOT
 
-PICO_TESTS=('test_pico_control','test_pico_loading','test_pico_mapping','test_pico_hud','test_pico_grasp')
+PICO_TESTS=('test_pico_control','test_pico_loading','test_pico_mapping','test_pico_hud','test_pico_grasp',
+            'test_bimanual_stop_handoff')
 SUITES={
     'core':('test_interpolation','test_execution_fault_sequences','test_system_contracts','test_runtime_mode'),
     'pico':PICO_TESTS,

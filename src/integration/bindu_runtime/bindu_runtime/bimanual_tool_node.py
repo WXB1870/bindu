@@ -19,6 +19,7 @@ from bindu_interfaces.action import TeleopSession as TeleopAction
 from bindu_interfaces.msg import VRInput, ExecutionState, RecorderHealth, MotionCommand, TeleopModeState, ToolPoseInput
 from bindu_interfaces.srv import Lease, SubmitMotion, ControlExecution
 from .common import MODE_STATE_MAX_AGE, RuntimeNode, seconds, stamp, spin, joints_at_rest
+from .stop_evidence import stop_feedback_matches
 
 
 WORKER_POLL_PERIOD = .005
@@ -387,14 +388,10 @@ class BimanualToolNode(RuntimeNode):
                         not s.lease_active):
                     await self.pause()
                     continue
-                if (s and instance_id and s.instance_id==instance_id and
-                        s.profile_hash==self.profile.digest and s.simulated==self.simulation and
-                        s.lease_epoch==expected_epoch and s.lease_active==(not release) and
-                        s.state not in ('RUNNING','STOPPING') and not s.stop_failures and seconds(s.feedback_stamp)>=requested and
-                        0 <= self.now()-seconds(s.feedback_stamp)<self.cfg['feedback_max_age'] and
-                        not s.reference.name and
-                        joints_at_rest(s.joints, self.names, .005) and
-                        (not release or not s.lease_active)):
+                if stop_feedback_matches(s,instance_id=instance_id,epoch=expected_epoch,
+                        lease_active=not release,profile_hash=self.profile.digest,simulated=self.simulation,
+                        requested=requested,now=self.now(),max_age=self.cfg['feedback_max_age'],
+                        at_rest=lambda joints:joints_at_rest(joints,self.names,.005)):
                     return True
                 await self.pause()
         except RuntimeError:

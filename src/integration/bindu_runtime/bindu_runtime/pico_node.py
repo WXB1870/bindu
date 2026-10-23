@@ -25,6 +25,7 @@ from bindu_execution.interpolation import Curve, State
 from bindu_interfaces.srv import Lease, SubmitMotion, ControlExecution, PicoContext
 from bindu_interfaces.action import SelectTeleopMode, TeleopSession
 from .common import RuntimeNode, seconds, stamp, spin, joints_at_rest
+from .stop_evidence import stop_feedback_matches
 
 
 class Superseded(RuntimeError):
@@ -137,7 +138,8 @@ class PicoNode(RuntimeNode):
         self.frames={};self.state=self.mode=None;self.handoff_complete=False
         self.tool_goal=None;self.tool_result=None;self.tool_phase='inactive'
         self.lease=None;self.pending_intent=None;self.running=None
-        self.waiters=set();self.stop_deadline=None;self.release_until=0.;self.recording=None;self.record_future=None
+        self.waiters=set();self.stop_request=None;self.release_until=0.;self.recording=None;self.record_future=None
+        self.tool_request=None
         self.last_status=0.;self.last_phase=None
         self.last_prepare_check=None
         self.last_context_at=self.control.context_at
@@ -181,9 +183,13 @@ class PicoNode(RuntimeNode):
 
     def reading(self):
         s=self.state
+        if s and ((self.lease is not None and s.instance_id!=self.lease[1]) or
+                (self.tool_request is not None and (s.instance_id!=self.tool_request['instance_id'] or
+                    s.lease_active and s.lease_epoch!=self.tool_request['epoch']))):
+            raise RuntimeError('PICO_EXECUTION_AUTHORITY_CHANGED')
         if s is not None and s.stop_failures:
             raise RuntimeError('PICO_STOP_UNCONFIRMED:'+s.code)
-        if (s is None or s.device_backend!=self.backend or s.simulated != self.simulation or
+        if (s is None or s.profile_hash!=self.profile.digest or s.device_backend!=self.backend or s.simulated != self.simulation or
                 not 0<=self.now()-seconds(s.feedback_stamp)<=self.tool_cfg['feedback_max_age'] or
                 len(s.joints.name)!=len(s.joints.position) or len(set(s.joints.name))!=len(s.joints.name) or
                 not all(math.isfinite(q) for q in s.joints.position)):
@@ -201,6 +207,11 @@ class PicoNode(RuntimeNode):
                 modes.append(next((m for m in ('closed','open','virtual') if abs(value-cfg[m])<.003),'unknown'))
             stopped=((self.handoff_complete or not s.lease_active) and s.state not in ('RUNNING','STOPPING') and not s.reference.name and
                      joints_at_rest(s.joints,self.names,.005) and (not self.position_ops or self.position_ops.stopped()))
+            # A new executor's idle display cannot erase an outstanding stop.
+            if self.stop_request is not None:
+                if self.stop_request['failed'] or time.monotonic()>=self.stop_request['deadline']:
+                    raise RuntimeError('PICO_STOP_UNCONFIRMED')
+                stopped=False
             return PicoFeedback(seconds(s.feedback_stamp),stopped,tuple(modes))
         except RuntimeError as exc:
             return PicoFeedback(0.,False,healthy=False,fault=str(exc))
@@ -302,48 +313,153 @@ class PicoNode(RuntimeNode):
             await self.pause()
         return future.result()
 
-    async def stopped(self,requested,timeout=6.,release=False):
-        if self.stop_deadline is None:self.stop_deadline=time.monotonic()+timeout
-        while time.monotonic()<self.stop_deadline:
-            f=self.feedback();s=self.state
-            if s and s.stop_failures:raise RuntimeError('PICO_STOP_UNCONFIRMED')
-            if f.healthy and f.stopped and f.stamp>=requested and (not release or not s.lease_active):
-                self.stop_deadline=None
+    def begin_stop_wait(self,instance_id,epoch,lease_active):
+        if self.stop_request is not None:
+            self.stop_unconfirmed(self.stop_request,'PREVIOUS_REQUEST_UNCONFIRMED')
+        self.stop_request=dict(instance_id=instance_id,epoch=epoch,lease_active=lease_active,
+            requested=self.now(),deadline=time.monotonic()+6.,failed=False)
+        self.handoff_complete=False
+        return self.stop_request
+
+    def stop_unconfirmed(self,request,reason):
+        # A delayed coroutine must not fail/clear a newer request or goal.
+        if request is self.stop_request and not request['failed']:
+            request['failed']=True
+            s=self.state
+            self.event('PICO_STOP_UNCONFIRMED',json.dumps(dict(
+                reason=reason,requested_instance_id=request['instance_id'],expected_epoch=request['epoch'],
+                expected_lease_active=request['lease_active'],requested_at=request['requested'],
+                deadline_monotonic=request['deadline'],
+                observed_instance_id=s.instance_id if s else None,
+                observed_epoch=s.lease_epoch if s else None,state=s.state if s else None,
+                code=s.code if s else None)))
+        raise RuntimeError('PICO_STOP_UNCONFIRMED:'+reason)
+
+    async def stopped(self,request,*,clear=True):
+        while time.monotonic()<request['deadline']:
+            if request is not self.stop_request or request['failed']:
+                self.stop_unconfirmed(request,'REQUEST_NOT_CURRENT')
+            s=self.state
+            if s and (s.stop_failures or 'EMERGENCY_STOP' in s.code or s.code=='STOP_FEEDBACK_TIMEOUT'):
+                self.stop_unconfirmed(request,'EXECUTION_STOP_FAILED')
+            try:s,_=self.reading()
+            except RuntimeError:
+                await self.pause();continue
+            if (stop_feedback_matches(s,instance_id=request['instance_id'],epoch=request['epoch'],
+                    lease_active=request['lease_active'],profile_hash=self.profile.digest,
+                    simulated=self.simulation,requested=request['requested'],now=self.now(),
+                    max_age=self.tool_cfg['feedback_max_age'],
+                    at_rest=lambda joints:joints_at_rest(joints,self.names,.005)) and
+                    (not self.position_ops or self.position_ops.stopped())):
+                if clear:self.stop_request=None
                 return
             await self.pause()
-        raise RuntimeError('PICO_STOP_UNCONFIRMED')
+        self.stop_unconfirmed(request,'DEADLINE_EXPIRED')
 
     async def cancel_tool(self):
-        if self.tool_goal is not None:
-            await self.wait(self.tool_goal.cancel_goal_async())
-            if self.tool_result is not None:await self.wait(self.tool_result,7.)
-            self.tool_goal=self.tool_result=None;self.tool_phase='inactive'
-        requested=self.now()
-        await self.stopped(requested,release=True)
+        if self.stop_request is not None:
+            return await self.stopped(self.stop_request)
+        if self.lease is not None:
+            await self.release_lease()
+        goal,result=self.tool_goal,self.tool_result
+        context=self.tool_request
+        if context is None:
+            s=self.state
+            request=self.begin_stop_wait(s.instance_id if s and goal is None else '',
+                                         s.lease_epoch if s else -1,False)
+        else:
+            context['canceling']=True
+            request=self.begin_stop_wait(context['instance_id'],context['epoch']+1,False)
+        try:
+            if goal is None and context is not None:
+                # A timed-out send_goal can still be accepted later. Settle
+                # that exact request and cancel its handle; idle is no proof.
+                future=context['future']
+                handle=await self.wait(future,max(0.,request['deadline']-time.monotonic()))
+                if self.tool_request is not context:self.stop_unconfirmed(request,'TOOL_REQUEST_CHANGED')
+                if handle.accepted:
+                    goal=self.tool_goal=handle
+                    result=self.tool_result=handle.get_result_async()
+                else:
+                    # An explicitly rejected Action never acquired a lease.
+                    request['epoch']=context['epoch']-1
+            if goal is not None:
+                await self.wait(goal.cancel_goal_async(),min(2.,max(0.,request['deadline']-time.monotonic())))
+                if result is None:self.stop_unconfirmed(request,'TOOL_RESULT_MISSING')
+                ended=await self.wait(result,min(7.,max(0.,request['deadline']-time.monotonic())))
+                if 'STOP_UNCONFIRMED' in ended.result.code:
+                    self.stop_unconfirmed(request,'TOOL_STOP_UNCONFIRMED')
+                if (self.tool_goal is not goal or self.tool_result is not result or
+                        self.tool_request is not context):
+                    self.stop_unconfirmed(request,'TOOL_GOAL_CHANGED')
+            await self.stopped(request)
+        except Exception as exc:
+            if str(exc).startswith('PICO_STOP_UNCONFIRMED:'):raise
+            self.stop_unconfirmed(request,type(exc).__name__+':'+str(exc))
+        self.tool_goal=self.tool_result=None;self.tool_phase='inactive'
+        self.tool_request=None
 
     async def release_lease(self):
         if self.lease is None:return
-        lease=self.lease;self.lease=None
-        reply=await self.wait(self.stop_client.call_async(ControlExecution.Request(operation='hold',
-            lease_id=lease.lease_id,epoch=lease.epoch)))
-        if not reply.ok:raise RuntimeError(reply.code)
-        await self.stopped(self.now())
-        reply=await self.wait(self.leases.call_async(Lease.Request(operation='release',lease_id=lease.lease_id,epoch=lease.epoch)))
-        if not reply.ok:raise RuntimeError(reply.code)
-        await self.stopped(self.now(),release=True)
+        if self.stop_request is not None:
+            return await self.stopped(self.stop_request)
+        ownership=self.lease
+        lease,instance_id=ownership
+        pending_grant=hasattr(lease,'done')
+        request=self.begin_stop_wait(instance_id,-1 if pending_grant else lease.epoch,True)
+        try:
+            if pending_grant:
+                lease=await self.wait(lease,max(0.,request['deadline']-time.monotonic()))
+                if self.lease is not ownership:self.stop_unconfirmed(request,'LEASE_REQUEST_CHANGED')
+                if lease.profile_hash!=self.profile.digest:self.stop_unconfirmed(request,'PROFILE_MISMATCH')
+                request['epoch']=lease.epoch
+                if not lease.ok:
+                    if lease.lease_id:self.stop_unconfirmed(request,'LEASE_NOT_OWNED')
+                    request['lease_active']=False
+                    await self.stopped(request)
+                    self.lease=None
+                    return
+            reply=await self.wait(self.stop_client.call_async(ControlExecution.Request(operation='hold',
+                lease_id=lease.lease_id,epoch=lease.epoch)),min(2.,max(0.,request['deadline']-time.monotonic())))
+            if reply.ok:await self.stopped(request,clear=False)
+            elif reply.code!='INVALID_LEASE':self.stop_unconfirmed(request,reply.code)
+            # Keep one original deadline across hold and release. INVALID_LEASE
+            # only permits checking the already-revoked next epoch below.
+            request.update(epoch=lease.epoch+1,lease_active=False,requested=self.now())
+            reply=await self.wait(self.leases.call_async(Lease.Request(operation='release',lease_id=lease.lease_id,epoch=lease.epoch)),
+                min(2.,max(0.,request['deadline']-time.monotonic())))
+            if not reply.ok and not (reply.code=='INVALID_LEASE' and not reply.lease_id and
+                    reply.epoch==lease.epoch+1 and reply.profile_hash==self.profile.digest):
+                self.stop_unconfirmed(request,reply.code)
+            await self.stopped(request)
+        except Exception as exc:
+            if str(exc).startswith('PICO_STOP_UNCONFIRMED:'):raise
+            self.stop_unconfirmed(request,type(exc).__name__+':'+str(exc))
+        if self.lease is ownership:self.lease=None
 
     async def move(self,intent,targets,duration,*,fit_duration=False):
         self.current(intent)
         if not self.feedback().stopped:raise RuntimeError('PICO_MOTION_REQUIRES_STOP')
         arrival_tolerance=self.prepare_position_tolerance if intent.operation=='prepare' else .002
-        lease=await self.wait(self.leases.call_async(Lease.Request(operation='acquire',
-            owner=self.instance_id,resources=list(self.groups))))
-        if not lease.ok:raise RuntimeError(lease.code)
-        self.lease=lease
+        execution_instance_id=self.state.instance_id
+        future=self.leases.call_async(Lease.Request(operation='acquire',
+            owner=self.instance_id,resources=list(self.groups)))
+        self.lease=(future,execution_instance_id)
+        try:
+            lease=await self.wait(future)
+            if not lease.ok or lease.profile_hash!=self.profile.digest:
+                raise RuntimeError(lease.code if not lease.ok else 'PROFILE_MISMATCH')
+        except Exception:
+            # A lost grant reply is not a rejected grant. Cleanup settles that
+            # exact future before releasing, or retains an unconfirmed barrier.
+            await self.release_lease()
+            raise
+        self.lease=(lease,execution_instance_id)
         try:
             self.current(intent)
             deadline=time.monotonic()+1.
-            while not (self.state and self.state.lease_active and self.state.lease_epoch==lease.epoch):
+            while not (self.state and self.state.instance_id==execution_instance_id and
+                       self.state.lease_active and self.state.lease_epoch==lease.epoch):
                 self.current(intent)
                 if time.monotonic()>deadline:raise RuntimeError('PICO_LEASE_FEEDBACK_TIMEOUT')
                 await self.pause()
@@ -372,6 +488,8 @@ class PicoNode(RuntimeNode):
             while time.monotonic()<deadline:
                 self.current(intent)
                 state,measured=self.reading();now=self.now()
+                if state.instance_id!=execution_instance_id or not state.lease_active or state.lease_epoch!=lease.epoch:
+                    raise RuntimeError('PICO_EXECUTION_AUTHORITY_CHANGED')
                 if state.command_id.startswith(command_id+'_') and state.state=='FAILED':raise RuntimeError(state.code)
                 if (now>=started+duration and seconds(state.feedback_stamp)>=started+duration and
                         all(abs(measured[n]-v)<arrival_tolerance for n,v in zip(self.names,end)) and
@@ -517,15 +635,27 @@ class PicoNode(RuntimeNode):
 
     async def follow(self,intent):
         self.current(intent)
+        if not self.feedback().stopped:raise RuntimeError('PICO_MOTION_REQUIRES_STOP')
+        state,_=self.reading()
+        if state.lease_active:raise RuntimeError('PICO_EXECUTION_AUTHORITY_CHANGED')
+        context=dict(instance_id=state.instance_id,epoch=state.lease_epoch+1,
+                     token=intent.token,canceling=False,future=None)
+        self.tool_request=context
         self.release_until=self.now()+.1
         future=self.tools.send_goal_async(TeleopSession.Goal(task_id='pico_'+self.instance_id,
-            resource_group=self.control.teleop_mode,duration=3600.),feedback_callback=self.tool_feedback)
+            resource_group=self.control.teleop_mode,duration=3600.),
+            feedback_callback=lambda msg:self.tool_feedback(msg,context))
+        context['future']=future
         def fence(f):
             handle=f.result()
-            if handle.accepted and (not self.control.pending or self.control.pending.token!=intent.token):
+            if handle.accepted and (self.tool_request is not context or context['canceling'] or
+                    not self.control.pending or self.control.pending.token!=intent.token):
                 handle.cancel_goal_async()
         future.add_done_callback(fence)
-        self.tool_goal=await self.wait(future)
+        handle=await self.wait(future)
+        if self.tool_request is not context or context['canceling']:
+            raise Superseded('PICO_OPERATION_SUPERSEDED')
+        self.tool_goal=handle
         if not self.tool_goal.accepted:self.tool_goal=None;raise RuntimeError('PICO_TOOL_SESSION_REJECTED')
         self.tool_result=self.tool_goal.get_result_async()
         self.current(intent)
@@ -537,8 +667,9 @@ class PicoNode(RuntimeNode):
             await self.pause()
         raise RuntimeError('PICO_FOLLOW_CAPTURE_TIMEOUT')
 
-    def tool_feedback(self,msg):
-        self.tool_phase=msg.feedback.mode
+    def tool_feedback(self,msg,context):
+        if context is self.tool_request and not context['canceling']:
+            self.tool_phase=msg.feedback.mode
 
     async def perform(self,intent):
         ok=False;reason='';read_only=False;rejected=False;canceled=False;stopped_failure=False
@@ -661,9 +792,9 @@ class PicoNode(RuntimeNode):
             if item is not None:self.validation_result=item
         except RuntimeError as exc:
             if self.control.pending and self.control.pending.operation=='prepare':self.control.lock(str(exc),self.now())
-        if self.state and not self.state.lease_active and self.feedback().healthy:
-            self.handoff_complete=True
         feedback=self.feedback()
+        if self.state and not self.state.lease_active and feedback.healthy and feedback.stopped:
+            self.handoff_complete=True
         if self.position_ops and self.control.teleop_mode=='bimanual_tool' and feedback.healthy:
             if (not self.operator_grasp and not self.control.pending and feedback.stopped and
                     self.control.phase in ('checking','standby','tool_standby') and

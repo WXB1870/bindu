@@ -23,8 +23,9 @@ class PrepareReturnPathTests(unittest.IsolatedAsyncioTestCase):
         from tests.support.paths import ROOT
         profile=Profile.load(ROOT/'src/integration/bindu_runtime/config/robots/snowbot/snowbot_real_position.json')
         clock=[0.];joint='arm_l_joint_1';target=.2
-        lease=S(ok=True,lease_id='test',epoch=1)
-        state=S(lease_active=True,lease_epoch=1,revision=0,command_id='',state='HOLDING',
+        lease=S(ok=True,lease_id='test',epoch=1,profile_hash=profile.digest)
+        state=S(instance_id='executor',profile_hash=profile.digest,
+            lease_active=True,lease_epoch=1,revision=0,command_id='',state='HOLDING',
             joints=S(name=[joint],velocity=[velocity]),reference=S(name=[joint],position=[target]))
         def reading():
             state.feedback_stamp=module.stamp(clock[0] if fresh else 0.)

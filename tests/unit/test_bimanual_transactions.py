@@ -24,6 +24,7 @@ from bindu_hardware.drivers.simulated_base import SimBaseDriver
 from bindu_hardware.robot_io.system import RobotIO
 from bindu_teleoperation.bimanual_session import AcceptedReference, BimanualSession, ToolPoseSession, ToolPause
 from bindu_teleoperation.independent_session import IndependentArmsSession
+from bindu_runtime.stop_evidence import stop_feedback_matches
 
 
 SOURCE = Path(__file__).resolve().parents[2]/'src/integration/bindu_runtime/bindu_runtime/bimanual_tool_node.py'
@@ -92,6 +93,7 @@ class Rig:
         names = {'execute','check','wait','begin_stop','stop','stop_pending','execution_revision'}
         methods = [n for n in node.body if getattr(n,'name','') in names]
         namespace = dict(time=S(monotonic=lambda:self.steady),json=json,math=__import__('math'),
+            stop_feedback_matches=stop_feedback_matches,
             WORKER_POLL_PERIOD=next(ast.literal_eval(n.value) for n in tree.body
                 if isinstance(n,ast.Assign) and any(isinstance(t,ast.Name) and
                     t.id=='WORKER_POLL_PERIOD' for t in n.targets)),
