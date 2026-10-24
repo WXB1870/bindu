@@ -349,6 +349,7 @@ PreparedSegment PreparedSegment::tracking_target(const JointLimits& limits,const
         double start,double horizon,double stop_timeout) {
     validate(limits,initial);
     auto final=rest(goal);final.v=velocity_hint;validate(final,limits.size());
+    constexpr double response_time=.2,maximum_preview=.2;
     check(std::isfinite(start)&&std::isfinite(horizon)&&horizon>0.&&
           std::isfinite(stop_timeout)&&stop_timeout>0.,"INVALID_TRACKING_TIME");
     double duration=minimum_tracking_duration;bool moving_goal=false;
@@ -361,15 +362,25 @@ PreparedSegment PreparedSegment::tracking_target(const JointLimits& limits,const
     auto fallback=target(limits,initial,goal,start,horizon,stop_timeout);
     if(moving_goal) {
         for(int attempt=0;attempt<70&&duration<horizon;++attempt,duration*=1.12) {
-            // Extrapolate only a short target trend, never an entire long
-            // catch-up interval. Every axis uses the same connection clock.
+            // Track the velocity trend with bounded position-error correction,
+            // rather than forcing a quintic to a lagging extrapolated point.
+            // Correction may slow a nonzero trend by at most half; it must not
+            // turn a still-advancing input into an at-rest/reversing endpoint.
+            // A true input reversal changes the allowed endpoint direction.
             for(size_t i=0;i<goal.size();++i) {
-                final.v[i]=velocity_hint[i]*std::min(1.,.2/duration);
-                final.q[i]=goal[i]+final.v[i]*duration;
+                const double low=velocity_hint[i]>1e-8?.5*velocity_hint[i]:-limits[i].velocity;
+                const double high=velocity_hint[i]<-1e-8?.5*velocity_hint[i]:limits[i].velocity;
+                final.v[i]=std::clamp(velocity_hint[i]+(goal[i]-initial.q[i])/response_time,
+                                      low,high)*std::min(1.,maximum_preview/duration);
+                // Integral of the cubic Hermite velocity joining (v,a) to
+                // (final.v,0). Position stays C2 without a second follower.
+                final.q[i]=initial.q[i]+(initial.v[i]+final.v[i])*duration/2+
+                           initial.a[i]*duration*duration/12;
             }
             bool inside=true;
             for(size_t i=0;i<goal.size();++i)
-                inside=inside&&final.q[i]>=limits[i].lower&&final.q[i]<=limits[i].upper;
+                inside=inside&&final.q[i]>=limits[i].lower&&final.q[i]<=limits[i].upper&&
+                    std::abs(final.q[i]-goal[i])<=maximum_preview*limits[i].velocity;
             if(!inside) break;
             auto curve=std::make_shared<Curve>(start,duration,initial,final);
             if(!curve->valid(limits)) continue;

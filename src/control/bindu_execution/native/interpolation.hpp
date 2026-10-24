@@ -60,9 +60,11 @@ public:
     // not a scalar path progress. Ordinary target/stop APIs stay unchanged.
     static PreparedSegment stream_target(const JointLimits&,const JointState&,
         const std::vector<double>& goal,double start,double horizon,double stop_timeout);
-    // Position-stream continuation with a target-velocity hint and at most
-    // 200 ms linear prediction. A shared-time joint quintic is followed by a
-    // certified at-rest convergence tail. Infeasible hints fall back to target.
+    // Position-stream continuation joins reference velocity/acceleration to a
+    // trend plus bounded position-error correction. Endpoint displacement from
+    // the actual goal is at most 200 ms at each axis's velocity limit. Shared
+    // clocks, analytic limits and the finite return-to-goal tail remain required.
+    // Infeasible continuations fall back to the ordinary target.
     static PreparedSegment tracking_target(const JointLimits&,const JointState&,
         const std::vector<double>& goal,const std::vector<double>& velocity_hint,
         double start,double horizon,double stop_timeout);

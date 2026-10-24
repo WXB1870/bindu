@@ -163,7 +163,7 @@ class PicoNode(RuntimeNode):
         self.frames={};self.state=self.mode=None;self.handoff_complete=False
         self.tool_goal=None;self.tool_result=None;self.tool_phase='inactive'
         self.lease=None;self.pending_intent=None;self.running=None
-        self.waiters=set();self.stop_request=None;self.release_until=0.;self.recording=None;self.record_future=None
+        self.waiters=set();self.stop_request=None;self.confirmed_stop=None;self.release_until=0.;self.recording=None;self.record_future=None
         self.tool_request=None
         self.last_status=0.;self.last_phase=None
         self.last_prepare_check=None
@@ -371,6 +371,8 @@ class PicoNode(RuntimeNode):
     def begin_stop_wait(self,instance_id,epoch,lease_active):
         if self.stop_request is not None:
             self.stop_unconfirmed(self.stop_request,'PREVIOUS_REQUEST_UNCONFIRMED')
+        self.confirmed_stop=None
+        self.stop_diagnostic=None
         self.stop_request=dict(instance_id=instance_id,epoch=epoch,lease_active=lease_active,
             requested=self.now(),deadline=time.monotonic()+6.,failed=False)
         self.handoff_complete=False
@@ -417,7 +419,9 @@ class PicoNode(RuntimeNode):
                     max_age=self.tool_cfg['feedback_max_age'],
                     at_rest=lambda joints:joints_at_rest(joints,self.names,.005)) and
                     (not self.position_ops or self.position_ops.stopped())):
-                if clear:self.stop_request=None
+                if clear:
+                    self.confirmed_stop=dict(request)
+                    self.stop_request=None
                 return
             await self.pause()
         self.stop_unconfirmed(request,'DEADLINE_EXPIRED')
@@ -515,7 +519,7 @@ class PicoNode(RuntimeNode):
             self.stop_unconfirmed(request,type(exc).__name__+':'+str(exc))
         if self.lease is ownership:self.lease=None
 
-    async def prepare_hold_reference(self,intent,*,lease=None,previous=None):
+    async def prepare_hold_reference(self,intent,*,lease=None,previous=None,allow_feedback_fault=False):
         """Authenticate the stopped PAUSE again after every ownership transition."""
         self.current(intent)
         if not self.prepare_hold_client or self.stop_request is not None:
@@ -525,7 +529,9 @@ class PicoNode(RuntimeNode):
         if not reply.success:raise RuntimeError(reply.message)
         try:
             data=json.loads(reply.message);s,q=self.reading()
-            if (s.stop_failures or s.state not in ('READY','CANCELED','SUCCEEDED') or
+            stopped_state=(s.state in ('READY','CANCELED','SUCCEEDED') or
+                allow_feedback_fault and s.state=='FAILED' and s.code=='DEVICE_FEEDBACK_ERROR')
+            if (s.stop_failures or not stopped_state or
                     s.lease_active is not (lease is not None) or
                     data['instance_id']!=s.instance_id or data['profile_hash']!=self.profile.digest or
                     data['lease_id']!=(lease.lease_id if lease else '') or
@@ -862,29 +868,42 @@ class PicoNode(RuntimeNode):
         if self.lease is not None or self.tool_request is not None or self.tool_goal is not None:
             raise RuntimeError('PICO_RECOVERY_OWNERSHIP_UNRESOLVED')
         s,_=self.reading()
-        request=self.stop_request
+        pending=self.stop_request
+        request=pending or getattr(self,'confirmed_stop',None)
+        feedback_fault=s.state=='FAILED' and s.code=='DEVICE_FEEDBACK_ERROR'
         if request is not None:
-            matches=stop_feedback_matches(s,instance_id=request['instance_id'],epoch=request['epoch'],
-                lease_active=request['lease_active'],profile_hash=self.profile.digest,
+            matches=not request['lease_active'] and stop_feedback_matches(s,instance_id=request['instance_id'],epoch=request['epoch'],
+                lease_active=False,profile_hash=self.profile.digest,
                 simulated=self.simulation,requested=request['requested'],now=self.now(),
                 max_age=self.tool_cfg['feedback_max_age'],
                 at_rest=lambda joints:joints_at_rest(joints,self.names,.005))
         else:
             matches=(not s.lease_active and s.state in ('READY','CANCELED','SUCCEEDED') and
                      not s.reference.name and joints_at_rest(s.joints,self.names,.005))
-        if not matches:raise RuntimeError('PICO_RECOVERY_STOP_NOT_CONFIRMED')
+        # Only a completed stop can recover a transient feedback failure. A
+        # fresh idle display alone cannot authorize FAILED or erase a barrier.
+        if (not matches or s.state not in ('READY','CANCELED','SUCCEEDED') and
+                not (feedback_fault and request is not None and not request['failed'] and pending is None)):
+            raise RuntimeError('PICO_RECOVERY_STOP_NOT_CONFIRMED')
+        hold=None
+        if feedback_fault:
+            hold=await self.prepare_hold_reference(intent,allow_feedback_fault=True)
         if self.position_ops:await self.position_ops.recover(intent)
+        if hold is not None:
+            await self.prepare_hold_reference(intent,previous=hold,allow_feedback_fault=True)
         self.current(intent)
-        # Recheck after the service await; a changed owner invalidates recovery.
+        # Recheck after the service await; a changed owner or fault invalidates recovery.
         current,_=self.reading()
-        if (current.instance_id!=s.instance_id or current.lease_epoch!=s.lease_epoch or
-                current.lease_active or current.state not in ('READY','CANCELED','SUCCEEDED') or
-                current.reference.name or not joints_at_rest(current.joints,self.names,.005)):
+        if (self.stop_request is not pending or
+                current.instance_id!=s.instance_id or current.lease_epoch!=s.lease_epoch or
+                current.lease_active or current.state!=s.state or current.code!=s.code or
+                current.stop_failures or current.reference.name or
+                not joints_at_rest(current.joints,self.names,.005)):
             raise RuntimeError('PICO_RECOVERY_STATE_CHANGED')
         self.stop_request=None
         self.control.update_feedback(self.feedback(),self.now())
         if not self.control.rest(self.now()):
-            self.stop_request=request
+            self.stop_request=pending
             raise RuntimeError('PICO_RECOVERY_FEEDBACK_NOT_READY')
 
     async def perform(self,intent):

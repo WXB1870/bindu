@@ -111,6 +111,7 @@ class PositionSessionDevices:
         from rcl_interfaces.msg import ParameterDescriptor
         from snowbot_ctl_msgs.msg import PositionObservation, PositionSessionCommand, PositionSessionState
         from std_msgs.msg import Float64MultiArray
+        from copy import deepcopy
         from rclpy.qos import qos_profile_sensor_data
         if node.runtime_mode != 'real':
             raise ValueError('SNOWBOT_VENDOR_REQUIRES_REAL_MODE')
@@ -160,7 +161,11 @@ class PositionSessionDevices:
         self.command_topics = {'arms': '/bindu/position/command'}
         self.publishers = {'arms': node.create_publisher(PositionSessionCommand, self.command_topics['arms'], 1)} if self.io.command_enabled else {}
         self.heartbeat_running = False
-        node.create_subscription(PositionObservation, self.feedback_topic, self.receive, qos_profile_sensor_data)
+        # This is current state, not a lossless history. Do not drain obsolete
+        # samples after a callback stall; all existing freshness gates still apply.
+        feedback_qos=deepcopy(qos_profile_sensor_data)
+        feedback_qos.depth=1
+        node.create_subscription(PositionObservation, self.feedback_topic, self.receive, feedback_qos)
         for layer, receiver in (('upper', 'arms'), ('middle', 'middle'), ('servo', 'head')):
             topic = '/bindu/position/'+layer+'_state'
             node.create_subscription(PositionSessionState, topic,
@@ -280,7 +285,13 @@ class PositionSessionDevices:
                             command_id=source[2])
         except (ValueError, RuntimeError) as exc:
             self.io.invalid = str(exc)
-            self.node.get_logger().warn(str(exc), throttle_duration_sec=1.)
+            detail=str(exc)
+            if detail=='SNOWBOT_PDO_STALE':
+                detail+=' '+json.dumps(dict(publish_age_ms=1000*(self.node.now()-
+                    (msg.header.stamp.sec+msg.header.stamp.nanosec*1e-9)),
+                    pdo_age_ms=1000*msg.pdo_age,pdo_sample=msg.pdo_sample,
+                    previous_sample=self.health.sample,wkc=msg.wkc,expected_wkc=msg.expected_wkc))
+            self.node.get_logger().warn(detail, throttle_duration_sec=1.)
 
     def _check_session_health(self, groups, *, acquiring=False):
         self.health.require(groups, acquiring=(acquiring or self.io.requesting_pause or bool(self.io.stop_targets)))
