@@ -284,6 +284,8 @@ asyncio.run(run())
 '''
         env=dict(os.environ);env['PYTHONPATH']=str(ROOT)+os.pathsep+os.pathsep.join(
             str(p) for p in (ROOT/'src').glob('*/*') if p.is_dir())
+        if os.environ.get('PYTHONPATH'):
+            env['PYTHONPATH']+=os.pathsep+os.environ['PYTHONPATH']
         process=await asyncio.create_subprocess_exec(sys.executable,'-c',program,
             env=env,stdout=asyncio.subprocess.PIPE,stderr=asyncio.subprocess.STDOUT)
         output,_=await process.communicate()

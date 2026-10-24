@@ -1,5 +1,6 @@
 """Same position semantics on PhysX: measured state, post-step ACK and one-shot hold."""
 from tests.support.paths import ROOT
+from dataclasses import replace
 import json
 from pathlib import Path
 from types import SimpleNamespace as S
@@ -57,7 +58,10 @@ class PhysicsRealtimeTests(unittest.TestCase):
 
 class PositionPhysicsTests(unittest.TestCase):
     def setUp(self):
-        self.profile=Profile.load(ROOT/'src/integration/bindu_runtime/config/robots/snowbot/snowbot_real_position.json')
+        # Shared-progress semantics use an explicit uniform fixture; field
+        # waist/arm tuning is verified separately by the target-wire tests.
+        self.profile=replace(Profile.load(ROOT/'src/integration/bindu_runtime/config/robots/snowbot/snowbot_real_position.json'),
+                             max_speed=1.5,joint_dynamics={},digest='uniform_physics_fixture')
         self.q=dict.fromkeys(self.profile.limits,0.)
         self.core=PhysicsPositionState(self.profile,'boot',self.q)
 
@@ -417,7 +421,7 @@ class PhysicsGripperAcknowledgmentTests(unittest.TestCase):
     def test_contact_velocity_is_distinct_from_opening_change_and_stop(self):
         from bindu_runtime.pico_position import PositionOperations
         ops=PositionOperations.__new__(PositionOperations)
-        ops.config=dict(grippers={'left':{'closed':0.},'right':{'closed':0.,'virtual':.02}},
+        ops.config=dict(calibrated=True,grippers={'left':{'closed':0.},'right':{'closed':0.,'virtual':.02}},
                         position_tolerance=.003,velocity_tolerance=.01)
         value=S(measured_position=.0006,measured_velocity=.04,state='CANCELED')
         ops.reading=lambda side:value

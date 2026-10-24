@@ -97,7 +97,9 @@ inline PreparedSegment balanced(const JointLimits& limits,const JointState& seed
   bool moving=false;for(size_t i=0;i<goal.size();++i){duration=std::max(duration,std::abs(goal[i]-seed.q[i])/limits[i].velocity);moving=moving||std::abs(hint[i])>1e-8;}
   if(moving)for(int k=0;k<70&&duration<30.;++k,duration*=1.12){JointState end;end.q=goal;end.v=hint;end.a.assign(goal.size(),0.);end.j=end.a;bool inside=true;
     for(size_t i=0;i<goal.size();++i){end.v[i]*=std::min(1.,.2/duration);end.q[i]+=end.v[i]*duration;inside=inside&&end.q[i]>=limits[i].lower&&end.q[i]<=limits[i].upper;}
-    if(!inside)break;auto curve=std::make_shared<Curve>(start,duration,seed,end);if(!curve->valid(limits))continue;
+    if(!inside)break;
+    auto curve=std::make_shared<Curve>(start,duration,seed,end);
+    if(!curve->valid(limits))continue;
     try{auto paths=fit_target(limits,end,goal,curve->end(),30.-duration,5.);paths.insert(paths.begin(),curve);auto candidate=PreparedSegment::from_curves(paths,limits);
       return predictionGate(candidate,fallback,goal,hint,start)?candidate:fallback;
     }catch(const std::invalid_argument&){break;}}
