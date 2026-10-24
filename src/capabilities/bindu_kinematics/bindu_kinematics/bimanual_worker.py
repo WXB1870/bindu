@@ -99,14 +99,15 @@ def _run(config, profile, requests, results, preload_path_checks=False):
                 elif operation == 'capture': value=solver.capture(feedback,grasp_mode,reference=reference)
                 elif operation == 'loaded_prepare_path':
                     value=solver.check_loaded_prepare(feedback,target)
-                elif operation in ('prepare_path','prepare_recovery_path','prepare_limit_recovery_path','gripper_path'):
+                elif operation in ('prepare_path','prepare_recovery_path','prepare_limit_recovery_path','gripper_path','gripper_body_path'):
                     import numpy as np
                     loaded=operation=='gripper_path'
+                    gripper=operation in ('gripper_path','gripper_body_path')
                     check=path_check(loaded)
-                    names=solver.model_names if loaded else solver.names
+                    names=solver.model_names if gripper else solver.names
                     tool=np.asarray(solver.capture(feedback,'right_axial')).reshape(4,4) if loaded else np.eye(4)
                     before=np.array([feedback[n] for n in names])
-                    after=np.array([target.get(n,feedback[n]) for n in names]) if loaded else np.array(target)
+                    after=np.array([target.get(n,feedback[n]) for n in names]) if gripper else np.array(target)
                     if before.shape!=after.shape or not np.isfinite(after).all():
                         raise ValueError('PREPARE_JOINT_LAYOUT')
                     if operation=='prepare_limit_recovery_path' and reference is None:

@@ -139,6 +139,29 @@ class GripperTests(unittest.TestCase):
             else:r.core.input(r.frame('left',3,1.,(2,1)))
             self.assertFalse(r.core.lease_id)
 
+    def test_independent_trigger_refusal_reports_reason_and_requires_new_edge(self):
+        for error in ('GRIPPER_COMMANDS_DISABLED','GRIPPER_RECEIVER_UNAVAILABLE:left','AFTER_LEASE_REJECTION'):
+            r=Rig(require_driver_ack=False,independent_trigger_control=True)
+            for side in SIDES:r.core.input(r.frame(side,1))
+            health=r.core.health
+            if error=='GRIPPER_COMMANDS_DISABLED':r.core.enabled=False
+            elif error=='AFTER_LEASE_REJECTION':r.core.health=Mock(side_effect=[r.health,RuntimeError(error)])
+            else:r.core.health=Mock(side_effect=RuntimeError(error))
+            r.core.input(r.frame('left',2,1.,(1,0)))
+            self.assertFalse(r.sent);self.assertFalse(r.core.lease_id)
+            self.assertEqual(r.core.snapshot('left')['code'],error)
+            self.assertEqual(r.core.snapshot('right')['code'],error if error=='AFTER_LEASE_REJECTION' else 'NO_COMMAND')
+            self.assertEqual(r.core.last_request_rejection['code'],error)
+            self.assertFalse(r.core.fault)
+            r.core.enabled=True;r.core.health=health
+            for seq in (3,4):
+                r.core.input(r.frame('right',seq))
+                r.core.input(r.frame('left',seq,1.,(1,0)))
+            self.assertFalse(r.sent)
+            r.core.input(r.frame('left',5,0.,(1,1)))
+            r.core.input(r.frame('left',6,1.,(2,1)))
+            self.assertTrue(r.sent)
+
 
     def test_manual_endpoint_residuals_finish_after_hold_without_claiming_grasp(self):
         r=Rig();r.config['calibrated']=False
@@ -643,6 +666,7 @@ class DirectOperationTests(unittest.TestCase):
         mode_code='PICO_TOOL_GRASP_UNCONFIRMED_UNCALIBRATED'
         async def wait(value):return value
         node=S(feedback=lambda:S(healthy=True,stopped=True,modes=('unknown','unknown')),
+            position_contract=False,
             position_ops=S(config={'calibrated':False,'allow_uncalibrated_direct':True}),
             arms_ready_client=S(service_is_ready=lambda:True,call_async=lambda _:S(success=True)),
             tool_cfg={},operator_grasp=False,unheld_test=False,current=lambda _:None,wait=wait)

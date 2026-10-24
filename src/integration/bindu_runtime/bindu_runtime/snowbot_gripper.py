@@ -130,9 +130,12 @@ class SnowbotGrippers:
 
     def input(self, msg):
         if self.node.matches_mode(msg):
+            previous=self.core.last_request_rejection
             frame = VRFrame(msg.source_id, msg.seq, seconds(msg.stamp), msg.side, tuple(msg.pose), msg.grip, msg.trigger,
                 msg.init, msg.stop, msg.valid, msg.clutch_seq, msg.mapping, msg.buttons, tuple(int(value) for value in msg.button_edges), msg.virtual_grip)
             self.core.input(frame)
+            if self.core.last_request_rejection is not previous:
+                self.node.event('GRIPPER_REQUEST_REJECTED',json.dumps(self.core.last_request_rejection))
 
     def tick(self):
         self.core.tick()

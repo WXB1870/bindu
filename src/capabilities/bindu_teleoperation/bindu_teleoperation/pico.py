@@ -414,7 +414,7 @@ class PicoControl:
                     self.phase,self.reason='standby','UNLOADED'
                 else:self.reason='GRIP_OR_TOOL_CONFIRMATION_REQUIRED'
             return
-        if presses[2]:
+        if presses[2] and not self.dual_modes:
             if self.guided_loading:self.loading_check(now)
             else:self.phase,self.reason='load_check','CHECK_SUPPORT_THEN_B'
             self.emit('stop');return
@@ -444,8 +444,6 @@ class PicoControl:
                         self.reason='MODE_SWITCH_REQUIRES_STOP'
                     else:
                         target='bimanual_tool' if independent else 'independent_arms'
-                        if target=='independent_arms' and self.load=='held':
-                            self.reason='PICO_TOOL_HELD_REQUIRES_TOOL_MODE';return
                         self.phase='selecting_mode';self.emit('select_mode',target)
                     return
             if not states[4]:self.a_since=None;self.prepare_blocked=False
@@ -474,8 +472,6 @@ class PicoControl:
             if self.dual_modes and (states[4] or states[5]):return
             if (self.guided_loading or self.phase=='tool_standby') and engage and self.rest(now):
                 if not independent:self.squeeze_released=[False,False]
-                if independent and self.load=='held':
-                    self.squeeze_released=[False,False];self.reason='PICO_TOOL_HELD_REQUIRES_TOOL_MODE';return
                 if not self.independent_grippers and not independent and states[0]!=self.virtual:
                     if self.guided_loading and self.armed[0]:
                         self.phase='switching';self.emit('switch_grasp',states[0])
@@ -491,7 +487,7 @@ class PicoControl:
         if targets==self.manual_targets:return
         self.manual_targets=targets
         self.supported=False
-        if 'open' in targets and self.load=='held':
+        if not self.dual_modes and 'open' in targets and self.load=='held':
             self.load,self.load_source='unknown','direct_gripper_open'
         if (self.pending and self.pending.operation=='manual_grippers' and
                 self.gripper_update_token==self.pending.token):
@@ -561,6 +557,11 @@ class PicoControl:
                     self.reason='PREPARE_HOLD_AFTER_GRIPPER_STOP'
         elif operation=='select_mode':
             self.teleop_mode=value
+            # Compatibility metadata describes the selected collision model,
+            # never an inferred physical grasp or a permission to engage.
+            self.load='held' if value=='bimanual_tool' else 'empty'
+            self.load_source='teleop_mode'
+            self.supported=False
             self.phase,self.reason='standby','TELEOP_MODE_SELECTED'
             self.squeeze_released=[False,False]
         elif operation=='confirm_tool':
@@ -629,6 +630,8 @@ class PicoControl:
                     button_edges=list(f.button_edges) if fresh else None,
                     position_m=[f.pose[i] for i in (3,7,11)] if fresh else None)
         view['independent_grippers']=self.independent_grippers
+        view['tool_collision_enabled']=self.teleop_mode=='bimanual_tool'
+        view['load_state_checked']=not self.dual_modes
         if self.guided_loading:view['operator_guide']=loading_guide(view,self.feedback.modes if self.feedback else ())
         return view
 
@@ -665,8 +668,6 @@ def loading_guide(view, modes):
         if reason=='GRIPPER_REQUIRES_STOP_AND_RELEASED_SQUEEZE':
             return dict(title='停稳、松开双侧握后再操作夹爪',
                         detail='先松开扳机，再按住打开对应爪，松开闭合',key='Trigger',step='grippers')
-        if reason=='PICO_TOOL_HELD_REQUIRES_TOOL_MODE':
-            return dict(title='当前已装夹工具',detail='松开双侧握，按 B 切换扫雪模式后接合',key='B',step='mode')
         if reason.startswith(('RuntimeError:','ValueError:')) or reason.startswith('PREPARE_REQUIRES_'):
             detail=next((label for code,label in (
                 ('BIMANUAL_GRASP_POSE','双臂姿态不满足工具握点几何，请核对姿态与工具配置'),

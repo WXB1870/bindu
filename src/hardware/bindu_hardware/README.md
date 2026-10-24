@@ -152,7 +152,7 @@ ros2 launch bindu_runtime g1_sim.launch.py recording_mode:=normal namespace:=/bi
 
 ### Snowbot真实夹爪位置闭环
 
-夹爪复用现有Snowbot执行节点，默认配方引用[`snowbot_grippers_real.json`](../../integration/bindu_runtime/config/robots/snowbot/snowbot_grippers_real.json)，不新增电机控制进程。该接口确认的是位置到位和保持；`grasp_state=unknown`明确表示没有实体夹持／夹紧力／虚握证明，不能据`position_reached=true`进入持物作业。
+夹爪复用现有Snowbot执行节点，默认配方引用[`snowbot_grippers_real.json`](../../integration/bindu_runtime/config/robots/snowbot/snowbot_grippers_real.json)，不新增电机控制进程。该接口确认的是位置到位和保持；`grasp_state=unknown`明确表示没有实体夹持／夹紧力／虚握证明。统一PICO位置入口不再以实体装夹状态阻止切模式或接管，杆件碰撞模型随耦合模式选择，详见[工具操作契约](../../../动作执行契约.md#61-snowbot-工具操作与握持切换)。独立Trigger请求在申请租约前被拒绝时，也会保留对应侧`code`并记录`GRIPPER_REQUEST_REJECTED`，不再静默显示`NO_COMMAND`；拒绝不自动重试，须新输入。
 
 | 接口（默认前缀`/bindu_snowbot`） | 用途 |
 |---|---|
