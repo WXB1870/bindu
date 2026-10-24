@@ -99,6 +99,36 @@ class GripperTests(unittest.TestCase):
         r.core.input(r.frame('left',26,stop=True))
         self.assertFalse(r.core.lease_id)
 
+    def test_resumed_input_before_timer_cannot_revive_expired_gripper_lease(self):
+        for clock in ('ros','steady'):
+            with self.subTest(clock=clock):
+                r=Rig(require_driver_ack=False,independent_trigger_control=True)
+                for side in SIDES:r.core.input(r.frame(side,1))
+                r.core.input(r.frame('left',2,1.,(1,0)))
+                r.core.input(r.frame('right',2))
+                old_lease=r.core.lease_id
+                r.step(12,track=False)
+                if clock=='ros':r.now=r.core.expires
+                else:r.now+=.001;r.steady=r.core.steady_expires
+                r.observe();before=len(r.sent)
+                # Resume callbacks exactly at expiry, before the next timer tick.
+                r.core.input(r.frame('left',3,1.,(1,0)))
+                self.assertFalse(r.core.lease_id)
+                self.assertEqual(r.core.channels['left']['code'],'GRIPPER_LEASE_EXPIRED')
+                for seq in range(4,12):
+                    for side in SIDES:
+                        r.core.input(r.frame(side,seq,1. if side=='left' else 0.,
+                                             (1,0) if side=='left' else (0,0)))
+                    r.step(track=False)
+                self.assertFalse(r.core.lease_id)
+                self.assertTrue(all(command[2] for command in r.sent[before:]))
+                # A fresh release after confirmed stop may acquire a new lease.
+                r.core.input(r.frame('left',12,0.,(1,1)))
+                self.assertTrue(r.core.lease_id)
+                self.assertNotEqual(r.core.lease_id,old_lease)
+                self.assertEqual(r.sent[-1][1],r.config['grippers']['left']['closed'])
+                self.assertFalse(r.sent[-1][2])
+
     def test_independent_trigger_stream_expiry_and_ambiguous_edges_stop(self):
         for fault in ('timeout','edges'):
             r=Rig(require_driver_ack=False,independent_trigger_control=True)

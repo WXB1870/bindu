@@ -417,6 +417,12 @@ class GripperController:
     def independent_input(self, frame):
         """Fresh coordinator trigger edges own a separate, expiring gripper lease."""
         if frame.side not in SIDES:return
+        # Input can run before the timer: never renew an already expired lease.
+        if self.lease_id:
+            try:self.check_lease(self.lease_id,self.epoch)
+            except RuntimeError:
+                self.trigger_frames={}
+                return
         if (not frame.valid or frame.stop or frame.init or frame.mapping!='pico_snowbot_v1' or
                 not 0<=self.now()-frame.stamp<=self.cfg['feedback_max_age'] or
                 not math.isfinite(frame.trigger) or not 0<=frame.trigger<=1 or
