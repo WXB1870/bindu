@@ -64,13 +64,18 @@ def make_plan(degrees=20., speed=.25, acceleration=.5, jerk=10.):
 
 
 def checked_state(msg, now, received, steady, profile_hash, *, owned=False, epoch=0):
+    feedback_age = now-(msg.feedback_stamp.sec+msg.feedback_stamp.nanosec*1e-9)
     if (msg.runtime_mode != 'real' or msg.simulated or msg.device_backend != 'snowbot_vendor' or
             msg.profile_hash != profile_hash or msg.stop_failures or
             not 0 <= steady-received <= .1 or
-            not 0 <= now-(msg.feedback_stamp.sec+msg.feedback_stamp.nanosec*1e-9) <= .2 or
+            not 0 <= feedback_age <= .2 or
             msg.state in ('FAILED', 'STOPPING') or
             msg.code not in ('OK', 'CANCELED', 'FEEDBACK_CONFIRMED', 'STARTUP_READY')):
-        raise RuntimeError('EXECUTION_NOT_READY')
+        raise RuntimeError('EXECUTION_NOT_READY:state='+msg.state+';code='+msg.code+
+                           ';feedback_age='+str(round(feedback_age, 4))+
+                           ';state_age='+str(round(steady-received, 4))+
+                           ';profile_match='+str(msg.profile_hash == profile_hash)+
+                           ';stop_failures='+str(list(msg.stop_failures)))
     if (msg.lease_active != owned or (owned and
             (msg.lease_epoch != epoch or set(msg.lease_resources) != set(GROUPS)))):
         raise RuntimeError('EXECUTION_OWNERSHIP_CHANGED')
@@ -94,6 +99,15 @@ def checked_pdo(msg, now, received, steady, boot):
             len(msg.position) != 20 or len(msg.speed) != 20 or
             any(not math.isfinite(x) for i in SLOTS for x in (msg.position[i], msg.speed[i]))):
         raise RuntimeError('PDO_NOT_READY')
+
+
+def checked_pdo_source(publishers, *, discovering=False):
+    if not publishers and discovering:
+        return False
+    if len(publishers) != 1 or publishers[0].node_name != 'servo_node':
+        raise RuntimeError('PDO_SOURCE_NOT_UNIQUE_SERVO:count='+str(len(publishers))+
+                           ';nodes='+','.join(p.node_name for p in publishers))
+    return True
 
 
 def json_value(value):
@@ -201,7 +215,9 @@ def execute(args, plan):
         return reply
 
     try:
-        spin_until(lambda: 'state' in latest and 'pdo' in latest and leases.service_is_ready() and submit.service_is_ready(), 5.)
+        spin_until(lambda: 'state' in latest and 'pdo' in latest and leases.service_is_ready() and
+                   submit.service_is_ready() and checked_pdo_source(node.get_publishers_info_by_topic(
+                       topic+'/bindu/position/observation'), discovering=True), 5.)
         def check(owned=False):
             now, steady = node.get_clock().now().nanoseconds*1e-9, time.monotonic()
             msg, received = latest['state']
@@ -212,8 +228,7 @@ def execute(args, plan):
             if steady-progress > .05 or latest.get('error'):
                 raise RuntimeError(latest.get('error', 'PDO_NOT_ADVANCING'))
             publishers = node.get_publishers_info_by_topic(topic+'/bindu/position/observation')
-            if len(publishers) != 1 or publishers[0].node_name != 'servo_node':
-                raise RuntimeError('PDO_SOURCE_NOT_UNIQUE_SERVO')
+            checked_pdo_source(publishers)
             return q, v
 
         boot = latest['pdo'][0].boot_id

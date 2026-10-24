@@ -135,6 +135,16 @@ class WaistTests(unittest.TestCase):
             with self.subTest(change=change), self.assertRaises(RuntimeError):
                 checked_pdo(msg, 10.01, 2., 2.01, 1)
 
+    def test_source_discovery_waits_only_for_empty_graph_before_ownership(self):
+        self.assertFalse(waist.checked_pdo_source([], discovering=True))
+        self.assertTrue(waist.checked_pdo_source([S(node_name='servo_node')]))
+        for publishers in ([], [S(node_name='other')],
+                           [S(node_name='servo_node'), S(node_name='servo_node')]):
+            with self.assertRaisesRegex(RuntimeError, 'PDO_SOURCE_NOT_UNIQUE_SERVO'):
+                waist.checked_pdo_source(publishers)
+        with self.assertRaisesRegex(RuntimeError, 'PDO_SOURCE_NOT_UNIQUE_SERVO'):
+            waist.checked_pdo_source([S(node_name='other')], discovering=True)
+
     def test_offline_analysis_exposes_speed_scale_disagreement(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory)/'capture.jsonl'; rows = []
@@ -238,6 +248,8 @@ class WaistTests(unittest.TestCase):
                     return S(now=lambda: S(nanoseconds=int(clock.value*1e9)))
 
                 def get_publishers_info_by_topic(self, topic):
+                    if axis == 'body_joint_2' and clock.value < 10.15:
+                        return []
                     return [S(node_name='servo_node')]
 
                 def destroy_node(self):
