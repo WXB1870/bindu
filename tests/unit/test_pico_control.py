@@ -14,6 +14,34 @@ from tests.support.pico import Rig
 
 
 class ScenarioRuntimeTests(unittest.IsolatedAsyncioTestCase):
+    def test_pico_sets_async_transport_before_ros_init_and_honors_site_override(self):
+        import ast,os
+        from unittest.mock import Mock,patch
+        path=Path(__file__).resolve().parents[2]/'src/integration/bindu_runtime/bindu_runtime/pico_node.py'
+        main=next(n for n in ast.parse(path.read_text()).body if getattr(n,'name','')=='main')
+        for configured in (None,'SYNCHRONOUS'):
+            with patch.dict(os.environ,{} if configured is None else
+                    {'RMW_FASTRTPS_PUBLICATION_MODE':configured},clear=True):
+                seen=[];spin=Mock(side_effect=lambda *a,**kw:seen.append(os.environ['RMW_FASTRTPS_PUBLICATION_MODE']))
+                ns=dict(os=os,spin=spin,PicoNode=object)
+                exec(compile(ast.Module(body=[main],type_ignores=[]),str(path),'exec'),ns);ns['main']()
+                self.assertEqual(seen,[configured or 'ASYNCHRONOUS'])
+                spin.assert_called_once_with(object,threaded=False)
+
+    def test_stale_feedback_keeps_original_deadline_and_stop_failure_priority(self):
+        from types import SimpleNamespace as S
+        node=self.production('reading');node.lease=node.tool_request=None;node.now=lambda:1.
+        node.tool_cfg={'feedback_max_age':.2};node.profile=S(digest='p',limits={'joint':(-1,1)})
+        node.backend='snowbot_vendor';node.simulation=False
+        node.state=S(instance_id='executor',stop_failures=[],code='OK',profile_hash='p',
+            device_backend='snowbot_vendor',simulated=False,feedback_stamp=S(sec=0,nanosec=900000000),
+            joints=S(name=['joint'],position=[0.]))
+        self.assertEqual(node.reading()[1],{'joint':0.})
+        node.state.feedback_stamp.nanosec=580000000
+        with self.assertRaisesRegex(RuntimeError,'^PICO_FEEDBACK_STALE$'):node.reading()
+        node.state.stop_failures=['vendor_hold']
+        with self.assertRaisesRegex(RuntimeError,'PICO_STOP_UNCONFIRMED'):node.reading()
+
     async def test_capture_not_ready_returns_to_standby_only_after_confirmed_stop(self):
         from types import SimpleNamespace as S
         from unittest.mock import Mock,AsyncMock
@@ -153,6 +181,20 @@ class ScenarioRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(r.core.first_fault['code'],'SNOWBOT_PDO_STALE')
         self.assertEqual(r.core.recovery_required,'device_inspection')
         self.assertEqual(node.stop_diagnostic['observed']['command_sequence'],1930)
+
+    def test_prepare_fault_is_owned_by_command_id_and_not_hidden_by_lease_failure(self):
+        from types import SimpleNamespace as S
+        for command,owned in (('test_8_random_93',True),('another_8_random_93',False)):
+            r=Rig();node=self.production('on_motion_event');node.control=r.core
+            node.run_id='run';node.runtime_mode='real';node.instance_id='test'
+            node.lease=('lease','executor');node.tool_request=None;node.now=lambda:r.now
+            event=S(run_id='run',runtime_mode='real',component='execution',task_id='pico_prepare',
+                command_id=command,state='STOPPING',code='COMMAND_TIMEOUT',stamp=S(sec=1,nanosec=0))
+            node.on_motion_event(event)
+            if owned:
+                r.core.record_fault('RuntimeError:INVALID_LEASE',r.now+.1)
+                self.assertEqual(r.core.first_fault['code'],'COMMAND_TIMEOUT')
+            else:self.assertIsNone(r.core.first_fault)
 
     @staticmethod
     def production(*names):
@@ -512,7 +554,7 @@ class LimitRecoveryRuntimeTests(unittest.IsolatedAsyncioTestCase):
         node.prepare_hold_reference.assert_not_awaited()
         node.validator.submit.assert_called_once_with('prepare_path',2,measured,[.2])
 
-    async def movement(self,*,outward=False,hold_error=False):
+    async def movement(self,*,outward=False,hold_error=False,renew_delay=None,renew_ok=True,revoked=False,renew_epoch=2):
         from types import SimpleNamespace as S
         from unittest.mock import Mock,AsyncMock
         from bindu_contracts.profile import Profile
@@ -536,19 +578,41 @@ class LimitRecoveryRuntimeTests(unittest.IsolatedAsyncioTestCase):
         node.position_contract=True;node.names=('joint',);node.groups=('arm',);node.cfg={};node.simulation=False
         node.instance_id='pico';node.runtime_mode='real'
         lease=S(ok=True,lease_id='lease',epoch=2,profile_hash='profile')
-        node.leases=S(call_async=Mock(side_effect=lambda request:lease if request.operation=='acquire' else S(ok=True)))
-        async def wait(value,*args,**kw):return value
+        renewal=S(done=lambda:clock[0]>=(renew_delay or 0.),
+            result=lambda:S(**dict(vars(lease),epoch=renew_epoch)) if renew_ok else S(ok=False,code='INVALID_LEASE'))
+        node.leases=S(call_async=Mock(side_effect=lambda request:lease if request.operation=='acquire' else renewal))
+        async def wait(value,*args,**kw):
+            if value is renewal:
+                while not value.done():clock[0]=round(clock[0]+.04,6)
+                return value.result()
+            return value
         node.wait=wait;node.now=lambda:clock[0];node.release_lease=AsyncMock();node.event=Mock()
         def reading():
             q=actual if not clock[0] else actual-.003 if outward else .2
             state.feedback_stamp=S(sec=int(clock[0]),nanosec=0)
+            if revoked and clock[0]>=.12:
+                state.command_id=node.submit.call_async.call_args.args[0].command.command_id
+                state.state='STOPPING';state.code='COMMAND_TIMEOUT';state.lease_active=False;state.lease_epoch=3
             return state,{'joint':q}
         node.reading=reading
-        async def pause():clock[0]=.01 if outward else 41.
+        async def pause():
+            clock[0]=(round(clock[0]+.04,6) if renew_delay is not None and clock[0]<.4 else
+                      .01 if outward or not clock[0] else 41.)
         node.pause=pause;node.submit=S(call_async=Mock(return_value=S(accepted=True,revision=2)))
         try:await node.move(S(token=1,operation='prepare'),{'joint':.2},12.)
         finally:node.release_lease.assert_awaited_once()
         return node,held,lo
+
+    async def test_slow_renewal_does_not_block_fresh_targets_and_failures_still_stop(self):
+        node,_,_=await self.movement(renew_delay=.24)
+        stamps=[c.args[0].command.stamp for c in node.submit.call_async.call_args_list]
+        self.assertGreaterEqual(len([t for t in stamps if t<.24]),5)
+        self.assertLess(max(b-a for a,b in zip(stamps,stamps[1:])),.1)
+        for kwargs,reason in (({'renew_ok':False},'INVALID_LEASE'),({'revoked':True},'COMMAND_TIMEOUT'),
+                              ({'renew_epoch':3},'PICO_EXECUTION_AUTHORITY_CHANGED'),
+                              ({'renew_delay':10.},'PICO_LEASE_RENEW_TIMEOUT')):
+            with self.subTest(kwargs=kwargs),self.assertRaisesRegex(RuntimeError,reason):
+                await self.movement(**dict({'renew_delay':.24},**kwargs))
 
     async def test_recovery_starts_at_confirmed_reference_and_returns_inside_hard_bounds(self):
         node,held,lo=await self.movement()
@@ -582,8 +646,9 @@ class PrepareReturnPathTests(unittest.IsolatedAsyncioTestCase):
             return state,{joint:target-error}
         async def pause():clock[0]+=1.
         async def wait(value):return value
+        renewal=S(done=lambda:True,result=lambda:lease)
         node=S(current=Mock(),feedback=lambda:S(stopped=True),prepare_position_tolerance=.035,
-            leases=S(call_async=lambda r:lease),wait=wait,instance_id='test',groups=('left_arm',),
+            leases=S(call_async=lambda r:lease if r.operation=='acquire' else renewal),wait=wait,instance_id='test',groups=('left_arm',),
             state=state,reading=reading,names=(joint,),position_contract=True,profile=profile,
             event=Mock(),simulation=False,now=lambda:clock[0],runtime_mode='real',pause=pause,
             submit=S(call_async=lambda r:S(accepted=True,revision=0)),
