@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 from bindu_contracts.teleoperation import VRFrame
 from bindu_teleoperation.vr.receiver import decode_controller, ButtonCounters
-from bindu_teleoperation.pico import PicoControl, PicoFeedback, PICO_MAPPING
+from bindu_teleoperation.pico import PicoControl, PicoFeedback, PICO_MAPPING, temporary_capture_refusal
 from bindu_teleoperation.bimanual_session import BimanualSession
 
 
@@ -45,7 +45,12 @@ class ScenarioRuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def test_capture_not_ready_returns_to_standby_only_after_confirmed_stop(self):
         from types import SimpleNamespace as S
         from unittest.mock import Mock,AsyncMock
+        lease_refusal='BIMANUAL_LEASE_NOT_ACQUIRED:'+json.dumps(dict(
+            reason='FEEDBACK_NOT_STATIONARY',instance_id='executor',profile_hash='p',epoch=3))
         for accepted,stop_ok,code in ((0,True,'SNOWBOT_HELD_REFERENCE_NOT_STATIONARY'),
+                (0,True,lease_refusal),(1,True,lease_refusal),(0,False,lease_refusal),
+                (0,True,lease_refusal.replace('FEEDBACK_NOT_STATIONARY','DEVICE_FAULT')),
+                (0,True,'BIMANUAL_LEASE_NOT_ACQUIRED:FEEDBACK_NOT_STATIONARY'),
                 (1,True,'SNOWBOT_HELD_REFERENCE_NOT_STATIONARY'),
                 (0,False,'SNOWBOT_HELD_REFERENCE_NOT_STATIONARY'),
                 (0,True,'SNOWBOT_PDO_STALE')):
@@ -58,7 +63,7 @@ class ScenarioRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 node.now=lambda:r.now;node.feedback=lambda:PicoFeedback(r.now,stop_ok)
                 node.event=Mock();node.simulation=False
                 await node.perform(intent)
-                retry=accepted==0 and stop_ok and code=='SNOWBOT_HELD_REFERENCE_NOT_STATIONARY'
+                retry=stop_ok and temporary_capture_refusal(code,accepted)
                 self.assertEqual(r.core.phase,'standby' if retry else 'locked')
                 self.assertEqual(r.core.squeeze_released,[False,False])
                 self.assertIsNone(r.core.pending)
@@ -69,7 +74,10 @@ class ScenarioRuntimeTests(unittest.IsolatedAsyncioTestCase):
     def test_pending_capture_refusal_is_not_locked_by_timer_before_cleanup(self):
         from types import SimpleNamespace as S
         from unittest.mock import Mock
-        for code in ('SNOWBOT_HELD_REFERENCE_NOT_STATIONARY','SNOWBOT_PDO_STALE'):
+        lease_refusal='BIMANUAL_LEASE_NOT_ACQUIRED:'+json.dumps(dict(
+            reason='FEEDBACK_NOT_STATIONARY',instance_id='executor',profile_hash='p',epoch=3))
+        for code in ('SNOWBOT_HELD_REFERENCE_NOT_STATIONARY',lease_refusal,'SNOWBOT_PDO_STALE',
+                     'BIMANUAL_LEASE_NOT_ACQUIRED:bad-json'):
             node=self.production('tick');node.last_tick_at=None;node.waiters=set();node.validator=S(poll=lambda:None)
             node.state=node.position_ops=node.base=None;node.last_context_at=node.last_status=1.
             node.now=lambda:1.;node.feedback=lambda:PicoFeedback(1.,True)
@@ -78,9 +86,9 @@ class ScenarioRuntimeTests(unittest.IsolatedAsyncioTestCase):
             node.tool_result=S(done=lambda:True,result=lambda:S(result=S(code=code,accepted_commands=0)))
             node.pending_intent=node.record_future=node.running=None
             node.tick()
-            self.assertEqual(node.control.lock.called,code!='SNOWBOT_HELD_REFERENCE_NOT_STATIONARY')
+            self.assertEqual(node.control.lock.called,not temporary_capture_refusal(code,0))
 
-    def test_independent_grippers_do_not_interrupt_follow_or_lock_mode_switch(self):
+    def test_independent_grippers_preserve_held_tool_mode_guard(self):
         r=Rig(load='held',guided=True,dual=True,direct=True)
         r.core.independent_grippers=True;r.core.teleop_mode='bimanual_tool'
         r.core.phase='following';r.grips=[1.,1.];r.step()
@@ -90,6 +98,11 @@ class ScenarioRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(r.step(),[]);self.assertEqual(r.core.phase,'following')
         r.core.phase='standby';r.grips=[0.,0.];r.step()
         result=r.click(1,1)
+        self.assertEqual(result,[])
+        self.assertEqual(r.core.reason,'PICO_TOOL_HELD_REQUIRES_TOOL_MODE')
+        self.assertEqual(r.core.teleop_mode,'bimanual_tool')
+        # An explicit empty-load declaration is separate from trigger release.
+        r.context('empty');result=r.click(1,1)
         self.assertEqual(result[-1].operation,'select_mode')
         self.assertEqual(result[-1].value,'independent_arms')
         r.complete();r.modes=('unknown','virtual');r.core.emit('confirm_tool')
@@ -206,6 +219,7 @@ class ScenarioRuntimeTests(unittest.IsolatedAsyncioTestCase):
         methods=[n for n in node.body if getattr(n,'name','') in names]
         module=ast.Module(body=[ast.ClassDef(name='Actual',bases=[],keywords=[],body=methods,decorator_list=[])],type_ignores=[])
         namespace=dict(json=json,math=__import__('math'),time=S(monotonic=lambda:0.),
+            temporary_capture_refusal=temporary_capture_refusal,
             seconds=lambda stamp:stamp.sec+stamp.nanosec*1e-9,
             joints_at_rest=lambda joints,names,tol:all(abs(v)<=tol for n,v in zip(joints.name,joints.velocity) if n in names),
             Trigger=S(Request=lambda:S()),Superseded=type('Superseded',(RuntimeError,),{}))

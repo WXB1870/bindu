@@ -5,10 +5,29 @@ operator declarations are separate; no input frame can manufacture a grip ack.
 """
 from dataclasses import dataclass
 import math
+import json
 import numpy as np
 from .vr.mapping import pose_matrix
 
 PICO_MAPPING = 'pico_snowbot_v1'
+
+
+def temporary_capture_refusal(code, accepted_commands):
+    """Classify only; the coordinator must still prove cancellation and rest."""
+    if type(accepted_commands) is not int or accepted_commands != 0:
+        return False
+    if code == 'SNOWBOT_HELD_REFERENCE_NOT_STATIONARY':
+        return True
+    prefix = 'BIMANUAL_LEASE_NOT_ACQUIRED:'
+    if not isinstance(code, str) or not code.startswith(prefix):
+        return False
+    try:
+        proof = json.loads(code[len(prefix):])
+    except (ValueError, TypeError):
+        return False
+    return (isinstance(proof, dict) and proof.get('reason') == 'FEEDBACK_NOT_STATIONARY' and
+            bool(proof.get('instance_id')) and bool(proof.get('profile_hash')) and
+            type(proof.get('epoch')) is int and proof['epoch'] >= 0)
 
 
 @dataclass(frozen=True)
@@ -425,7 +444,7 @@ class PicoControl:
                         self.reason='MODE_SWITCH_REQUIRES_STOP'
                     else:
                         target='bimanual_tool' if independent else 'independent_arms'
-                        if not self.independent_grippers and target=='independent_arms' and self.load=='held':
+                        if target=='independent_arms' and self.load=='held':
                             self.reason='PICO_TOOL_HELD_REQUIRES_TOOL_MODE';return
                         self.phase='selecting_mode';self.emit('select_mode',target)
                     return
@@ -455,7 +474,7 @@ class PicoControl:
             if self.dual_modes and (states[4] or states[5]):return
             if (self.guided_loading or self.phase=='tool_standby') and engage and self.rest(now):
                 if not independent:self.squeeze_released=[False,False]
-                if not self.independent_grippers and independent and self.load=='held':
+                if independent and self.load=='held':
                     self.squeeze_released=[False,False];self.reason='PICO_TOOL_HELD_REQUIRES_TOOL_MODE';return
                 if not self.independent_grippers and not independent and states[0]!=self.virtual:
                     if self.guided_loading and self.armed[0]:
@@ -506,7 +525,8 @@ class PicoControl:
             arrival_failure=(stopped_failure and operation=='prepare' and
                              reason.startswith('RuntimeError:PICO_ACTUATOR_FEEDBACK_TIMEOUT:'))
             capture_failure=(stopped_failure and operation=='follow' and not self.fault_active and
-                             reason=='RuntimeError:SNOWBOT_HELD_REFERENCE_NOT_STATIONARY')
+                             reason.startswith('RuntimeError:') and
+                             temporary_capture_refusal(reason[len('RuntimeError:'):], 0))
             retry=(((rejected or arrival_failure) and self.guided_loading or capture_failure) and self.rest(now) and
                    self.frames and 0<=now-self.stamp<=self.max_age)
             if not retry:
