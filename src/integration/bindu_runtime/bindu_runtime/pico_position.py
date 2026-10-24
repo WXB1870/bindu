@@ -58,7 +58,8 @@ class PositionOperations:
         states=[self.reading(side,recovery=True) for side in SIDES]
         if any(s.lease_active or s.state in ('MOVING','STOPPING') for s in states):
             raise RuntimeError('PICO_GRIPPER_RECOVERY_REQUIRES_STOP')
-        if self.lease is not None and any(s.epoch!=self.lease.epoch+1 for s in states):
+        if (any(s.epoch!=states[0].epoch for s in states) or
+                self.lease is not None and states[0].epoch<=self.lease.epoch):
             raise RuntimeError('PICO_GRIPPER_RECOVERY_EPOCH')
         if any(s.state=='FAULT' for s in states):
             epoch=states[0].epoch

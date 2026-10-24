@@ -702,12 +702,14 @@ class CoordinatorStopBarrierTests(unittest.TestCase):
     def test_b_recovery_confirms_new_epoch_without_resending_motion(self):
         ops,_=self.rig();ops.stop_unconfirmed=ops.release_pending=True
         ops.config['feedback_max_age']=.2;ops.node.current=lambda _:None
-        for state in ops.states.values():state.state='FAULT';state.code='GRIPPER_STOP_UNCONFIRMED:HOLD_TIMEOUT'
+        for state in ops.states.values():
+            state.state='FAULT';state.code='GRIPPER_STOP_UNCONFIRMED:HOLD_TIMEOUT';state.epoch=6
         ops.recover.__func__.__globals__.update(GripperControl=S(Request=lambda **kw:S(**kw)),stamp=lambda v:v)
         requests=[]
         def recover(req):
+            self.assertEqual(req.epoch,6)  # Release plus fault revocation advanced twice.
             requests.append(req.operation)
-            for state in ops.states.values():state.epoch=6;state.state='CANCELED';state.code='OPERATOR_RECOVERED'
+            for state in ops.states.values():state.epoch=7;state.state='CANCELED';state.code='OPERATOR_RECOVERED'
             return S(accepted=True)
         ops.control=S(call_async=recover)
         asyncio.run(ops.recover(S(token=1)))
