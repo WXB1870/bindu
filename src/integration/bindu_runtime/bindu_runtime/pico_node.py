@@ -545,7 +545,7 @@ class PicoNode(RuntimeNode):
             raise RuntimeError('PREPARE_LIMIT_RECOVERY_HOLD_CHANGED') from exc
         return data
 
-    async def move(self,intent,targets,duration,*,fit_duration=False):
+    async def move(self,intent,targets,duration,*,fit_duration=False,limit_exit=False):
         self.current(intent)
         if not self.feedback().stopped:raise RuntimeError('PICO_MOTION_REQUIRES_STOP')
         arrival_tolerance=self.prepare_position_tolerance if intent.operation=='prepare' else .002
@@ -591,6 +591,9 @@ class PicoNode(RuntimeNode):
                     duration=max(duration,2.5*max(abs(start[n]-v) for n,v in zip(self.names,end))/speed)
             else:
                 start=prepare_reference(self.profile,self.names,q) if self.position_contract and intent.operation=='prepare' else q
+            if limit_exit and not recovery_progress:
+                raise RuntimeError('PREPARE_LIMIT_RECOVERY_HOLD_REQUIRED')
+            arrival_names=set(recovery_progress) if limit_exit else set(self.names)
             revision=s.revision;segment=0
             before=State.rest(tuple(start[n] for n in self.names));after=State.rest(tuple(end))
             curve=Curve.between(0.,duration,before,after)
@@ -622,9 +625,13 @@ class PicoNode(RuntimeNode):
                     recovery_progress[n]=(side,min(best,measured[n]) if side>0 else max(best,measured[n]))
                 if state.command_id.startswith(command_id+'_') and state.state=='FAILED':raise RuntimeError(state.code)
                 if (now>=started+duration and seconds(state.feedback_stamp)>=started+duration and
-                        all(abs(measured[n]-v)<arrival_tolerance for n,v in zip(self.names,end)) and
+                        all(abs(measured[n]-v)<arrival_tolerance for n,v in zip(self.names,end) if n in arrival_names) and
                         (recovery is None or all(self.profile.limits[n][0]<=measured[n]<=self.profile.limits[n][1]
                                                  for n in self.names)) and
+                        (not limit_exit or all(
+                            self.profile.limits[n][0]+self.profile.feedback_tolerances['joint_position']<=measured[n]<=
+                            self.profile.limits[n][1]-self.profile.feedback_tolerances['joint_position']
+                            for n in recovery_progress)) and
                         joints_at_rest(state.joints,self.names,.005)):
                     self.event('PICO_ACTUATOR_ARRIVED',json.dumps(dict(operation=intent.operation,
                         position_tolerance_rad=arrival_tolerance,
@@ -694,6 +701,9 @@ class PicoNode(RuntimeNode):
             held=await self.prepare_hold_reference(intent)
             reference=prepare_limit_reference(self.profile,names,q,held['positions'],target,
                                              self.prepare_limit_max,self.prepare_position_tolerance)
+            from bindu_kinematics.bimanual_worker import prepare_limit_exit_target
+            target=prepare_limit_exit_target(self.profile,names,q,reference,target,
+                                             self.prepare_position_tolerance)
             self.prepare_limit_reference=held
             self.prepare_limit_start=dict(q)
         elif self.position_contract and not gripper_move:
@@ -891,6 +901,14 @@ class PicoNode(RuntimeNode):
                 # A is the operator's explicit empty-hand return request.
                 if not self.position_contract and self.control.load!='empty':raise RuntimeError('PICO_PREPARE_REQUIRES_EMPTY')
                 target=await self.validate_prepare(intent)
+                if getattr(self,'prepare_limit_reference',None) is not None:
+                    read_only=False
+                    self.event('PICO_PREPARE_LIMIT_EXIT',json.dumps(dict(target=target)))
+                    await self.move(intent,target,min(3.,self.cfg['prepare_duration']),limit_exit=True)
+                    self.current(intent)
+                    target=await self.validate_prepare(intent)
+                    if self.prepare_limit_reference is not None:
+                        raise RuntimeError('PREPARE_LIMIT_RECOVERY_NOT_INSIDE')
                 _,measured=self.reading()
                 error=max(abs(measured[n]-q) for n,q in target.items())
                 if (self.position_contract and error<self.prepare_position_tolerance and not self.prepare_recovery and
@@ -1090,6 +1108,13 @@ class PicoNode(RuntimeNode):
                                 self.running is None and self.handoff_complete),
                 grasp_applied=None if self.control.teleop_mode=='independent_arms' else
                     'right_axial' if self.control.virtual else 'rigid')
+            if feedback.healthy and self.prepare_positions is not None:
+                measured=view['model_joints']
+                view['measured_limit_joints']=[n for n in self.names
+                    if n in measured and not self.profile.limits[n][0]<=measured[n]<=self.profile.limits[n][1]]
+                if view['measured_limit_joints']:
+                    from bindu_teleoperation.pico import loading_guide
+                    view['operator_guide']=loading_guide(view,feedback.modes)
             view.update(self.input_status(self.now()))
             view['stop_diagnostic']=getattr(self,'stop_diagnostic',None)
             if self.base:

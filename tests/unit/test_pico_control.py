@@ -326,6 +326,30 @@ class ScenarioRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
 
 class LimitRecoveryRuntimeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_short_exit_is_revalidated_before_full_prepare(self):
+        from types import SimpleNamespace as S
+        from unittest.mock import Mock,AsyncMock
+        for exit_fails in (False,True):
+            node=ScenarioRuntimeTests.production('perform');node.position_contract=True
+            node.prepare_limit_reference=None;node.prepare_recovery=None;node.prepare_position_tolerance=.035
+            node.cfg={'prepare_duration':12.};node.simulation_demo=False;node.simulation=False
+            node.control=S(complete=Mock());node.current=Mock();node.cancel_tool=AsyncMock()
+            node.now=lambda:0.;node.event=Mock();node.reading=lambda:(None,{'joint':.55})
+            calls=[]
+            async def validate(intent):
+                calls.append('validate')
+                node.prepare_limit_reference={'positions':{'joint':.58}} if len(calls)==1 else None
+                return {'joint':.546} if len(calls)==1 else {'joint':.43}
+            async def move(intent,target,duration,**kw):
+                calls.append(('move',duration,kw.get('limit_exit',False)))
+                if exit_fails:raise RuntimeError('PREPARE_LIMIT_RECOVERY_NOT_INSIDE')
+            node.validate_prepare=validate;node.move=move
+            await node.perform(S(operation='prepare',token=1))
+            expected=['validate',('move',3.,True)]
+            if not exit_fails:expected+=['validate',('move',12.,False)]
+            self.assertEqual(calls,expected)
+            self.assertIs(node.control.complete.call_args.args[1],not exit_fails)
+
     def held_node(self):
         from types import SimpleNamespace as S
         from unittest.mock import Mock,AsyncMock
@@ -374,8 +398,8 @@ class LimitRecoveryRuntimeTests(unittest.IsolatedAsyncioTestCase):
         def submit(operation,token,feedback,target,**extra):
             node.validation_result=('result',token,{});return True
         node.validator=S(ready=True,busy=False,startup_timeout=1.,submit=Mock(side_effect=submit))
-        self.assertEqual(await node.validate_prepare(S(token=1)),{'joint':.2})
-        node.validator.submit.assert_called_once_with('prepare_limit_recovery_path',1,measured,[.2],reference={'joint':-.995})
+        self.assertEqual(await node.validate_prepare(S(token=1)),{'joint':-.965})
+        node.validator.submit.assert_called_once_with('prepare_limit_recovery_path',1,measured,[-.965],reference={'joint':-.995})
         self.assertEqual(measured,{'joint':-1.01})
         self.assertEqual(node.prepare_limit_start,measured)
         # Recorded R1 residual is inside hard limits: use the original A path.

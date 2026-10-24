@@ -610,6 +610,10 @@ def loading_guide(view, modes):
     """One operator instruction shared by the headset and computer view."""
     phase, goal = view['phase'], view.get('loading_goal')
     operation = '装夹' if goal=='held' else '卸载'
+    if view.get('measured_limit_joints') and phase in ('standby','tool_standby','preparing'):
+        return dict(title='关节越界，需先向内回撤',
+                    detail='松开双侧握，持续按住 A；先低速退回范围，再回准备位。松 A 取消；B 解锁不会移动关节',
+                    key='A',step='limit_recovery')
     if phase=='gripper_control':
         if view.get('reason','').startswith('GRIPPER_POSITION_TIMEOUT:'):
             sides=view['reason'].split(':',1)[1].split(',')

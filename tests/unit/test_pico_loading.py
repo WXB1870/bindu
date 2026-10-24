@@ -32,6 +32,14 @@ class DirectGripperTests(unittest.TestCase):
                     r.buttons[1]=0;r.step();r.grips=[1.,0.]
                     self.assertEqual(r.step()[-1].operation,'follow')
 
+    def test_measured_limit_guide_survives_unlock_and_canceled_return(self):
+        from bindu_teleoperation.pico import loading_guide
+        for phase in ('standby','tool_standby','preparing'):
+            guide=loading_guide(dict(phase=phase,reason='PREPARE_RELEASED',
+                measured_limit_joints=['arm_l_joint_3'],teleop_mode='independent_arms'),())
+            self.assertEqual(guide['step'],'limit_recovery')
+            self.assertEqual(guide['key'],'A')
+
     def test_stop_failure_is_not_downgraded_to_prepare_arrival_warning(self):
         r=self.rig();r.buttons[1]=1
         for _ in range(60):r.step()

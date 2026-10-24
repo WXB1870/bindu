@@ -21,11 +21,26 @@ def validate_base_config(cfg):
         value = cfg.get(key)
         if type(value) not in (int, float) or not 0 < value <= maximum:
             raise ValueError('BASE_CONFIG:'+key)
+    linear_sign = cfg.get('linear_axis_sign', -1)
+    if type(linear_sign) not in (int, float) or linear_sign not in (-1, 1):
+        raise ValueError('BASE_CONFIG:linear_axis_sign')
     watchdog = cfg.get('driver_watchdog_s')
     if watchdog is not None and (type(watchdog) not in (int, float) or
             not 0 < watchdog <= .5):
         raise ValueError('BASE_CONFIG:driver_watchdog_s')
-    return dict(cfg, driver_watchdog_s=watchdog)
+    required = cfg.get('require_driver_watchdog', True)
+    if type(required) is not bool:
+        raise ValueError('BASE_CONFIG:require_driver_watchdog')
+    feedback_required = cfg.get('require_feedback', True)
+    if type(feedback_required) is not bool:
+        raise ValueError('BASE_CONFIG:require_feedback')
+    nodes = {key: cfg.get(key, '') for key in ('receiver_node', 'feedback_node')}
+    for key, value in nodes.items():
+        if not isinstance(value, str) or value and (
+                not value.startswith('/') or value.endswith('/') or '//' in value):
+            raise ValueError('BASE_CONFIG:'+key)
+    return dict(cfg, linear_axis_sign=linear_sign, driver_watchdog_s=watchdog, require_driver_watchdog=required,
+                require_feedback=feedback_required, **nodes)
 
 
 class BaseTeleop:
@@ -84,11 +99,10 @@ class BaseTeleop:
             self.inhibit('BASE_INPUT_STALE', now)
             return
         self.seq, self.input_stamp, self.received = left.seq, left.stamp, clock
-        # Preserve the reference script's WebXR signs and deadzone, but only
-        # use left Y for forward/reverse and right X for yaw. No button remap.
-        def axis(value):
-            return 0. if abs(value) < self.cfg['deadzone'] else -value
-        self.target = (axis(left.stick[1])*self.cfg['max_linear_m_s'],
+        # Calibrate forward/reverse per deployment; yaw keeps its WebXR sign.
+        def axis(value,sign=-1):
+            return 0. if abs(value) < self.cfg['deadzone'] else sign*value
+        self.target = (axis(left.stick[1],self.cfg['linear_axis_sign'])*self.cfg['max_linear_m_s'],
                        axis(right.stick[0])*self.cfg['max_angular_rad_s'])
         self.neutral = (abs(left.stick[1]) < self.cfg['deadzone'] and
                         abs(right.stick[0]) < self.cfg['deadzone'])
@@ -131,14 +145,15 @@ class BaseTeleop:
             return self.inhibit(reason, now)
         if not 0 < dt <= self.cfg['max_tick_gap_s']:
             return self.inhibit('BASE_TICK_GAP', now)
-        if not self.healthy(now, clock):
+        if self.cfg['require_feedback'] and not self.healthy(now, clock):
             return self.inhibit('BASE_FEEDBACK_UNAVAILABLE', now)
         if not (0 <= now-self.input_stamp <= self.cfg['input_max_age_s'] and
                 0 <= clock-self.received <= self.cfg['input_max_age_s']):
             return self.inhibit('BASE_INPUT_TIMEOUT', now)
         if not self.armed:
-            if not self.neutral or not self.stopped(now, clock):
-                return self.inhibit('BASE_CENTRE_STICKS_AND_WAIT_FOR_STOP', now)
+            if not self.neutral or (self.cfg['require_feedback'] and not self.stopped(now, clock)):
+                return self.inhibit('BASE_CENTRE_STICKS_AND_WAIT_FOR_STOP' if self.cfg['require_feedback']
+                                    else 'BASE_CENTRE_STICKS', now)
             self.armed = True
         previous = self.command
         self.command = tuple(v+max(-a*dt, min(a*dt, target-v)) for v, target, a in zip(

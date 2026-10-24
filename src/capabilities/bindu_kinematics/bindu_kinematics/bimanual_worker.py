@@ -38,6 +38,22 @@ def prepare_limit_reference(profile, names, feedback, reference, target,
     return result
 
 
+def prepare_limit_exit_target(profile, names, feedback, reference, target, reserve):
+    """Short inward stage; other axes retain their authenticated hold targets.
+
+    The caller still validates the measured prefix and this entire CAD path.
+    The final preparation path is checked anew after measured inward arrival.
+    """
+    result = dict(reference)
+    for name in names:
+        lo, hi = profile.limits[name]
+        if feedback[name] < lo:
+            result[name] = min(target[name], max(reference[name], lo+reserve))
+        elif feedback[name] > hi:
+            result[name] = max(target[name], min(reference[name], hi-reserve))
+    return result
+
+
 def _run(config, profile, requests, results, preload_path_checks=False):
     solver = None
     try:

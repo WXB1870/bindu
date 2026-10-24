@@ -192,6 +192,21 @@ class PrepareLimitReferenceTests(unittest.TestCase):
             self.assertAlmostEqual(cfg['posture_reference_margin_rad'],.01+math.radians(1.))
             self.assertEqual(cfg['posture_policy']['reference'],'initial_capture')
 
+    def test_limit_exit_moves_only_violating_axes_before_full_return(self):
+        from bindu_kinematics.bimanual_worker import prepare_limit_exit_target,prepare_limit_reference
+        profile=self.fixture();held={'r3':-.59,'other':.91}
+        measured={'r3':-.60,'other':.86};final={'r3':-.43,'other':-.98}
+        exit_target=prepare_limit_exit_target(profile,tuple(held),measured,held,final,.035)
+        self.assertAlmostEqual(exit_target['r3'],profile.limits['r3'][0]+.035)
+        self.assertEqual(exit_target['other'],held['other'])
+        self.assertEqual(prepare_limit_reference(profile,tuple(held),measured,held,exit_target,.017,.035),held)
+        profile.limits['r3']=(-2.61,.5817453292519943)
+        held['r3']=.579782605;measured['r3']=.586484015;final['r3']=.431745
+        exit_target=prepare_limit_exit_target(profile,tuple(held),measured,held,final,.035)
+        self.assertAlmostEqual(exit_target['r3'],.5467453292519943)
+        self.assertEqual(exit_target['other'],.91)
+        prepare_limit_reference(profile,tuple(held),measured,held,exit_target,.017,.035)
+
     def fixture(self):
         from types import SimpleNamespace as S
         return S(limits={'r3':(-.5974532925199433,2.611745329251994),'other':(-1.,1.)},

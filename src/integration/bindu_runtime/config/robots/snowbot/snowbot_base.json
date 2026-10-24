@@ -4,6 +4,7 @@
   "odom_topic": "/odom",
   "feedback_frame": "car_base_link",
   "max_linear_m_s": 0.1,
+  "linear_axis_sign": 1,
   "max_angular_rad_s": 0.5,
   "linear_acceleration_m_s2": 0.2,
   "angular_acceleration_rad_s2": 1.0,
