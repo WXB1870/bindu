@@ -111,7 +111,7 @@ class PositionSessionDevices:
         from rcl_interfaces.msg import ParameterDescriptor
         from snowbot_ctl_msgs.msg import PositionObservation, PositionSessionCommand, PositionSessionState
         from std_msgs.msg import Float64MultiArray
-        from copy import deepcopy
+        from copy import copy
         from rclpy.qos import qos_profile_sensor_data
         if node.runtime_mode != 'real':
             raise ValueError('SNOWBOT_VENDOR_REQUIRES_REAL_MODE')
@@ -163,7 +163,7 @@ class PositionSessionDevices:
         self.heartbeat_running = False
         # This is current state, not a lossless history. Do not drain obsolete
         # samples after a callback stall; all existing freshness gates still apply.
-        feedback_qos=deepcopy(qos_profile_sensor_data)
+        feedback_qos=copy(qos_profile_sensor_data)
         feedback_qos.depth=1
         node.create_subscription(PositionObservation, self.feedback_topic, self.receive, feedback_qos)
         for layer, receiver in (('upper', 'arms'), ('middle', 'middle'), ('servo', 'head')):
