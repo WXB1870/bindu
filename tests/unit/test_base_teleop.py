@@ -198,7 +198,7 @@ class BaseTests(unittest.TestCase):
 class WithoutFeedbackTests(unittest.TestCase):
     pair = BaseTests.pair
     def setUp(self):
-        self.cfg = dict(json.loads(CONFIG.read_text()), require_feedback=False)
+        self.cfg = dict(json.loads(CONFIG.read_text()), require_feedback=False, linear_axis_sign=-1)
         self.base = BaseTeleop(self.cfg)
         self.now, self.seq, self.source = 10., 0, 'headset'
 
@@ -479,6 +479,55 @@ class AdapterTests(unittest.TestCase):
         bridge.on_odom(msg)
         self.assertEqual(bridge.core.feedback_velocity, (.1, .2))
 
+    def test_publish_pacing_keeps_stop_immediate_and_repeats_zero(self):
+        _, bridge, _, _ = self.writable()
+        control = S(pending=None, phase='following', source='headset', seq=1)
+        clock = [10.]
+        bridge.core.tick = Mock(return_value=(.1, 0.))
+        with patch.object(self.adapter.time, 'monotonic', side_effect=lambda: clock[0]):
+            bridge.tick(control, True)
+            for i in range(1, 4):
+                clock[0] = 10.+i*.005
+                bridge.tick(control, True)
+            self.assertEqual(bridge.publisher.publish.call_count, 1)
+            clock[0] = 10.021
+            bridge.tick(control, True)
+            self.assertEqual(bridge.publisher.publish.call_count, 2)
+            # Loss of permission must bypass the publication interval.
+            bridge.core.tick.return_value = ZERO
+            clock[0] = 10.022
+            bridge.tick(control, False)
+            self.assertEqual(bridge.publisher.publish.call_count, 3)
+            self.assertEqual(bridge.publisher.publish.call_args.args[0].linear.x, 0.)
+            clock[0] = 10.027
+            bridge.tick(control, False)
+            self.assertEqual(bridge.publisher.publish.call_count, 3)
+            clock[0] = 10.043
+            bridge.tick(control, False)
+            self.assertEqual(bridge.publisher.publish.call_count, 4)
+
+    def test_graph_delay_rechecks_freshness_before_nonzero_output(self):
+        node, bridge, _, _ = self.writable()
+        control = S(pending=None, phase='following', source='headset', seq=1)
+        clock = [10.]
+        node.now = lambda: clock[0]
+        core = bridge.core
+        core.source, core.seq = control.source, control.seq
+        core.command = core.target = (.1, 0.)
+        core.armed = True
+        core.input_stamp = core.received = 10.
+        core.last_tick = 9.995
+        core.cfg['require_feedback'] = False
+        def slow_graph(_):
+            clock[0] += .4
+            bridge.graph_ok = True
+        bridge.check_graph = slow_graph
+        with patch.object(self.adapter.time, 'monotonic', side_effect=lambda: clock[0]):
+            bridge.tick(control, True)
+        self.assertEqual(core.reason, 'BASE_TICK_GAP')
+        self.assertEqual(bridge.publisher.publish.call_args.args[0].linear.x, 0.)
+        self.assertAlmostEqual(bridge.tick_work['graph_s'], .4)
+
     def test_decoder_pico_and_adapter_chain_with_independent_input_and_timer_rates(self):
         from bindu_teleoperation.pico import PicoControl, PicoFeedback
         from bindu_teleoperation.vr.receiver import ButtonCounters
@@ -522,7 +571,7 @@ class AdapterTests(unittest.TestCase):
                 control.tick(now)
                 bridge.tick(control, healthy)
                 msg = bridge.publisher.publish.call_args.args[0]
-                max_linear = max(max_linear, msg.linear.x)
+                max_linear = max(max_linear, abs(msg.linear.x))
                 max_angular = max(max_angular, msg.angular.z)
                 if now-10. >= 1.02:
                     self.assertEqual((msg.linear.x, msg.angular.z), ZERO)
