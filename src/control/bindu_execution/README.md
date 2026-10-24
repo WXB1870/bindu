@@ -125,6 +125,20 @@ servo在非实时后台从已采用名义轨迹的未来`q/v/a`快照调用`trac
 
 本机[时序对比工具](../../../tools/analysis/compare_session_latency.py)使用相同输入与动态限制比较冻结的旧方案和新目标流，仅覆盖相应本机软件／内存设备替身。结果不能代替ROS/DDS和硬件验收。
 
+离线刚性双臂预测候选由 [replay_geometric_prediction.py](../../../tools/analysis/replay_geometric_prediction.py) 构建，不接入运行装配或设备。它将趋势速度投影至相对位姿雅可比的零空间，非线性修正预测末点以保持已接纳目标的六维相对位姿，再约束末速度与含曲率项的末加速度。各轴共用预测增益，沿用原生联合曲线、动态限制及有限停止尾段；几何候选失败时退回无趋势联合曲线，独立模式显式绕过几何约束。`A`、仅切空间投影与自适应增益用于消融对照，不是生产策略开关。
+
+工具需要已有的C++17编译器和Eigen头文件，不自动安装依赖。输入沿用原生回放格式，末尾追加一次握持捕获的关节位置；`--names`为同轴序JSON数组，单位rad／m与秒。示例只执行本机参考计算：
+
+```bash
+python3 -m tools.analysis.replay_geometric_prediction \
+  --urdf path/to/model.urdf --names path/to/names.json \
+  --left-frame left_tool --right-frame right_tool \
+  --output artifacts/geometric-prediction --input path/to/replay.input
+python3 -m unittest tests.unit.test_geometric_prediction
+```
+
+预测末点服从六维相对约束，但连接曲线仍只做有限采样几何检查；无趋势回退也不是连续闭链证书。当前不支持轴向五维握持、完整工具／CAD准入或真实闭环保证。输出须分别比较目标到参考、参考到实测与相对位姿，不能将参考端收益当成实测相位收益；当前工具未接入PICO、ROS/DDS或servo实时路径。
+
 原生消费者可`add_subdirectory(path/to/native)`并链接`bindu::execution_native`；独立安装后也可`find_package(bindu_execution_native CONFIG REQUIRED)`。Python包会将同一份源码与CMake入口安装到`share/bindu_execution/native`，避免servo另写插值器。独立构建不需要ROS、Python或设备SDK：
 
 ```bash
