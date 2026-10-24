@@ -5,6 +5,7 @@ actuator handoffs wait for fresh stop feedback; stale completions cannot rearm.
 """
 import json
 import math
+import os
 import time
 import uuid
 from pathlib import Path
@@ -219,8 +220,9 @@ class PicoNode(RuntimeNode):
             raise RuntimeError('PICO_EXECUTION_AUTHORITY_CHANGED')
         if s is not None and s.stop_failures:
             raise RuntimeError('PICO_STOP_UNCONFIRMED:'+s.code)
+        if s is not None and not 0<=self.now()-seconds(s.feedback_stamp)<=self.tool_cfg['feedback_max_age']:
+            raise RuntimeError('PICO_FEEDBACK_STALE')
         if (s is None or s.profile_hash!=self.profile.digest or s.device_backend!=self.backend or s.simulated != self.simulation or
-                not 0<=self.now()-seconds(s.feedback_stamp)<=self.tool_cfg['feedback_max_age'] or
                 len(s.joints.name)!=len(s.joints.position) or len(set(s.joints.name))!=len(s.joints.name) or
                 not all(math.isfinite(q) for q in s.joints.position)):
             raise RuntimeError('PICO_FEEDBACK_UNAVAILABLE')
@@ -347,6 +349,7 @@ class PicoNode(RuntimeNode):
                         for old,new in zip(previous_frames,pair)])))
         if self.control.source!=a.source_id or self.control.seq!=a.seq or previous==(a.source_id,a.seq):return
         allowed=self.control.phase in ('engaging','following') and self.now()>=self.release_until
+        publish_started=time.monotonic()
         for i,m in enumerate((a,b)):
             hand_allowed=allowed and (self.control.teleop_mode!='independent_arms' or self.control.squeeze_released[i])
             self.projected.publish(VRInput(stamp=m.stamp,source_id=m.source_id+':'+self.instance_id,runtime_mode=m.runtime_mode,
@@ -356,6 +359,7 @@ class PicoNode(RuntimeNode):
                 button_edges=([0]*6+list(m.button_edges[6:8]) if getattr(self,'independent_grippers',False) else
                               [0]*8 if self.position_contract else m.button_edges),
                 virtual_grip=self.control.virtual,stick=m.stick))
+        self.projected_publish_s=time.monotonic()-publish_started
 
     async def pause(self):
         future=Future(executor=self.executor);self.waiters.add(future)
@@ -1064,9 +1068,12 @@ class PicoNode(RuntimeNode):
         if self.last_tick_at is not None and tick_at-self.last_tick_at>.1:
             self.event('PICO_COORDINATOR_TICK_GAP',json.dumps(dict(
                 interval_s=tick_at-self.last_tick_at,
+                previous_tick_work=getattr(self,'tick_work',{}),
+                projected_publish_s=getattr(self,'projected_publish_s',None),
                 input_age_s=self.now()-self.control.stamp if math.isfinite(self.control.stamp) else None,
                 phase=self.control.phase,seq=self.control.seq)))
         self.last_tick_at=tick_at
+        self.tick_work={}
         for f in tuple(self.waiters):
             if not f.done():f.set_result(None)
         try:
@@ -1122,7 +1129,9 @@ class PicoNode(RuntimeNode):
             intent,self.pending_intent=self.pending_intent,None
             self.running=self.executor.create_task(self.perform(intent))
         if self.base:
+            base_started=time.monotonic()
             self.base.tick(self.control, feedback.healthy)
+            self.tick_work['base_s']=time.monotonic()-base_started
         if self.now()-self.last_status>=.1:
             self.last_status=self.now()
             if self.simulation_demo:
@@ -1173,11 +1182,14 @@ class PicoNode(RuntimeNode):
             view['stop_diagnostic']=getattr(self,'stop_diagnostic',None)
             if self.base:
                 view['base'] = self.base.snapshot()
+            publish_started=time.monotonic()
             self.display.publish(String(data=json.dumps(view)))
             self.operator_state.publish(String(data=json.dumps(view)))
+            self.tick_work['state_publish_s']=time.monotonic()-publish_started
             if self.last_phase!=(self.control.phase,self.control.reason):
                 self.last_phase=(self.control.phase,self.control.reason)
                 self.event('PICO_STATE',json.dumps(view))
+        self.tick_work['total_s']=time.monotonic()-tick_at
 
     def input_status(self, now):
         """Display the coordinated pair without hiding raw tracking loss."""
@@ -1203,4 +1215,7 @@ class PicoNode(RuntimeNode):
 
 
 def main():
+    # Configure this process before rclpy.init(); honor an explicit site override.
+    # Fast DDS otherwise sends synchronously on the control callback thread.
+    os.environ.setdefault('RMW_FASTRTPS_PUBLICATION_MODE','ASYNCHRONOUS')
     spin(PicoNode,threaded=False)

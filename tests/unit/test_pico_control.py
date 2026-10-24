@@ -14,6 +14,34 @@ from tests.support.pico import Rig
 
 
 class ScenarioRuntimeTests(unittest.IsolatedAsyncioTestCase):
+    def test_pico_sets_async_transport_before_ros_init_and_honors_site_override(self):
+        import ast,os
+        from unittest.mock import Mock,patch
+        path=Path(__file__).resolve().parents[2]/'src/integration/bindu_runtime/bindu_runtime/pico_node.py'
+        main=next(n for n in ast.parse(path.read_text()).body if getattr(n,'name','')=='main')
+        for configured in (None,'SYNCHRONOUS'):
+            with patch.dict(os.environ,{} if configured is None else
+                    {'RMW_FASTRTPS_PUBLICATION_MODE':configured},clear=True):
+                seen=[];spin=Mock(side_effect=lambda *a,**kw:seen.append(os.environ['RMW_FASTRTPS_PUBLICATION_MODE']))
+                ns=dict(os=os,spin=spin,PicoNode=object)
+                exec(compile(ast.Module(body=[main],type_ignores=[]),str(path),'exec'),ns);ns['main']()
+                self.assertEqual(seen,[configured or 'ASYNCHRONOUS'])
+                spin.assert_called_once_with(object,threaded=False)
+
+    def test_stale_feedback_keeps_original_deadline_and_stop_failure_priority(self):
+        from types import SimpleNamespace as S
+        node=self.production('reading');node.lease=node.tool_request=None;node.now=lambda:1.
+        node.tool_cfg={'feedback_max_age':.2};node.profile=S(digest='p',limits={'joint':(-1,1)})
+        node.backend='snowbot_vendor';node.simulation=False
+        node.state=S(instance_id='executor',stop_failures=[],code='OK',profile_hash='p',
+            device_backend='snowbot_vendor',simulated=False,feedback_stamp=S(sec=0,nanosec=900000000),
+            joints=S(name=['joint'],position=[0.]))
+        self.assertEqual(node.reading()[1],{'joint':0.})
+        node.state.feedback_stamp.nanosec=580000000
+        with self.assertRaisesRegex(RuntimeError,'^PICO_FEEDBACK_STALE$'):node.reading()
+        node.state.stop_failures=['vendor_hold']
+        with self.assertRaisesRegex(RuntimeError,'PICO_STOP_UNCONFIRMED'):node.reading()
+
     async def test_capture_not_ready_returns_to_standby_only_after_confirmed_stop(self):
         from types import SimpleNamespace as S
         from unittest.mock import Mock,AsyncMock
