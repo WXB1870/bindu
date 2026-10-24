@@ -472,6 +472,7 @@ class BimanualToolNode(RuntimeNode):
         work_dt=None
         work_gap=None
         work_feedback=work_reference=None
+        work_execution_reference=None
         pending_reference=None
         trajectory_bootstrap=True
         trajectory_reference_deadline=None
@@ -741,7 +742,8 @@ class BimanualToolNode(RuntimeNode):
                                 'timing':geometry.get('timing') if geometry else None,
                                 'control_sampled_at':work_sampled_at,'integration_dt':work_dt,'sample_gap_s':work_gap,
                                 'grasp_mode':session.grasp_mode,'feedback':work_feedback,
-                                'joint_names':self.names,'reference':work_reference,'target':work_target}),goal.request.task_id)
+                                'joint_names':self.names,'reference':work_reference,
+                                'execution_reference':work_execution_reference,'target':work_target}),goal.request.task_id)
                             raise RuntimeError(value)
                         if awaiting=='capture':
                             if not 0 <= self.now()-work_sampled_at <= reference.max_sample_gap:
@@ -809,6 +811,9 @@ class BimanualToolNode(RuntimeNode):
                                     'sample_gap_s':work_gap,
                                     'control_sampled_at':work_sampled_at,'result_received_at':self.now(),
                                     'result_age_s':self.now()-work_sampled_at,
+                                    'joint_names':self.names,'positions':positions,
+                                    'reference':work_reference,'feedback':work_feedback,
+                                    'execution_reference':work_execution_reference,
                                     'target':work_target}),
                                     goal.request.task_id,command.command_id)
                         awaiting=''
@@ -841,6 +846,7 @@ class BimanualToolNode(RuntimeNode):
                             'input_stamp':session.stamp,'input_age_s':sampled_at-session.stamp,
                             'feedback_stamp':seconds(s.feedback_stamp),'feedback_age_s':sampled_at-seconds(s.feedback_stamp),
                             'will_reject':gap>reference.max_sample_gap}),goal.request.task_id)
+                    execution_sample=None
                     if operation=='solve' and self.trajectory_reference and not trajectory_bootstrap:
                         from .snowbot_position_session import sampled_nominal_reference
                         if trajectory_reference_deadline is None:
@@ -865,6 +871,7 @@ class BimanualToolNode(RuntimeNode):
                         # QP measured tracking/geometry and device limits stay active.
                         trajectory_sample_at=actual_stamp
                         trajectory_reference_deadline=None
+                        execution_sample=dict(positions=actual,stamp=actual_stamp,epoch=lease.epoch)
                     baseline,dt=reference.step(sampled_at) if operation=='solve' else (None,None)
                     if operation=='capture' and self.trajectory_reference:
                         baseline=await self.held_reference(lease,submit_revision)
@@ -885,6 +892,7 @@ class BimanualToolNode(RuntimeNode):
                         work_positions=(baseline if operation=='capture' and baseline is not None else
                                         tuple(measured[n] for n in self.names))
                         work_feedback,work_reference=measured,baseline
+                        work_execution_reference=execution_sample
                         work_target=None if session.target is None else session.target.ravel().tolist()
                 goal.publish_feedback(TeleopAction.Feedback(session_id=session.identity,
                     mode=(('capturing' if session.mode=='follow' and session.anchor_tool is None else session.mode)

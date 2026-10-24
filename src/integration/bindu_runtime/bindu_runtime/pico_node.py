@@ -19,7 +19,7 @@ from std_srvs.srv import Trigger, SetBool
 from trajectory_msgs.msg import JointTrajectoryPoint
 from builtin_interfaces.msg import Duration
 from bindu_contracts.teleoperation import VRFrame
-from bindu_teleoperation.pico import PicoControl, PicoFeedback, PICO_MAPPING
+from bindu_teleoperation.pico import PicoControl, PicoFeedback, PICO_MAPPING, temporary_capture_refusal
 from bindu_kinematics.bimanual_worker import BimanualWorker
 from bindu_interfaces.msg import VRInput, ExecutionState, MotionCommand, TeleopModeState, RecorderHealth, RuntimeEvent
 from bindu_execution.interpolation import Curve, State
@@ -1040,9 +1040,10 @@ class PicoNode(RuntimeNode):
         except Exception as exc:
             reason=type(exc).__name__+':'+str(exc)
             capture_not_ready=(intent.operation=='follow' and
-                reason=='RuntimeError:SNOWBOT_HELD_REFERENCE_NOT_STATIONARY' and
                 self.tool_result is not None and self.tool_result.done() and
-                self.tool_result.result().result.accepted_commands==0)
+                str(exc)==self.tool_result.result().result.code and
+                temporary_capture_refusal(self.tool_result.result().result.code,
+                    self.tool_result.result().result.accepted_commands))
             try:
                 if intent.operation!='recover':await self.cancel_tool()
                 rejected=read_only
@@ -1109,7 +1110,7 @@ class PicoNode(RuntimeNode):
             # The pending follow operation owns cancellation and exact stop proof.
             # Do not let this timer latch its transient pre-target refusal first.
             canceling_capture=(self.control.pending and self.control.pending.operation=='follow' and
-                ended.code=='SNOWBOT_HELD_REFERENCE_NOT_STATIONARY' and ended.accepted_commands==0)
+                temporary_capture_refusal(ended.code,ended.accepted_commands))
             if not canceling_capture:
                 self.control.lock('PICO_TOOL_SESSION_ENDED:'+ended.code,self.now())
         for intent in self.control.drain():
