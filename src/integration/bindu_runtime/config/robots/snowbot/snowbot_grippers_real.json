@@ -2,6 +2,7 @@
   "schema_version": 1,
   "calibrated": false,
   "allow_uncalibrated_direct": true,
+  "independent_trigger_control": true,
   "position_tolerance": 0.003,
   "direct_position_tolerance": 0.03,
   "velocity_tolerance": 0.01,

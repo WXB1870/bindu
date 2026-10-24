@@ -46,7 +46,10 @@ class SnowbotGrippers:
 
     def arms_idle(self):
         engine = getattr(self.node, 'engine', None)
-        return bool(engine and not engine.lease_id and not engine.active and not engine.stopping and not engine.stop_fault)
+        # Independent fingers may move during arm execution; fault barriers remain.
+        return bool(engine and not engine.stop_fault and
+            (self.core.cfg.get('independent_trigger_control',False) or
+             not engine.lease_id and not engine.active and not engine.stopping))
 
     def health(self):
         self.devices.io.require_feedback()

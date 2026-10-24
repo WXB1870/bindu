@@ -153,7 +153,7 @@ class BimanualToolNode(RuntimeNode):
     def axial_position_ready(self):
         cfg=self.gripper_cfg
         s=self.state
-        if (not cfg or not cfg['calibrated'] or 'virtual' not in cfg['grippers']['right'] or
+        if (not cfg or cfg.get('independent_trigger_control',False) or not cfg['calibrated'] or 'virtual' not in cfg['grippers']['right'] or
                 s is None or s.profile_hash!=self.profile.digest or s.simulated!=self.simulation or
                 not 0<=self.now()-seconds(s.feedback_stamp)<=self.cfg['feedback_max_age']):
             return False
@@ -166,16 +166,19 @@ class BimanualToolNode(RuntimeNode):
         if self.matches_mode(msg) and msg.side in ('left','right'):
             # Gripper motion is coordinated separately. Accept the projected
             # axial bit only after the configured opening has measured feedback.
+            independent_grippers=bool(getattr(self,'gripper_cfg',None) and
+                self.gripper_cfg.get('independent_trigger_control',False))
             previous=self.frames.get(msg.side)
             edges=tuple(int(v) for v in msg.button_edges)
+            if independent_grippers and len(edges)==8:edges=edges[:6]+(0,0)
             edge_changed=bool(previous and previous.source_id==msg.source_id and
                 len(edges)==len(previous.button_edges)==8 and edges!=previous.button_edges)
             blocked=not self.simulation and (msg.mapping!='pico_snowbot_v1' or msg.init or
-                msg.trigger>=.3 or msg.virtual_grip and not self.axial_position_ready() or bool(msg.buttons) or len(edges) not in (0,8) or
+                not independent_grippers and msg.trigger>=.3 or msg.virtual_grip and not self.axial_position_ready() or bool(msg.buttons) or len(edges) not in (0,8) or
                 edge_changed or bool(self.busy and previous and previous.stop))
             self.frames[msg.side]=VRFrame(msg.source_id,msg.seq,seconds(msg.stamp),msg.side,
-                tuple(msg.pose),msg.grip,msg.trigger,msg.init,msg.stop or blocked,msg.valid,msg.clutch_seq,
-                msg.mapping or "v34",msg.buttons,tuple(int(v) for v in msg.button_edges),msg.virtual_grip)
+                tuple(msg.pose),msg.grip,0. if independent_grippers else msg.trigger,msg.init,msg.stop or blocked,msg.valid,msg.clutch_seq,
+                msg.mapping or "v34",msg.buttons,edges,msg.virtual_grip)
 
     def on_tool_frame(self,msg):
         if self.input_source == 'tool_pose' and self.matches_mode(msg):
@@ -863,7 +866,7 @@ class BimanualToolNode(RuntimeNode):
                         trajectory_sample_at=actual_stamp
                         trajectory_reference_deadline=None
                     baseline,dt=reference.step(sampled_at) if operation=='solve' else (None,None)
-                    if operation=='capture' and self.trajectory_reference and isinstance(session,IndependentArmsSession):
+                    if operation=='capture' and self.trajectory_reference:
                         baseline=await self.held_reference(lease,submit_revision)
                         # The request yields: use current measured feedback and
                         # retain all normal input/feedback checks before capture.

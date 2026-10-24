@@ -116,6 +116,10 @@ class PositionOperations:
                 self.lease is not None):
             return False
         try:
+            if (self.config.get('independent_trigger_control',False) and
+                    self.node.control.phase!='locked'):
+                # Arm mode transitions do not wait for independent finger travel.
+                return all(self.reading(side).state!='FAULT' for side in SIDES)
             return all(s.state not in ('MOVING','STOPPING','FAULT') and
                 abs(s.measured_velocity) <= self.config['velocity_tolerance']
                 for s in (self.reading(side) for side in SIDES))

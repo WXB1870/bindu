@@ -25,6 +25,8 @@ def target_position_tolerance(config, *, direct=False):
 def validate_config(config, profile):
     if type(config.get('schema_version')) is not int or config['schema_version'] != 1 or type(config.get('calibrated')) is not bool:
         raise ValueError('GRIPPER_CONFIG_SCHEMA')
+    if type(config.get('independent_trigger_control', False)) is not bool:
+        raise ValueError('GRIPPER_CONFIG_TRIGGER_POLICY')
     if type(config.get('allow_uncalibrated_direct', False)) is not bool:
         raise ValueError('GRIPPER_CONFIG_DIRECT_POLICY')
     for key in ('position_tolerance', 'velocity_tolerance', 'settle_time', 'motion_timeout',
@@ -87,6 +89,8 @@ class GripperController:
         self.vr = {}
         self.authorized_at = 0.
         self.trigger_opened = dict.fromkeys(SIDES, False)
+        self.trigger_source = None
+        self.trigger_frames = {}
         self.channels = {s: dict(state='IDLE', code='NO_COMMAND', touched=False, target=0.,
             hold=0., ack=0, sent_at=0., sample=0, deadline=0., steady_deadline=0.,
             settled=None, feedback_sequence=0., result='CANCELED', result_code='HELD') for s in SIDES}
@@ -205,8 +209,8 @@ class GripperController:
                 or stamp < self.command_stamp or not math.isfinite(valid_for) or not 0 < valid_for <= .4 or not 0 <= self.now()-stamp < valid_for):
             raise RuntimeError('GRIPPER_STALE_COMMAND')
         if operation == 'authorize_direct':
-            # Explicit stopped-arm trigger operation, independent of a load
-            # declaration. It permits only the configured open/closed endpoints.
+            # Explicit trigger operation, independent of a load declaration.
+            # Availability is checked by require_write; only configured endpoints.
             if side or load_state not in ('empty','held','unknown') or external_support is not False:
                 raise RuntimeError('GRIPPER_DIRECT_CONTEXT')
             self.load,self.supported,self.authorized=load_state,False,True
@@ -374,7 +378,9 @@ class GripperController:
                 if now >= c['deadline'] or steady >= c['steady_deadline']:
                     if c['state'] == 'STOPPING':
                         raise RuntimeError('HOLD_TIMEOUT')
-                    self._hold(side, 'CANCELED' if c.get('manual_close') else 'FAILED',
+                    manual=self.cfg.get('independent_trigger_control',False) and c.get('direct')
+                    self._hold(side, 'CANCELED' if manual or c.get('manual_close') else 'FAILED',
+                               'MANUAL_ENDPOINT_STOPPED' if manual else
                                'CLOSE_STOPPED' if c.get('manual_close') else 'POSITION_TIMEOUT')
                     continue
                 # Native commands have no sequence ACK or hold ACK. Confirm only
@@ -408,8 +414,64 @@ class GripperController:
                 self.stop(str(exc), revoke=True)
                 self.fail(str(exc))
 
+    def independent_input(self, frame):
+        """Fresh coordinator trigger edges own a separate, expiring gripper lease."""
+        if frame.side not in SIDES:return
+        if (not frame.valid or frame.stop or frame.init or frame.mapping!='pico_snowbot_v1' or
+                not 0<=self.now()-frame.stamp<=self.cfg['feedback_max_age'] or
+                not math.isfinite(frame.trigger) or not 0<=frame.trigger<=1 or
+                len(frame.button_edges)!=8):
+            if self.lease_id:self.stop('GRIPPER_VR_STOP_OR_INVALID',revoke=True)
+            self.trigger_frames={}
+            return
+        if self.trigger_source!=frame.source_id:
+            if self.lease_id:self.stop('GRIPPER_VR_SOURCE_CHANGED',revoke=True)
+            self.trigger_source=frame.source_id;self.trigger_frames={}
+        previous=self.trigger_frames.get(frame.side)
+        if previous and frame.seq<=previous[0]:return
+        counts=tuple(frame.button_edges[6:8])
+        if (not frame.source_id or any(type(x) is not int or x<0 for x in counts) or
+                counts[0]-counts[1] not in (0,1) or
+                frame.trigger>.7 and counts[0]-counts[1]!=1 or
+                frame.trigger<.3 and counts[0]-counts[1]!=0 or
+                previous and frame.stamp<previous[3]):
+            if self.lease_id:self.stop('GRIPPER_VR_COUNTER_INVALID',revoke=True)
+            self.trigger_frames={}
+            return
+        armed=bool(previous and previous[2]) or frame.trigger<.3
+        self.trigger_frames[frame.side]=(frame.seq,counts,armed,frame.stamp)
+        # A held trigger on startup/reconnect is not a new command.
+        if previous is None:return
+        delta=tuple(a-b for a,b in zip(counts,previous[1]))
+        if any(x<0 or x>1 for x in delta) or all(delta):
+            if self.lease_id:self.stop('GRIPPER_VR_EDGE_AMBIGUOUS',revoke=True)
+            self.trigger_frames={}
+            return
+        if self.lease_id and self.owner!=frame.source_id:return
+        if self.lease_id:
+            # Refresh only with both fresh sides from this coordinator source.
+            if all(side in self.trigger_frames and
+                   0<=self.now()-self.trigger_frames[side][3]<=.25 for side in SIDES):
+                self.expires,self.steady_expires=self.now()+.25,self.steady()+.25
+        if not armed or not any(delta):return
+        if not all(side in self.trigger_frames and
+                   0<=self.now()-self.trigger_frames[side][3]<=.25 for side in SIDES):return
+        try:
+            if not self.lease_id:
+                self.lease('acquire',frame.source_id,tuple(GROUPS.values()))
+                self.command('authorize_direct','',self.lease_id,self.epoch,self.sequence+1,
+                             frame.stamp,self.cfg['command_ttl'])
+            self.command('open' if delta[0] else 'close',frame.side,self.lease_id,self.epoch,
+                         self.sequence+1,frame.stamp,self.cfg['command_ttl'])
+            self.expires,self.steady_expires=self.now()+.25,self.steady()+.25
+        except RuntimeError as exc:
+            if self.lease_id:self.stop(str(exc),revoke=True)
+            self.trigger_frames={}
+
     def input(self, frame):
         """Optional trigger control, explicitly bound to a leased VR source id."""
+        if self.cfg.get('independent_trigger_control',False):
+            return self.independent_input(frame)
         if not self.lease_id or self.direct_authorized or self.owner != frame.source_id or frame.side not in SIDES:
             return
         if GROUPS[frame.side] not in self.groups:

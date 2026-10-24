@@ -94,7 +94,7 @@ def _run(config, profile, requests, results, preload_path_checks=False):
                 independent=isinstance(grasp_mode,str) and grasp_mode.startswith('independent:')
                 if operation=='independent_capture' or operation=='capture' and independent:
                     value=solver.capture_independent(feedback,reference=reference)
-                elif operation == 'capture': value=solver.capture(feedback,grasp_mode)
+                elif operation == 'capture': value=solver.capture(feedback,grasp_mode,reference=reference)
                 elif operation == 'loaded_prepare_path':
                     value=solver.check_loaded_prepare(feedback,target)
                 elif operation in ('prepare_path','prepare_recovery_path','prepare_limit_recovery_path','gripper_path'):

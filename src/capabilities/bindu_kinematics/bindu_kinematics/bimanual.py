@@ -297,7 +297,7 @@ class BimanualQP:
             raise ValueError('BIMANUAL_TOOL_TRANSFORM')
         return transform
 
-    def capture(self, feedback, grasp_mode='rigid'):
+    def capture(self, feedback, grasp_mode='rigid', *, reference=None):
         self.captured = False
         self.target_sample = None
         if not self.handle:
@@ -307,6 +307,21 @@ class BimanualQP:
         if (self.measured_rigid_grasp or self.measured_grasp_policy=='unheld_test') and grasp_mode!='rigid':
             raise ValueError('BIMANUAL_MEASURED_GRASP_REQUIRES_RIGID')
         q = self._q(feedback)
+        anchor_q=q
+        positions=np.array([feedback[n] for n in self.names])
+        if reference is not None:
+            reference=np.asarray(reference,dtype=float)
+            if reference.shape!=positions.shape or not np.isfinite(reference).all():
+                raise ValueError('BIMANUAL_REFERENCE_LAYOUT')
+            if not self.reference_kinematics:
+                raise ValueError('BIMANUAL_CAPTURE_REQUIRES_REFERENCE_KINEMATICS')
+            if np.max(np.abs(reference-positions))>self.max_reference_error:
+                raise ValueError('BIMANUAL_REFERENCE_TRACKING_ERROR')
+            self._check_measured_limits(positions)
+            anchor_q=q.copy()
+            anchor_q[[self.model_names.index(n) for n in self.names]]=reference
+        # Freeze the real grasp from measurements; only the target anchor uses
+        # the confirmed held reference, so servo residuals cannot ratchet it.
         measured = np.empty((4,4), dtype=np.float64)
         if not self.lib.bq_relative_pose(self.handle, self._ptr(q), self.nq, self._ptr(measured)):
             raise ValueError('BIMANUAL_GRASP_POSE:'+self._error())
@@ -360,11 +375,11 @@ class BimanualQP:
         self.grasp_mode = grasp_mode
         self.grasp_reference = measured.copy()
         out = np.empty((4,4), dtype=np.float64)
-        if not self.lib.bq_tool_pose(self.handle, self._ptr(q), self.nq, self._ptr(out)):
+        if not self.lib.bq_tool_pose(self.handle, self._ptr(anchor_q), self.nq, self._ptr(out)):
             raise ValueError('BIMANUAL_TOOL_POSE:'+self._error())
         self.captured = True
         try:
-            self.check_path(feedback, [feedback[n] for n in self.names])
+            self.check_path(feedback, positions if reference is None else reference)
             self.set_shared_targets(self.cfg.get('shared_targets'))
         except (ValueError, TypeError, TimeoutError):
             self.captured = False
