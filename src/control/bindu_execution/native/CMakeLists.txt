@@ -13,6 +13,6 @@ target_include_directories(bindu_execution_native PUBLIC
   $<INSTALL_INTERFACE:include/bindu_execution>)
 
 install(TARGETS bindu_execution_native EXPORT bindu_execution_nativeTargets ARCHIVE DESTINATION lib)
-install(FILES interpolation.hpp adaptive_stream.hpp curve_math.hpp DESTINATION include/bindu_execution)
+install(FILES interpolation.hpp adaptive_stream.hpp curve_math.hpp rigid_prediction.hpp DESTINATION include/bindu_execution)
 install(EXPORT bindu_execution_nativeTargets NAMESPACE bindu::
   FILE bindu_execution_nativeConfig.cmake DESTINATION lib/cmake/bindu_execution_native)

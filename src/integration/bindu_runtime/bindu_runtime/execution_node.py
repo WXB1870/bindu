@@ -76,7 +76,7 @@ class ExecutionNode(RuntimeNode):
                    (msg.velocity.linear.x, msg.velocity.angular.z), msg.duration, msg.schema_version,
                    tuple(tuple(p.velocities) for p in msg.points) if any(p.velocities for p in msg.points) else (),
                    tuple(tuple(p.accelerations) for p in msg.points) if any(p.accelerations for p in msg.points) else (),
-                   msg.expected_revision, tuple(msg.resource_groups), selected_mode)
+                   msg.expected_revision, tuple(msg.resource_groups), selected_mode, msg.rigid_reference)
         self.engine.submit(m, self.now())
         msg.runtime_mode = selected_mode
         self.accepted_pub.publish(msg)

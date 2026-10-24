@@ -52,7 +52,8 @@ def model_header(urdf,names,left,right):
             nodes.append('{'+f'{world[parent]},{names.index(name) if name in names else -1},{str(kind=="prismatic").lower()},'+'{'+','.join(format(x,'.17g') for x in fixed)+'},{'+','.join(format(x,'.17g') for x in axis)+'}}')
             world[child]=len(nodes);pending.remove(joint)
         if len(pending)==old:raise ValueError('invalid or cyclic kinematic tree')
-    return '#pragma once\n#include <array>\nnamespace prediction_model {\nstruct Node{int parent,index;bool prismatic;std::array<double,16> fixed;std::array<double,3> axis;};\ninline constexpr int dofs='+str(len(names))+',left='+str(world[left])+',right='+str(world[right])+';\ninline const std::array<Node,'+str(len(nodes))+'> nodes={{'+','.join(nodes)+'}};\n}\n'
+    metadata='inline constexpr char source_sha256[]='+json.dumps(hashlib.sha256(Path(urdf).read_bytes()).hexdigest())+';\ninline constexpr char left_frame[]='+json.dumps(left)+';\ninline constexpr char right_frame[]='+json.dumps(right)+';\n'
+    return '#pragma once\n#include "rigid_prediction.hpp"\nnamespace prediction_model {\nusing Node=bindu::execution::rigid::Node;\ninline constexpr int dofs='+str(len(names))+',left='+str(world[left])+',right='+str(world[right])+';\ninline const std::array<Node,'+str(len(nodes))+'> nodes={{'+','.join(nodes)+'}};\n'+metadata+'}\n'
 
 def eigen_include(explicit=None):
     if explicit:return Path(explicit)
@@ -67,7 +68,7 @@ def build(output,urdf,names,left,right,eigen=None):
     if not include or not compiler:raise RuntimeError('Existing C++17 compiler and Eigen headers required; no automatic installation')
     (output/'prediction_model.hpp').write_text(model_header(urdf,names,left,right))
     core=ROOT/'src/control/bindu_execution/native';source=Path(__file__).with_name('geometric_prediction.cpp');exe=output/'geometric_prediction'
-    files=[source,output/'prediction_model.hpp',*[core/n for n in ['interpolation.cpp','interpolation.hpp','adaptive_stream.cpp','adaptive_stream.hpp','curve_math.hpp']]]
+    files=[source,output/'prediction_model.hpp',*[core/n for n in ['interpolation.cpp','interpolation.hpp','adaptive_stream.cpp','adaptive_stream.hpp','curve_math.hpp','rigid_prediction.hpp']]]
     signature={str(p):hashlib.sha256(p.read_bytes()).hexdigest() for p in files};manifest=output/'build.json'
     if not exe.exists() or not manifest.exists() or json.loads(manifest.read_text())!=signature:
         subprocess.run([compiler,'-O2','-std=c++17','-I',str(output),'-I',str(core),'-I',str(include),str(source),str(core/'interpolation.cpp'),str(core/'adaptive_stream.cpp'),'-o',str(exe)],check=True)

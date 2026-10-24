@@ -174,7 +174,7 @@ class RepeatedLogs:
 
 
 class RosLogObserver:
-    """Observe vendor ROS warnings only; log text is never a control/health input."""
+    """Observe vendor warnings and explicit prediction INFO; never a control input."""
     LOGGERS = ('servo_node', 'dual_arm_control_node', 'robot_upperMonitor')
 
     def __init__(self, node, writer, run_id):
@@ -189,10 +189,13 @@ class RosLogObserver:
         self.subscription = node.create_subscription(Log, '/rosout', self.receive, qos)
         writer.record('rosout-log-events', dict(kind='capture_started', run_id=run_id,
                       loggers=self.LOGGERS, minimum_level=Log.WARN, scope='observed_rosout_only',
+                      info_exceptions=['TARGET_PREDICTION ', 'TARGET_PREDICTION_MODEL '],
                       reliability='best_effort', durability='volatile', queue_depth=100))
 
     def receive(self, msg):
-        if msg.level < 30 or not any(msg.name == name or msg.name.startswith(name+'.') for name in self.LOGGERS):return
+        prediction = (msg.level == 20 and msg.name == 'servo_node' and
+                      msg.msg.startswith(('TARGET_PREDICTION ', 'TARGET_PREDICTION_MODEL ')))
+        if (msg.level < 30 and not prediction) or not any(msg.name == name or msg.name.startswith(name+'.') for name in self.LOGGERS):return
         self.received += 1
         stamp_ns = msg.stamp.sec*1000000000+msg.stamp.nanosec
         self.writer.record_log('rosout-log-events', dict(name=msg.name, level=int(msg.level), message=msg.msg,
@@ -201,6 +204,7 @@ class RosLogObserver:
 
     def status(self):
         return dict(scope='observed_rosout_warn_plus', received=self.received,
+                    info_exceptions=['TARGET_PREDICTION ', 'TARGET_PREDICTION_MODEL '],
                     loggers=self.LOGGERS, plain_stdio_captured=False)
 
 

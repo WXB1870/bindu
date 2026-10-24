@@ -142,6 +142,7 @@ class PositionSessionDevices:
                             simulated=False, check_ready=self.check_ready, check_health=self.check_health)
         self.io.source_motion = None
         self.io.trajectory_reference = bool(self.health.reference_mode)
+        self.io.supports_rigid_reference = self.health.reference_mode == 2
         self.io.stop_confirmation_window = .1 if self.health.reference_mode == 2 else 0.
         self.io.stop_confirmation_max_gap = ROS_FEEDBACK_TIMEOUT_S
         self.io.stop_requires_arrival = self.health.reference_mode != 2
@@ -494,7 +495,8 @@ class PositionSessionDevices:
             msg.meta.source_command_id, msg.meta.lease_id, msg.meta.epoch, msg.meta.profile_hash = identity
             # Version 2 is a target recipe, never a curve. The servo owns its
             # local switching time; empty curve fields reject legacy packets.
-            msg.trajectory.version = 2
+            msg.trajectory.version = (3 if not self.io.sending_hold and
+                                      getattr(self.io.source_motion,'rigid_reference',False) else 2)
             msg.trajectory.segment_id = metadata['sequence']
             for field, getter, ceiling in (('max_velocity', self.io.profile.speed, self.trajectory_limits['trajectory_max_velocity']),
                     ('max_acceleration', self.io.profile.acceleration, self.trajectory_limits['trajectory_max_acceleration']),
@@ -525,7 +527,9 @@ class PositionSessionDevices:
         if self.health.reference_mode:
             mapping = {k: metadata[k] for k in ('session', 'sequence', 'source_stamp_ns', 'expires_at_ns')}
             mapping.update(lease_id=msg.meta.lease_id, epoch=msg.meta.epoch,
-                           execution_mode='position', reference_mode=2)
+                           execution_mode='position', reference_mode=2,
+                           target_recipe_version=msg.trajectory.version,
+                           rigid_reference=msg.trajectory.version==3)
             self.node.event('TARGET_SENT', 'SNOWBOT_TARGET:'+json.dumps(mapping, separators=(',', ':')),
                             command_id=msg.meta.source_command_id)
         if self.io.sending_hold:

@@ -44,6 +44,7 @@
   "integration_max_sample_gap": 0.25,
   "max_reference_error": 0.15,
   "worker_timeout": 0.23,
+  "rigid_reference_prediction": true,
   "worker_startup_timeout": 30.0,
   "relative_gain": 12.0,
   "max_relative_error": 0.08,

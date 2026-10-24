@@ -27,6 +27,7 @@ class Motion:
     expected_revision: int = 0  # 0 disables the check; chunks require a current revision.
     resource_groups: Tuple[str, ...] = ()  # Schema 2: one timeline across disjoint groups.
     runtime_mode: str = ''  # Untagged legacy commands are accepted only in simulation.
+    rigid_reference: bool = False  # Explicit 6D relative reference constraint; not force/grasp confirmation.
 
 
 @dataclass

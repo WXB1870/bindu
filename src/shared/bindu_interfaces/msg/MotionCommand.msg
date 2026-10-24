@@ -20,3 +20,6 @@ geometry_msgs/Twist velocity
 float64 duration
 # Required current revision for joint_reference_segment; zero disables check otherwise.
 uint64 expected_revision
+# Untimed joint_target only: explicit rigid dual-arm reference prediction.
+# False keeps the existing path. This is not measured grasp confirmation.
+bool rigid_reference

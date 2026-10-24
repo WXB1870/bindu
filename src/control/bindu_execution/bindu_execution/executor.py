@@ -242,6 +242,12 @@ class Executor:
             raise Rejected('STALE_REVISION')
         if m.schema_version not in (1, 2) or m.profile_hash != self.profile.digest:
             raise Rejected('SCHEMA_OR_PROFILE_MISMATCH')
+        if (type(m.rigid_reference) is not bool or (m.rigid_reference and
+                (m.schema_version != 2 or m.mode != 'joint_target' or
+                 len(m.resource_groups) < 2))):
+            raise Rejected('RIGID_REFERENCE_SCOPE')
+        if m.rigid_reference and not getattr(self.io, 'supports_rigid_reference', False):
+            raise Rejected('RIGID_REFERENCE_UNSUPPORTED')
         if not m.command_id or not m.task_id or m.command_id in self.results:
             raise Rejected('DUPLICATE_OR_EMPTY_ID')
         if m.schema_version == 1:

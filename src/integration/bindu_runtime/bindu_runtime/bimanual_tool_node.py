@@ -36,6 +36,8 @@ class BimanualToolNode(RuntimeNode):
         self.declare_parameter('position_protocol','legacy_guard',descriptor=ParameterDescriptor(read_only=True))
         self.trajectory_reference = (not self.simulation and position_contract and
                                     self.get_parameter('position_protocol').value == 'session_v3')
+        if type(self.cfg.get('rigid_reference_prediction',False)) is not bool:
+            raise ValueError('RIGID_REFERENCE_CONFIG')
         from .teleop_deployment import apply_execution_tracking
         self.cfg=apply_execution_tracking(self.cfg,self.get_parameter('execution_mode').value,
                                           real=not self.simulation,position_contract=position_contract,
@@ -624,7 +626,10 @@ class BimanualToolNode(RuntimeNode):
                                     profile_hash=self.profile.digest,lease_id=lease.lease_id,epoch=lease.epoch,
                                     expected_revision=submit_revision,mode='joint_target',resource_group='',resource_groups=list(self.groups),
                                     stamp=stamp(work_stamp),valid_for=self.cfg['command_max_age'],
-                                    joint_names=list(self.names),positions=list(positions))
+                                    joint_names=list(self.names),positions=list(positions),
+                                    rigid_reference=(self.trajectory_reference and
+                                        self.cfg.get('rigid_reference_prediction',False) and
+                                        mode.mode=='bimanual_tool' and session.grasp_mode=='rigid'))
                                 pending=self.submit_client.call_async(SubmitMotion.Request(command=command))
                                 pending_reference=(positions,work_sampled_at)
                                 pending_at=now

@@ -484,6 +484,7 @@ class TargetWireTests(unittest.TestCase):
         d.takeover_pending = None
         d.takeover_previous_hold = None
         d.io.trajectory_reference = True
+        d.io.supports_rigid_reference = True
         d.node.event = Mock(); d.node.get_logger = Mock()
         d.arm_type = lambda: S(meta=S(), command=S(), trajectory=S(effective_at_ns=0,
             piece_start=[], duration=[], source_duration=[], source_elapsed=[], control_count=[], controls=[]))
@@ -779,6 +780,34 @@ class TargetWireTests(unittest.TestCase):
         self.assertEqual((second.meta.operation, second.meta.sequence), (0,2))
         self.assertFalse(hasattr(self.d,'pending_trajectory'))
         self.assertFalse(hasattr(self.d,'trajectory'))
+
+    def test_rigid_reference_is_explicit_recipe_and_pause_keeps_original_stop(self):
+        self.d.new_session()
+        first=self.send(rigid_reference=True)
+        self.assertEqual(first.trajectory.version,3)
+        self.assertEqual(first.meta.reference_mode,2)
+        self.assertEqual(first.meta.expires_at_ns-first.meta.source_stamp_ns,200_000_000)
+        self.assertEqual(first.trajectory.controls,[])
+        self.d.receive_receipt(self.receipt(first))
+        pause=self.send(pause=True,rigid_reference=True)
+        self.assertEqual((pause.meta.operation,pause.trajectory.version),(2,2))
+        self.assertEqual(pause.meta.expires_at_ns-pause.meta.source_stamp_ns,2_000_000_000)
+
+    def test_rigid_reference_scope_is_validated_before_device_acceptance(self):
+        from bindu_contracts.contracts import Motion
+        lease,epoch=self.rig.engine.acquire('rigid',CONTROL_GROUPS,2.,self.rig.now)
+        names=tuple(n for group in CONTROL_GROUPS for n in self.rig.profile.groups[group])
+        motion=Motion('rigid',lease,epoch,self.rig.profile.digest,'test','','joint_target','',
+            self.rig.now,.2,names=names,positions=tuple(self.target[n] for n in names),
+            schema_version=2,resource_groups=CONTROL_GROUPS,runtime_mode='real',rigid_reference=True)
+        with self.assertRaisesRegex(Exception,'RIGID_REFERENCE_SCOPE'):
+            self.rig.engine.submit(replace(motion,rigid_reference=1),self.rig.now)
+        self.rig.io.supports_rigid_reference=False
+        with self.assertRaisesRegex(Exception,'RIGID_REFERENCE_UNSUPPORTED'):
+            self.rig.engine.submit(motion,self.rig.now)
+        self.rig.io.supports_rigid_reference=True
+        self.rig.engine.submit(motion,self.rig.now)
+        self.assertTrue(self.rig.io.source_motion.rigid_reference)
 
     def test_pause_preempts_without_receipt_and_retains_identity_after_motion_clear(self):
         first = self.send()

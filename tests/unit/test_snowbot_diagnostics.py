@@ -416,6 +416,20 @@ class RepeatedLogTests(unittest.TestCase):
         self.assertTrue(records[-1][1]['source_stamp_before_capture'])
         self.assertFalse(observer.status()['plain_stdio_captured'])
 
+    def test_only_explicit_prediction_info_is_retained(self):
+        records=[]
+        observer=diagnostics.RosLogObserver.__new__(diagnostics.RosLogObserver)
+        observer.writer=S(record_log=lambda stream,value:records.append(value))
+        observer.run_id='test';observer.started_ns=1;observer.received=0
+        fields=dict(level=20,name='servo_node',msg='TARGET_PREDICTION {"sequence":7}',
+                    stamp=S(sec=10,nanosec=0),file='servo.cpp',function='prepare',line=1)
+        observer.receive(S(**fields))
+        observer.receive(S(**dict(fields,msg='TARGET_PREDICTION_MODEL {}')))
+        observer.receive(S(**dict(fields,msg='ordinary info')))
+        observer.receive(S(**dict(fields,name='unrelated')))
+        self.assertEqual(observer.received,2)
+        self.assertEqual(records[0]['level'],20)
+
     def test_real_ros_log_qos_and_payload_are_supported_with_a_subscription_only_node(self):
         from rcl_interfaces.msg import Log
         with tempfile.TemporaryDirectory() as directory:

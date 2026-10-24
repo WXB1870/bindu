@@ -13,7 +13,7 @@ setup(
                 ('share/bindu_execution', ['package.xml']),
                 ('share/bindu_execution/native', [str(native / name) for name in
                     ('CMakeLists.txt', 'interpolation.cpp', 'interpolation.hpp',
-                     'adaptive_stream.cpp', 'adaptive_stream.hpp', 'curve_math.hpp')])],
+                     'adaptive_stream.cpp', 'adaptive_stream.hpp', 'curve_math.hpp', 'rigid_prediction.hpp')])],
     ext_modules=[Extension('bindu_execution._native',
         sources=[str(native / name) for name in ('python_bindings.cpp', 'interpolation.cpp', 'adaptive_stream.cpp')],
         depends=[str(native / name) for name in ('interpolation.hpp', 'adaptive_stream.hpp', 'curve_math.hpp')],
