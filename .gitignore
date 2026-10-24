@@ -19,10 +19,7 @@ __pycache__/
 /项目上下文.md
 /当前进度.md
 /决策记录.md
-/一期建设计划与开源选型.md
-/历史代码盘点与复用评估.md
-/Galbot设计对照.md
-/系统架构图.md
+/参考文档/
 
 # Machine-local credentials/configuration
 .env

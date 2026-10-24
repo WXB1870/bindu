@@ -74,26 +74,22 @@ bindu/
 | 环境、构建、运行和验证步骤 | [运行与验证](运行与验证.md)；配置选择见[运行装配](src/integration/bindu_runtime/README.md#配置目录) |
 | Snowbot／118现场配方、问题与验收 | [Snowbot工作区](../../snowbot/README.md)及[底层驱动问题记录](../../snowbot/底层驱动问题记录.md) |
 
-主工作区另有本地的`项目上下文.md`、`当前进度.md`、`决策记录.md`与`过程记录/`，分别保存确认条件、当前状态、重要取舍和历史证据；它们不随Git分发，新克隆按本文、工程文档与源码使用。Snowbot链接指向独立本地工作区，未取得该目录时不影响阅读Bindu公共工程说明。
+主工作区另有本地的`项目上下文.md`、`当前进度.md`、`决策记录.md`与`过程记录/`，分别保存稳定条件、当前摘要、重要取舍和历史证据；历史选型、来源对照、源码盘点及架构图册位于本地`参考文档/`，按主题检索；这些本地材料不随Git分发，新克隆按本文、工程文档与源码使用。Snowbot链接指向独立本地工作区，未取得该目录时不影响阅读Bindu公共工程说明。
 
-### 扫雪遥操作阅读路径
+### 按任务定位
 
-先看[运行装配与场景选择](src/integration/bindu_runtime/README.md#扫雪遥操作)，再按“[工具输入与握持](src/capabilities/bindu_teleoperation/README.md#扫雪输入与握持) → [腰臂联合求解与反馈](src/capabilities/bindu_kinematics/README.md#扫雪求解与反馈) → [位置执行](src/control/bindu_execution/README.md#扫雪位置执行) → [Snowbot 位置接入](src/hardware/bindu_hardware/README.md#snowbot-位置接入)”阅读。ROS 运动学遥操作与 Isaac Sim 6.2 物理受力实验各有独立入口，配置和验证范围见运行装配页。
+局部修改从对应模块的职责、源码和验证入口开始；仅在影响跨模块接口时扩读相关契约与上下游。文档链接提供查阅入口，不构成逐篇全文必读清单。
 
-PICO扫雪：[统一部署与启动](运行与验证.md#vr-统一部署与启动) · [按键与相对映射](src/capabilities/bindu_teleoperation/README.md#pico-按键方案) · [操作流程](运行与验证.md#pico-扫雪操作流程) · [工具操作与握持契约](动作执行契约.md#61-snowbot-工具操作与握持切换)。
-
-导航部署：[Orin专用脚本与新手流程](src/capabilities/bindu_navigation/README.md#orin-导航专用部署与新手操作)（Tracer 2.0底盘接口按要求占位，建图与定位按实际传感器选型）。
-
-真机部署：先看[现场驱动完整测试流程与扫雪接入](运行与验证.md#snowbot-真机驱动与双臂扫雪部署)，再按[x86独立环境与构建](src/integration/bindu_runtime/README.md#x86-真机部署已有适配底层)接入统一 PICO 遥操作；[旧最小位置接口检查](src/integration/bindu_runtime/README.md#现场部署顺序)与[Snowbot自动化入口](src/integration/bindu_runtime/README.md#部署自动化)用于专项验证，默认只读。
+| 本次任务 | 直接入口 |
+|---|---|
+| 手柄按键、位姿映射、滤波、握持与会话 | [遥操作](src/capabilities/bindu_teleoperation/README.md#按任务查阅) |
+| 插值、期限、控制权与停止 | [执行模块](src/control/bindu_execution/README.md#扫雪位置执行)、[执行契约](动作执行契约.md#6-执行状态与停止)相关章节 |
+| 模型、设备接口与反馈 | [本体模型](src/hardware/bindu_description/README.md#机器人模型与资产)、[设备适配](src/hardware/bindu_hardware/README.md#snowbot-位置接入) |
+| 场景配置、部署或验证 | [运行装配](src/integration/bindu_runtime/README.md#按任务查阅)、[运行与验证](运行与验证.md#按需查阅) |
+| 导航与其他能力 | 从上方模块导航选择本次涉及的模块 |
 
 ## 当前状态与验证入口
 
 已接入单臂、普通双臂与工具耦合遥操作、共享执行、Snowbot位置设备接口及可选PhysX反馈；实体握持、真实设备标定和完整真机运行尚未验收。功能边界与配置选择见[运行装配](src/integration/bindu_runtime/README.md)，输入滤波及插值的实际路径见[位置执行说明](src/control/bindu_execution/README.md#当前snowbot-vr链路的滤波与插值)。
 
-```bash
-# 先加载相应ROS、工作区及依赖
-python3 -m tests --list
-python3 -m tests unit vr
-```
-
-测试按单元、集成、物理、回放与公共夹具分类；完整命令和前提见[分组测试](运行与验证.md#测试)。已验证开发机与Humble容器的范围、Orin及实机限制见[环境准备](运行与验证.md#环境准备与构建)。历史批次结果保留在本地过程记录和实验产物中。
+测试按单元、集成、物理、回放与公共夹具分类；命令和前提统一见[分组测试](运行与验证.md#测试)，平台与部署限制见[环境准备](运行与验证.md#环境准备与构建)。历史批次结果保留在本地过程记录和实验产物中。
