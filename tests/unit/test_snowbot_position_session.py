@@ -1046,7 +1046,7 @@ class TargetWireTests(unittest.TestCase):
             'snowbot_ctl_msgs': S(), 'snowbot_ctl_msgs.msg': S(PositionObservation=object,
                 PositionSessionCommand=object, PositionSessionState=object),
             'std_msgs': S(), 'std_msgs.msg': S(Float64MultiArray=object),
-            'rclpy': S(), 'rclpy.qos': S(qos_profile_sensor_data=object())}
+            'rclpy': S(), 'rclpy.qos': S(qos_profile_sensor_data=S(depth=5))}
         parameters = {}; descriptors = {}
         def declare(key, default, descriptor):
             descriptors[key] = descriptor; parameters.setdefault(key, default)
@@ -1057,6 +1057,9 @@ class TargetWireTests(unittest.TestCase):
         modules['std_srvs.srv']=S(Trigger=object)
         with patch.dict('sys.modules', modules):
             created = PositionSessionDevices(node, self.rig.profile)
+        qos=node.create_subscription.call_args_list[0].args[3]
+        self.assertEqual(qos.depth,1)
+        self.assertEqual(modules['rclpy.qos'].qos_profile_sensor_data.depth,5)
         self.assertIs(parameters['command_enabled'],False)
         self.assertTrue(descriptors['command_enabled'].read_only)
         self.assertFalse(created.io.command_enabled)

@@ -39,6 +39,48 @@ class ScenarioRuntimeTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaisesRegex(RuntimeError,'STOP_NOT_CONFIRMED'):await node.recover(S(token=2))
             self.assertIs(node.stop_request,barrier);node.position_ops.recover.assert_not_awaited()
 
+    async def test_feedback_fault_recovery_needs_completed_stop_and_fresh_device_hold(self):
+        from types import SimpleNamespace as S
+        from unittest.mock import Mock,AsyncMock
+        from bindu_runtime.stop_evidence import stop_feedback_matches
+        node=self.production('recover','stopped','begin_stop_wait')
+        node.recover.__func__.__globals__['stop_feedback_matches']=stop_feedback_matches
+        node.current=Mock();node.lease=node.tool_request=node.tool_goal=None
+        node.profile=S(digest='profile');node.simulation=False;node.now=lambda:10.
+        node.tool_cfg={'feedback_max_age':.2};node.names=('joint',)
+        state=S(instance_id='executor',lease_epoch=10,lease_active=False,profile_hash='profile',
+                simulated=False,state='FAILED',stop_failures=[],code='DEVICE_FEEDBACK_ERROR',
+                feedback_stamp=9.99,reference=S(name=[]),joints=S(name=['joint'],velocity=[0.]))
+        node.state=state;node.reading=Mock(return_value=(state,{'joint':0.}))
+        node.position_ops=None;node.control=S(update_feedback=Mock(),rest=lambda _:True)
+        node.feedback=Mock();node.stop_request=None;node.stop_diagnostic={'old':True}
+        node.prepare_hold_reference=AsyncMock(return_value={'session':2,'sequence':268})
+        with self.assertRaisesRegex(RuntimeError,'STOP_NOT_CONFIRMED'):
+            await node.recover(S(token=1))
+        request=node.begin_stop_wait('executor',10,False);request['requested']=9.8
+        self.assertIsNone(node.stop_diagnostic)
+        await node.stopped(request)
+        self.assertEqual(node.confirmed_stop,request);self.assertIsNone(node.stop_request)
+        await node.recover(S(token=1))
+        self.assertEqual(node.prepare_hold_reference.await_count,2)
+        for change in ({'lease_epoch':11},{'lease_active':True},{'stop_failures':['vendor_hold']},
+                       {'state':'STOPPING'},{'code':'EMERGENCY_STOP'},{'feedback_stamp':9.7}):
+            with self.subTest(change=change):
+                saved={k:getattr(state,k) for k in change}
+                for k,v in change.items():setattr(state,k,v)
+                with self.assertRaisesRegex(RuntimeError,'STOP_NOT_CONFIRMED'):
+                    await node.recover(S(token=2))
+                for k,v in saved.items():setattr(state,k,v)
+        node.prepare_hold_reference.side_effect=RuntimeError('SNOWBOT_DRIVE_FAULT')
+        with self.assertRaisesRegex(RuntimeError,'DRIVE_FAULT'):await node.recover(S(token=3))
+        node.prepare_hold_reference.side_effect=None
+        async def owner_changed(*args,**kwargs):
+            changed=S(**vars(state));changed.lease_epoch+=1
+            node.reading.return_value=(changed,{'joint':0.})
+            return {'session':2,'sequence':268}
+        node.prepare_hold_reference.side_effect=owner_changed
+        with self.assertRaisesRegex(RuntimeError,'STATE_CHANGED'):await node.recover(S(token=4))
+
     def test_execution_fault_and_stop_protocol_reach_pico_without_normal_cancel_fault(self):
         from types import SimpleNamespace as S
         node=self.production('on_motion_event');node.run_id='run';node.runtime_mode='real';node.instance_id='test'
@@ -377,7 +419,13 @@ class LimitRecoveryRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 await node.prepare_hold_reference(intent)
         node.wait.return_value=S(success=True,message=json.dumps(value));state.stop_failures=['vendor_hold']
         with self.assertRaisesRegex(RuntimeError,'HOLD_CHANGED'):await node.prepare_hold_reference(intent)
-        state.stop_failures=[];state.lease_active=True;value.update(lease_id='lease',epoch=3);state.lease_epoch=3
+        state.stop_failures=[];state.state='FAILED';state.code='DEVICE_FEEDBACK_ERROR'
+        with self.assertRaisesRegex(RuntimeError,'HOLD_CHANGED'):await node.prepare_hold_reference(intent)
+        self.assertEqual(await node.prepare_hold_reference(intent,allow_feedback_fault=True),value)
+        state.code='EMERGENCY_STOP'
+        with self.assertRaisesRegex(RuntimeError,'HOLD_CHANGED'):
+            await node.prepare_hold_reference(intent,allow_feedback_fault=True)
+        state.state='CANCELED';state.lease_active=True;value.update(lease_id='lease',epoch=3);state.lease_epoch=3
         node.wait.return_value=S(success=True,message=json.dumps(value));lease=S(lease_id='lease',epoch=3)
         self.assertEqual(await node.prepare_hold_reference(intent,lease=lease,previous=dict(value)),value)
         with self.assertRaisesRegex(RuntimeError,'HOLD_CHANGED'):
