@@ -22,6 +22,10 @@ class TeleopBase:
             'BASE_COMMANDS_DISABLED' if not command_enabled else 'BASE_DRIVER_WATCHDOG_UNCONFIRMED')
         self.publisher = None
         self.last_published = None
+        self.last_publish_at = float('-inf')
+        watchdog = self.cfg['driver_watchdog_s']
+        self.publish_period = min(.02, watchdog/2) if watchdog is not None else .02
+        self.tick_work = {}
         self.feedback_gid = None
         self.feedback_source_fault = False
         self.graph_ok = False
@@ -96,21 +100,31 @@ class TeleopBase:
             self.core.stationary_since = None
 
     def tick(self, control, healthy):
-        now, clock = self.node.now(), time.monotonic()
+        clock = time.monotonic()
+        self.tick_work = {}
         if self.writable:
             self.check_graph(clock)
+        self.tick_work['graph_s'] = time.monotonic()-clock
+        # Graph discovery may block. Recheck input age and loop continuity at
+        # completion, rather than authorizing a velocity with the old clock.
+        now, clock = self.node.now(), time.monotonic()
         allowed = (self.writable and self.graph_ok and healthy and not control.pending and
                    self.core.source == control.source and self.core.seq == control.seq and
                    control.phase in ('standby', 'tool_standby', 'following'))
         reason = (self.disabled_reason if not self.writable else self.graph_reason if not self.graph_ok
                   else 'BASE_PICO_NOT_PERMITTED')
         velocity = self.core.tick(now, clock, allowed=allowed, reason=reason)
-        if self.publisher:
+        stop_edge = velocity == (0., 0.) and self.last_published != (0., 0.)
+        if self.publisher and (stop_edge or clock-self.last_publish_at >= self.publish_period):
             msg = Twist()
             msg.linear.x, msg.angular.z = velocity
-            # Repeat zero while inhibited. Process death still needs the device
-            # watchdog: no ROS publisher can stop a latched receiver after death.
+            # Bound DDS traffic independently of the 200 Hz joint coordinator.
+            # A transition to zero bypasses pacing; inhibited zeros still repeat.
+            # Process death still needs the device watchdog.
+            publish_started = time.monotonic()
             self.publisher.publish(msg)
+            self.last_publish_at = time.monotonic()
+            self.tick_work['publish_s'] = self.last_publish_at-publish_started
             if velocity == (0., 0.) and self.last_published != (0., 0.):
                 self.core.zero_requested = self.node.now()
                 self.core.stationary_since = None

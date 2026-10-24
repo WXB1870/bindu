@@ -1132,6 +1132,7 @@ class PicoNode(RuntimeNode):
             base_started=time.monotonic()
             self.base.tick(self.control, feedback.healthy)
             self.tick_work['base_s']=time.monotonic()-base_started
+            self.tick_work['base_detail']=getattr(self.base,'tick_work',{})
         if self.now()-self.last_status>=.1:
             self.last_status=self.now()
             if self.simulation_demo:
