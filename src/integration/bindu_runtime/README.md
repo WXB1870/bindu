@@ -267,6 +267,7 @@ ros2 topic echo /bindu/servo_health
 | [snowbot_real_position.json](config/robots/snowbot/snowbot_real_position.json) | 真实位置运行限制；头部第2轴取源接口与CAD交集±0.79 rad，其余沿用源接口，仍需现场核实 |
 | [bimanual_snowbot_real.json](config/robots/snowbot/bimanual_snowbot_real.json) | 真机位置链的名义工具安装／CAD几何／QP与时效参数；不包含演示轨迹，安装尺寸和地面需标定 |
 | [snowbot_grippers_real.json](config/robots/snowbot/snowbot_grippers_real.json) | 独立夹爪位置闭环、超时与开合参数；默认未标定，拒绝写入 |
+| [snowbot_base.json](config/robots/snowbot/snowbot_base.json) | 可选PICO两轴`cmd_vel`端口、摇杆限速、反馈与停止条件；设备独立超时未确认，默认底盘只读 |
 | [snowbot_shovel_sim.json](config/robots/snowbot/snowbot_shovel_sim.json) | 当前扫雪仿真的资源组、限位、动态限制与腰臂同步执行 |
 | [snowbot_sim.json](config/robots/snowbot/snowbot_sim.json) | 旧Snowbot模拟入口的执行基线，供兼容入口及回归使用 |
 | [snowbot_vendor_position.json](config/robots/snowbot/snowbot_vendor_position.json) | 真实位置接口的20轴资源与限制；适配器默认只读，独立夹爪接口需另配已标定配置，真机未验收 |
@@ -277,6 +278,8 @@ ros2 topic echo /bindu/servo_health
 | [snowbot_shovel_physics.json](config/robots/snowbot/snowbot_shovel_physics.json) | 空铲木质质量、接触夹持、Fabric与GUI刷新；保留显式proxy对照参数 |
 
 基础构建和启动命令见本文[编译与运行](#编译与运行)，系统依赖见[环境准备](../../../运行与验证.md#环境准备与构建)。普通工具装配需有效握姿和新鲜反馈，再显式选择`bimanual_tool`并启动`teleop/tool_session`；[专用装配与暂停](../../capabilities/bindu_teleoperation/README.md#遥操作专用装配与暂停)维护完整步骤。默认零位不是准备姿态，测试夹具仅由专用模拟入口显式初始化。
+
+`snowbot_vr_real.json`／`snowbot_vr_sim.json`已选择可选`base_config`，由原PICO节点承载，无新增控制进程。方向映射、`/cmd_vel`／`Odometry`前提及模拟预览范围见[底盘适配](../../capabilities/bindu_teleoperation/README.md#底盘摇杆适配)；修改`VRInput.stick`后须重建接口和运行包，不能只复制Python文件到旧安装。旧配方不配置`base_config`时保持原行为。
 
 PICO仿真由协调器管理上述Action，无需手动开启工具会话；真机最小配方仅接受位姿／Squeeze／Y，仍需显式启动Action。按职责查阅：[按键与相对映射](../../capabilities/bindu_teleoperation/README.md#pico-按键方案) · [启动、装卸及重接步骤](../../../运行与验证.md#pico-扫雪操作流程) · [状态契约](../../../动作执行契约.md#61-snowbot-工具操作与握持切换) · [真实底层启动与重启限制](../../../软件架构设计.md#832-snowbot-实机启动与准备)。
 

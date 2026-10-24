@@ -542,6 +542,7 @@ class PicoControl:
                 view['controller_states'][f.side] = dict(seq=f.seq, valid=f.valid and fresh,
                     squeeze=f.grip if fresh else None, trigger=f.trigger if fresh else None,
                     buttons=f.buttons if fresh else None,
+                    stick=list(f.stick) if fresh and f.stick else None,
                     button_edges=list(f.button_edges) if fresh else None,
                     position_m=[f.pose[i] for i in (3,7,11)] if fresh else None)
         if self.guided_loading:view['operator_guide']=loading_guide(view,self.feedback.modes if self.feedback else ())

@@ -138,7 +138,8 @@ class VRInputNode(RuntimeNode):
                 pose=list(item.pose) if item.valid else [0.]*16,
                 grip=item.grip, trigger=item.trigger, init=item.init, stop=item.stop,
                 valid=item.valid, clutch_seq=item.clutch_seq, mapping=item.mapping,
-                buttons=item.buttons, button_edges=list(item.button_edges), virtual_grip=item.virtual_grip))
+                buttons=item.buttons, button_edges=list(item.button_edges), virtual_grip=item.virtual_grip,
+                stick=list(item.stick)))
             duration=time.monotonic()-started
             if duration>.02:
                 self.emit_health(dict(stage='ros_input_publish_duration',stamp=time.time(),

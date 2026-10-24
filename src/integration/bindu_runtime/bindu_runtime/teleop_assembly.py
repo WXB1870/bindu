@@ -68,6 +68,12 @@ def assemble(context):
     if pico and (robot.robot_id != 'snowbot' or (backend != 'kinematic' and not position_contract) or value('tool_input_source') != 'vr'):
         raise ValueError('PICO_REQUIRES_SNOWBOT_KINEMATIC_VR')
     pico_config = value('pico_config') or str(Path(get_package_share_directory('bindu_runtime'))/'config/robots/snowbot/pico_snowbot_sim.json')
+    base_config = value('base_config')
+    if base_config:
+        if not pico or not position_contract or not enabled('vr_enabled','false'):
+            raise ValueError('BASE_REQUIRES_PICO_POSITION_VR')
+        from bindu_teleoperation.base import validate_base_config
+        validate_base_config(json.loads(Path(base_config).read_text()))
     if pico:
         tool_settings=json.loads(robot.tool_config.read_text())
         if not tool_settings.get('right_axial_grasp') or tool_settings.get('collision_scope')!='configured_tool_geometry' or (not position_contract and not tool_settings.get('demo',{}).get('initial_positions_rad')):
@@ -150,6 +156,7 @@ def assemble(context):
             parameters=[{**common,**model,'tool_config':str(robot.tool_config),
                          'pico_config':pico_config,'device_backend':backend,'recording_enabled':recorder_enabled,
                          'gripper_config':value('gripper_config'),
+                         'base_config':base_config, 'command_enabled':enabled('command_enabled','false'),
                          'simulation_demo':pico_demo}]))
     nodes.append(Node(package='bindu_runtime', executable='vr_input', namespace=ns,
                       condition=IfCondition(LaunchConfiguration('vr_enabled')), output='screen',

@@ -13,7 +13,7 @@ COMMON = {'namespace', 'profile', 'bimanual_config', 'side', 'tool_input_source'
 EXECUTION = {'runtime_mode', 'namespace', 'profile', 'device_backend', 'run_id', 'output',
              'recording_mode', 'command_enabled', 'vendor_namespace', 'arm_receiver_node',
              'servo_receiver_node', 'mid_receiver_node'}
-COMMON.add('gripper_config')
+COMMON.update(('gripper_config', 'base_config'))
 COMMON.update(('position_protocol','execution_mode'))
 COMMON.update(('position_contract','physics_config'))
 EXECUTION.add('gripper_config')
@@ -21,7 +21,7 @@ EXECUTION.update(('position_protocol','execution_mode'))
 TARGET_STREAM_LIMIT_DEFAULTS = {'trajectory_max_velocity': .25, 'trajectory_max_acceleration': .5}
 COMMON.update(TARGET_STREAM_LIMIT_DEFAULTS)
 EXECUTION.update(TARGET_STREAM_LIMIT_DEFAULTS)
-PATHS = {'profile', 'bimanual_config', 'robot_config', 'cert_file', 'key_file', 'output', 'pico_config', 'gripper_config', 'physics_config'}
+PATHS = {'profile', 'bimanual_config', 'robot_config', 'cert_file', 'key_file', 'output', 'pico_config', 'gripper_config', 'physics_config', 'base_config'}
 
 
 def target_stream_limits(values):
@@ -96,6 +96,9 @@ def load_deployment(path, share):
     if args.get('pico_enabled', False) and (args.get('tool_input_source') != 'vr' or
             (backend != 'kinematic' and not position_contract)):
         raise ValueError('PICO_REQUIRES_KINEMATIC_VR')
+    if args.get('base_config') and (version != 2 or not args.get('pico_enabled') or
+            not args.get('vr_enabled') or not position_contract):
+        raise ValueError('BASE_REQUIRES_PICO_POSITION_VR')
     if 'pico_simulation_demo' in args and type(args['pico_simulation_demo']) is not bool:
         raise ValueError('TELEOP_DEPLOYMENT_BOOLEAN:pico_simulation_demo')
     if args.get('pico_simulation_demo',False) and (position_contract or not args.get('pico_enabled',False) or

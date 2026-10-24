@@ -1,0 +1,312 @@
+"""Offline VR/base boundary checks; no ROS graph or device communication."""
+from dataclasses import replace
+import importlib.util
+import json
+from pathlib import Path
+from types import SimpleNamespace as S, ModuleType
+import sys
+import tempfile
+import unittest
+from unittest.mock import Mock, patch
+import numpy as np
+from tests.support.paths import ROOT
+from bindu_contracts.teleoperation import VRFrame
+from bindu_teleoperation.base import BaseTeleop, ZERO, validate_base_config
+from bindu_teleoperation.vr.receiver import decode_controller
+from bindu_runtime.teleop_deployment import load_deployment
+
+
+SHARE = ROOT/'src/integration/bindu_runtime'
+CONFIG = SHARE/'config/robots/snowbot/snowbot_base.json'
+
+
+class BaseTests(unittest.TestCase):
+    def setUp(self):
+        self.cfg = json.loads(CONFIG.read_text())
+        self.base = BaseTeleop(self.cfg)
+        self.now = 10.
+        self.seq = 0
+        self.source = 'headset'
+        self.step()
+        for _ in range(8):
+            self.step()
+        self.assertTrue(self.base.armed)
+
+    def pair(self, left=(0., 0.), right=(0., 0.)):
+        self.seq += 1
+        return tuple(VRFrame(self.source, self.seq, self.now, side, (),
+            mapping='pico_snowbot_v1', stick=stick) for side, stick in (('left', left), ('right', right)))
+
+    def step(self, left=(0., 0.), right=(0., 0.), *, dt=.02, allowed=True, velocity=ZERO):
+        self.now += dt
+        self.base.ingest(*self.pair(left, right), self.now, self.now)
+        self.base.observe(self.now, velocity, self.now, self.now)
+        return self.base.tick(self.now, self.now, allowed=allowed)
+
+    def test_only_left_y_and_right_x_drive_two_axis_command(self):
+        for _ in range(35):
+            result = self.step(left=(1., -1.), right=(-1., 1.))
+        self.assertEqual(result, (.1, .5))
+        previous = result
+        result = self.step(left=(0., 1.), right=(1., 0.))
+        self.assertAlmostEqual(previous[0]-result[0], .2*.02)
+        self.assertAlmostEqual(previous[1]-result[1], 1.*.02)
+        for _ in range(65):
+            result = self.step(left=(0., 1.), right=(1., 0.))
+        self.assertEqual(result, (-.1, -.5))
+
+    def test_unused_axes_and_all_buttons_have_no_velocity_mapping(self):
+        self.assertEqual(self.step(left=(1., 0.), right=(0., 1.)), ZERO)
+        for bits in range(8):
+            pair = tuple(replace(f, buttons=bits) for f in self.pair())
+            self.base.ingest(*pair, self.now, self.now)
+            self.assertEqual(self.base.target, ZERO)
+
+    def test_deadzone_matches_old_script_without_rescaling(self):
+        self.step(left=(0., -.049), right=(.049, 0.))
+        self.assertEqual(self.base.target, ZERO)
+        self.step(left=(0., -.05), right=(.05, 0.))
+        self.assertAlmostEqual(self.base.target[0], .005)
+        self.assertAlmostEqual(self.base.target[1], -.025)
+
+    def test_stop_is_immediate_and_held_stick_cannot_resume(self):
+        self.assertGreater(self.step(left=(0., -1.))[0], 0.)
+        self.assertEqual(self.step(left=(0., -1.), allowed=False), ZERO)
+        for _ in range(10):
+            self.assertEqual(self.step(left=(0., -1.)), ZERO)
+        for _ in range(8):
+            self.step()
+        self.assertGreater(self.step(left=(0., -1.))[0], 0.)
+
+    def test_missing_invalid_axes_and_bad_pair_stop_without_fabricated_neutral(self):
+        original = self.pair(left=(0., -1.))
+        bad = ((), (float('nan'), 0.), (float('inf'), 0.), (1.01, 0.), (True, 0.))
+        pairs = [(replace(original[0], stick=axes), original[1]) for axes in bad]
+        pairs += [(replace(original[0], valid=False), original[1]),
+                  (original[0], replace(original[1], seq=999)),
+                  (original[0], replace(original[1], source_id='other')),
+                  (replace(original[0], stop=True), original[1])]
+        for pair in pairs:
+            with self.subTest(pair=pair):
+                self.base.ingest(*pair, self.now, self.now)
+                self.assertEqual(self.base.command, ZERO)
+                self.assertFalse(self.base.armed)
+                self.assertFalse(self.base.neutral)
+
+    def test_replayed_input_does_not_renew_expiry_or_rearm(self):
+        pair = self.pair()
+        self.base.ingest(*pair, self.now, self.now)
+        received = self.base.received
+        self.base.ingest(*pair, self.now+.1, self.now+.1)
+        self.assertEqual(self.base.received, received)
+        self.assertFalse(self.base.armed)
+        self.assertFalse(self.base.neutral)
+
+    def test_reconnect_and_retired_source_require_neutral(self):
+        old = self.pair()
+        self.source = 'new'
+        self.assertEqual(self.step(left=(0., -1.)), ZERO)
+        for _ in range(8):
+            self.step()
+        self.assertTrue(self.base.armed)
+        self.base.ingest(*old, self.now, self.now)
+        self.assertEqual(self.base.reason, 'BASE_RETIRED_SOURCE')
+        self.assertFalse(self.base.armed)
+
+    def test_source_expiry_and_monotonic_receipt_timeout_are_independent(self):
+        self.step(left=(0., -1.))
+        self.now += .26
+        self.base.observe(self.now, ZERO, self.now, self.now)
+        self.base.last_tick = self.now-.02
+        self.assertEqual(self.base.tick(self.now, self.now, allowed=True), ZERO)
+        self.assertEqual(self.base.reason, 'BASE_INPUT_TIMEOUT')
+        self.base.received = self.now-.3
+        self.base.input_stamp = self.now
+        self.base.last_tick = self.now-.02
+        self.assertEqual(self.base.tick(self.now, self.now, allowed=True), ZERO)
+        self.assertEqual(self.base.reason, 'BASE_INPUT_TIMEOUT')
+
+    def test_tick_gap_and_feedback_loss_stop_without_ramp(self):
+        for kind in ('tick', 'feedback'):
+            self.step(left=(0., -1.))
+            if kind == 'tick':
+                self.base.last_tick = self.now-.2
+            else:
+                self.base.feedback_velocity = None
+                self.base.last_tick = self.now-.02
+            self.assertEqual(self.base.tick(self.now, self.now, allowed=True), ZERO)
+            self.assertIn(self.base.reason, ('BASE_TICK_GAP', 'BASE_FEEDBACK_UNAVAILABLE'))
+
+    def test_zero_publish_requires_later_sustained_measured_stop(self):
+        self.step(left=(0., -1.))
+        self.step(allowed=False, velocity=(.1, 0.))
+        self.assertFalse(self.base.stopped(self.now, self.now))
+        for _ in range(4):
+            self.step(allowed=False)
+        self.assertFalse(self.base.stopped(self.now, self.now))
+        self.step(allowed=False, velocity=(0., .02))
+        self.assertFalse(self.base.stopped(self.now, self.now))
+        for _ in range(8):
+            self.step(allowed=False)
+        self.assertTrue(self.base.stopped(self.now, self.now))
+        self.assertFalse(self.base.stopped(self.now+.3, self.now+.3))
+
+    def test_duplicate_feedback_does_not_refresh_or_confirm_stop(self):
+        stamp = self.base.feedback_stamp
+        received = self.base.feedback_received
+        self.base.observe(stamp, ZERO, stamp+.1, stamp+.1)
+        self.assertEqual(self.base.feedback_received, received)
+        self.assertFalse(self.base.healthy(stamp+.21, stamp+.21))
+        self.base.observe(stamp+.2, (float('nan'), 0.), stamp+.2, stamp+.2)
+        self.assertIsNone(self.base.feedback_velocity)
+
+    def test_feedback_gap_cannot_count_towards_continuous_stop_window(self):
+        self.assertTrue(self.base.stopped(self.now, self.now))
+        self.now += .3
+        self.base.observe(self.now, ZERO, self.now, self.now)
+        self.assertFalse(self.base.stopped(self.now, self.now))
+
+    def test_only_driven_axes_need_neutral_to_rearm(self):
+        self.step(allowed=False)
+        for _ in range(8):
+            self.step(left=(1., 0.), right=(0., 1.))
+        self.assertTrue(self.base.armed)
+
+    def test_config_rejects_invalid_limits_and_unconfirmed_watchdog_is_explicit(self):
+        self.assertIsNone(self.cfg['driver_watchdog_s'])
+        for key in ('max_linear_m_s', 'max_angular_rad_s', 'deadzone', 'driver_watchdog_s'):
+            for value in (True, 0., -1., float('nan'), float('inf')):
+                with self.subTest(key=key, value=value), self.assertRaises(ValueError):
+                    validate_base_config(dict(self.cfg, **{key: value}))
+
+
+class DecodeTests(unittest.TestCase):
+    def test_real_controller_fields_pass_through_without_changing_buttons(self):
+        pose = np.eye(4).ravel(order='F').tolist()
+        state = dict(squeezeValue=0., triggerValue=0., aButton=True, bButton=True,
+                     thumbstick=True, thumbstickValue=[.2, -.7])
+        event = dict(left=pose, right=pose, leftState=dict(state), rightState=dict(state))
+        frame = decode_controller(event, 'left', 'id', 1, 10., 'pico_snowbot_v1')
+        self.assertEqual(frame.stick, (.2, -.7))
+        self.assertEqual(frame.buttons, 7)
+        for axes in (None, [], [0.], [0., 0., 0.], [float('nan'), 0.], [True, 0.], ['0', 0.]):
+            event['leftState']['thumbstickValue'] = axes
+            frame = decode_controller(event, 'left', 'id', 1, 10., 'pico_snowbot_v1')
+            self.assertTrue(frame.valid)
+            self.assertEqual(frame.buttons, 7)
+            self.assertEqual(frame.stick, ())
+
+
+class DeploymentTests(unittest.TestCase):
+    def test_existing_recipes_resolve_the_optional_base_config(self):
+        for mode in ('real', 'sim'):
+            _, args = load_deployment(SHARE/f'config/deployments/snowbot_vr_{mode}.json', SHARE)
+            self.assertEqual(Path(args['base_config']), CONFIG)
+            validate_base_config(json.loads(Path(args['base_config']).read_text()))
+
+    def test_base_recipe_requires_actual_vr_and_pico_position_assembly(self):
+        recipe = json.loads((SHARE/'config/deployments/snowbot_vr_real.json').read_text())
+        for key in ('vr_enabled', 'pico_enabled', 'position_contract'):
+            bad = json.loads(json.dumps(recipe))
+            bad['arguments'][key] = False
+            with tempfile.TemporaryDirectory() as tmp:
+                path = Path(tmp)/'bad.json'
+                path.write_text(json.dumps(bad))
+                with self.subTest(key=key), self.assertRaises(ValueError):
+                    load_deployment(path, SHARE)
+
+
+class AdapterTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        # Load the real adapter with in-memory ROS message/transport substitutes.
+        # This verifies wiring without importing rclpy or contacting a robot.
+        def module(**attrs):
+            result = ModuleType('substitute')
+            result.__dict__.update(attrs)
+            return result
+        def twist():
+            return S(linear=S(x=0., y=0., z=0.), angular=S(x=0., y=0., z=0.))
+        substitutes = {'geometry_msgs.msg': module(Twist=twist),
+            'nav_msgs.msg': module(Odometry=object),
+            'rclpy.qos': module(QoSProfile=lambda **kw: kw,
+                ReliabilityPolicy=S(RELIABLE=1, BEST_EFFORT=2), DurabilityPolicy=S(VOLATILE=1)),
+            'bindu_runtime.common': module(seconds=lambda x: x)}
+        spec = importlib.util.spec_from_file_location('bindu_runtime._base_offline_test',
+            SHARE/'bindu_runtime/teleop_base.py')
+        cls.adapter = importlib.util.module_from_spec(spec)
+        with patch.dict(sys.modules, substitutes):
+            spec.loader.exec_module(cls.adapter)
+
+    def node(self, simulation=False):
+        return S(simulation=simulation, now=lambda: 10.,
+            create_publisher=Mock(return_value=Mock()), create_subscription=Mock(),
+            get_name=lambda: 'pico_control', get_namespace=lambda: '/bindu_snowbot')
+
+    def test_simulation_readonly_and_unknown_watchdog_never_create_command_publisher(self):
+        for sim, enabled in ((False, False), (False, True), (True, True)):
+            node = self.node(sim)
+            bridge = self.adapter.TeleopBase(node, CONFIG, enabled)
+            self.assertFalse(bridge.writable)
+            node.create_publisher.assert_not_called()
+            bridge.close()
+
+    def writable(self):
+        node = self.node()
+        cfg = dict(json.loads(CONFIG.read_text()), driver_watchdog_s=.2)
+        with patch.object(self.adapter.json, 'loads', return_value=cfg):
+            bridge = self.adapter.TeleopBase(node, CONFIG, True)
+        own = S(node_name='pico_control', node_namespace='/bindu_snowbot')
+        feedback = S(topic_type='nav_msgs/msg/Odometry', endpoint_gid=[1]*16)
+        node.get_publishers_info_by_topic = Mock(side_effect=lambda topic: [own] if topic == '/cmd_vel' else [feedback])
+        node.get_subscriptions_info_by_topic = Mock(return_value=[S(topic_type='geometry_msgs/msg/Twist')])
+        return node, bridge, own, feedback
+
+    def test_exclusive_output_and_pinned_feedback_instance(self):
+        node, bridge, own, feedback = self.writable()
+        bridge.check_graph(10.)
+        self.assertTrue(bridge.graph_ok)
+        node.get_publishers_info_by_topic.side_effect = lambda topic: [own, own] if topic == '/cmd_vel' else [feedback]
+        bridge.check_graph(10.2)
+        self.assertFalse(bridge.graph_ok)
+        feedback.endpoint_gid = [2]*16
+        node.get_publishers_info_by_topic.side_effect = lambda topic: [own] if topic == '/cmd_vel' else [feedback]
+        bridge.check_graph(10.4)
+        self.assertFalse(bridge.graph_ok)
+
+    def test_adapter_only_sets_forward_yaw_and_close_sends_zero(self):
+        _, bridge, _, _ = self.writable()
+        control = S(pending=None, phase='following', source='headset', seq=1)
+        bridge.core.source, bridge.core.seq = control.source, control.seq
+        bridge.core.tick = Mock(return_value=(.1, -.5))
+        bridge.tick(control, healthy=True)
+        msg = bridge.publisher.publish.call_args.args[0]
+        self.assertEqual((msg.linear.x, msg.angular.z), (.1, -.5))
+        self.assertEqual((msg.linear.y, msg.linear.z, msg.angular.x, msg.angular.y), (0.,)*4)
+        self.assertTrue(bridge.core.tick.call_args.kwargs['allowed'])
+        for phase, pending, healthy in (('locked', None, True), ('preparing', None, True),
+                ('following', object(), True), ('following', None, False)):
+            control.phase, control.pending = phase, pending
+            bridge.tick(control, healthy)
+            self.assertFalse(bridge.core.tick.call_args.kwargs['allowed'])
+        control.phase, control.pending, control.seq = 'following', None, 2
+        bridge.tick(control, True)
+        self.assertFalse(bridge.core.tick.call_args.kwargs['allowed'])
+        bridge.close()
+        msg = bridge.publisher.publish.call_args.args[0]
+        self.assertEqual((msg.linear.x, msg.angular.z), ZERO)
+
+    def test_feedback_frame_is_checked_and_no_target_is_used_as_measurement(self):
+        _, bridge, _, _ = self.writable()
+        bridge.check_graph(10.)
+        msg = S(header=S(stamp=10.), child_frame_id='wrong',
+                twist=S(twist=S(linear=S(x=.1), angular=S(z=.2))))
+        bridge.on_odom(msg)
+        self.assertIsNone(bridge.core.feedback_velocity)
+        msg.child_frame_id = bridge.cfg['feedback_frame']
+        bridge.on_odom(msg)
+        self.assertEqual(bridge.core.feedback_velocity, (.1, .2))
+
+
+if __name__ == '__main__':
+    unittest.main()

@@ -54,6 +54,13 @@ class PicoNode(RuntimeNode):
         self.declare_parameter('model_root',str(Path(get_package_share_directory('bindu_description'))/'urdf'),descriptor=ParameterDescriptor(read_only=True))
         self.declare_parameter('device_backend','kinematic',descriptor=ParameterDescriptor(read_only=True))
         self.declare_parameter('gripper_config','',descriptor=ParameterDescriptor(read_only=True))
+        self.declare_parameter('base_config','',descriptor=ParameterDescriptor(read_only=True))
+        self.declare_parameter('command_enabled',False,descriptor=ParameterDescriptor(read_only=True))
+        self.base = None
+        if self.get_parameter('base_config').value:
+            from .teleop_base import TeleopBase
+            self.base = TeleopBase(self, self.get_parameter('base_config').value,
+                                  self.get_parameter('command_enabled').value)
         self.cfg=json.loads(Path(self.get_parameter('pico_config').value).read_text())
         self.position_contract = self.cfg.get('schema_version') == 2
         if self.cfg.get('schema_version') not in (1,2):
@@ -201,6 +208,11 @@ class PicoNode(RuntimeNode):
                 modes.append(next((m for m in ('closed','open','virtual') if abs(value-cfg[m])<.003),'unknown'))
             stopped=((self.handoff_complete or not s.lease_active) and s.state not in ('RUNNING','STOPPING') and not s.reference.name and
                      joints_at_rest(s.joints,self.names,.005) and (not self.position_ops or self.position_ops.stopped()))
+            if self.base and self.base.writable:
+                clock = time.monotonic()
+                if not self.base.core.healthy(self.now(), clock):
+                    raise RuntimeError('BASE_FEEDBACK_UNAVAILABLE')
+                stopped = stopped and self.base.core.stopped(self.now(), clock)
             return PicoFeedback(seconds(s.feedback_stamp),stopped,tuple(modes))
         except RuntimeError as exc:
             return PicoFeedback(0.,False,healthy=False,fault=str(exc))
@@ -241,8 +253,11 @@ class PicoNode(RuntimeNode):
                 interval_s=now-self.last_pair_at,input_age_s=now-seconds(a.stamp),seq=a.seq)))
         self.last_pair_at=now
         pair=tuple(VRFrame(m.source_id,m.seq,seconds(m.stamp),m.side,tuple(m.pose),m.grip,m.trigger,
-                          m.init,m.stop,m.valid,m.clutch_seq,m.mapping,m.buttons,tuple(int(v) for v in m.button_edges),m.virtual_grip)
+                          m.init,m.stop,m.valid,m.clutch_seq,m.mapping,m.buttons,tuple(int(v) for v in m.button_edges),m.virtual_grip,
+                          tuple(m.stick))
                    for m in (a,b))
+        if self.base:
+            self.base.ingest(pair, now)
         self.control.update_feedback(self.feedback(),self.now())
         previous=(self.control.source,self.control.seq)
         previous_frames=self.control.frames
@@ -274,7 +289,7 @@ class PicoNode(RuntimeNode):
                 init=False,stop=self.control.phase=='locked' or not self.handoff_complete,valid=m.valid,clutch_seq=m.clutch_seq,
                 mapping=PICO_MAPPING,buttons=0 if self.position_contract else m.buttons,
                 button_edges=[0]*8 if self.position_contract else m.button_edges,
-                virtual_grip=self.control.virtual))
+                virtual_grip=self.control.virtual,stick=m.stick))
 
     async def pause(self):
         future=Future(executor=self.executor);self.waiters.add(future)
@@ -694,6 +709,8 @@ class PicoNode(RuntimeNode):
         if self.running is None and self.pending_intent is not None:
             intent,self.pending_intent=self.pending_intent,None
             self.running=self.executor.create_task(self.perform(intent))
+        if self.base:
+            self.base.tick(self.control, feedback.healthy)
         if self.now()-self.last_status>=.1:
             self.last_status=self.now()
             if self.simulation_demo:
@@ -737,6 +754,8 @@ class PicoNode(RuntimeNode):
             view['raw_input_age_s']=max((self.now()-seconds(f.stamp) for f in raw),default=None)
             view['raw_input_valid']=(len(raw)==2 and all(f.valid for f in raw) and
                 len({(f.source_id,f.seq) for f in raw})==1)
+            if self.base:
+                view['base'] = self.base.snapshot()
             self.display.publish(String(data=json.dumps(view)))
             self.operator_state.publish(String(data=json.dumps(view)))
             if self.last_phase!=(self.control.phase,self.control.reason):
@@ -744,6 +763,8 @@ class PicoNode(RuntimeNode):
                 self.event('PICO_STATE',json.dumps(view))
 
     def destroy_node(self):
+        if self.base:
+            self.base.close()
         self.validator.close()
         return super().destroy_node()
 

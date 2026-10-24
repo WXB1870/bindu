@@ -19,3 +19,6 @@ uint8 buttons
 # primary press/release, secondary press/release, stick press/release, trigger press/release.
 uint64[8] button_edges
 bool virtual_grip
+
+# WebXR thumbstickValue (x,y), each in [-1,1]. Empty means unavailable.
+float64[] stick

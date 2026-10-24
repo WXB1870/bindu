@@ -36,13 +36,17 @@ def check_runtime(args, robot):
 
     check_installed_configs(
         [args['robot_config'], robot.profile_path, robot.tool_config,
-         args.get('pico_config'), args.get('gripper_config')],
+         args.get('pico_config'), args.get('gripper_config'), args.get('base_config')],
         get_package_share_directory('bindu_runtime'))
     modules = [
         ('bindu_interfaces.msg', ('ExecutionState', 'VRInput', 'TeleopModeState', 'GripperState')),
         ('bindu_interfaces.action', ('SelectTeleopMode', 'TeleopSession')),
         ('bindu_interfaces.srv', ('GripperControl',)),
     ]
+    if args.get('base_config'):
+        from bindu_teleoperation.base import validate_base_config
+        validate_base_config(json.loads(Path(args['base_config']).read_text()))
+        modules += [('geometry_msgs.msg', ('Twist',)), ('nav_msgs.msg', ('Odometry',))]
     if args['runtime_mode'] == 'real':
         modules.append(('snowbot_ctl_msgs.msg', ('JointPositionCommand', 'RetInformation')))
         if args.get('position_protocol') in ('session_v1','session_v3'):
@@ -54,6 +58,9 @@ def check_runtime(args, robot):
         package = importlib.import_module(module)
         for name in names:
             check_for_type_support(getattr(package, name))
+    from bindu_interfaces.msg import VRInput
+    if 'stick' not in VRInput.get_fields_and_field_types():
+        raise ValueError('VR_INPUT_STICK_SCHEMA_REBUILD_REQUIRED')
     for module in ('pinocchio', 'casadi', 'vuer', 'bindu_execution.interpolation'):
         importlib.import_module(module)
     tool = json.loads(robot.tool_config.read_text())

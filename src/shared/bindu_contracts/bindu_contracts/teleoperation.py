@@ -24,6 +24,7 @@ class VRFrame:
     buttons: int = 0  # primary, secondary, thumbstick-click; physical side is explicit.
     button_edges: Tuple[int, ...] = (0,)*8  # press/release counters for those 3 + Trigger.
     virtual_grip: bool = False  # Coordinated PICO X request, not right Trigger.
+    stick: Tuple[float, ...] = ()  # WebXR thumbstickValue (x,y); absent is unknown.
 
 
 

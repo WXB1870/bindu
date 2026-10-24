@@ -42,7 +42,7 @@ ros2 launch bindu_runtime snowbot_adapter.launch.py \
 
 ## Snowbot 位置接入
 
-[snowbot.py](bindu_hardware/snowbot.py) 接收现场双臂及夹爪的16轴实测反馈，也兼容扩展头腰反馈；缺失轴不补零、不引用目标值或保留旧测量冒充新帧。`execution/state.missing_feedback_groups`明确列出缺失组，`joints`与反馈源时间仅含实际收到的数据。20轴profile继续保留，完整本体状态与腰臂协调不因16轴接收成功而视为已验收。底盘未接入。
+[snowbot.py](bindu_hardware/snowbot.py) 接收现场双臂及夹爪的16轴实测反馈，也兼容扩展头腰反馈；缺失轴不补零、不引用目标值或保留旧测量冒充新帧。`execution/state.missing_feedback_groups`明确列出缺失组，`joints`与反馈源时间仅含实际收到的数据。20轴profile继续保留，完整本体状态与腰臂协调不因16轴接收成功而视为已验收。该位置适配器不接底盘；可选PICO独立速度端口见[底盘适配](../../capabilities/bindu_teleoperation/README.md#底盘摇杆适配)，真实反馈及驱动超时尚待确认。
 
 独立[snowbot_gripper.py](bindu_hardware/snowbot_gripper.py)提供夹爪位置闭环、装卸授权、到位与保持确认，默认标定门槛禁止夹爪写入。通过健康、路由和控制权检查后才允许写位置；现有底层缺口与当前适配边界集中见[底层驱动问题记录](../../../../../snowbot/底层驱动问题记录.md)。
 
@@ -206,7 +206,7 @@ ROS_LOCALHOST_ONLY=1 ROS_DOMAIN_ID=226 python3 -m tests.integration.validate_sno
   --output artifacts/gripper-wire-check
 ```
 
-本轮Jazzy的单元、ROS替身及底层假PDO验证不等于Humble／Orin、现场PICO、实体开合、夹紧力或虚握验收。摇杆方向在普通／扫雪模式都预留为底盘控制，头部后续可跟随VR视角，本轮均未接入。
+本轮Jazzy的单元、ROS替身及底层假PDO验证不等于Humble／Orin、现场PICO、实体开合、夹紧力或虚握验收。摇杆方向后续已增加可选[底盘速度适配](../../capabilities/bindu_teleoperation/README.md#底盘摇杆适配)，本节历史夹爪验证不覆盖底盘；头部跟随仍未接入。
 
 
 

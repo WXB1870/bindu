@@ -23,6 +23,7 @@
     "description_enabled": false,
     "tool_display_enabled": false,
     "position_contract": true,
-    "pico_config": "@runtime/config/robots/snowbot/pico_snowbot_position_sim.json"
+    "pico_config": "@runtime/config/robots/snowbot/pico_snowbot_position_sim.json",
+    "base_config": "@runtime/config/robots/snowbot/snowbot_base.json"
   }
 }

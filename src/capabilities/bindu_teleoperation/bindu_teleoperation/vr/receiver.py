@@ -47,8 +47,15 @@ def decode_controller(value, side, source_id, seq, stamp, mapping="v34"):
                 raise ValueError('VR_INVALID_BUTTON')
             buttons = sum(int(bit) << i for i,bit in enumerate(bits))
             init = False
+        # A missing/invalid stick must inhibit the base, without changing the
+        # existing arm/button input contract or fabricating a centred stick.
+        axes = state.get('thumbstickValue')
+        stick = ()
+        if (isinstance(axes, (tuple, list)) and len(axes) == 2 and
+                all(type(x) in (int, float) and math.isfinite(x) and -1 <= x <= 1 for x in axes)):
+            stick = tuple(float(x) for x in axes)
         return VRFrame(source_id, seq, stamp, side, pose, grip, trigger, init, stop,
-                       mapping=mapping, buttons=buttons)
+                       mapping=mapping, buttons=buttons, stick=stick)
     except (KeyError, TypeError, ValueError):
         return VRFrame(source_id, seq, stamp, side, (), valid=False)
 
