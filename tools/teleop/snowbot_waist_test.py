@@ -53,8 +53,8 @@ class Plan:
         return 0., 0., 0.
 
 
-def make_plan(degrees=3., speed=.05, acceleration=.25, jerk=10.):
-    for value, maximum in ((degrees, 10.), (speed, .25), (acceleration, .5), (jerk, 162.)):
+def make_plan(degrees=20., speed=.25, acceleration=.5, jerk=10.):
+    for value, maximum in ((degrees, 20.), (speed, .25), (acceleration, .5), (jerk, 162.)):
         if type(value) not in (float, int) or not math.isfinite(value) or not 0 < value <= maximum:
             raise ValueError('TEST_ENVELOPE_EXCEEDED')
     distance = math.radians(degrees)
@@ -334,9 +334,9 @@ def analyze(path):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--degrees', type=float, default=3., help='yaw excursion each way, <=10 deg')
-    parser.add_argument('--speed', type=float, default=.05, help='rad/s, <=0.25 and selected profile')
-    parser.add_argument('--acceleration', type=float, default=.25, help='rad/s^2, <=0.5')
+    parser.add_argument('--degrees', type=float, default=20., help='yaw excursion each way, <=20 deg')
+    parser.add_argument('--speed', type=float, default=.25, help='rad/s, <=0.25 and selected profile')
+    parser.add_argument('--acceleration', type=float, default=.5, help='rad/s^2, <=0.5')
     parser.add_argument('--jerk', type=float, default=10., help='rad/s^3, <=162')
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument('--execute', action='store_true', help='operator only: acquire 16-axis lease and send targets')
@@ -353,6 +353,8 @@ def main():
     print(json.dumps(dict(preview=not args.execute, axis='body_joint_1', degrees=args.degrees,
         duration_s=plan.duration, move_seconds=plan.move_seconds,
         target_peak_speed=1.875*plan.amplitude/plan.move_seconds,
+        target_peak_acceleration=10/math.sqrt(3)*plan.amplitude/plan.move_seconds**2,
+        target_peak_jerk=60*plan.amplitude/plan.move_seconds**3,
         controlled_groups=GROUPS, holds_other_joint_targets=True,
         starts_driver=False, **vars_limits(args)), indent=2))
     if args.execute:

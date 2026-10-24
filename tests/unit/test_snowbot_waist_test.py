@@ -30,8 +30,8 @@ def pdo():
 
 class WaistTests(unittest.TestCase):
     def test_signal_limits_and_rest_at_every_boundary(self):
-        for speed in (.05, .1, .25):
-            plan = make_plan(3., speed, .5, 162.)
+        for degrees, speed in ((3., .05), (3., .1), (3., .25), (20., .25)):
+            plan = make_plan(degrees, speed, .5, 162.)
             previous = plan.sample(0.)
             step = .001
             for index in range(1, math.ceil(plan.duration/step)+1):
@@ -51,9 +51,17 @@ class WaistTests(unittest.TestCase):
                 self.assertAlmostEqual(a, 0.)
 
     def test_invalid_or_unreviewed_envelope_refused(self):
-        for values in ((0.,), (float('nan'),), (11.,), (3., .26), (3., .05, .51), (3., .05, .25, 163.)):
+        for values in ((0.,), (float('nan'),), (21.,), (3., .26), (3., .05, .51), (3., .05, .25, 163.)):
             with self.subTest(values=values), self.assertRaises(ValueError):
                 make_plan(*values)
+
+    def test_default_twenty_degree_excursion_reaches_requested_speed(self):
+        plan = make_plan()
+        self.assertAlmostEqual(math.degrees(plan.amplitude), 20.)
+        peak = plan.sample(plan.dwell+plan.move_seconds/2)
+        self.assertGreater(peak[1], .249)
+        self.assertLessEqual(peak[1], .25)
+        self.assertAlmostEqual(plan.duration, 15.48)
 
     def test_only_yaw_target_changes_and_limits_keep_margin(self):
         plan = make_plan()
@@ -124,6 +132,10 @@ class WaistTests(unittest.TestCase):
         self.assertTrue(result['preview'])
         self.assertFalse(result['starts_driver'])
         self.assertEqual(result['axis'], 'body_joint_1')
+        self.assertEqual(result['degrees'], 20.)
+        self.assertEqual(result['requested_speed'], .25)
+        self.assertEqual(result['requested_acceleration'], .5)
+        self.assertGreater(result['target_peak_speed'], .249)
         self.assertEqual(json_value([float('nan'), float('-inf')]), [None, None])
 
     def test_actual_runner_with_memory_ros_holds_arms_and_releases_on_fault(self):
@@ -214,7 +226,7 @@ class WaistTests(unittest.TestCase):
             with tempfile.TemporaryDirectory() as directory, patch.dict(sys.modules, modules), patch.object(
                     waist.time, 'monotonic', lambda: clock.value):
                 args = S(robot_config=Path('/memory/robot.json'), output=Path(directory)/'capture.jsonl',
-                         namespace='bindu_snowbot', vendor_namespace='/', speed=.05, acceleration=.25, jerk=10.)
+                         namespace='bindu_snowbot', vendor_namespace='/', speed=.25, acceleration=.5, jerk=10.)
                 if inject_fault:
                     with self.assertRaisesRegex(RuntimeError, 'PDO_NOT_READY'):
                         waist.execute(args, make_plan())
