@@ -52,7 +52,7 @@ def decode_controller(value, side, source_id, seq, stamp, mapping="v34"):
         axes = state.get('thumbstickValue')
         stick = ()
         if (isinstance(axes, (tuple, list)) and len(axes) == 2 and
-                all(type(x) in (int, float) and math.isfinite(x) and -1 <= x <= 1 for x in axes)):
+                all(type(x) in (int, float) and -1 <= x <= 1 for x in axes)):
             stick = tuple(float(x) for x in axes)
         return VRFrame(source_id, seq, stamp, side, pose, grip, trigger, init, stop,
                        mapping=mapping, buttons=buttons, stick=stick)

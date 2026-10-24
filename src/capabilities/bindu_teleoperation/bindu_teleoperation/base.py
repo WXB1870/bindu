@@ -6,7 +6,7 @@ ZERO = (0., 0.)
 
 
 def validate_base_config(cfg):
-    if cfg.get('schema_version') != 1:
+    if not isinstance(cfg, dict) or type(cfg.get('schema_version')) is not int or cfg['schema_version'] != 1:
         raise ValueError('BASE_CONFIG_SCHEMA')
     for key in ('cmd_vel_topic', 'odom_topic', 'feedback_frame'):
         value = cfg.get(key)
@@ -19,13 +19,13 @@ def validate_base_config(cfg):
         stop_angular_rad_s=.1, stop_window_s=1.)
     for key, maximum in bounds.items():
         value = cfg.get(key)
-        if type(value) not in (int, float) or not math.isfinite(value) or not 0 < value <= maximum:
+        if type(value) not in (int, float) or not 0 < value <= maximum:
             raise ValueError('BASE_CONFIG:'+key)
     watchdog = cfg.get('driver_watchdog_s')
     if watchdog is not None and (type(watchdog) not in (int, float) or
-            not math.isfinite(watchdog) or not 0 < watchdog <= .5):
+            not 0 < watchdog <= .5):
         raise ValueError('BASE_CONFIG:driver_watchdog_s')
-    return dict(cfg)
+    return dict(cfg, driver_watchdog_s=watchdog)
 
 
 class BaseTeleop:
@@ -66,7 +66,7 @@ class BaseTeleop:
                 left.source_id != right.source_id or left.seq != right.seq or
                 left.stamp != right.stamp or any(not f.valid or f.mapping != 'pico_snowbot_v1' or
                 f.stop or len(f.stick) != 2 or any(type(x) not in (int, float) or
-                not math.isfinite(x) or not -1 <= x <= 1 for x in f.stick) for f in pair)):
+                not -1 <= x <= 1 for x in f.stick) for f in pair)):
             self.target = ZERO
             self.neutral = False
             self.inhibit('BASE_INPUT_INVALID', now)

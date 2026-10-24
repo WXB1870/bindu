@@ -23,6 +23,7 @@ class TeleopBase:
         self.publisher = None
         self.last_published = None
         self.feedback_gid = None
+        self.feedback_source_fault = False
         self.graph_ok = False
         self.graph_checked_at = float('-inf')
         self.graph_reason = 'BASE_ENDPOINTS_UNAVAILABLE'
@@ -50,6 +51,12 @@ class TeleopBase:
         if clock-self.graph_checked_at < .1:
             return
         self.graph_checked_at = clock
+        if self.feedback_source_fault:
+            self.graph_ok = False
+            self.core.feedback_velocity = None
+            self.core.stationary_since = None
+            self.graph_reason = 'BASE_FEEDBACK_SOURCE_CHANGED_RESTART_REQUIRED'
+            return
         pubs = self.node.get_publishers_info_by_topic(self.cfg['cmd_vel_topic'])
         own = lambda info: (info.node_name == self.node.get_name() and
                            info.node_namespace == self.node.get_namespace())
@@ -59,11 +66,19 @@ class TeleopBase:
             all(info.topic_type == 'geometry_msgs/msg/Twist' for info in receivers) and
             len(feedback) == 1 and feedback[0].topic_type == 'nav_msgs/msg/Odometry')
         if self.graph_ok:
-            gid = bytes(feedback[0].endpoint_gid)
-            if self.feedback_gid is None:
+            raw_gid = getattr(feedback[0], 'endpoint_gid', None)
+            try:
+                gid = bytes(raw_gid) if raw_gid is not None else b''
+            except (TypeError, ValueError):
+                gid = b''
+            if not any(gid):
+                self.graph_ok = False
+                self.graph_reason = 'BASE_FEEDBACK_IDENTITY_UNAVAILABLE'
+            elif self.feedback_gid is None:
                 self.feedback_gid = gid
             elif gid != self.feedback_gid:
                 self.graph_ok = False
+                self.feedback_source_fault = True
                 self.graph_reason = 'BASE_FEEDBACK_SOURCE_CHANGED_RESTART_REQUIRED'
         else:
             self.graph_reason = 'BASE_ENDPOINTS_UNAVAILABLE_OR_MULTIPLE_WRITERS'

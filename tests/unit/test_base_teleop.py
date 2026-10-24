@@ -80,7 +80,7 @@ class BaseTests(unittest.TestCase):
 
     def test_missing_invalid_axes_and_bad_pair_stop_without_fabricated_neutral(self):
         original = self.pair(left=(0., -1.))
-        bad = ((), (float('nan'), 0.), (float('inf'), 0.), (1.01, 0.), (True, 0.))
+        bad = ((), (float('nan'), 0.), (float('inf'), 0.), (1.01, 0.), (True, 0.), (10**400, 0.))
         pairs = [(replace(original[0], stick=axes), original[1]) for axes in bad]
         pairs += [(replace(original[0], valid=False), original[1]),
                   (original[0], replace(original[1], seq=999)),
@@ -175,7 +175,7 @@ class BaseTests(unittest.TestCase):
     def test_config_rejects_invalid_limits_and_unconfirmed_watchdog_is_explicit(self):
         self.assertIsNone(self.cfg['driver_watchdog_s'])
         for key in ('max_linear_m_s', 'max_angular_rad_s', 'deadzone', 'driver_watchdog_s'):
-            for value in (True, 0., -1., float('nan'), float('inf')):
+            for value in (True, 0., -1., float('nan'), float('inf'), 10**400):
                 with self.subTest(key=key, value=value), self.assertRaises(ValueError):
                     validate_base_config(dict(self.cfg, **{key: value}))
 
@@ -189,7 +189,7 @@ class DecodeTests(unittest.TestCase):
         frame = decode_controller(event, 'left', 'id', 1, 10., 'pico_snowbot_v1')
         self.assertEqual(frame.stick, (.2, -.7))
         self.assertEqual(frame.buttons, 7)
-        for axes in (None, [], [0.], [0., 0., 0.], [float('nan'), 0.], [True, 0.], ['0', 0.]):
+        for axes in (None, [], [0.], [0., 0., 0.], [float('nan'), 0.], [True, 0.], ['0', 0.], [10**400, 0.]):
             event['leftState']['thumbstickValue'] = axes
             frame = decode_controller(event, 'left', 'id', 1, 10., 'pico_snowbot_v1')
             self.assertTrue(frame.valid)
@@ -251,6 +251,15 @@ class AdapterTests(unittest.TestCase):
             node.create_publisher.assert_not_called()
             bridge.close()
 
+    def test_omitted_optional_watchdog_defaults_to_readonly(self):
+        node = self.node()
+        cfg = json.loads(CONFIG.read_text())
+        del cfg['driver_watchdog_s']
+        with patch.object(self.adapter.json, 'loads', return_value=cfg):
+            bridge = self.adapter.TeleopBase(node, CONFIG, True)
+        self.assertFalse(bridge.writable)
+        node.create_publisher.assert_not_called()
+
     def writable(self):
         node = self.node()
         cfg = dict(json.loads(CONFIG.read_text()), driver_watchdog_s=.2)
@@ -273,6 +282,26 @@ class AdapterTests(unittest.TestCase):
         node.get_publishers_info_by_topic.side_effect = lambda topic: [own] if topic == '/cmd_vel' else [feedback]
         bridge.check_graph(10.4)
         self.assertFalse(bridge.graph_ok)
+
+    def test_changed_feedback_source_cannot_recover_when_original_gid_returns(self):
+        _, bridge, _, feedback = self.writable()
+        bridge.check_graph(10.)
+        self.assertTrue(bridge.graph_ok)
+        feedback.endpoint_gid = [2]*16
+        bridge.check_graph(10.2)
+        self.assertFalse(bridge.graph_ok)
+        feedback.endpoint_gid = [1]*16
+        bridge.check_graph(10.4)
+        self.assertFalse(bridge.graph_ok)
+        self.assertIsNone(bridge.core.feedback_velocity)
+
+    def test_unknown_feedback_gid_cannot_establish_identity(self):
+        for gid in (None, [], [0]*16):
+            _, bridge, _, feedback = self.writable()
+            feedback.endpoint_gid = gid
+            with self.subTest(gid=gid):
+                bridge.check_graph(10.)
+                self.assertFalse(bridge.graph_ok)
 
     def test_adapter_only_sets_forward_yaw_and_close_sends_zero(self):
         _, bridge, _, _ = self.writable()
@@ -306,6 +335,58 @@ class AdapterTests(unittest.TestCase):
         msg.child_frame_id = bridge.cfg['feedback_frame']
         bridge.on_odom(msg)
         self.assertEqual(bridge.core.feedback_velocity, (.1, .2))
+
+    def test_decoder_pico_and_adapter_chain_with_independent_input_and_timer_rates(self):
+        from bindu_teleoperation.pico import PicoControl, PicoFeedback
+        from bindu_teleoperation.vr.receiver import ButtonCounters
+        node, bridge, _, _ = self.writable()
+        clock = [10.]
+        node.now = lambda: clock[0]
+        control = PicoControl(initial_load='unknown', guided_loading=True, dual_modes=True,
+                              direct_grippers=True)
+        counters = [ButtonCounters(), ButtonCounters()]
+        pose = np.eye(4).ravel(order='F').tolist()
+        sequence = 0
+        next_input = next_feedback = 10.
+        max_linear = max_angular = 0.
+        with patch.object(self.adapter.time, 'monotonic', side_effect=lambda: clock[0]):
+            # Synthetic event ordering: 200 Hz timer, 60 Hz input, 50 Hz odom.
+            # Feedback is explicitly injected; this is not a physical model.
+            for tick in range(241):
+                clock[0] = now = 10.+tick*.005
+                bridge.check_graph(now)
+                if now >= next_feedback:
+                    moving = .3 <= now-10. < 1.
+                    bridge.on_odom(S(header=S(stamp=now), child_frame_id=bridge.cfg['feedback_frame'],
+                        twist=S(twist=S(linear=S(x=.02 if moving else 0.), angular=S(z=0.)))))
+                    next_feedback += .02
+                healthy = bridge.core.healthy(now, now)
+                control.update_feedback(PicoFeedback(now, bridge.core.stopped(now, now), healthy=healthy), now)
+                if now >= next_input:
+                    sequence += 1
+                    stop = now-10. >= 1.
+                    state = dict(squeezeValue=0., triggerValue=0., aButton=False,
+                                 bButton=False, thumbstick=False)
+                    event = dict(left=pose, right=pose,
+                        leftState=dict(state, bButton=stop,
+                            thumbstickValue=[0., -1. if now-10. >= .3 else 0.]),
+                        rightState=dict(state, thumbstickValue=[-.5 if now-10. >= .3 else 0., 0.]))
+                    pair = tuple(counters[i].update(decode_controller(event, side, 'headset', sequence,
+                        now, 'pico_snowbot_v1')) for i, side in enumerate(('left', 'right')))
+                    bridge.ingest(pair, now)
+                    control.ingest(*pair, now)
+                    next_input += 1./60.
+                control.tick(now)
+                bridge.tick(control, healthy)
+                msg = bridge.publisher.publish.call_args.args[0]
+                max_linear = max(max_linear, msg.linear.x)
+                max_angular = max(max_angular, msg.angular.z)
+                if now-10. >= 1.02:
+                    self.assertEqual((msg.linear.x, msg.angular.z), ZERO)
+            self.assertAlmostEqual(max_linear, .1)
+            self.assertAlmostEqual(max_angular, .25)
+            self.assertEqual((control.phase, control.reason), ('locked', 'PICO_Y_STOP'))
+            self.assertEqual(control.teleop_mode, 'independent_arms')
 
 
 if __name__ == '__main__':
