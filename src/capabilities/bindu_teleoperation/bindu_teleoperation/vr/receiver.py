@@ -61,6 +61,67 @@ def decode_controller(value, side, source_id, seq, stamp, mapping="v34"):
         return VRFrame(source_id, seq, stamp, side, (), valid=False)
 
 
+class HeadsetSamples:
+    """Validate same-socket viewer metadata; repeated packets never refresh it."""
+    def __init__(self):
+        self.reference = None
+        self.tracking = None
+        self.frame_time = None
+        self.sample = None
+        self.changed = False
+
+    def ingest(self, value, now, controllers):
+        self.changed = False
+        try:
+            if (not isinstance(value, dict) or type(value.get('version')) not in (int,float) or
+                    value.get('version') != 1):
+                return {}
+            samples=value['samples']
+            if not isinstance(samples,list) or not 1<=len(samples)<=4:return {}
+            matches=[]
+            for candidate in samples:
+                if not isinstance(candidate,dict):return {}
+                observed=candidate.get('controllers',{})
+                if not isinstance(observed,dict):return {}
+                sides=[side for side in ('left','right') if side in controllers]
+                if sides and all(observed.get(side)==controllers[side] for side in sides):
+                    matches.append(candidate)
+            if not matches:return {}
+            # Distinct XRReferenceSpace objects may have identical transforms.
+            # Only accept an ambiguous match if their actual viewer poses agree.
+            if any(c.get('pose')!=matches[0].get('pose') or
+                   c.get('frame_time_ms')!=matches[0].get('frame_time_ms') for c in matches[1:]):return {}
+            value=next((c for c in matches if c.get('frame_id')==self.reference),
+                       min(matches,key=lambda c:c.get('frame_id','')))
+            if type(value.get('age_ms')) not in (int,float) or type(value.get('frame_time_ms')) not in (int,float):
+                return {}
+            seq, age, reference = value['seq'], value['age_ms']/1000., value['frame_id']
+            tracking=value['tracking_id']
+            if (type(seq) not in (int,float) or not math.isfinite(seq) or int(seq)!=seq or not 1<=seq<2**53 or
+                    not isinstance(reference,str) or not 0<len(reference)<=128 or
+                    not isinstance(tracking,str) or not 0<len(tracking)<=128 or
+                    value['mode'] not in ('immersive-vr','immersive-ar') or
+                    not math.isfinite(now) or not math.isfinite(age) or not 0<=age<=.25 or
+                    not math.isfinite(value['frame_time_ms'])):
+                return {}
+            raw=np.asarray(value['pose'],dtype=float)
+            if raw.shape!=(16,):return {}
+            pose=tuple(pose_matrix(raw.reshape(4,4,order='F')).ravel())
+            if self.tracking == tracking and self.sample is not None:
+                if value['frame_time_ms']<self.frame_time:return {}
+                if seq<self.sample['head_seq']:return {}
+                if seq==self.sample['head_seq']:
+                    return dict(self.sample) if pose==self.sample['head_pose'] else {}
+            self.changed = self.tracking is not None and self.tracking != tracking
+            self.reference=reference
+            self.tracking=tracking
+            self.frame_time=value['frame_time_ms']
+            self.sample=dict(head_pose=pose,head_stamp=now,head_age_s=age,head_seq=int(seq))
+            return dict(self.sample)
+        except (KeyError,TypeError,ValueError,OverflowError):
+            return {}
+
+
 class ButtonCounters:
     """Cumulative edges survive pose queue coalescing; never infer a release on loss."""
     def __init__(self):
@@ -227,6 +288,7 @@ def _serve(config, output, feedback, health):
         previous_grip = {'left': 0., 'right': 0.}
         stop_latched = False
         counters = {side: ButtonCounters() for side in ('left','right')}
+        headset = HeadsetSamples()
         latest_display = None
         display_received = float('-inf')
         last_event = None
@@ -263,7 +325,7 @@ def _serve(config, output, feedback, health):
         connectivity = VRConnectivity() if config.get('connectivity_check') else None
 
         async def on_controller(event, session):
-            nonlocal owner, identity, seq, clutch_seq, previous_grip, stop_latched, counters, last_event, controller_ack
+            nonlocal owner, identity, seq, clutch_seq, previous_grip, stop_latched, counters, last_event, controller_ack, headset
             if owner is None or owner.CURRENT_WS_ID not in app.ws:
                 owner, identity = session, uuid.uuid4().hex
                 clutch_seq = {'left': 0, 'right': 0}
@@ -271,11 +333,16 @@ def _serve(config, output, feedback, health):
                 stop_latched = False
                 counters = {side: ButtonCounters() for side in ('left','right')}
                 last_event=None
+                headset=HeadsetSamples()
             if owner is not session:
                 return  # A second browser must not interleave commands.
             quick_ack(controller_sockets.get(id(app.ws.get(session.CURRENT_WS_ID))))
             seq += 1
             now = time.time()
+            head=headset.ingest(getattr(event,'bindu_head',None),now,event.value)
+            if headset.changed:
+                identity=uuid.uuid4().hex  # XR session/reference reset fences old intent.
+            if head:head['head_source_id']=identity
             handler_started=time.monotonic()
             emit_health(controller_timing.observe(getattr(event, 'bindu_timing', None),
                 now, handler_started, identity, seq))
@@ -283,7 +350,8 @@ def _serve(config, output, feedback, health):
             last_event=now
             if now-last_report>=1. or gap is not None and gap>.1:report_health(now,gap)
             sides = ('left', 'right') if config['side'] == 'both' else (config['side'],)
-            frames = [decode_controller(event.value, side, identity, seq, now, config.get("mapping", "v34")) for side in sides]
+            frames = [replace(decode_controller(event.value, side, identity, seq, now,
+                config.get("mapping", "v34")),**head) for side in sides]
             stop_latched = stop_latched or any(frame.stop for frame in frames)
             paired = []
             for frame in frames:

@@ -178,7 +178,11 @@ class BimanualToolNode(RuntimeNode):
                 edge_changed or bool(self.busy and previous and previous.stop))
             self.frames[msg.side]=VRFrame(msg.source_id,msg.seq,seconds(msg.stamp),msg.side,
                 tuple(msg.pose),msg.grip,0. if independent_grippers else msg.trigger,msg.init,msg.stop or blocked,msg.valid,msg.clutch_seq,
-                msg.mapping or "v34",msg.buttons,edges,msg.virtual_grip)
+                msg.mapping or "v34",msg.buttons,edges,msg.virtual_grip,
+                head_pose=tuple(getattr(msg,'head_pose',())),
+                head_stamp=seconds(msg.head_stamp) if getattr(msg,'head_pose',()) else 0.,
+                head_age_s=getattr(msg,'head_age_s',0.),head_source_id=getattr(msg,'head_source_id',''),
+                head_seq=int(getattr(msg,'head_seq',0)))
 
     def on_tool_frame(self,msg):
         if self.input_source == 'tool_pose' and self.matches_mode(msg):
@@ -776,6 +780,11 @@ class BimanualToolNode(RuntimeNode):
                                 'feedback_sampled_at':work_sampled_at,'capture_completed_at':reference.sampled_at,
                                 'input_after_capture':reference.input_after_capture,
                                 'grasp_generation':session.grasp_generation,
+                                'direction_reference':self.cfg.get('direction_reference','fixed'),
+                                'latched_operator_yaw_rad':([hand.mapping_yaw for hand in session.hands]
+                                    if isinstance(session,IndependentArmsSession) else getattr(session,'mapping_yaw',None)),
+                                'heading_input':([hand.heading_input for hand in session.hands]
+                                    if isinstance(session,IndependentArmsSession) else getattr(session,'heading_input',None)),
                                 'grasp_continuation':getattr(session,'resumed_grasp',False)}),goal.request.task_id)
                         else:
                             # A newer VR frame does not invalidate a bounded,

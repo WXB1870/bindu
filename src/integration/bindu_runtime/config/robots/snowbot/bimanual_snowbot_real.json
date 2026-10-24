@@ -39,6 +39,7 @@
   "position_scale": 1.0,
   "vr_tool_mapping": "hand_line_midpoint",
   "operator_yaw_rad": 0.0,
+  "direction_reference": "headset_on_engage",
   "sample_period": 0.01,
   "max_integration_interval": 0.1,
   "integration_max_sample_gap": 0.25,

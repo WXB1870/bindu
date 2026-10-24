@@ -3,7 +3,7 @@ import math
 import uuid
 import numpy as np
 from bindu_contracts.teleoperation import IKRequest
-from .vr.mapping import robot_pose, relative_target
+from .vr.mapping import robot_pose, relative_target, direction_reference, engagement_yaw
 from .vr.one_euro import configured_pose_filter
 
 
@@ -25,6 +25,9 @@ class TeleopSession:
         self.clutch_seq = 0
         self.pose_filter = configured_pose_filter(config.get('pose_filter'))
         self.raw_pose = self.filtered_pose = None
+        self.direction_reference=direction_reference(config)
+        self.mapping_yaw=config.get('operator_yaw_rad',0.)
+        self.heading_input=None
 
     def ingest(self, frame, now):
         try:
@@ -55,6 +58,9 @@ class TeleopSession:
         if frame.init:
             # No verified initial posture exists yet. Never silently move to zero.
             raise ValueError('VR_INIT_NOT_CONFIGURED')
+        if (self.mode=='follow' and frame.grip>=.3 and frame.clutch_seq==self.clutch_seq and
+                self.direction_reference=='headset_on_engage'):
+            engagement_yaw(frame,self.cfg,now)  # Validate tracking, retain the latched direction.
         if self.pose_filter and self.frame is not None:
             if frame.stamp < self.frame.stamp:
                 raise ValueError('VR_FILTER_TIME_ORDER')
@@ -83,6 +89,9 @@ class TeleopSession:
                 self.anchor_pending = False
         elif frame.grip > .7 and self.released:
             if self.pressed_since is None:
+                self.mapping_yaw=engagement_yaw(frame,self.cfg,now)
+                self.heading_input=dict(source_id=frame.head_source_id,seq=frame.head_seq,
+                    stamp=frame.head_stamp,age_s=frame.head_age_s,input_stamp=frame.stamp)
                 self.pressed_since = frame.stamp
             if frame.stamp-self.pressed_since >= self.cfg['engage_seconds'] and self.mode == 'idle':
                 self.mode = 'follow'
@@ -122,7 +131,7 @@ class TeleopSession:
         else:
             target = relative_target(self.anchor_input, current, self.anchor_robot, self.cfg['position_scale'],
                                      mapping_mode=self.cfg.get('mapping_mode', 'v34_anchor'),
-                                     operator_yaw_rad=self.cfg.get('operator_yaw_rad', 0.))
+                                     operator_yaw_rad=self.mapping_yaw)
         self.last_requested = self.seq
         return IKRequest(self.identity+'_'+str(self.seq), self.generation, self.frame.stamp,
                          self.frame.stamp+self.cfg['command_max_age'], self.names, seed, target, context)

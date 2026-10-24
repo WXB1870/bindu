@@ -66,7 +66,11 @@ class TeleopNode(RuntimeNode):
         if not self.matches_mode(msg) or msg.side != self.cfg['side']:
             return
         self.frame = VRFrame(msg.source_id, msg.seq, seconds(msg.stamp), msg.side, tuple(msg.pose),
-                             msg.grip, msg.trigger, msg.init, msg.stop, msg.valid, msg.clutch_seq)
+                             msg.grip, msg.trigger, msg.init, msg.stop, msg.valid, msg.clutch_seq,
+                             head_pose=tuple(getattr(msg,'head_pose',())),
+                             head_stamp=seconds(msg.head_stamp) if getattr(msg,'head_pose',()) else 0.,
+                             head_age_s=getattr(msg,'head_age_s',0.),head_source_id=getattr(msg,'head_source_id',''),
+                             head_seq=int(getattr(msg,'head_seq',0)))
 
     def poll_worker(self):
         if self.worker_error:

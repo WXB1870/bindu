@@ -321,7 +321,10 @@ class PicoNode(RuntimeNode):
         self.last_pair_monotonic=received_monotonic
         pair=tuple(VRFrame(m.source_id,m.seq,seconds(m.stamp),m.side,tuple(m.pose),m.grip,m.trigger,
                           m.init,m.stop,m.valid,m.clutch_seq,m.mapping,m.buttons,tuple(int(v) for v in m.button_edges),m.virtual_grip,
-                          tuple(m.stick))
+                          tuple(m.stick),head_pose=tuple(getattr(m,'head_pose',())),
+                          head_stamp=seconds(m.head_stamp) if getattr(m,'head_pose',()) else 0.,
+                          head_age_s=getattr(m,'head_age_s',0.),head_source_id=getattr(m,'head_source_id',''),
+                          head_seq=int(getattr(m,'head_seq',0)))
                    for m in (a,b))
         if self.base:
             self.base.ingest(pair, now)
@@ -358,7 +361,11 @@ class PicoNode(RuntimeNode):
                 mapping=PICO_MAPPING,buttons=0 if self.position_contract else m.buttons,
                 button_edges=([0]*6+list(m.button_edges[6:8]) if getattr(self,'independent_grippers',False) else
                               [0]*8 if self.position_contract else m.button_edges),
-                virtual_grip=self.control.virtual,stick=m.stick))
+                virtual_grip=self.control.virtual,stick=m.stick,
+                head_pose=getattr(m,'head_pose',()),head_stamp=getattr(m,'head_stamp',m.stamp),
+                head_age_s=getattr(m,'head_age_s',0.),head_seq=int(getattr(m,'head_seq',0)),
+                head_source_id=(m.head_source_id+':'+self.instance_id
+                    if getattr(m,'head_source_id','')==m.source_id else getattr(m,'head_source_id',''))))
         self.projected_publish_s=time.monotonic()-publish_started
 
     async def pause(self):
@@ -1155,6 +1162,7 @@ class PicoNode(RuntimeNode):
                     axial_grasp=not self.unheld_test and (not self.operator_grasp and self.position_ops.axial_available if self.position_ops else True)),
                 measured_grasp_policy='unheld_test' if self.unheld_test else 'enforce',
                 tool_grasp_confirmation='unheld_test' if self.unheld_test else 'operator' if self.operator_grasp else 'calibrated',
+                direction_reference=getattr(self,'tool_cfg',{}).get('direction_reference','fixed'),
                 execution_state=self.state.state if self.state is not None else 'unavailable',
                 feedback_age_s=self.now()-seconds(self.state.feedback_stamp) if self.state is not None else None)
             feedback=self.feedback()

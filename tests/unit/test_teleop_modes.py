@@ -447,7 +447,8 @@ class DeployedToolMappingTests(unittest.TestCase):
             pose=np.eye(4);pose[:3,3]=swing @ [x,0.,0.]+np.array(offset)
             raw=OPENXR_TO_ROBOT.T @ pose @ OPENXR_TO_ROBOT
             frames.append(VRFrame('pico',self.seq,t,side,tuple(raw.ravel()),grip=float(held),
-                                  clutch_seq=clutch,mapping='pico_snowbot_v1'))
+                                  clutch_seq=clutch,mapping='pico_snowbot_v1',head_pose=tuple(np.eye(4).ravel()),
+                                  head_stamp=t,head_source_id='pico',head_seq=self.seq))
         self.session.ingest(*frames,t)
 
     def engage(self,t,home,**kwargs):
@@ -495,7 +496,8 @@ class DeployedToolMappingTests(unittest.TestCase):
                                     pose=hand.copy();pose[:3,3]=middle+delta @ (hand[:3,3]-middle)
                                     pose[:3,:3]=delta @ hand[:3,:3]
                                     raw=OPENXR_TO_ROBOT.T @ pose @ OPENXR_TO_ROBOT
-                                    frames.append(VRFrame('pico',seq,t,side,tuple(raw.ravel()),grip=float(held)))
+                                    frames.append(VRFrame('pico',seq,t,side,tuple(raw.ravel()),grip=float(held),
+                                        head_pose=tuple(np.eye(4).ravel()),head_stamp=t,head_source_id='pico',head_seq=seq+1))
                                 session.ingest(*frames,t)
                                 if seq==2:session.capture(home)
                             np.testing.assert_allclose(session.target[:3,:3],basis @ delta @ basis.T @ home[:3,:3],atol=1e-12)
@@ -523,6 +525,97 @@ class DeployedToolMappingTests(unittest.TestCase):
         broken['demo']=dict(self.config['demo'],right_grip_offset_m=self.config['demo']['grip_offset_m'])
         with self.assertRaisesRegex(ValueError,'VR_TOOL_GRIP_GEOMETRY'):
             BimanualSession(broken,1,0.)
+
+
+class HeadsetEngagementTests(unittest.TestCase):
+    def setUp(self):
+        import json
+        self.cfg=json.loads((ROOT/'src/integration/bindu_runtime/config/robots/snowbot/bimanual_snowbot_real.json').read_text())
+        self.cfg.update(engage_seconds=.02,pico_grasp_resume_seconds=.01)
+        self.cfg['pose_filter']['enabled']=False
+        self.seq=0
+
+    def feed(self,session,t,body_yaw=0.,head_yaw=None,offset=0.,grips=(1.,1.),clutch=(0,0),positions=None):
+        from scipy.spatial.transform import Rotation
+        from bindu_teleoperation.vr.mapping import OPENXR_TO_ROBOT as B
+        self.seq+=1
+        body=Rotation.from_euler('z',body_yaw).as_matrix()
+        head=np.eye(4);head[:3,:3]=Rotation.from_euler('ZYX',
+            [body_yaw if head_yaw is None else head_yaw,.3,-.4]).as_matrix()
+        rawhead=B.T @ head @ B
+        frames=[]
+        for i,(side,x) in enumerate((('left',.17),('right',-.17))):
+            pose=np.eye(4);pose[:3,:3]=body @ Rotation.from_euler('x',.2+i*.3).as_matrix()
+            pose[:3,3]=body @ [x+offset,0.,0.] if positions is None else positions[i]
+            raw=B.T @ pose @ B
+            frames.append(VRFrame('headset',self.seq,t,side,tuple(raw.ravel()),grip=grips[i],
+                clutch_seq=clutch[i],head_pose=tuple(rawhead.ravel()),head_stamp=t-.001,
+                head_age_s=.002,head_source_id='headset',head_seq=self.seq))
+        session.ingest(*frames,t)
+        return frames
+
+    def test_turn_ninety_degrees_reclutch_and_async_capture_still_pushes_base_forward(self):
+        from scipy.spatial.transform import Rotation
+        session=BimanualSession(self.cfg,1,0.)
+        home=np.eye(4);home[:3,3]=[.6,.1,.7]
+        home[:3,:3]=Rotation.from_euler('xyz',[.3,-.4,.5]).as_matrix()
+        for phase,yaw in enumerate((0.,-np.pi/2,np.pi/2,0.)):
+            t=1.+phase;clutch=(phase,phase)
+            self.feed(session,t,yaw,grips=(0.,0.),clutch=clutch)
+            self.feed(session,t+.01,yaw,clutch=clutch)
+            self.feed(session,t+.04,yaw,clutch=clutch)
+            # Hands and gaze move during asynchronous FK. Input origin is
+            # renewed at completion; heading stays at the original squeeze.
+            self.feed(session,t+.05,yaw,head_yaw=yaw+.6,offset=.1,clutch=clutch)
+            session.capture(home)
+            np.testing.assert_allclose(session.target,home,atol=1e-12)
+            self.feed(session,t+.06,yaw,head_yaw=yaw-.7,offset=.1,clutch=clutch)
+            np.testing.assert_allclose(session.target,home,atol=1e-12)
+            self.feed(session,t+.08,yaw,head_yaw=yaw+.8,offset=.18,clutch=clutch)
+            point=session.control_point_in_tool
+            delta=session.target[:3,3]+session.target[:3,:3]@point-home[:3,3]-home[:3,:3]@point
+            np.testing.assert_allclose(delta,[.08,0.,0.],atol=1e-12)
+
+    def test_each_independent_side_renews_only_its_own_heading(self):
+        from bindu_teleoperation.independent_session import IndependentArmsSession
+        session=IndependentArmsSession(self.cfg,1,0.)
+        poses=np.array([np.eye(4),np.eye(4)])
+        positions=np.array([[.17,0.,0.],[-.17,0.,0.]])
+        self.feed(session,1.,grips=(0.,0.),positions=positions)
+        self.feed(session,1.01,positions=positions);self.feed(session,1.04,positions=positions)
+        session.capture(poses);right=session.anchors[1].copy()
+        self.feed(session,1.05,grips=(0.,1.),positions=positions,clutch=(1,0))
+        session.capture(poses)
+        self.feed(session,1.06,-np.pi/2,positions=positions,clutch=(1,0))
+        self.feed(session,1.09,-np.pi/2,positions=positions,clutch=(1,0))
+        session.capture(poses)
+        np.testing.assert_allclose(session.target[0],poses[0],atol=1e-12)
+        np.testing.assert_allclose(session.target[:,:3,3],0.,atol=1e-12)
+        np.testing.assert_array_equal(session.anchors[1],right)
+        self.assertAlmostEqual(session.hands[0].mapping_yaw,np.pi/2)
+        self.assertAlmostEqual(session.hands[1].mapping_yaw,0.)
+        positions[0,1]-=.04;positions[1,0]+=.04
+        self.feed(session,1.11,-np.pi/2,positions=positions,clutch=(1,0))
+        np.testing.assert_allclose(session.target[:,:3,3],[[.04,0.,0.],[.04,0.,0.]],atol=1e-12)
+
+    def test_missing_head_rejects_new_engagement_instead_of_using_wrist_axes(self):
+        session=BimanualSession(self.cfg,1,0.)
+        frames=self.feed(session,1.,grips=(0.,0.))
+        frames=[replace(f,seq=f.seq+1,stamp=1.01,grip=1.,head_pose=()) for f in frames]
+        with self.assertRaisesRegex(ValueError,'VR_HEADSET_UNAVAILABLE'):
+            session.ingest(*frames,1.01)
+        self.assertIsNone(session.target)
+
+    def test_release_does_not_wait_for_head_tracking(self):
+        from bindu_teleoperation.independent_session import IndependentArmsSession
+        for kind in (BimanualSession,IndependentArmsSession):
+            session=kind(self.cfg,1,0.)
+            self.feed(session,1.,grips=(0.,0.));self.feed(session,1.01)
+            frames=self.feed(session,1.04)
+            session.capture(np.eye(4) if kind is BimanualSession else np.array([np.eye(4),np.eye(4)]))
+            released=[replace(f,seq=f.seq+1,stamp=1.05,grip=0.,head_pose=()) for f in frames]
+            session.ingest(*released,1.05)
+            self.assertEqual(session.mode,'idle');self.assertIsNone(session.target)
 
 
 class AxialTriggerTests(unittest.TestCase):

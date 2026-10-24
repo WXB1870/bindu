@@ -28,14 +28,17 @@ def hud_spec(view):
         spec.update(context='模式待确认',mode_hint='等待有效控制状态')
     def notice(title, detail):
         spec.update(title=title, detail=detail)
-    input_fault = any(x in reason for x in ('INPUT_TIMEOUT','PAIR_INVALID','POSE_INVALID','TRACKING','CONNECTION_CHANGED','POSE_ORIGIN','TIME_REVERSED'))
+    input_fault = any(x in reason for x in ('INPUT_TIMEOUT','PAIR_INVALID','POSE_INVALID','TRACKING','CONNECTION_CHANGED','POSE_ORIGIN','TIME_REVERSED','HEADSET'))
     if mode == 'DISPLAY_STALE':
         spec.update(state='lost', status='状态未知', tone='danger',grip='握持未知')
         notice('状态反馈已中断', '停止状态未确认，请查看电脑操作台')
     elif mode == 'locked':
         spec.update(state='lost' if input_fault else 'stopped',
                     status='已停止 · 锁定' if confirmed else '停止未确认', tone='danger')
-        if 'PICO_ACTUATOR_FEEDBACK_TIMEOUT' in reason:
+        if 'VR_HEADSET' in reason:
+            notice('头显朝向不可用', '恢复VR追踪并平视操作前方；松握后按 B' if confirmed else
+                   '保持松握，等待停稳确认；检查头显追踪')
+        elif 'PICO_ACTUATOR_FEEDBACK_TIMEOUT' in reason:
             notice('未到目标位置',
                    '已停稳；查看电脑端关节误差，松握按 B 恢复待命' if confirmed else
                    '到位等待超时；保持松握，等待停稳确认')
@@ -75,6 +78,8 @@ def hud_spec(view):
         spec['status']='工具检查中' if mode=='confirming_tool' else '正在接合'
         notice('正在确认工具' if mode=='confirming_tool' else '正在建立相对跟随基准',
                 '保持双侧握松开，等待检查完成' if mode=='confirming_tool' else '保持双侧握；松开任一侧可暂停')
+        if mode=='engaging' and view.get('direction_reference')=='headset_on_engage':
+            notice('正在锁定操作方向', '看向操作正前方并保持侧握；松握可取消')
     elif mode == 'switching':
         requested = view.get('grasp_requested')
         target = '右手虚握' if requested=='right_axial' else '刚握'

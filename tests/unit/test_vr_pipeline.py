@@ -149,7 +149,9 @@ class TimingSummaries(unittest.TestCase):
                 message=S(source_id='source',seq=seq,stamp=clock.ros,side=side,
                     pose=tuple(np.eye(4).ravel()),grip=0.,trigger=0.,init=False,stop=False,
                     valid=True,clutch_seq=0,mapping=PICO_MAPPING,buttons=0,
-                    button_edges=(0,)*8,virtual_grip=False,stick=(0.,0.),runtime_mode='simulation')
+                    button_edges=(0,)*8,virtual_grip=False,stick=(0.,0.),runtime_mode='simulation',
+                    head_pose=tuple(np.eye(4).ravel()),head_stamp=clock.ros-.01,head_age_s=.002,
+                    head_source_id='source',head_seq=seq)
                 namespace['on_frame'](owner,message)
         pair(1);clock.ros+=RECORDED_GAP;clock.mono+=.02;pair(2)
         data=json.loads(next(v[1] for v in events if v[0]=='PICO_INPUT_DELIVERY_GAP'))
@@ -177,6 +179,12 @@ class TimingSummaries(unittest.TestCase):
         tool=S(matches_mode=lambda m:True,frames={},simulation=False,busy=True,
                gripper_cfg={'independent_trigger_control':True},axial_position_ready=lambda:False)
         namespace['on_frame'](tool,outgoing)
+        mapped=tool.frames['left']
+        self.assertEqual(mapped.head_pose,tuple(np.eye(4).ravel()))
+        self.assertEqual(mapped.head_source_id,mapped.source_id)
+        self.assertEqual(mapped.head_seq,4)  # A new hand frame must not invent a new head sample.
+        self.assertAlmostEqual(mapped.head_stamp,clock.ros-.01)
+        self.assertEqual(mapped.head_age_s,.002)
         self.assertFalse(tool.frames['left'].stop)
         outgoing.trigger=0.;outgoing.button_edges=[0]*6+[1,1];outgoing.seq+=1
         namespace['on_frame'](tool,outgoing)

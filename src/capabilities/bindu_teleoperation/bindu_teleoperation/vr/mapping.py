@@ -46,6 +46,34 @@ def mapping_rotation(mode, yaw):
     return np.array([[c, -s, 0.], [s, c, 0.], [0., 0., 1.]])
 
 
+def direction_reference(config):
+    mode=config.get('direction_reference','fixed')
+    if mode not in ('fixed','headset_on_engage'):
+        raise ValueError('VR_DIRECTION_REFERENCE_CONFIG')
+    if mode=='headset_on_engage' and config.get('mapping_mode','robot_base')!='robot_base':
+        raise ValueError('VR_HEADSET_REQUIRES_ROBOT_BASE')
+    mapping_rotation('robot_base',config.get('operator_yaw_rad',0.))
+    return mode
+
+
+def engagement_yaw(frame, config, now):
+    """Human forward becomes base +X; remove pitch/roll, preserve fixed trim."""
+    trim=config.get('operator_yaw_rad',0.)
+    if direction_reference(config)=='fixed':return trim
+    if (not frame.head_pose or frame.head_source_id!=frame.source_id or
+            type(frame.head_seq) is not int or frame.head_seq<1 or
+            not all(type(v) in (int,float) and math.isfinite(v) for v in (now,frame.head_stamp,frame.head_age_s)) or
+            frame.head_stamp>frame.stamp or not 0<=frame.head_age_s<=config['input_max_age'] or
+            not 0<=now-frame.head_stamp<=config['input_max_age'] or
+            now-frame.head_stamp+frame.head_age_s>config['input_max_age']):
+        raise ValueError('VR_HEADSET_UNAVAILABLE')
+    head=robot_pose(frame.head_pose)
+    forward=head[:2,0]  # Local OpenXR -Z is local robot +X.
+    if np.linalg.norm(forward)<.1:
+        raise ValueError('VR_HEADSET_HEADING_UNDEFINED')
+    return trim-math.atan2(float(forward[1]),float(forward[0]))
+
+
 def relative_target(anchor_input, current_input, anchor_robot, scale=1., *,
                     mapping_mode='v34_anchor', operator_yaw_rad=0.):
     if isinstance(scale,bool) or not isinstance(scale,(int,float)) or not math.isfinite(scale) or scale<=0:

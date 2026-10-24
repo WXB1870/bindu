@@ -164,7 +164,8 @@ class DualArmFilterTests(unittest.TestCase):
             pose=np.eye(4);pose[:3,:3]=rotation;pose[:3,3]=rotation @ [x,0.,0.]+translations[i]
             raw=OPENXR_TO_ROBOT.T @ pose @ OPENXR_TO_ROBOT
             frames.append(VRFrame('pico',self.seq,t,side,tuple(raw.ravel()),grip=grips[i],
-                clutch_seq=clutch[i],mapping='pico_snowbot_v1'))
+                clutch_seq=clutch[i],mapping='pico_snowbot_v1',head_pose=tuple(np.eye(4).ravel()),
+                head_stamp=t,head_source_id='pico',head_seq=self.seq))
         session.ingest(*frames,t)
         return frames
 

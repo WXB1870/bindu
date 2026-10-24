@@ -3,7 +3,7 @@ import math
 import uuid
 from dataclasses import dataclass
 import numpy as np
-from .vr.mapping import robot_pose, relative_target, pose_matrix
+from .vr.mapping import robot_pose, relative_target, pose_matrix, direction_reference, engagement_yaw
 from .vr.one_euro import rotation_log, rotation_exp, configured_pose_filter
 
 
@@ -84,6 +84,9 @@ class BimanualSession:
             self.control_point_in_tool=(points[0]+points[1])/2
             config=dict(config,two_hand_rod=True,rod_axis_in_tool=(axis/spacing).tolist())
         self.cfg = config
+        self.direction_reference=direction_reference(config)
+        self.mapping_yaw=config.get('operator_yaw_rad',0.)
+        self.heading_input=None
         if type(config.get('two_hand_rod',False)) is not bool:
             raise ValueError('VR_ROD_MAPPING_CONFIG')
         if config.get('two_hand_rod'):
@@ -188,7 +191,7 @@ class BimanualSession:
     def mapped_target(self):
         target=np.asarray(relative_target(self.anchor_input,self.current_input,self.anchor_tool,
             self.cfg['position_scale'],mapping_mode='robot_base',
-            operator_yaw_rad=self.cfg['operator_yaw_rad'])).reshape(4,4)
+            operator_yaw_rad=self.mapping_yaw)).reshape(4,4)
         # paired_rod_pose already combines line swing and relative wrist twist.
         # Map that complete rotation through the SAME fixed basis as position.
         # Aligning human/robot shaft axes here would rotate the operator's axes
@@ -221,6 +224,14 @@ class BimanualSession:
             raise ValueError('VR_CONNECTION_CHANGED')
         if left.seq <= self.seq:
             return False
+        if self.direction_reference=='headset_on_engage' and (self.mode=='follow' and
+                min(left.grip,right.grip)>=.3 and (left.clutch_seq,right.clutch_seq)==self.clutch_seq or
+                min(left.grip,right.grip)>.7 and self.released and self.pressed_since is None):
+            engagement_yaw(left,self.cfg,now)
+            engagement_yaw(right,self.cfg,now)
+            if (left.head_seq!=right.head_seq or left.head_stamp!=right.head_stamp or
+                    left.head_pose!=right.head_pose or left.head_age_s!=right.head_age_s):
+                raise ValueError('VR_HEADSET_PAIR_MISMATCH')
         if self.input_stamps is not None and any(
                 f.stamp < previous for f, previous in zip(frames, self.input_stamps)):
             raise ValueError('VR_INPUT_UNORDERED')
@@ -285,6 +296,9 @@ class BimanualSession:
             self.anchor_input=self.anchor_tool=self.target=None
         elif min(left.grip,right.grip) > .7 and self.released:
             if self.pressed_since is None:
+                self.mapping_yaw=engagement_yaw(left,self.cfg,now)
+                self.heading_input=dict(source_id=left.head_source_id,seq=left.head_seq,
+                    stamp=left.head_stamp,age_s=left.head_age_s,input_stamp=left.stamp)
                 self.pressed_since=self.stamp
                 # Projected hands are released during the actuator handoff.
                 # Physical release counters must be unchanged throughout it.
