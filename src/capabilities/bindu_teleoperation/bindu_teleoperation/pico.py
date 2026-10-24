@@ -505,7 +505,9 @@ class PicoControl:
             # completed stop after an arrival timeout. Neither means arrival.
             arrival_failure=(stopped_failure and operation=='prepare' and
                              reason.startswith('RuntimeError:PICO_ACTUATOR_FEEDBACK_TIMEOUT:'))
-            retry=((rejected or arrival_failure) and self.guided_loading and self.rest(now) and
+            capture_failure=(stopped_failure and operation=='follow' and not self.fault_active and
+                             reason=='RuntimeError:SNOWBOT_HELD_REFERENCE_NOT_STATIONARY')
+            retry=(((rejected or arrival_failure) and self.guided_loading or capture_failure) and self.rest(now) and
                    self.frames and 0<=now-self.stamp<=self.max_age)
             if not retry:
                 self.record_fault(reason or 'PICO_OPERATION_FAILED', now,

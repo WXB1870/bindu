@@ -119,22 +119,22 @@
       "arm_l_link_7": {
         "grip": "left",
         "center_m": 0.0,
-        "half_length_m": 0.1
+        "half_length_m": 0.11
       },
       "arm_l_link_8": {
         "grip": "left",
         "center_m": 0.0,
-        "half_length_m": 0.1
+        "half_length_m": 0.11
       },
       "arm_r_link_7": {
         "grip": "right",
         "center_m": -0.34,
-        "half_length_m": 0.1
+        "half_length_m": 0.11
       },
       "arm_r_link_8": {
         "grip": "right",
         "center_m": -0.34,
-        "half_length_m": 0.1
+        "half_length_m": 0.11
       }
     },
     "right_grip_offset_m": [
