@@ -92,7 +92,9 @@ def _run(config, profile, requests, results, preload_path_checks=False):
             try:
                 solver.last_constraint=solver.last_timing=None
                 independent=isinstance(grasp_mode,str) and grasp_mode.startswith('independent:')
-                if operation=='independent_capture' or operation=='capture' and independent:
+                if operation=='independent_capture':
+                    value=solver.capture_independent(feedback,reference=reference,preserve_rigid_grasp=True)
+                elif operation=='capture' and independent:
                     value=solver.capture_independent(feedback,reference=reference)
                 elif operation == 'capture': value=solver.capture(feedback,grasp_mode,reference=reference)
                 elif operation == 'loaded_prepare_path':

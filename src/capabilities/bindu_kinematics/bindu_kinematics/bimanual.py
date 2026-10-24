@@ -38,6 +38,7 @@ class BimanualQP:
     def __init__(self, config, profile):
         self.cfg = config
         self.captured = False
+        self.rigid_grasp_q = self.rigid_grasp_reference = None
         # Explicit empty-hand test declaration; never relax the native relative
         # task, joint/trajectory limits, tracking budget or collision checks.
         self.measured_grasp_policy = config.get('measured_grasp_policy', 'enforce')
@@ -320,8 +321,12 @@ class BimanualQP:
             self._check_measured_limits(positions)
             anchor_q=q.copy()
             anchor_q[[self.model_names.index(n) for n in self.names]]=reference
-        # Freeze the real grasp from measurements; only the target anchor uses
-        # the confirmed held reference, so servo residuals cannot ratchet it.
+        # Input/tool origins may be renewed on every clutch, but a held rigid
+        # grasp must survive preflight and new Action sessions in this worker.
+        # Retain it even after a rejected capture; retrying cannot bless drift.
+        retained = self.rigid_grasp_q is not None and grasp_mode == 'rigid'
+        if retained and reference is None:
+            self._check_measured_limits(positions)
         measured = np.empty((4,4), dtype=np.float64)
         if not self.lib.bq_relative_pose(self.handle, self._ptr(q), self.nq, self._ptr(measured)):
             raise ValueError('BIMANUAL_GRASP_POSE:'+self._error())
@@ -329,6 +334,12 @@ class BimanualQP:
         low, high = self.cfg['flange_distance_range']
         if self.axial is None and not low <= distance <= high:
             raise ValueError('BIMANUAL_GRASP_GEOMETRY')
+        if retained:
+            error = np.linalg.inv(self.rigid_grasp_reference) @ measured
+            angle = math.acos(float(np.clip((np.trace(error[:3,:3])-1.)/2., -1., 1.)))
+            if (np.linalg.norm(error[:3,3]) > self.grasp_position_tolerance or
+                    angle > self.grasp_rotation_tolerance):
+                raise ValueError('BIMANUAL_GRASP_POSE')
         if (self.expected_relative is not None and not self.measured_rigid_grasp and
                 self.measured_grasp_policy!='unheld_test'):
             error = np.linalg.inv(self.expected_relative) @ measured
@@ -348,7 +359,10 @@ class BimanualQP:
             ok = self.lib.bq_capture_axial(self.handle, self._ptr(q), self.nq, self._ptr(self.tool),
                 self._ptr(self.right_grip), self._ptr(self.tool_grip), c.byref(self.native_config))
         else:
-            ok = self.lib.bq_capture(self.handle, self._ptr(q), self.nq, self._ptr(self.tool),
+            # Rebuild the native objective from the original grasp sample.
+            # FK below still uses today's confirmed hold for the tool origin.
+            grasp_q = self.rigid_grasp_q if retained else q
+            ok = self.lib.bq_capture(self.handle, self._ptr(grasp_q), self.nq, self._ptr(self.tool),
                                      c.byref(self.native_config))
         if not ok:
             raise ValueError('BIMANUAL_CAPTURE:'+self._error())
@@ -368,12 +382,13 @@ class BimanualQP:
             if not recipe.get('check_grasp_contacts',False):
                 inverse=np.linalg.inv(self.tool)
                 left=(inverse @ np.r_[recipe['grip_offset_m'],1.])[:3]
-                right=(inverse @ measured @ np.r_[recipe['right_grip_offset_m'],1.])[:3]
+                rigid = self.rigid_grasp_reference if retained else measured
+                right=(inverse @ rigid @ np.r_[recipe['right_grip_offset_m'],1.])[:3]
                 center=float((right-left) @ np.asarray(recipe['shaft_axis_in_tool']))
                 self.collision_check.set_contact_centers({name:center
                     for name,band in recipe['shaft_contacts'].items() if band.get('grip')=='right'})
         self.grasp_mode = grasp_mode
-        self.grasp_reference = measured.copy()
+        self.grasp_reference = (self.rigid_grasp_reference if retained else measured).copy()
         out = np.empty((4,4), dtype=np.float64)
         if not self.lib.bq_tool_pose(self.handle, self._ptr(anchor_q), self.nq, self._ptr(out)):
             raise ValueError('BIMANUAL_TOOL_POSE:'+self._error())
@@ -384,8 +399,14 @@ class BimanualQP:
         except (ValueError, TypeError, TimeoutError):
             self.captured = False
             raise
-        # Retain only a successfully captured preference across grasp changes;
-        # the measured tool/grasp reference is still rebuilt on every capture.
+        if (grasp_mode == 'rigid' and self.measured_grasp_policy == 'enforce' and
+                self.expected_relative is not None):
+            if not retained:
+                self.rigid_grasp_q = q.copy()
+                self.rigid_grasp_reference = measured.copy()
+        else:
+            self.rigid_grasp_q = self.rigid_grasp_reference = None
+        # Keep successful posture preferences independently of input origins.
         if self.posture_policy is not None:
             self.posture_reference = posture_reference.copy()
         return out
@@ -598,7 +619,7 @@ class BimanualQP:
                     lower_rad=float(lo),upper_rad=float(hi),
                     violation_rad=float(max(lo-value,value-hi)))
 
-    def capture_independent(self, feedback, *, reference=None):
+    def capture_independent(self, feedback, *, reference=None, preserve_rigid_grasp=False):
         self.captured=False;self.independent_abi()
         q=self._q(feedback);poses=np.empty((2,4,4),dtype=np.float64)
         measured=np.array([feedback[n] for n in self.names])
@@ -620,6 +641,10 @@ class BimanualQP:
         if posture_reference is not None:
             self.posture_reference = posture_reference.copy()
         self.grasp_mode='independent';self.captured=True
+        # Only a leased independent-arm capture ends the hold scope. A
+        # read-only readiness query cannot authorize a new physical grasp.
+        if not preserve_rigid_grasp:
+            self.rigid_grasp_q = self.rigid_grasp_reference = None
         return poses
 
     def solve_independent(self, feedback, targets, *, active_mask, reference, dt):
