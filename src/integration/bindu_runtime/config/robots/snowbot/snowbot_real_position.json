@@ -133,12 +133,12 @@
     "joint_target_interpolation": "adaptive",
     "joint_dynamics": {
       "body_joint_1": {
-        "velocity": 0.25,
-        "acceleration": 0.5
+        "velocity": 0.375,
+        "acceleration": 2.25
       },
       "body_joint_2": {
-        "velocity": 0.25,
-        "acceleration": 0.5
+        "velocity": 0.375,
+        "acceleration": 2.25
       },
       "head_joint_1": {
         "velocity": 0.75
@@ -153,60 +153,60 @@
         "velocity": 0.75
       },
       "arm_l_joint_1": {
-        "velocity": 0.5,
-        "acceleration": 1.5
+        "velocity": 1.0,
+        "acceleration": 4.5
       },
       "arm_l_joint_2": {
-        "velocity": 0.5,
-        "acceleration": 1.5
+        "velocity": 1.0,
+        "acceleration": 4.5
       },
       "arm_l_joint_3": {
-        "velocity": 0.5,
-        "acceleration": 1.5
+        "velocity": 1.0,
+        "acceleration": 4.5
       },
       "arm_l_joint_4": {
-        "velocity": 0.5,
-        "acceleration": 1.5
+        "velocity": 1.0,
+        "acceleration": 4.5
       },
       "arm_l_joint_5": {
-        "velocity": 0.5,
-        "acceleration": 1.5
+        "velocity": 1.0,
+        "acceleration": 4.5
       },
       "arm_l_joint_6": {
-        "velocity": 0.5,
-        "acceleration": 1.5
+        "velocity": 1.0,
+        "acceleration": 4.5
       },
       "arm_l_joint_7": {
-        "velocity": 0.5,
-        "acceleration": 1.5
+        "velocity": 1.0,
+        "acceleration": 4.5
       },
       "arm_r_joint_1": {
-        "velocity": 0.5,
-        "acceleration": 1.5
+        "velocity": 1.0,
+        "acceleration": 4.5
       },
       "arm_r_joint_2": {
-        "velocity": 0.5,
-        "acceleration": 1.5
+        "velocity": 1.0,
+        "acceleration": 4.5
       },
       "arm_r_joint_3": {
-        "velocity": 0.5,
-        "acceleration": 1.5
+        "velocity": 1.0,
+        "acceleration": 4.5
       },
       "arm_r_joint_4": {
-        "velocity": 0.5,
-        "acceleration": 1.5
+        "velocity": 1.0,
+        "acceleration": 4.5
       },
       "arm_r_joint_5": {
-        "velocity": 0.5,
-        "acceleration": 1.5
+        "velocity": 1.0,
+        "acceleration": 4.5
       },
       "arm_r_joint_6": {
-        "velocity": 0.5,
-        "acceleration": 1.5
+        "velocity": 1.0,
+        "acceleration": 4.5
       },
       "arm_r_joint_7": {
-        "velocity": 0.5,
-        "acceleration": 1.5
+        "velocity": 1.0,
+        "acceleration": 4.5
       }
     }
   }

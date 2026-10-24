@@ -2,6 +2,7 @@
 from types import SimpleNamespace as S
 import ast
 from dataclasses import replace
+from pathlib import Path
 import json
 import unittest
 from unittest.mock import Mock, patch
@@ -1094,16 +1095,28 @@ class TargetWireTests(unittest.TestCase):
         self.assertEqual(first.meta.expires_at_ns-first.meta.source_stamp_ns, 200_000_000)
         self.assertEqual(pause.meta.expires_at_ns-pause.meta.source_stamp_ns, 2_000_000_000)
 
-    def test_real_arms_and_waist_keep_distinct_limits_through_target_and_pause_wire(self):
+    def test_candidate_deployment_keeps_group_limits_and_geometry_through_target_and_pause_wire(self):
         from bindu_contracts.profile import Profile
+        from bindu_runtime.teleop_deployment import load_deployment
         from tests.support.paths import ROOT
-        self.d.io.profile=Profile.load(ROOT/'src/integration/bindu_runtime/config/robots/snowbot/snowbot_real_position.json')
-        self.d.trajectory_limits=dict(trajectory_max_velocity=.5,trajectory_max_acceleration=1.5)
-        self.d.new_session()
-        for pause in (False,True):
-            packet=self.send(pause=pause)
-            self.assertEqual(list(packet.trajectory.max_velocity),[.5]*14+[.25]*2)
-            self.assertEqual(list(packet.trajectory.max_acceleration),[1.5]*14+[.5]*2)
+        runtime=ROOT/'src/integration/bindu_runtime'
+        _,args=load_deployment(runtime/'config/deployments/snowbot_vr_real.json',runtime)
+        robot_path=Path(args['robot_config'])
+        robot=json.loads(robot_path.read_text())
+        self.d.io.profile=Profile.load(robot_path.parent/robot['profile'])
+        self.d.trajectory_limits={key:float(args[key]) for key in
+                                 ('trajectory_max_velocity','trajectory_max_acceleration')}
+        tool=json.loads((robot_path.parent/robot['teleop']['tool']).read_text())
+        self.assertIs(tool['rigid_reference_prediction'],True)
+        self.assertEqual(args['command_enabled'],'false')
+        for rigid,pause in ((False,False),(True,False),(True,True)):
+            self.d.new_session()
+            packet=self.send(pause=pause,rigid_reference=rigid)
+            self.assertEqual(list(packet.trajectory.max_velocity),[1.0]*14+[.375]*2)
+            self.assertEqual(list(packet.trajectory.max_acceleration),[4.5]*14+[2.25]*2)
+            self.assertEqual(list(packet.trajectory.max_jerk),[162.]*16)
+            self.assertEqual(packet.trajectory.version,3 if rigid and not pause else 2)
+            self.assertEqual(packet.meta.profile_hash,self.d.io.profile.digest)
             self.assertEqual(packet.meta.expires_at_ns-packet.meta.source_stamp_ns,
                              2_000_000_000 if pause else 200_000_000)
 
