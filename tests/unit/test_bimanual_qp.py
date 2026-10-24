@@ -1149,6 +1149,56 @@ class NativeBimanual(unittest.TestCase):
 
 
 class AxialShovelTests(unittest.TestCase):
+    def test_reclutch_keeps_rigid_grasp_and_rejects_accumulated_drift(self):
+        cfg=dict(self.cfg,grasp_reference_source='measured_rigid',reference_kinematics=True)
+        solver=BimanualQP(cfg,self.profile);self.addCleanup(solver.close)
+        solver.capture(self.ready)
+        original=solver.grasp_reference.copy()
+        held=np.array([self.ready[n] for n in solver.names])
+        # Each individual change is inside 0.02 rad. Repeated capture must
+        # compare against the first hold, including after a rejected attempt.
+        with patch.object(solver,'_validate_geometry'):
+            for drift in (.006,.012,.018):
+                measured=dict(self.ready);measured['arm_r_joint_7']+=drift
+                solver.capture(measured,reference=held)
+                np.testing.assert_array_equal(solver.grasp_reference,original)
+                np.testing.assert_allclose(solver.capture(measured,reference=held),
+                    solver.capture(self.ready,reference=held),atol=1e-12)
+            for drift in (.024,.024):
+                measured=dict(self.ready);measured['arm_r_joint_7']+=drift
+                with self.assertRaisesRegex(ValueError,'BIMANUAL_GRASP_POSE'):
+                    solver.capture(measured,reference=held)
+                self.assertFalse(solver.captured)
+                np.testing.assert_array_equal(solver.rigid_grasp_reference,original)
+            # Native equality also retains the original relative pose: it
+            # must request recovery rather than accept drift as zero error.
+            measured=dict(self.ready);measured['arm_r_joint_7']+=.012
+            target=solver.capture(measured)
+            _,metrics=propose(solver,measured,target)
+            self.assertGreater(metrics[1],.01)
+            invalid=dict(measured);name='arm_r_joint_7'
+            invalid[name]=solver.limits[name][1]+.01
+            with self.assertRaisesRegex(ValueError,'BIMANUAL_MEASURED_POSITION_LIMIT:'+name):
+                solver.capture(invalid)
+            invalid[name]=float('nan')
+            with self.assertRaisesRegex(ValueError,'BIMANUAL_FEEDBACK_NONFINITE'):
+                solver.capture(invalid)
+
+    def test_successful_independent_capture_ends_rigid_hold_scope(self):
+        solver=BimanualQP(dict(self.cfg,grasp_reference_source='measured_rigid'),self.profile)
+        self.addCleanup(solver.close)
+        solver.capture(self.ready);original=solver.grasp_reference.copy()
+        measured=dict(self.ready);measured['arm_r_joint_7']+=.024
+        with patch.object(solver,'_validate_geometry'),patch.object(solver,'check_independent_path'):
+            solver.capture_independent(measured,preserve_rigid_grasp=True)
+            np.testing.assert_array_equal(solver.rigid_grasp_reference,original)
+            with self.assertRaisesRegex(ValueError,'BIMANUAL_GRASP_POSE'):
+                solver.capture(measured)
+            solver.capture_independent(measured)
+            self.assertIsNone(solver.rigid_grasp_reference)
+            solver.capture(measured)
+        self.assertGreater(np.linalg.norm(solver.grasp_reference-original),.02)
+
     def test_measured_rigid_capture_preserves_actual_grasp_without_nominal_coaxial_gate(self):
         cfg=dict(self.cfg,grasp_reference_source='measured_rigid')
         solver=BimanualQP(cfg,self.profile);self.addCleanup(solver.close)

@@ -136,6 +136,21 @@ class WorkerReceiptTests(unittest.TestCase):
         self.assertEqual(reply,('error',8,'UNKNOWN_CAPTURE_FAILURE'))
         self.assertTrue(results.empty());solver.close.assert_called_once()
 
+    def test_readiness_preserves_rigid_grasp_but_leased_independent_capture_ends_it(self):
+        from bindu_kinematics.bimanual_worker import _run
+        requests,results=queue.Queue(),queue.Queue()
+        requests.put(('independent_capture',-1,{},None,None,None,'rigid',None))
+        requests.put(('capture',1,{},None,None,None,'independent:1',None))
+        requests.put(None)
+        solver=SimpleNamespace(capture_independent=Mock(return_value=[]),close=Mock())
+        with patch('bindu_kinematics.bimanual.BimanualQP',return_value=solver), \
+                patch('bindu_kinematics.bimanual_worker.gc.collect'), \
+                patch('bindu_kinematics.bimanual_worker.gc.freeze'):
+            _run({},None,requests,results)
+        self.assertEqual(solver.capture_independent.call_args_list,[
+            unittest.mock.call({},reference=None,preserve_rigid_grasp=True),
+            unittest.mock.call({},reference=None)])
+
     def test_dead_process_or_fatal_cannot_advertise_ready_or_accept_work(self):
         for cause in ('exit', 'fatal'):
             with self.subTest(cause=cause):
