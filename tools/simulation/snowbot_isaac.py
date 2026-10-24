@@ -219,9 +219,11 @@ def main():
                     fault=realtime.fault
                     for group in profile.groups:core.hold(group,measured)
                 stage=time.monotonic()
-                drive,drive_velocity=core.reference_step(dt)
+                drive,_reference_velocity=core.reference_step(dt)
+                # Snowbot CSP sends position only. A nonzero PhysX velocity
+                # target adds ideal feed-forward absent from that drive path.
                 body.apply_action(ArticulationAction(joint_positions=np.array([drive[n] for n in names]),
-                    joint_velocities=np.array([drive_velocity[n] for n in names])))
+                    joint_velocities=np.zeros(len(names))))
                 timings['apply_action_s']=time.monotonic()-stage
                 before=SimulationManager.get_num_physics_steps()
                 stage=time.monotonic()

@@ -174,7 +174,7 @@ python3 -m tools.analysis.compare_interpolators --legacy-root 历史代码/legs_
 |---|---|
 | 手柄位姿滤波 | 共用Snowbot配方已启用One Euro；普通双臂分别滤波手柄，扫雪滤波合成中点／姿态。按键与时效使用原始输入，参数及重置规则见[遥操作模块](../../capabilities/bindu_teleoperation/README.md#vr-位姿-one-euro-滤波) |
 | 共享位置执行 | `DelegatedPositionExecutor.prepare_path`保留直接位置目标，不调用通用执行器的原生自适应／S曲线生成；profile中的`joint_target_interpolation=adaptive`不能据此证明此路径使用了自适应插值 |
-| 当前PhysX设备 | 腰与双臂共用一个限速向量进度，生成一致的位置／速度参考；实际关节由物理驱动跟随，头部与夹爪独立 |
+| 当前PhysX设备 | 默认腰与双臂共用限速向量进度，也可按配方选择原生`target_stream`参考；实际关节由PhysX位置驱动跟随，速度目标置零以匹配Snowbot CSP的位置下发语义，参考速度仅供采样／诊断，不附加理想速度前馈；头部与夹爪独立 |
 | 真实设备 | `legacy_guard/session_v1`委托底层跟随；`session_v3`由servo后台生成联合曲线并统一采样，实际配置和同步性能仍需按现场记录与实测核对 |
 
 原有插值路径仍由通用`Executor`使用；`PreparedSegment`供`session_v3`执行侧非实时生成复用，见[snowbot_position_session.py](../../integration/bindu_runtime/bindu_runtime/snowbot_position_session.py)。软件接入与现场已加载版本、真实周期及停止验收分别核对。输入滤波保持独立。
