@@ -14,6 +14,31 @@ from tests.support.pico import Rig
 
 
 class ScenarioRuntimeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_b_recovery_rechecks_exact_stop_before_clearing_latch(self):
+        from types import SimpleNamespace as S
+        from unittest.mock import Mock,AsyncMock
+        from bindu_runtime.stop_evidence import stop_feedback_matches
+        node=self.production('recover')
+        node.recover.__func__.__globals__['stop_feedback_matches']=stop_feedback_matches
+        node.current=Mock();node.lease=node.tool_request=node.tool_goal=None
+        node.profile=S(digest='profile');node.simulation=False;node.now=lambda:10.
+        node.tool_cfg={'feedback_max_age':.2};node.names=('joint',)
+        state=S(instance_id='executor',lease_epoch=2,lease_active=False,profile_hash='profile',
+                simulated=False,state='CANCELED',stop_failures=[],code='CANCELED',
+                feedback_stamp=9.99,reference=S(name=[]),joints=S(name=['joint'],velocity=[0.]))
+        node.reading=Mock(return_value=(state,{'joint':0.}))
+        barrier=dict(instance_id='executor',epoch=2,lease_active=False,requested=9.8,failed=True)
+        node.stop_request=barrier;node.position_ops=S(recover=AsyncMock())
+        node.control=S(update_feedback=Mock(),rest=lambda _:True);node.feedback=Mock()
+        await node.recover(S(token=1))
+        self.assertIsNone(node.stop_request);node.position_ops.recover.assert_awaited_once()
+        for change in ({'lease_epoch':3},{'lease_active':True},{'stop_failures':['vendor_hold']}):
+            state.lease_epoch=2;state.lease_active=False;state.stop_failures=[]
+            for key,value in change.items():setattr(state,key,value)
+            node.stop_request=barrier;node.position_ops.recover.reset_mock()
+            with self.assertRaisesRegex(RuntimeError,'STOP_NOT_CONFIRMED'):await node.recover(S(token=2))
+            self.assertIs(node.stop_request,barrier);node.position_ops.recover.assert_not_awaited()
+
     def test_execution_fault_and_stop_protocol_reach_pico_without_normal_cancel_fault(self):
         from types import SimpleNamespace as S
         node=self.production('on_motion_event');node.run_id='run';node.runtime_mode='real';node.instance_id='test'
@@ -353,6 +378,13 @@ class LimitRecoveryRuntimeTests(unittest.IsolatedAsyncioTestCase):
         node.validator.submit.assert_called_once_with('prepare_limit_recovery_path',1,measured,[.2],reference={'joint':-.995})
         self.assertEqual(measured,{'joint':-1.01})
         self.assertEqual(node.prepare_limit_start,measured)
+        # Recorded R1 residual is inside hard limits: use the original A path.
+        measured['joint']=.18645057082176208
+        node.profile.limits['joint']=(-3.1417453292519943,3.1417453292519943)
+        node.prepare_hold_reference.reset_mock();node.validator.submit.reset_mock()
+        await node.validate_prepare(S(token=2))
+        node.prepare_hold_reference.assert_not_awaited()
+        node.validator.submit.assert_called_once_with('prepare_path',2,measured,[.2])
 
     async def movement(self,*,outward=False,hold_error=False):
         from types import SimpleNamespace as S
@@ -605,6 +637,17 @@ class DualModeTests(unittest.TestCase):
 
 
 class StateTests(unittest.TestCase):
+    def test_b_rechecks_latched_stop_and_restores_standby_only_after_confirmation(self):
+        r=Rig();r.core.lock('PICO_STOP_UNCONFIRMED',r.now);r.core.drain();r.complete(False,'PICO_STOP_UNCONFIRMED')
+        intent=r.click(1,1)[-1]
+        self.assertEqual(intent.operation,'recover')
+        r.core.complete(intent.token,False,'GRIPPER_RECOVERY_REQUIRES_REST',r.now)
+        self.assertEqual(r.core.phase,'locked')
+        intent=r.click(1,1)[-1]
+        r.complete(True)
+        self.assertEqual((r.core.phase,r.core.reason),('standby','RECOVERED_TO_STANDBY'))
+        self.assertIsNone(r.core.stop_failure)
+
     def test_stop_failure_and_late_request_never_replace_first_fault(self):
         r=Rig();r.core.phase='following'
         r.core.lock('PICO_FEEDBACK_UNAVAILABLE',r.now)

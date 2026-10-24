@@ -90,16 +90,17 @@ class GripperTests(unittest.TestCase):
             self.assertEqual(state['target_position'],0.)
             self.assertEqual(r.goals[side],r.q[JOINTS[side]])
 
-    def test_manual_accuracy_does_not_relax_hold_or_calibrated_grasp(self):
+    def test_manual_hold_uses_manual_accuracy_but_calibrated_grasp_remains_strict(self):
         r=Rig(stop_timeout=.3);r.q[JOINTS['left']]=-.024568;r.step(track=False)
         r.acquire();r.command('authorize_direct');r.command('close','left')
         for _ in range(10):
             r.step(track=False)
             if r.core.channels['left']['state']=='STOPPING':break
         self.assertEqual(r.core.channels['left']['state'],'STOPPING')
-        r.q[JOINTS['left']]+=.006  # Inside manual accuracy, outside fixed hold tolerance.
+        r.q[JOINTS['left']]+=.006  # Small contact rebound inside manual accuracy.
         r.step(20,track=False)
-        self.assertIn('HOLD_TIMEOUT',r.core.fault)
+        self.assertFalse(r.core.fault)
+        self.assertEqual(r.core.channels['left']['state'],'SUCCEEDED')
         r=Rig(motion_timeout=.3);r.q[JOINTS['right']]=.010498;r.step(track=False)
         r.acquire();r.authorize();r.command('close','right');r.step(30,track=False)
         self.assertEqual(r.core.channels['right']['code'],'POSITION_TIMEOUT')
@@ -113,7 +114,35 @@ class GripperTests(unittest.TestCase):
         self.assertEqual(target_position_tolerance(validate_config(cfg,self.r.profile),direct=True),.003)
         r=Rig(motion_timeout=.3);r.q[JOINTS['right']]=.04;r.step(track=False)
         r.acquire();r.command('authorize_direct');r.command('close','right');r.step(30,track=False)
-        self.assertEqual(r.core.channels['right']['code'],'POSITION_TIMEOUT')
+        self.assertEqual(r.core.channels['right']['code'],'CLOSE_STOPPED')
+        self.assertFalse(r.core.snapshot('right')['position_reached'])
+
+    def test_manual_rod_close_stops_without_claiming_empty_endpoint_or_grasp(self):
+        r=Rig(require_driver_ack=False,motion_timeout=.3)
+        r.q[JOINTS['left']]=-.073079802;r.q[JOINTS['right']]=.047289751
+        r.step(track=False);r.acquire();r.command('authorize_direct')
+        for side in SIDES:r.command('close',side)
+        r.step(17,track=False)
+        r.q[JOINTS['right']]=.054192662
+        r.step(12,track=False)
+        for side in SIDES:
+            state=r.core.snapshot(side)
+            self.assertEqual((state['state'],state['code']),('CANCELED','CLOSE_STOPPED'))
+            self.assertFalse(state['position_reached']);self.assertEqual(state['grasp_state'],'unknown')
+        self.assertFalse(r.core.fault)
+
+    def test_manual_hold_recovery_is_read_only_and_requires_fresh_rest(self):
+        r=Rig(require_driver_ack=False,motion_timeout=.3,stop_timeout=.3)
+        r.q[JOINTS['right']]=.047;r.step(track=False);r.acquire();r.command('authorize_direct');r.command('close','right')
+        r.step(17,track=False);r.q[JOINTS['right']]=.09;r.step(20,track=False)
+        self.assertIn('HOLD_TIMEOUT',r.core.fault)
+        with self.assertRaisesRegex(RuntimeError,'REQUIRES_REST|HOLD_UNCONFIRMED'):r.core.recover()
+        r.q[JOINTS['right']]=.054;r.step(8,track=False)
+        before=list(r.sent);r.command('recover')
+        self.assertEqual(r.sent,before);self.assertFalse(r.core.fault)
+        self.assertEqual(r.core.channels['right']['code'],'OPERATOR_RECOVERED')
+        r.core.fail('DRIVE_FAULT')
+        with self.assertRaisesRegex(RuntimeError,'DRIVE_FAULT'):r.core.recover()
 
     def test_direct_retarget_does_not_interrupt_other_channel_or_renew_its_budget(self):
         r=Rig();r.acquire();r.command('authorize_direct')
@@ -572,7 +601,7 @@ class DirectOperationTests(unittest.TestCase):
     def run_case(self, interrupt=None):
         from bindu_teleoperation.pico import PicoIntent
         r=Rig(require_driver_ack=False,direct_position_tolerance=.003)
-        r.q[JOINTS['right']]=.010666;r.step(track=False)
+        r.q[JOINTS['right']]=.389334;r.step(track=False)
         source=ROOT/'src/integration/bindu_runtime/bindu_runtime/pico_position.py'
         cls=next(n for n in ast.parse(source.read_text()).body if isinstance(n,ast.ClassDef))
         method=next(n for n in cls.body if getattr(n,'name','')=='move_grippers')
@@ -580,7 +609,7 @@ class DirectOperationTests(unittest.TestCase):
                 Lease=S(Request=lambda **kw:S(**kw)),seconds=lambda value:value,
                 target_position_tolerance=target_position_tolerance)
         exec(compile(ast.Module(body=[method],type_ignores=[]),str(source),'exec'),ns)
-        control=S(pending=PicoIntent(1,'manual_grippers',(None,'closed')),load='unknown',
+        control=S(pending=PicoIntent(1,'manual_grippers',(None,'open')),load='unknown',
                   supported=False,gripper_update_token=None,reason='')
         events=[];requests=[];released=[];seen_failed=False;recovered=False;cached=None
         async def wait(value):return value
@@ -592,7 +621,7 @@ class DirectOperationTests(unittest.TestCase):
             return S(ok=True,lease_id=r.core.lease_id,epoch=r.core.epoch)
         async def request(operation,side='',**kw):
             nonlocal cached
-            if side=='right' and operation=='open':
+            if side=='right' and operation=='close':
                 cached=S(stamp=r.now,**r.core.snapshot(side))
             ops.sequence+=1
             r.core.command(operation,side,ops.lease.lease_id,ops.lease.epoch,ops.sequence,
@@ -611,7 +640,7 @@ class DirectOperationTests(unittest.TestCase):
             elapsed=r.now-10.
             self.assertLess(elapsed,12.,'operation lost a deadline or failed to complete')
             if elapsed>=4. and control.pending.value[0] is None:
-                control.pending=PicoIntent(1,'manual_grippers',('open','closed'))
+                control.pending=PicoIntent(1,'manual_grippers',('open','open'))
             right=r.core.channels['right']
             if right['state']=='FAILED':
                 seen_failed=True
@@ -625,14 +654,14 @@ class DirectOperationTests(unittest.TestCase):
                 self.assertTrue(seen_failed)
                 self.assertEqual(r.core.channels['left']['state'],'SUCCEEDED')
                 self.assertIn('right',control.reason)
-                self.assertEqual(requests.count(('close','right')),1)  # no automatic retry
+                self.assertEqual(requests.count(('open','right')),1)  # no automatic retry
                 recovered=True
                 if interrupt=='stop':control.pending=PicoIntent(2,'stop')
                 elif interrupt=='fault':r.core.fail('TEST_DRIVER_FAULT')
-                else:control.pending=PicoIntent(1,'manual_grippers',('open','open'))
+                else:control.pending=PicoIntent(1,'manual_grippers',('open','closed'))
             for side,target in r.goals.items():
-                # Right closure remains off-target until the operator changes it.
-                if side=='right' and requests.count(('open','right'))==0:continue
+                # A blocked opening remains off-target until a new close input.
+                if side=='right' and requests.count(('close','right'))==0:continue
                 joint=JOINTS[side];delta=max(-.004,min(.004,target-r.q[joint]))
                 r.q[joint]+=delta;r.v[joint]=delta/.02
             r.step(track=False)
@@ -654,8 +683,8 @@ class DirectOperationTests(unittest.TestCase):
 
     def test_timeout_holds_only_failed_side_and_new_input_can_reverse_it(self):
         r,requests=self.run_case()
-        self.assertEqual(requests,[('authorize_direct',''),('close','right'),('open','left'),('open','right')])
-        self.assertAlmostEqual(r.q[JOINTS['right']],.4)
+        self.assertEqual(requests,[('authorize_direct',''),('open','right'),('open','left'),('close','right')])
+        self.assertLess(abs(r.q[JOINTS['right']]),.003)
         self.assertAlmostEqual(r.q[JOINTS['left']],-.4)
 
     def test_explicit_stop_cancels_pending_partial_failure(self):
@@ -670,6 +699,21 @@ class DirectOperationTests(unittest.TestCase):
 
 
 class CoordinatorStopBarrierTests(unittest.TestCase):
+    def test_b_recovery_confirms_new_epoch_without_resending_motion(self):
+        ops,_=self.rig();ops.stop_unconfirmed=ops.release_pending=True
+        ops.config['feedback_max_age']=.2;ops.node.current=lambda _:None
+        for state in ops.states.values():state.state='FAULT';state.code='GRIPPER_STOP_UNCONFIRMED:HOLD_TIMEOUT'
+        ops.recover.__func__.__globals__.update(GripperControl=S(Request=lambda **kw:S(**kw)),stamp=lambda v:v)
+        requests=[]
+        def recover(req):
+            requests.append(req.operation)
+            for state in ops.states.values():state.epoch=6;state.state='CANCELED';state.code='OPERATOR_RECOVERED'
+            return S(accepted=True)
+        ops.control=S(call_async=recover)
+        asyncio.run(ops.recover(S(token=1)))
+        self.assertEqual(requests,['recover']);self.assertIsNone(ops.lease)
+        self.assertFalse(ops.stop_unconfirmed);self.assertFalse(ops.release_pending)
+
     def rig(self):
         source=ROOT/'src/integration/bindu_runtime/bindu_runtime/pico_position.py'
         cls=next(n for n in ast.parse(source.read_text()).body if isinstance(n,ast.ClassDef))

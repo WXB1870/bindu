@@ -35,9 +35,9 @@ class PositionOperations:
                 msg.config_hash == self.config_hash):
             self.states[msg.side] = msg
 
-    def reading(self, side):
+    def reading(self, side, *, recovery=False):
         n = self.node
-        if self.stop_unconfirmed:
+        if self.stop_unconfirmed and not recovery:
             raise RuntimeError('PICO_GRIPPER_STOP_UNCONFIRMED')
         msg = self.states.get(side)
         if (msg is None or n.state is None or msg.instance_id != n.state.instance_id or
@@ -47,9 +47,38 @@ class PositionOperations:
                 not 0 <= n.now()-seconds(msg.feedback_stamp) <= .2 or
                 not all(math.isfinite(v) for v in (msg.measured_position, msg.measured_velocity))):
             raise RuntimeError('PICO_GRIPPER_FEEDBACK_OR_CALIBRATION_REQUIRED:'+side)
-        if msg.state == 'FAULT':
+        if msg.state == 'FAULT' and not (recovery and msg.code=='GRIPPER_STOP_UNCONFIRMED:HOLD_TIMEOUT'):
             raise RuntimeError(msg.code)
         return msg
+
+    async def recover(self, intent):
+        """Recheck a revoked manual hold without resending any gripper target."""
+        n=self.node
+        if self.acquire_future is not None:raise RuntimeError('PICO_GRIPPER_ACQUIRE_UNRESOLVED')
+        states=[self.reading(side,recovery=True) for side in SIDES]
+        if any(s.lease_active or s.state in ('MOVING','STOPPING') for s in states):
+            raise RuntimeError('PICO_GRIPPER_RECOVERY_REQUIRES_STOP')
+        if self.lease is not None and any(s.epoch!=self.lease.epoch+1 for s in states):
+            raise RuntimeError('PICO_GRIPPER_RECOVERY_EPOCH')
+        if any(s.state=='FAULT' for s in states):
+            epoch=states[0].epoch
+            if any(s.epoch!=epoch for s in states):raise RuntimeError('PICO_GRIPPER_RECOVERY_EPOCH')
+            reply=await n.wait(self.control.call_async(GripperControl.Request(operation='recover',
+                epoch=epoch,stamp=stamp(n.now()),valid_for=.25)))
+            n.current(intent)
+            if not reply.accepted:raise RuntimeError(reply.code)
+            end=time.monotonic()+self.config['feedback_max_age']*3
+            while True:
+                n.current(intent)
+                states=[self.reading(side,recovery=True) for side in SIDES]
+                if all(s.epoch==epoch+1 and s.state=='CANCELED' and
+                       s.code=='OPERATOR_RECOVERED' and not s.lease_active for s in states):break
+                if time.monotonic()>=end:raise RuntimeError('PICO_GRIPPER_RECOVERY_FEEDBACK_TIMEOUT')
+                await n.pause()
+        if any(abs(s.measured_velocity)>self.config['velocity_tolerance'] for s in states):
+            raise RuntimeError('PICO_GRIPPER_RECOVERY_REQUIRES_REST')
+        self.lease=None;self.lease_instance=None
+        self.release_pending=self.stop_unconfirmed=False
 
     def modes(self, *, require_stationary=True):
         if not self.config['calibrated']:
@@ -248,9 +277,15 @@ class PositionOperations:
                                     time.monotonic()+self.config['motion_timeout']+1.)
                 n.current(intent)  # A stop may have arrived while a request awaited its reply.
                 states={s:self.reading(s) for s in expected}
+                closed_stopped=set()
                 for side,s in states.items():
                     if s.state=='FAULT':
                         raise RuntimeError('PICO_GRIPPER_OPERATION_FAILED')
+                    if (sent_modes[side]=='closed' and s.state=='CANCELED' and s.code=='CLOSE_STOPPED' and
+                            s.epoch==lease.epoch and s.control_sequence>=expected[side][1] and
+                            seconds(s.stamp)>expected[side][2]):
+                        if automatic or not direct:raise RuntimeError('PICO_GRIPPERS_CLOSED_FEEDBACK_REQUIRED')
+                        closed_stopped.add(side)
                     if (s.state=='FAILED' and s.epoch==lease.epoch and
                             s.control_sequence>=expected[side][1] and
                             seconds(s.stamp)>expected[side][2]):
@@ -267,14 +302,15 @@ class PositionOperations:
                         failed[side]=s.code
                 if direct and not automatic:
                     n.control.reason=('GRIPPER_POSITION_TIMEOUT:'+','.join(sorted(failed)) if failed else
+                                      'GRIPPER_CLOSE_HELD' if closed_stopped else
                                       'TRIGGERS_CONTROL_INDIVIDUAL_GRIPPERS')
                 reached={side:(s.position_reached and s.epoch==lease.epoch and
                     s.control_sequence>=expected[side][1] and seconds(s.feedback_stamp)>expected[side][2] and
                     abs(s.measured_position-expected[side][0])<=target_position_tolerance(self.config,direct=direct))
                     for side,s in states.items()}
-                if reached and not failed and all(reached.values()):
+                if reached and not failed and all(reached[side] or side in closed_stopped for side in reached):
                     return
-                if any(not reached[side] and side not in failed and
+                if any(not reached[side] and side not in failed and side not in closed_stopped and
                        time.monotonic()>=expected[side][3] for side,s in states.items()):
                     raise RuntimeError('PICO_GRIPPER_FEEDBACK_TIMEOUT')
                 if time.monotonic() >= renew_at:

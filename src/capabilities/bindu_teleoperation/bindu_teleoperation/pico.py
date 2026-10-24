@@ -154,7 +154,7 @@ class PicoControl:
 
     def lock(self, reason, now):
         self.record_fault(reason, now)
-        if self.phase != 'locked' or self.pending and self.pending.operation != 'stop':
+        if self.phase != 'locked' or self.pending and self.pending.operation not in ('stop','recover'):
             if self.guided_loading and self.phase == 'loading':
                 self.load, self.load_source = 'unknown', 'interrupted_loading'
             if reason=='PICO_INPUT_TIMEOUT':
@@ -302,14 +302,17 @@ class PicoControl:
                                             else 'OPEN_REQUIRES_LOADING_AND_SUPPORT')
             self.prepare_blocked=True;self.emit('stop');return
         if self.phase=='locked':
-            if (presses[5] and self.rest(now) and all(f.grip<.3 for f in pair) and
-                    not self.pending and not self.recovery_required and not self.stop_failure):
-                self.phase,self.reason='standby','RECOVERED_TO_STANDBY'
-                self.fault_active=False
-                self.fault_acknowledged_at=now
-                self.loading_opened=[False,False]
-                self.armed=[not h for h in states]
-                self.squeeze_released=[True,True]
+            if presses[5] and not self.pending and all(f.grip<.3 and f.trigger<.3 for f in pair):
+                if self.rest(now) and not self.recovery_required and not self.stop_failure:
+                    self.phase,self.reason='standby','RECOVERED_TO_STANDBY'
+                    self.fault_active=False
+                    self.fault_acknowledged_at=now
+                    self.loading_opened=[False,False]
+                    self.armed=[not h for h in states]
+                    self.squeeze_released=[True,True]
+                else:
+                    self.reason='RECOVERY_CHECK'
+                    self.emit('recover')
             return
         if self.phase=='gripper_control' and (any(f.grip>=.3 for f in pair) or any(clutch_changed)):
             self.phase,self.reason='standby','GRIPPER_REQUIRES_STOP_AND_RELEASED_SQUEEZE'
@@ -479,6 +482,15 @@ class PicoControl:
         if not self.pending or self.pending.token!=token:return False
         operation,value=self.pending.operation,self.pending.value
         self.pending=None
+        if operation=='recover':
+            if success and self.rest(now):
+                self.phase,self.reason='standby','RECOVERED_TO_STANDBY'
+                self.fault_active=False;self.fault_acknowledged_at=now
+                self.stop_failure=self.request_failure=None;self.recovery_required=''
+                self.loading_opened=[False,False];self.armed=[False]*8
+                self.squeeze_released=[True,True];self.prepare_blocked=True
+            else:self.reason='RECOVERY_BLOCKED:'+(reason or 'STOP_NOT_CONFIRMED')
+            return True
         if not success:
             if operation=='stop' and self.phase=='locked':
                 self.record_fault(reason or 'PICO_OPERATION_FAILED', now,kind='stop')
@@ -507,9 +519,10 @@ class PicoControl:
         elif operation=='prepare':
             self.phase,self.reason='standby','PREPARED'
         elif operation=='manual_grippers':
+            close_held=self.reason=='GRIPPER_CLOSE_HELD'
             if value[1]=='closed':self.virtual=False
             if all(m in (None,'closed') for m in value):
-                self.phase,self.reason='standby','GRIPPER_CONTROL_COMPLETE'
+                self.phase,self.reason='standby','GRIPPER_CLOSE_HELD' if close_held else 'GRIPPER_CONTROL_COMPLETE'
                 self.squeeze_released=[False,False]
                 # A is a continuously held request. Only after the gripper
                 # backend confirms final hold may a fresh full hold timer run;
@@ -608,6 +621,8 @@ def loading_guide(view, modes):
             return dict(title='先松开两侧扳机',detail='夹爪闭合停稳后，继续按住 A 可回准备位；保持双侧握松开',key='Trigger',step='prepare_wait')
         return dict(title='夹爪独立开合',detail='按住对应扳机打开，松开闭合；保持双侧握松开，B 停止并退出',key='Trigger',step='grippers')
     if phase=='standby':
+        if view.get('reason')=='GRIPPER_CLOSE_HELD':
+            return dict(title='夹爪闭合已停止',detail='未到空载闭合端点，可能接触物体；夹持状态仍需现场确认，可继续操作',key='',step='gripper_held')
         reason=view.get('reason','')
         if reason=='GRIPPER_CONTROL_EXIT_REQUESTED':
             return dict(title='正在退出夹爪开合',detail='等待夹爪停止确认；保持双侧握松开',key='',step='gripper_stop')

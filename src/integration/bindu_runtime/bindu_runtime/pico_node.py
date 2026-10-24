@@ -686,7 +686,10 @@ class PicoNode(RuntimeNode):
             await self.pause()
         names=[n for g in self.tool_cfg['resource_groups'] for n in self.profile.groups[g]]
         reference=q
-        if self.position_contract and not gripper_move and getattr(self,'prepare_limit_max',0.):
+        # The held-reference recovery contract is only for measured excursions.
+        # An ordinary in-bounds A return retains its original measured-start path.
+        if (self.position_contract and not gripper_move and getattr(self,'prepare_limit_max',0.) and
+                any(not self.profile.limits[n][0]<=q[n]<=self.profile.limits[n][1] for n in names)):
             from bindu_kinematics.bimanual_worker import prepare_limit_reference
             held=await self.prepare_hold_reference(intent)
             reference=prepare_limit_reference(self.profile,names,q,held['positions'],target,
@@ -843,10 +846,42 @@ class PicoNode(RuntimeNode):
         if context is self.tool_request and not context['canceling']:
             self.tool_phase=msg.feedback.mode
 
+    async def recover(self,intent):
+        """B rechecks current stop evidence; it never retries motion or enable."""
+        self.current(intent)
+        if self.lease is not None or self.tool_request is not None or self.tool_goal is not None:
+            raise RuntimeError('PICO_RECOVERY_OWNERSHIP_UNRESOLVED')
+        s,_=self.reading()
+        request=self.stop_request
+        if request is not None:
+            matches=stop_feedback_matches(s,instance_id=request['instance_id'],epoch=request['epoch'],
+                lease_active=request['lease_active'],profile_hash=self.profile.digest,
+                simulated=self.simulation,requested=request['requested'],now=self.now(),
+                max_age=self.tool_cfg['feedback_max_age'],
+                at_rest=lambda joints:joints_at_rest(joints,self.names,.005))
+        else:
+            matches=(not s.lease_active and s.state in ('READY','CANCELED','SUCCEEDED') and
+                     not s.reference.name and joints_at_rest(s.joints,self.names,.005))
+        if not matches:raise RuntimeError('PICO_RECOVERY_STOP_NOT_CONFIRMED')
+        if self.position_ops:await self.position_ops.recover(intent)
+        self.current(intent)
+        # Recheck after the service await; a changed owner invalidates recovery.
+        current,_=self.reading()
+        if (current.instance_id!=s.instance_id or current.lease_epoch!=s.lease_epoch or
+                current.lease_active or current.state not in ('READY','CANCELED','SUCCEEDED') or
+                current.reference.name or not joints_at_rest(current.joints,self.names,.005)):
+            raise RuntimeError('PICO_RECOVERY_STATE_CHANGED')
+        self.stop_request=None
+        self.control.update_feedback(self.feedback(),self.now())
+        if not self.control.rest(self.now()):
+            self.stop_request=request
+            raise RuntimeError('PICO_RECOVERY_FEEDBACK_NOT_READY')
+
     async def perform(self,intent):
         ok=False;reason='';read_only=False;rejected=False;canceled=False;stopped_failure=False
         try:
-            await self.cancel_tool()
+            if intent.operation=='recover':await self.recover(intent)
+            else:await self.cancel_tool()
             self.current(intent)
             read_only=intent.operation in ('prepare','confirm_tool','follow','select_mode')
             if (getattr(self,'automatic_close_grippers',False) and not self.unheld_test and
@@ -925,7 +960,7 @@ class PicoNode(RuntimeNode):
                 await self.select_tool_mode(intent)
                 read_only=False
                 await self.follow(intent)
-            elif intent.operation!='stop':raise RuntimeError('PICO_OPERATION_UNSUPPORTED')
+            elif intent.operation not in ('stop','recover'):raise RuntimeError('PICO_OPERATION_UNSUPPORTED')
             ok=True
         except Superseded:
             # A newer fenced intent owns the workflow. Keep the same measured
@@ -939,7 +974,7 @@ class PicoNode(RuntimeNode):
         except Exception as exc:
             reason=type(exc).__name__+':'+str(exc)
             try:
-                await self.cancel_tool()
+                if intent.operation!='recover':await self.cancel_tool()
                 rejected=read_only
                 stopped_failure=(intent.operation=='prepare' and
                     reason.startswith('RuntimeError:PICO_ACTUATOR_FEEDBACK_TIMEOUT:'))
