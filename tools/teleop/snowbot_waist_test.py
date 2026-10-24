@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Waist yaw diagnostic. Preview is offline; --execute uses an existing executor.
+"""Single waist-axis diagnostic. Preview is offline; --execute uses an existing executor.
 
 The operator starts the reviewed position stack separately. This program never
 starts/stops drivers, changes limits, resets faults or writes the legacy body
 topic. The current Snowbot session owns all 16 waist/arm joints: arm joint
-targets and waist pitch stay at the captured measurement, not Cartesian poses.
+targets and the other waist axis stay at the captured measurement, not Cartesian poses.
 Use without a tool: moving the waist moves both arms in the world frame.
 """
 import argparse
@@ -54,7 +54,7 @@ class Plan:
 
 
 def make_plan(degrees=20., speed=.25, acceleration=.5, jerk=10.):
-    for value, maximum in ((degrees, 20.), (speed, .25), (acceleration, .5), (jerk, 162.)):
+    for value, maximum in ((degrees, 20.), (speed, .375), (acceleration, 2.25), (jerk, 162.)):
         if type(value) not in (float, int) or not math.isfinite(value) or not 0 < value <= maximum:
             raise ValueError('TEST_ENVELOPE_EXCEEDED')
     distance = math.radians(degrees)
@@ -106,13 +106,15 @@ def json_value(value):
     return value
 
 
-def targets(plan, elapsed, initial, limits):
+def targets(plan, elapsed, initial, limits, axis='body_joint_1'):
+    if axis not in NAMES[:2]:
+        raise ValueError('TEST_AXIS_INVALID')
     offset, _, _ = plan.sample(elapsed)
     q = {n: initial[n] for n in NAMES}
-    q['body_joint_1'] += offset
+    q[axis] += offset
     for n in NAMES:
         # Extra excursion clearance applies only to the axis being moved.
-        margin = .01 if n == 'body_joint_1' else 0.
+        margin = .01 if n == axis else 0.
         if not math.isfinite(q[n]) or not limits[n][0]+margin <= q[n] <= limits[n][1]-margin:
             raise ValueError('TEST_POSITION_LIMIT:'+n)
     return q
@@ -132,12 +134,15 @@ def execute(args, plan):
 
     if not args.robot_config or not args.output:
         raise ValueError('--execute requires --robot-config and --output')
+    axis = args.axis
+    if axis not in NAMES[:2]:
+        raise ValueError('TEST_AXIS_INVALID')
     robot = RobotSetup.load(args.robot_config)
     if tuple(n for g in GROUPS for n in robot.profile.groups.get(g, ())) != NAMES:
         raise ValueError('SNOWBOT_GROUP_LAYOUT')
-    if (args.speed > robot.profile.speed('body_joint_1') or
-            args.acceleration > robot.profile.acceleration('body_joint_1') or
-            args.jerk > robot.profile.jerk('body_joint_1')):
+    if (args.speed > robot.profile.speed(axis) or
+            args.acceleration > robot.profile.acceleration(axis) or
+            args.jerk > robot.profile.jerk(axis)):
         raise ValueError('TEST_EXCEEDS_SELECTED_PROFILE')
     args.output.parent.mkdir(parents=True, exist_ok=True)
     log = args.output.open('x')
@@ -218,9 +223,9 @@ def execute(args, plan):
         spin_until(lambda: latest['pdo'][0].pdo_sample > sample, .1)
         initial, _ = check()
         for t in (0., plan.dwell+plan.move_seconds, plan.dwell+3*plan.move_seconds+2*plan.dwell):
-            targets(plan, t, initial, robot.profile.limits)
+            targets(plan, t, initial, robot.profile.limits, axis)
         record('plan', dict(task=task, robot_config=str(robot.path), profile_hash=robot.profile.digest,
-                           joint_names=NAMES, initial=initial, amplitude_rad=plan.amplitude,
+                           joint_names=NAMES, axis=axis, initial=initial, amplitude_rad=plan.amplitude,
                            move_seconds=plan.move_seconds, duration=plan.duration, **vars_limits(args)))
         lease = call(leases, Lease.Request(operation='acquire', owner=task, resources=list(GROUPS)))
         if lease.profile_hash != robot.profile.digest:
@@ -232,23 +237,24 @@ def execute(args, plan):
             if elapsed >= plan.duration:
                 break
             measured, _ = check(True)
-            if any(abs(measured[n]-initial[n]) > .02 for n in NAMES if n != 'body_joint_1'):
+            if any(abs(measured[n]-initial[n]) > .02 for n in NAMES if n != axis):
                 raise RuntimeError('NON_TEST_JOINT_DRIFT')
-            if abs(measured['body_joint_1']-initial['body_joint_1']) > plan.amplitude+.02:
+            if abs(measured[axis]-initial[axis]) > plan.amplitude+.02:
                 raise RuntimeError('WAIST_TEST_ENVELOPE')
             if elapsed > 1. and not (latest['pdo'][0].reference_valid and latest['pdo'][0].output_valid):
                 raise RuntimeError('SERVO_REFERENCE_UNAVAILABLE')
             if time.monotonic()-renewed >= .5:
                 call(leases, Lease.Request(operation='renew', lease_id=lease.lease_id, epoch=lease.epoch))
                 renewed = time.monotonic()
-            goal = targets(plan, elapsed, initial, robot.profile.limits)
+            goal = targets(plan, elapsed, initial, robot.profile.limits, axis)
             msg = MotionCommand(schema_version=2, runtime_mode='real', command_id=uuid.uuid4().hex,
                 task_id=task, observation_id=str(latest['pdo'][0].pdo_sample), profile_hash=robot.profile.digest,
                 lease_id=lease.lease_id, epoch=lease.epoch, mode='joint_target',
                 resource_groups=list(GROUPS), stamp=stamp(node.get_clock().now().nanoseconds*1e-9),
                 valid_for=.2, joint_names=list(NAMES), positions=[goal[n] for n in NAMES])
             call(submit, SubmitMotion.Request(command=msg))
-            record('target', dict(elapsed=elapsed, yaw=goal['body_joint_1']))
+            record('target', dict(elapsed=elapsed, joint=axis, position=goal[axis],
+                                  **({'yaw': goal[axis]} if axis == 'body_joint_1' else {})))
             next_tick += .02
             if time.monotonic()-next_tick > .08:
                 raise RuntimeError('TEST_STREAM_GAP')
@@ -285,8 +291,17 @@ def vars_limits(args):
 
 def analyze(path):
     """Compare same-PDO reference/output/measurement; estimate speed from position."""
-    samples = []; result = None; repeats = 0
+    samples = []; result = None; repeats = 0; axis = 'body_joint_1'
     with Path(path).open() as source:
+        # PDO callbacks can write before plan metadata; select the axis first.
+        for line in source:
+            row = json.loads(line)
+            if row['kind'] == 'plan':
+                axis = row['data'].get('axis', 'body_joint_1')
+                if axis not in NAMES[:2]:
+                    raise ValueError('TEST_AXIS_INVALID')
+                break
+        source.seek(0)
         for line in source:
             row = json.loads(line)
             if row['kind'] == 'result':
@@ -300,8 +315,9 @@ def analyze(path):
                     data.get('valid_mask', 0) & MASK == MASK and
                     not any(data['status'][slot] & 8 for slot in SLOTS)):
                 continue
-            values = (data['stamp']-data['pdo_age'], data['position'][18], data['speed'][18],
-                      data['reference_position'][14], data['reference_speed'][14], data['output_position'][14])
+            slot, ref_slot = (18, 14) if axis == 'body_joint_1' else (19, 15)
+            values = (data['stamp']-data['pdo_age'], data['position'][slot], data['speed'][slot],
+                      data['reference_position'][ref_slot], data['reference_speed'][ref_slot], data['output_position'][ref_slot])
             if not all(type(v) in (int, float) and math.isfinite(v) for v in values):
                 continue
             if samples and data['boot_id'] == samples[-1][0] and data['pdo_sample'] == samples[-1][1]:
@@ -324,7 +340,8 @@ def analyze(path):
             if abs(estimated) >= .005:
                 reported = (sample[4]+samples[previous][4])/2
                 ratios.append(reported/estimated)
-    return dict(samples=len(samples), repeated_samples_ignored=repeats, run_result=result,
+    return dict(axis=axis, physical_units_verified=False,
+        samples=len(samples), repeated_samples_ignored=repeats, run_result=result,
         reference_speed_peak_rad_s=max(abs(s[6]) for s in samples),
         reported_speed_peak_rad_s=max(abs(s[4]) for s in samples),
         position_difference_speed_peak_rad_s=max(map(abs, speeds), default=None),
@@ -337,9 +354,10 @@ def analyze(path):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--degrees', type=float, default=20., help='yaw excursion each way, <=20 deg')
-    parser.add_argument('--speed', type=float, default=.25, help='rad/s, <=0.25 and selected profile')
-    parser.add_argument('--acceleration', type=float, default=.5, help='rad/s^2, <=0.5')
+    parser.add_argument('--axis', choices=NAMES[:2], default='body_joint_1', help='only this waist target changes')
+    parser.add_argument('--degrees', type=float, default=20., help='excursion each way, <=20 deg')
+    parser.add_argument('--speed', type=float, default=.25, help='rad/s, <=0.375 and selected profile')
+    parser.add_argument('--acceleration', type=float, default=.5, help='rad/s^2, <=2.25 and selected profile')
     parser.add_argument('--jerk', type=float, default=10., help='rad/s^3, <=162')
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument('--execute', action='store_true', help='operator only: acquire 16-axis lease and send targets')
@@ -353,7 +371,7 @@ def main():
         print(json.dumps(analyze(args.analyze), indent=2))
         return
     plan = make_plan(args.degrees, args.speed, args.acceleration, args.jerk)
-    print(json.dumps(dict(preview=not args.execute, axis='body_joint_1', degrees=args.degrees,
+    print(json.dumps(dict(preview=not args.execute, axis=args.axis, physical_units_verified=False, degrees=args.degrees,
         duration_s=plan.duration, move_seconds=plan.move_seconds,
         target_peak_speed=1.875*plan.amplitude/plan.move_seconds,
         target_peak_acceleration=10/math.sqrt(3)*plan.amplitude/plan.move_seconds**2,

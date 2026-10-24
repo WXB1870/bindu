@@ -51,7 +51,7 @@ class WaistTests(unittest.TestCase):
                 self.assertAlmostEqual(a, 0.)
 
     def test_invalid_or_unreviewed_envelope_refused(self):
-        for values in ((0.,), (float('nan'),), (21.,), (3., .26), (3., .05, .51), (3., .05, .25, 163.)):
+        for values in ((0.,), (float('nan'),), (21.,), (3., .376), (3., .05, 2.251), (3., .05, .25, 163.)):
             with self.subTest(values=values), self.assertRaises(ValueError):
                 make_plan(*values)
 
@@ -73,6 +73,22 @@ class WaistTests(unittest.TestCase):
         limits['body_joint_1'] = (-2., output['body_joint_1']+.005)
         with self.assertRaises(ValueError):
             targets(plan, plan.dwell+plan.move_seconds, initial, limits)
+
+    def test_faster_signal_and_pitch_selection_keep_other_targets(self):
+        plan = make_plan(20., .375, 1., 10.)
+        self.assertLess(plan.duration, make_plan().duration)
+        self.assertLessEqual(1.875*plan.amplitude/plan.move_seconds, .375)
+        self.assertGreater(1.875*plan.amplitude/plan.move_seconds, .37)
+        initial = {n: 0. for n in NAMES}
+        limits = {n: (-2., 2.) for n in NAMES}
+        output = targets(plan, plan.dwell+plan.move_seconds, initial, limits, 'body_joint_2')
+        self.assertAlmostEqual(output['body_joint_2'], plan.amplitude)
+        self.assertTrue(all(output[n] == initial[n] for n in NAMES if n != 'body_joint_2'))
+        limits['body_joint_2'] = (-2., output['body_joint_2']+.005)
+        with self.assertRaisesRegex(ValueError, 'TEST_POSITION_LIMIT:body_joint_2'):
+            targets(plan, plan.dwell+plan.move_seconds, initial, limits, 'body_joint_2')
+        with self.assertRaisesRegex(ValueError, 'TEST_AXIS_INVALID'):
+            targets(plan, 0., initial, limits, 'arm_l_joint_1')
 
     def test_held_arms_near_limits_do_not_require_excursion_margin(self):
         plan = make_plan()
@@ -148,6 +164,7 @@ class WaistTests(unittest.TestCase):
                                 capture_output=True, text=True, check=True)
         result = json.loads(result.stdout)
         self.assertTrue(result['preview'])
+        self.assertFalse(result['physical_units_verified'])
         self.assertFalse(result['starts_driver'])
         self.assertEqual(result['axis'], 'body_joint_1')
         self.assertEqual(result['degrees'], 20.)
@@ -156,10 +173,32 @@ class WaistTests(unittest.TestCase):
         self.assertGreater(result['target_peak_speed'], .249)
         self.assertEqual(json_value([float('nan'), float('-inf')]), [None, None])
 
+    def test_pitch_analysis_selects_pitch_even_when_pdo_precedes_plan(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)/'pitch.jsonl'
+            rows = []
+            for i in range(20):
+                t = 10.+i*.01
+                q = [0.]*20; q[19] = .05*(t-10.)
+                v = [0.]*20; v[19] = 1.
+                ref = [0.]*16; ref[15] = q[19]+.001
+                rv = [0.]*16; rv[15] = .05
+                rows.append(dict(kind='pdo', data=dict(boot_id=1, pdo_sample=i+1,
+                    stamp=t, pdo_age=0., reference_valid=True, output_valid=True,
+                    wkc=67, expected_wkc=67, valid_mask=MASK, status=[0x27]*20,
+                    position=q, speed=v, reference_position=ref,
+                    reference_speed=rv, output_position=ref)))
+            rows.insert(1, dict(kind='plan', data=dict(axis='body_joint_2')))
+            path.write_text(''.join(json.dumps(r)+'\n' for r in rows))
+            result = analyze(path)
+            self.assertEqual(result['axis'], 'body_joint_2')
+            self.assertAlmostEqual(result['position_difference_speed_peak_rad_s'], .05)
+            self.assertAlmostEqual(result['reference_measurement_rms_rad'], .001)
+
     def test_actual_runner_with_memory_ros_holds_arms_and_releases_on_fault(self):
         # Execute the real runner with in-memory ROS objects and a virtual clock.
         # No launch, socket, ROS runtime or hardware process exists in this test.
-        for inject_fault in (False, True):
+        for axis, inject_fault in ((n, f) for n in NAMES[:2] for f in (False, True)):
             clock = S(value=10.)
             requests = []; commands = []; subscriptions = {}
             current = {n: .1 for n in NAMES}; owned = S(value=False)
@@ -221,7 +260,7 @@ class WaistTests(unittest.TestCase):
                 for n, slot in zip(NAMES, waist.SLOTS):
                     p.position[slot] = current[n]
                 if inject_fault and len(commands) >= 3 and owned.value:
-                    p.status[18] |= 8
+                    p.status[18 if axis == 'body_joint_1' else 19] |= 8
                 subscriptions['/bindu_snowbot/execution/state'](s)
                 subscriptions['/bindu/position/observation'](p)
 
@@ -243,7 +282,7 @@ class WaistTests(unittest.TestCase):
             module('bindu_runtime.robot_setup', RobotSetup=S(load=lambda path: S(profile=profile, path=path)))
             with tempfile.TemporaryDirectory() as directory, patch.dict(sys.modules, modules), patch.object(
                     waist.time, 'monotonic', lambda: clock.value):
-                args = S(robot_config=Path('/memory/robot.json'), output=Path(directory)/'capture.jsonl',
+                args = S(axis=axis, robot_config=Path('/memory/robot.json'), output=Path(directory)/'capture.jsonl',
                          namespace='bindu_snowbot', vendor_namespace='/', speed=.25, acceleration=.5, jerk=10.)
                 if inject_fault:
                     with self.assertRaisesRegex(RuntimeError, 'PDO_NOT_READY'):
@@ -252,13 +291,14 @@ class WaistTests(unittest.TestCase):
                     waist.execute(args, make_plan())
                 rows = [json.loads(line) for line in args.output.read_text().splitlines()]
                 self.assertEqual(rows[-1]['data']['completed'], not inject_fault)
+                self.assertEqual(next(r['data']['axis'] for r in rows if r['kind'] == 'plan'), axis)
             self.assertTrue(commands)
             self.assertEqual(requests[0], 'acquire')
             self.assertEqual(requests[-1], 'release')
             self.assertFalse(owned.value)
             for command in commands:
                 goal = dict(zip(command.joint_names, command.positions))
-                self.assertTrue(all(goal[n] == .1 for n in NAMES if n != 'body_joint_1'))
+                self.assertTrue(all(goal[n] == .1 for n in NAMES if n != axis))
                 self.assertEqual(command.resource_groups, list(waist.GROUPS))
 
 
