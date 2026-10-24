@@ -84,26 +84,8 @@ inline bool retract(Model& model,V& q,const Pose& target,const JointLimits& limi
 }
 struct Decision {const char* reason="no_feasible_prediction";int projection_failures=0,guard_rejections=0,attempts=0,accepted=0;double gain=0.,end_translation=0.,end_rotation=0.;};
 
-inline bool predictionGate(const PreparedSegment& candidate,const PreparedSegment& fallback,const std::vector<double>& goal,const std::vector<double>& hint,double start){
-  V next=V::Zero(goal.size()),old=next;
-  for(int k=1;k<=4;++k){const double dt=k*.01;const V predicted=vec(goal)+dt*vec(hint);
-    next+=(vec(candidate.sample(start+dt).q)-predicted).array().square().matrix();
-    old+=(vec(fallback.sample(start+dt).q)-predicted).array().square().matrix();}
-  for(int i=0;i<next.size();++i)if(next[i]>4.*std::pow(1.1*std::sqrt(old[i]/4.)+.001,2))return false;
-  return std::sqrt(next.sum()/(4.*goal.size()))<=std::sqrt(old.sum()/(4.*goal.size()))+1e-6;
-}
 inline PreparedSegment balanced(const JointLimits& limits,const JointState& seed,const std::vector<double>& goal,const std::vector<double>& hint,double start){
-  auto fallback=PreparedSegment::target(limits,seed,goal,start,30.,5.);double duration=.02;
-  bool moving=false;for(size_t i=0;i<goal.size();++i){duration=std::max(duration,std::abs(goal[i]-seed.q[i])/limits[i].velocity);moving=moving||std::abs(hint[i])>1e-8;}
-  if(moving)for(int k=0;k<70&&duration<30.;++k,duration*=1.12){JointState end;end.q=goal;end.v=hint;end.a.assign(goal.size(),0.);end.j=end.a;bool inside=true;
-    for(size_t i=0;i<goal.size();++i){end.v[i]*=std::min(1.,.2/duration);end.q[i]+=end.v[i]*duration;inside=inside&&end.q[i]>=limits[i].lower&&end.q[i]<=limits[i].upper;}
-    if(!inside)break;
-    auto curve=std::make_shared<Curve>(start,duration,seed,end);
-    if(!curve->valid(limits))continue;
-    try{auto paths=fit_target(limits,end,goal,curve->end(),30.-duration,5.);paths.insert(paths.begin(),curve);auto candidate=PreparedSegment::from_curves(paths,limits);
-      return predictionGate(candidate,fallback,goal,hint,start)?candidate:fallback;
-    }catch(const std::invalid_argument&){break;}}
-  return fallback;
+  return PreparedSegment::tracking_target(limits,seed,goal,hint,start,30.,5.);
 }
 inline bool geometryGate(Model& model,const PreparedSegment& candidate,const PreparedSegment& baseline,const Pose& grasp,double start){
   std::vector<double> p,r,bp,br;double pmax=0,rmax=0,bpmax=0,brmax=0;
@@ -128,7 +110,7 @@ inline PreparedSegment constrained(Model& model,const JointLimits& limits,const 
   if(!project(jac,V::Zero(6),desired,vlimits,projected)){++decision.projection_failures;decision.reason="velocity_projection";return fallback;}
   if(mode=="project")return balanced(limits,seed,goal,values(projected),start);
   const double max_gain=mode=="adaptive"?confidence:1.;
-  for(double multiplier:{1.,.5,.25}){const double gain=max_gain*multiplier;double duration=.02;
+  for(double multiplier:{1.,.5,.25}){const double gain=max_gain*multiplier;double duration=PreparedSegment::minimum_tracking_duration;
     for(size_t i=0;i<goal.size();++i)duration=std::max(duration,std::abs(goal[i]-seed.q[i])/limits[i].velocity);
     for(int attempt=0;attempt<70&&duration<30.;++attempt,duration*=1.12){++decision.attempts;
       const double predict=std::min(.2,duration);V endq=qgoal+gain*predict*projected;
@@ -143,9 +125,9 @@ inline PreparedSegment constrained(Model& model,const JointLimits& limits,const 
       auto curve=std::make_shared<Curve>(start,duration,seed,end);if(!curve->valid(limits)){decision.reason="dynamic_limits";continue;}
       try{auto paths=fit_target(limits,end,goal,curve->end(),30.-duration,5.);paths.insert(paths.begin(),curve);auto candidate=PreparedSegment::from_curves(paths,limits);
         if(!geometryGate(model,candidate,baseline,grasp,start)){++decision.guard_rejections;decision.reason="geometry_guard";break;}
-        // Compare against the unprojected input prediction to avoid choosing
-        // a geometrically easy curve solely by changing its own scoring target.
-        if(!predictionGate(candidate,fallback,goal,raw_hint,start)){decision.reason="prediction_error";break;}
+        // Dynamic, geometric and finite-tail checks already certify this
+        // continuation. A 40ms position-only score must not replace it with
+        // an at-rest endpoint and introduce another braking-policy switch.
         const V e=error(model.evaluate(endq),target);decision.reason="accepted";decision.accepted=1;decision.gain=gain;decision.end_translation=e.head<3>().norm();decision.end_rotation=e.tail<3>().norm();return candidate;
       }catch(const std::invalid_argument&){decision.reason="finite_tail";break;}
     }

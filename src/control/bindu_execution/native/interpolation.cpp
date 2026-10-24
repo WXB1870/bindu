@@ -351,7 +351,7 @@ PreparedSegment PreparedSegment::tracking_target(const JointLimits& limits,const
     auto final=rest(goal);final.v=velocity_hint;validate(final,limits.size());
     check(std::isfinite(start)&&std::isfinite(horizon)&&horizon>0.&&
           std::isfinite(stop_timeout)&&stop_timeout>0.,"INVALID_TRACKING_TIME");
-    double duration=.02;bool moving_goal=false;
+    double duration=minimum_tracking_duration;bool moving_goal=false;
     for(size_t i=0;i<limits.size();++i) {
         check(goal[i]>=limits[i].lower&&goal[i]<=limits[i].upper,"JOINT_LIMIT");
         check(std::abs(velocity_hint[i])<=limits[i].velocity,"TARGET_VELOCITY_LIMIT");
@@ -379,23 +379,12 @@ PreparedSegment PreparedSegment::tracking_target(const JointLimits& limits,const
                 // to this goal; the caller's original TTL still gates execution.
                 auto curves=fit_target(limits,final,goal,curve->end(),horizon-duration,stop_timeout);
                 curves.insert(curves.begin(),std::move(curve));
-                auto candidate=from_curves(curves,limits);
-                // A moving endpoint can require a longer connection. Reject
-                // it if any axis predicts worse tracking over the next 40 ms.
-                // This is a local model check, not a guarantee about new input.
-                std::vector<double> next_error(goal.size()),old_error(goal.size());
-                for(int step=1;step<=4;++step) {
-                    const double dt=step*.01;
-                    const auto next=candidate.sample(start+dt),old=fallback.sample(start+dt);
-                    for(size_t i=0;i<goal.size();++i) {
-                        const double predicted=goal[i]+velocity_hint[i]*dt;
-                        next_error[i]+=std::pow(next.q[i]-predicted,2);
-                        old_error[i]+=std::pow(old.q[i]-predicted,2);
-                    }
-                }
-                for(size_t i=0;i<goal.size();++i)
-                    if(next_error[i]>old_error[i]+1e-14) return fallback;
-                return candidate;
+                // A short-window position score favors catching the current
+                // point and stopping over continuing a moving stream. Switching
+                // between those policies creates repeated braking pulses even
+                // when the target keeps advancing. Feasible continuation wins;
+                // analytic limits and its finite return tail remain mandatory.
+                return from_curves(curves,limits);
             } catch(const std::invalid_argument&) {
                 break; // An unsafe terminal hint does not relax any limit.
             }

@@ -21,10 +21,15 @@ def prepare_limit_reference(profile, names, feedback, reference, target,
     for name in names:
         q, held, end = feedback[name], reference[name], target[name]
         lo, hi = profile.limits[name]
+        outside = q < lo or q > hi
         if (not all(math.isfinite(x) for x in (q, held, end)) or
                 not lo <= held <= hi or not lo <= end <= hi or
-                max(lo-q, q-hi, 0.) > max_excursion or abs(held-q) > max_tracking_offset):
+                max(lo-q, q-hi, 0.) > max_excursion or
+                outside and abs(held-q) > max_tracking_offset):
             raise ValueError('PREPARE_LIMIT_RECOVERY_BOUND:'+name)
+        # Only the out-of-bounds axes use the bounded-excursion contract.
+        # In-bounds tracking residuals still undergo the complete CAD prefix
+        # check and must not prevent another joint's explicit inward return.
         margin = profile.feedback_tolerances['joint_position']
         if (q < lo and (held < q or end < held or end < lo+margin) or
                 q > hi and (held > q or end > held or end > hi-margin)):

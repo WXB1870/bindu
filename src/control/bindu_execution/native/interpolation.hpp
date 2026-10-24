@@ -49,6 +49,9 @@ Curves fit_timed(const JointLimits&,const JointState&,const std::vector<JointSta
 class PreparedSegment {
 public:
     static constexpr size_t max_axes=256,max_pieces=1024;
+    // Avoid fitting aggressive, near-terminal connections for each small
+    // streaming update. This is a planning horizon, not a transport delay.
+    static constexpr double minimum_tracking_duration=.1;
     PreparedSegment()=default; // Empty mailbox/slot; sampling returns false.
     static PreparedSegment target(const JointLimits&,const JointState&,
         const std::vector<double>& goal,double start,double horizon,double stop_timeout);
