@@ -25,7 +25,15 @@ def validate_base_config(cfg):
     if watchdog is not None and (type(watchdog) not in (int, float) or
             not 0 < watchdog <= .5):
         raise ValueError('BASE_CONFIG:driver_watchdog_s')
-    return dict(cfg, driver_watchdog_s=watchdog)
+    required = cfg.get('require_driver_watchdog', True)
+    if type(required) is not bool:
+        raise ValueError('BASE_CONFIG:require_driver_watchdog')
+    nodes = {key: cfg.get(key, '') for key in ('receiver_node', 'feedback_node')}
+    for key, value in nodes.items():
+        if not isinstance(value, str) or value and (
+                not value.startswith('/') or value.endswith('/') or '//' in value):
+            raise ValueError('BASE_CONFIG:'+key)
+    return dict(cfg, driver_watchdog_s=watchdog, require_driver_watchdog=required, **nodes)
 
 
 class BaseTeleop:

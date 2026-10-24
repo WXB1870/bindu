@@ -172,7 +172,7 @@ PICO外层与工具内层共用 `bindu_runtime.stop_evidence.stop_feedback_match
 
 [配置示例](../../integration/bindu_runtime/config/robots/snowbot/snowbot_base.json)沿用旧版0.1 m/s、0.5 rad/s和0.05死区，正常速度变化率分别限制为0.2 m/s²、1.0 rad/s²；异常直接请求零速。输入250 ms过期、反馈200 ms过期、tick间隔超过100 ms、PICO锁定／操作交接或输出端存在其他发布者时均禁止继续运动。来源改变、暂停或失联后须有新鲜摇杆回中和实测停稳才能恢复。PICO准备、装卸和模式交接也纳入底盘停稳条件。完整的身份、独占和停止语义见[执行契约](../../../动作执行契约.md#2-输入模式必须显式选择)。
 
-真实写入要求原`command_enabled=true`，并在本机配置中填入**已确认的底盘驱动独立断流超时**`driver_watchdog_s`（最多0.5 s）；默认`null`或缺省时保持底盘只读，不阻断已有手臂操作。此字段是人工确认的设备条件，不会配置或验证底层驱动。`/cmd_vel`为旧脚本已知的输出；`/odom`及`child_frame_id=car_base_link`只是可改的接入初值，须核实实际`Odometry`速度反馈、源时间和机体坐标系。适配器要求唯一反馈发布实例、后续新鲜测量及100 ms连续低速窗口才确认停止；零速已发不等于停稳。身份检查范围与Humble接口限制见执行契约，不把ROS图绑定视为逐消息身份校验。独立超时未确认、无反馈或缺接收端时不得视为已接通真机。模拟模式只显示同一映射的请求，不发布真实`/cmd_vel`，尚未接入底盘物理仿真；头部跟随仍未实现。
+真实写入要求原`command_enabled=true`；默认`require_driver_watchdog=true`还要求填入**已确认的底盘驱动独立断流超时**`driver_watchdog_s`（最多0.5 s），否则底盘只读且不阻断已有手臂操作。操作者明确接受暂缓下层断流停车时，可仅在现场配方显式设`require_driver_watchdog=false`；未知的超时仍为`null`并在状态中显示，不伪造保护能力。该选择保留上层输入过期／暂停／停止的零速请求，不承诺上层进程退出后的自动停车。字段只描述接入条件，不会配置底层驱动。`receiver_node`／`feedback_node`可绑定已核实的ROS端点节点；`feedback_frame`必须匹配实际`Odometry.child_frame_id`，不根据机器人模型名猜测。118实际独立`/car_control`提供`/cmd_vel`／`/odom`和`base_link`，专属配方由Snowbot维护。适配器要求唯一反馈发布实例、后续新鲜测量及100 ms连续低速窗口才确认停止；零速已发不等于停稳。身份检查范围与Humble接口限制见执行契约，不把ROS图绑定视为逐消息身份校验。模拟模式只显示同一映射的请求，不发布真实`/cmd_vel`，尚未接入底盘物理仿真；头部跟随仍未实现。
 
 ### 相对位姿映射
 

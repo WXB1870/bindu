@@ -14,10 +14,10 @@ class TeleopBase:
         self.node = node
         self.core = BaseTeleop(json.loads(Path(config_path).read_text()))
         self.cfg = self.core.cfg
-        # The old script establishes only the outgoing topic. A real receiver's
-        # independent timeout must be confirmed locally before allowing writes.
+        # Keep the default receiver-watchdog requirement. A site can explicitly
+        # defer it; a missing timeout stays unknown rather than being fabricated.
         self.writable = bool(command_enabled and not node.simulation and
-                             self.cfg['driver_watchdog_s'] is not None)
+            (self.cfg['driver_watchdog_s'] is not None or not self.cfg['require_driver_watchdog']))
         self.disabled_reason = ('BASE_SIMULATION_PREVIEW' if node.simulation else
             'BASE_COMMANDS_DISABLED' if not command_enabled else 'BASE_DRIVER_WATCHDOG_UNCONFIRMED')
         self.publisher = None
@@ -62,9 +62,14 @@ class TeleopBase:
                            info.node_namespace == self.node.get_namespace())
         receivers = self.node.get_subscriptions_info_by_topic(self.cfg['cmd_vel_topic'])
         feedback = self.node.get_publishers_info_by_topic(self.cfg['odom_topic'])
+        def named(info, key):
+            return (not self.cfg[key] or
+                info.node_namespace.rstrip('/')+'/'+info.node_name == self.cfg[key])
         self.graph_ok = (len(pubs) == 1 and own(pubs[0]) and bool(receivers) and
             all(info.topic_type == 'geometry_msgs/msg/Twist' for info in receivers) and
-            len(feedback) == 1 and feedback[0].topic_type == 'nav_msgs/msg/Odometry')
+            any(named(info, 'receiver_node') for info in receivers) and
+            len(feedback) == 1 and feedback[0].topic_type == 'nav_msgs/msg/Odometry' and
+            named(feedback[0], 'feedback_node'))
         if self.graph_ok:
             raw_gid = getattr(feedback[0], 'endpoint_gid', None)
             try:
@@ -113,6 +118,9 @@ class TeleopBase:
                  0 <= clock-self.core.received <= self.cfg['input_max_age_s'])
         return dict(writable=self.writable, reason=self.core.reason, armed=self.core.armed,
             cmd_vel_topic=self.cfg['cmd_vel_topic'], frame=self.cfg['feedback_frame'],
+            receiver_node=self.cfg['receiver_node'], feedback_node=self.cfg['feedback_node'],
+            driver_watchdog_s=self.cfg['driver_watchdog_s'],
+            require_driver_watchdog=self.cfg['require_driver_watchdog'],
             requested=list(self.core.target) if fresh else None, command=list(self.core.command),
             measured=list(self.core.feedback_velocity) if self.core.healthy(now, clock) else None,
             stop_confirmed=self.core.stopped(now, clock) if self.writable else None,

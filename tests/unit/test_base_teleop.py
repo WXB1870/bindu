@@ -260,6 +260,36 @@ class AdapterTests(unittest.TestCase):
         self.assertFalse(bridge.writable)
         node.create_publisher.assert_not_called()
 
+    def test_watchdog_deferral_is_explicit_and_still_requires_command_enable(self):
+        original = json.loads(CONFIG.read_text())
+        for enabled, simulation, expected in ((False, False, False), (True, False, True), (True, True, False)):
+            node = self.node(simulation)
+            cfg = dict(original, require_driver_watchdog=False)
+            with patch.object(self.adapter.json, 'loads', return_value=cfg):
+                bridge = self.adapter.TeleopBase(node, CONFIG, enabled)
+            self.assertEqual(bridge.writable, expected)
+            self.assertIsNone(bridge.snapshot()['driver_watchdog_s'])
+            self.assertFalse(bridge.snapshot()['require_driver_watchdog'])
+            node.create_publisher.return_value.publish.assert_not_called()
+        for invalid in ('false', 0, None):
+            with self.subTest(invalid=invalid), self.assertRaisesRegex(ValueError, 'require_driver_watchdog'):
+                validate_base_config(dict(original, require_driver_watchdog=invalid))
+
+    def test_site_pins_both_car_control_endpoints(self):
+        node, bridge, _, feedback = self.writable()
+        bridge.cfg.update(receiver_node='/car_control', feedback_node='/car_control')
+        feedback.node_name, feedback.node_namespace = 'wrong', '/'
+        receiver = S(node_name='car_control', node_namespace='/', topic_type='geometry_msgs/msg/Twist')
+        node.get_subscriptions_info_by_topic.return_value = [receiver]
+        bridge.check_graph(10.)
+        self.assertFalse(bridge.graph_ok)
+        feedback.node_name = 'car_control'
+        bridge.check_graph(10.2)
+        self.assertTrue(bridge.graph_ok)
+        receiver.node_name = 'wrong'
+        bridge.check_graph(10.4)
+        self.assertFalse(bridge.graph_ok)
+
     def writable(self):
         node = self.node()
         cfg = dict(json.loads(CONFIG.read_text()), driver_watchdog_s=.2)
