@@ -1,5 +1,6 @@
 """Geometry/box feasibility, independent-mode bypass and finite-stop regression."""
 import json
+import math
 from pathlib import Path
 import shutil
 import subprocess
@@ -56,6 +57,21 @@ class GeometricPredictionTest(unittest.TestCase):
         self.assertLess(max(x[2] for x in events),1e-8)
         rows=[list(map(float,line.split())) for line in result.stdout.splitlines()]
         self.assertGreater(max(x[1] for x in rows),.001)
+        self.assertTrue(all(abs(x)<1e-8 for x in rows[-1][4:10]))
+
+    def test_advancing_rigid_stream_has_no_short_window_braking_pulses(self):
+        count=200
+        lines=[f'3 {count}',*['-2 2 1 4.5 162']*3,'0 0 0']
+        for k in range(count):
+            t=k*.02
+            lines.append(f'{t:.17g} {t:.17g} {.02*t+.005*math.sin(3*t):.17g} 0 0')
+        lines.append('0 0 0')
+        result=subprocess.run([str(self.exe),'geometry','1'],input='\n'.join(lines)+'\n',
+                              text=True,capture_output=True,check=True)
+        rows=[list(map(float,line.split())) for line in result.stdout.splitlines()]
+        active=[row for row in rows if .4<row[0]<3.8]
+        self.assertGreater(min(row[4] for row in active),.002)
+        self.assertLess(math.sqrt(sum(row[10]**2 for row in active)/len(active)),5.)
         self.assertTrue(all(abs(x)<1e-8 for x in rows[-1][4:10]))
 
     def test_geometry_rejection_falls_back_without_unconstrained_prediction(self):

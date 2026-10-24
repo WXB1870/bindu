@@ -279,6 +279,36 @@ void velocity_aware_targets() {
         require(rejected,"invalid velocity hint accepted");
     }
 }
+void small_streaming_motion_does_not_switch_braking_policy() {
+    // A continuously advancing small target used to alternate between the
+    // moving continuation and the rest-endpoint fallback. Position RMS hid
+    // the resulting jerk pulses. Exercise both steady and irregular updates.
+    for(int period:{10,20}) for(bool jitter:{false,true}) {
+        auto ls=limits(3);
+        for(auto& l:ls) {l.velocity=1.;l.acceleration=4.5;l.jerk=162.;}
+        const auto initial=rest({0.,0.,0.});
+        auto path=PreparedSegment::tracking_target(ls,initial,initial.q,{0.,0.,0.},0.,20.,5.);
+        int next=0,updates=0,samples=0;double jerk_squared=0.;std::vector<double> last_goal;
+        for(int tick=0;tick<6000;++tick) {
+            const double t=tick*.001;const auto state=path.sample(t);bounded(ls,state);
+            if(tick==next&&t<4.) {
+                last_goal={.02*t+.005*std::sin(3*t),.001*std::sin(4*t),0.};
+                const std::vector<double> hint{.02+.015*std::cos(3*t),.004*std::cos(4*t),0.};
+                path=PreparedSegment::tracking_target(ls,state,last_goal,hint,t,20.,5.);
+                continuous(state,path.sample(t));
+                next+=period+(jitter?(++updates%2?3:-3):0);
+            }
+            close(state.q[2],0.);close(state.v[2],0.);
+            if(t>.4&&t<3.8) {
+                require(state.v[0]>.002,"advancing stream stopped/reversed");
+                jerk_squared+=state.j[0]*state.j[0];++samples;
+            }
+        }
+        require(std::sqrt(jerk_squared/samples)<5.,"small stream has braking-policy jerk pulses");
+        const auto final=path.sample(path.end()+1.);
+        for(size_t i=0;i<3;++i) {close(final.q[i],last_goal[i]);close(final.v[i],0.);close(final.a[i],0.);}
+    }
+}
 }
 int main() {
     try {
@@ -286,6 +316,7 @@ int main() {
         wire_roundtrip_and_source_pieces();
         continuous_streams();
         velocity_aware_targets();
+        small_streaming_motion_does_not_switch_braking_policy();
         std::cout<<"prepared segment: synchronized/moving/retarget/stop/buffer tests passed; zero sampling allocations\n";
     }catch(const std::exception& e) {std::cerr<<e.what()<<'\n';return 1;}
 }
