@@ -94,8 +94,8 @@ class ShovelGeometryTests(unittest.TestCase):
             checker.set_contact_centers(dict.fromkeys(right,center))
             report=checker([self.sample],collect_failures=True)
             for name in right:
-                self.assertEqual(report['shaft_contact_intervals_m'][name],[recipe['shaft_from_left_grip_m'][0],center+.1])
-                self.assertEqual(report['shaft_contacts'][name]['half_length_m'],.1)
+                self.assertEqual(report['shaft_contact_intervals_m'][name],[recipe['shaft_from_left_grip_m'][0],center+recipe['shaft_contacts'][name]['half_length_m']])
+                self.assertEqual(report['shaft_contacts'][name]['half_length_m'],recipe['shaft_contacts'][name]['half_length_m'])
             bad=copy.deepcopy(self.sample);bad['tool'][0][3]-=.5
             with self.assertRaisesRegex(ValueError,'CLEARANCE|COLLISION|GROUND'):
                 checker([bad])

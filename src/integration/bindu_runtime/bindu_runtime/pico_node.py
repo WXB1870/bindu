@@ -1019,11 +1019,15 @@ class PicoNode(RuntimeNode):
                 reason+=':'+type(stop_error).__name__+':'+str(stop_error)
         except Exception as exc:
             reason=type(exc).__name__+':'+str(exc)
+            capture_not_ready=(intent.operation=='follow' and
+                reason=='RuntimeError:SNOWBOT_HELD_REFERENCE_NOT_STATIONARY' and
+                self.tool_result is not None and self.tool_result.done() and
+                self.tool_result.result().result.accepted_commands==0)
             try:
                 if intent.operation!='recover':await self.cancel_tool()
                 rejected=read_only
-                stopped_failure=(intent.operation=='prepare' and
-                    reason.startswith('RuntimeError:PICO_ACTUATOR_FEEDBACK_TIMEOUT:'))
+                stopped_failure=(capture_not_ready or (intent.operation=='prepare' and
+                    reason.startswith('RuntimeError:PICO_ACTUATOR_FEEDBACK_TIMEOUT:')))
             except Exception as stop_error:reason+=':'+type(stop_error).__name__+':'+str(stop_error)
         if ok and intent.operation=='manual_grippers':
             # The release barrier has just observed fresh device hold. Read it
@@ -1078,7 +1082,13 @@ class PicoNode(RuntimeNode):
             self.last_context_at=self.control.context_at
             self.event('PICO_CONTEXT',json.dumps(self.control.snapshot(self.now())))
         if (self.tool_result and self.tool_result.done() and self.control.phase in ('engaging','following')):
-            self.control.lock('PICO_TOOL_SESSION_ENDED:'+self.tool_result.result().result.code,self.now())
+            ended=self.tool_result.result().result
+            # The pending follow operation owns cancellation and exact stop proof.
+            # Do not let this timer latch its transient pre-target refusal first.
+            canceling_capture=(self.control.pending and self.control.pending.operation=='follow' and
+                ended.code=='SNOWBOT_HELD_REFERENCE_NOT_STATIONARY' and ended.accepted_commands==0)
+            if not canceling_capture:
+                self.control.lock('PICO_TOOL_SESSION_ENDED:'+ended.code,self.now())
         for intent in self.control.drain():
             if intent.operation=='record':
                 if not self.recording_enabled:

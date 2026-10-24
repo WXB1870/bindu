@@ -14,6 +14,44 @@ from tests.support.pico import Rig
 
 
 class ScenarioRuntimeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_capture_not_ready_returns_to_standby_only_after_confirmed_stop(self):
+        from types import SimpleNamespace as S
+        from unittest.mock import Mock,AsyncMock
+        for accepted,stop_ok,code in ((0,True,'SNOWBOT_HELD_REFERENCE_NOT_STATIONARY'),
+                (1,True,'SNOWBOT_HELD_REFERENCE_NOT_STATIONARY'),
+                (0,False,'SNOWBOT_HELD_REFERENCE_NOT_STATIONARY'),
+                (0,True,'SNOWBOT_PDO_STALE')):
+            with self.subTest(accepted=accepted,stop_ok=stop_ok,code=code):
+                r=Rig(guided=True);r.core.phase='engaging';intent=r.core.emit('follow');r.core.drain()
+                node=self.production('perform');node.control=r.core;node.position_contract=False
+                node.cancel_tool=AsyncMock(side_effect=[None,None if stop_ok else RuntimeError('STOP_UNCONFIRMED')])
+                node.current=Mock();node.select_tool_mode=AsyncMock();node.follow=AsyncMock(side_effect=RuntimeError(code))
+                node.tool_result=S(done=lambda:True,result=lambda:S(result=S(code=code,accepted_commands=accepted)))
+                node.now=lambda:r.now;node.feedback=lambda:PicoFeedback(r.now,stop_ok)
+                node.event=Mock();node.simulation=False
+                await node.perform(intent)
+                retry=accepted==0 and stop_ok and code=='SNOWBOT_HELD_REFERENCE_NOT_STATIONARY'
+                self.assertEqual(r.core.phase,'standby' if retry else 'locked')
+                self.assertEqual(r.core.squeeze_released,[False,False])
+                self.assertIsNone(r.core.pending)
+                if retry:
+                    self.assertFalse(r.core.fault_active)
+                    r.grips=[1.,1.];self.assertEqual(r.step(),[])
+
+    def test_pending_capture_refusal_is_not_locked_by_timer_before_cleanup(self):
+        from types import SimpleNamespace as S
+        from unittest.mock import Mock
+        for code in ('SNOWBOT_HELD_REFERENCE_NOT_STATIONARY','SNOWBOT_PDO_STALE'):
+            node=self.production('tick');node.last_tick_at=None;node.waiters=set();node.validator=S(poll=lambda:None)
+            node.state=node.position_ops=node.base=None;node.last_context_at=node.last_status=1.
+            node.now=lambda:1.;node.feedback=lambda:PicoFeedback(1.,True)
+            node.control=S(phase='engaging',context_at=1.,pending=S(operation='follow'),
+                lock=Mock(),update_feedback=Mock(),tick=Mock(),drain=lambda:[])
+            node.tool_result=S(done=lambda:True,result=lambda:S(result=S(code=code,accepted_commands=0)))
+            node.pending_intent=node.record_future=node.running=None
+            node.tick()
+            self.assertEqual(node.control.lock.called,code!='SNOWBOT_HELD_REFERENCE_NOT_STATIONARY')
+
     def test_independent_grippers_do_not_interrupt_follow_or_lock_mode_switch(self):
         r=Rig(load='held',guided=True,dual=True,direct=True)
         r.core.independent_grippers=True;r.core.teleop_mode='bimanual_tool'
