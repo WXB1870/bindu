@@ -21,6 +21,9 @@ def validate_base_config(cfg):
         value = cfg.get(key)
         if type(value) not in (int, float) or not 0 < value <= maximum:
             raise ValueError('BASE_CONFIG:'+key)
+    linear_sign = cfg.get('linear_axis_sign', -1)
+    if type(linear_sign) not in (int, float) or linear_sign not in (-1, 1):
+        raise ValueError('BASE_CONFIG:linear_axis_sign')
     watchdog = cfg.get('driver_watchdog_s')
     if watchdog is not None and (type(watchdog) not in (int, float) or
             not 0 < watchdog <= .5):
@@ -36,7 +39,7 @@ def validate_base_config(cfg):
         if not isinstance(value, str) or value and (
                 not value.startswith('/') or value.endswith('/') or '//' in value):
             raise ValueError('BASE_CONFIG:'+key)
-    return dict(cfg, driver_watchdog_s=watchdog, require_driver_watchdog=required,
+    return dict(cfg, linear_axis_sign=linear_sign, driver_watchdog_s=watchdog, require_driver_watchdog=required,
                 require_feedback=feedback_required, **nodes)
 
 
@@ -96,11 +99,10 @@ class BaseTeleop:
             self.inhibit('BASE_INPUT_STALE', now)
             return
         self.seq, self.input_stamp, self.received = left.seq, left.stamp, clock
-        # Preserve the reference script's WebXR signs and deadzone, but only
-        # use left Y for forward/reverse and right X for yaw. No button remap.
-        def axis(value):
-            return 0. if abs(value) < self.cfg['deadzone'] else -value
-        self.target = (axis(left.stick[1])*self.cfg['max_linear_m_s'],
+        # Calibrate forward/reverse per deployment; yaw keeps its WebXR sign.
+        def axis(value,sign=-1):
+            return 0. if abs(value) < self.cfg['deadzone'] else sign*value
+        self.target = (axis(left.stick[1],self.cfg['linear_axis_sign'])*self.cfg['max_linear_m_s'],
                        axis(right.stick[0])*self.cfg['max_angular_rad_s'])
         self.neutral = (abs(left.stick[1]) < self.cfg['deadzone'] and
                         abs(right.stick[0]) < self.cfg['deadzone'])

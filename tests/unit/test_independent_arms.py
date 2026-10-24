@@ -96,6 +96,30 @@ class IndependentNativeTests(unittest.TestCase):
             conservative_convex=True,tool_present=False,validation_only=True)
         self.feedback={n:0. for n in self.solver.model_names}
 
+    def test_first_independent_capture_installs_margin_and_preserves_preference(self):
+        # The first ordinary-arm capture used to omit this native policy entirely.
+        apply=self.solver.lib.bq_posture_reference_margin
+        with patch.object(self.solver.lib,'bq_posture_reference_margin',wraps=apply) as margin:
+            self.solver.capture_independent(self.feedback)
+            preferred=self.solver.posture_reference.copy()
+            self.solver.capture_independent(self.feedback)
+        self.assertEqual(margin.call_count,2)
+        self.assertAlmostEqual(margin.call_args.args[1],.027453292519943295)
+        np.testing.assert_array_equal(self.solver.posture_reference,preferred)
+
+    def test_independent_margin_blocks_outward_target_inside_physical_limits(self):
+        solver=self.solver;name='arm_l_joint_3';j=solver.names.index(name)
+        measured=dict(self.feedback);measured[name]=solver.limits[name][1]-.02
+        reference=np.array([measured[n] for n in solver.names])
+        # Isolate native joint bounds; CAD checks have separate path tests.
+        with patch.object(solver,'check_independent_path'):
+            targets=solver.capture_independent(measured)
+            q=solver._q(dict(measured,**{name:measured[name]+.01}))
+            self.assertTrue(solver.lib.bq_flange_poses(solver.handle,solver._ptr(q),solver.nq,
+                solver._ptr(targets[0]),solver._ptr(targets[1])))
+            out,_=solver.solve_independent(measured,targets,active_mask=1,reference=reference,dt=.02)
+        self.assertLessEqual(out[j],reference[j]+1e-9)
+
     def test_guarded_iteration_failure_keeps_both_arm_references_without_candidate(self):
         target=self.solver.capture_independent(self.feedback)
         reference=[0.]*len(self.solver.names)

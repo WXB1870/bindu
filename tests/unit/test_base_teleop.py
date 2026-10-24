@@ -23,6 +23,7 @@ CONFIG = SHARE/'config/robots/snowbot/snowbot_base.json'
 class BaseTests(unittest.TestCase):
     def setUp(self):
         self.cfg = json.loads(CONFIG.read_text())
+        self.cfg.pop('linear_axis_sign',None)  # Existing generic WebXR convention.
         self.base = BaseTeleop(self.cfg)
         self.now = 10.
         self.seq = 0
@@ -54,6 +55,20 @@ class BaseTests(unittest.TestCase):
         for _ in range(65):
             result = self.step(left=(0., 1.), right=(1., 0.))
         self.assertEqual(result, (-.1, -.5))
+
+    def test_snowbot_forward_reverse_calibration_keeps_yaw_and_rejects_bad_signs(self):
+        configured=json.loads(CONFIG.read_text())
+        self.assertEqual(configured['linear_axis_sign'],1)
+        self.base.cfg=validate_base_config(dict(self.cfg,linear_axis_sign=configured['linear_axis_sign']))
+        for _ in range(35):
+            result=self.step(left=(0.,-1.),right=(-1.,0.))
+        self.assertEqual(result,(-.1,.5))
+        for _ in range(65):
+            result=self.step(left=(0.,1.),right=(1.,0.))
+        self.assertEqual(result,(.1,-.5))
+        for sign in (0,True,float('nan'),2):
+            with self.assertRaisesRegex(ValueError,'linear_axis_sign'):
+                validate_base_config(dict(self.cfg,linear_axis_sign=sign))
 
     def test_unused_axes_and_all_buttons_have_no_velocity_mapping(self):
         self.assertEqual(self.step(left=(1., 0.), right=(0., 1.)), ZERO)

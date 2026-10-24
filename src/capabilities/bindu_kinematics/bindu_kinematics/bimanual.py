@@ -345,15 +345,7 @@ class BimanualQP:
             fn.argtypes,fn.restype=[c.c_void_p,c.POINTER(c.c_double)],c.c_int
             if not fn(self.handle,self._ptr(self.tracking_point)):
                 raise ValueError('BIMANUAL_TRACKING_POINT:'+self._error())
-        posture_reference = self.posture_reference
-        if self.posture_policy is not None:
-            if posture_reference is None:
-                posture_reference = np.array([feedback[n] for n in self.names],dtype=np.float64)
-            if not self.lib.bq_posture_policy(self.handle,self._ptr(posture_reference),
-                    self._ptr(self.posture_lower),self._ptr(self.posture_upper),len(self.names)):
-                raise ValueError('BIMANUAL_POSTURE_POLICY:'+self._error())
-            if self.posture_reference_margin > 0 and not self.lib.bq_posture_reference_margin(self.handle,self.posture_reference_margin):
-                raise ValueError('BIMANUAL_POSTURE_REFERENCE_MARGIN:'+self._error())
+        posture_reference = self._apply_posture_policy(feedback)
         if self.measured_rigid_grasp and self.collision_check is not None:
             # Freeze the actual right grip at capture, rather than moving the
             # contact exemption with later feedback. Width and all gates stay fixed.
@@ -548,6 +540,18 @@ class BimanualQP:
             before=end
         self._validate_geometry(self.empty_collision_check,samples)
 
+    def _apply_posture_policy(self, feedback):
+        posture_reference = self.posture_reference
+        if self.posture_policy is not None:
+            if posture_reference is None:
+                posture_reference = np.array([feedback[n] for n in self.names],dtype=np.float64)
+            if not self.lib.bq_posture_policy(self.handle,self._ptr(posture_reference),
+                    self._ptr(self.posture_lower),self._ptr(self.posture_upper),len(self.names)):
+                raise ValueError('BIMANUAL_POSTURE_POLICY:'+self._error())
+            if self.posture_reference_margin > 0 and not self.lib.bq_posture_reference_margin(self.handle,self.posture_reference_margin):
+                raise ValueError('BIMANUAL_POSTURE_REFERENCE_MARGIN:'+self._error())
+        return posture_reference
+
     def _apply_shared_motion_weight(self):
         if self.shared_motion_weight > 0 and not self.lib.bq_shared_motion_weight(self.handle,self.shared_motion_weight):
             raise ValueError('BIMANUAL_SHARED_MOTION_WEIGHT:'+self._error())
@@ -596,7 +600,10 @@ class BimanualQP:
                                              self._ptr(poses[0]),self._ptr(poses[1]))):
             raise ValueError('INDEPENDENT_ARMS_CAPTURE:'+self._error())
         self._apply_shared_motion_weight()
+        posture_reference = self._apply_posture_policy(feedback)
         self.check_independent_path(feedback,measured if reference is None else reference)
+        if posture_reference is not None:
+            self.posture_reference = posture_reference.copy()
         self.grasp_mode='independent';self.captured=True
         return poses
 
