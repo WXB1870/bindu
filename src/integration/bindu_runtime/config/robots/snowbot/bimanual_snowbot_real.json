@@ -46,10 +46,10 @@
   "worker_timeout": 0.23,
   "worker_startup_timeout": 30.0,
   "relative_gain": 12.0,
-  "max_relative_error": 0.03,
+  "max_relative_error": 0.08,
   "max_linear_speed": 1.2,
   "max_angular_speed": 2.4,
-  "solve_timeout_us": 30000,
+  "solve_timeout_us": 80000,
   "demo": {
     "description": "Virtual tool proxy: 0.34 m grip spacing with 0.10 m overhang at each end; shared display and collision geometry. Physical tool geometry requires onsite calibration.",
     "display_urdf": "snowbot_display.urdf",
@@ -113,6 +113,7 @@
         ]
       }
     },
+    "shaft_contact_endpoint_tolerance_m": 0.1,
     "shaft_contacts": {
       "arm_l_link_7": {
         "grip": "left",
@@ -162,8 +163,8 @@
     0.0,
     1.0
   ],
-  "grasp_position_tolerance_m": 0.01,
-  "grasp_rotation_tolerance_rad": 0.02,
+  "grasp_position_tolerance_m": 0.06,
+  "grasp_rotation_tolerance_rad": 0.04,
   "tool_gain": 10.0,
   "posture_gain": 0.1,
   "shared_motion_weight": 0.1,

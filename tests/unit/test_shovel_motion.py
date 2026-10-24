@@ -149,7 +149,8 @@ class ShovelGeometryTests(unittest.TestCase):
         report=make_collision_checker(self.urdf,recipe,conservative_convex=True)([self.sample])
         self.assertEqual(report['geometry_kind'],'rod')
         self.assertNotIn('PAN',json.dumps(report['failures']))
-        invalid=copy.deepcopy(recipe);invalid['shaft_contacts']['arm_l_link_7']['half_length_m']=.101
+        invalid=copy.deepcopy(recipe)
+        invalid['shaft_contacts']['arm_l_link_7']['half_length_m']=.101+recipe.get('shaft_contact_endpoint_tolerance_m',0.)
         with self.assertRaisesRegex(ValueError,'INVALID_SHAFT_CONTACT_BAND'):
             make_collision_checker(self.urdf,invalid,conservative_convex=True)
 

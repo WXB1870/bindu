@@ -10,6 +10,24 @@ class GeometryBudgetExceeded(TimeoutError):
     """A candidate search ran out of time; not proof of safe geometry."""
 
 
+def _shaft_contact_span(ends, center, half_length, endpoint_tolerance_m=0.):
+    """Clip an allowed contact band to the rod without growing its geometry."""
+    try:
+        values = np.asarray([*ends, center, half_length, endpoint_tolerance_m], dtype=float)
+    except (TypeError, ValueError, OverflowError):
+        raise ValueError('INVALID_SHAFT_CONTACT_BAND') from None
+    if (values.shape != (5,) or not np.isfinite(values).all() or
+            isinstance(endpoint_tolerance_m, (bool, np.bool_))):
+        raise ValueError('INVALID_SHAFT_CONTACT_BAND')
+    low, high, center, half_length, tolerance = map(float, values)
+    start, stop = center-half_length, center+half_length
+    if (low >= high or half_length <= 0 or tolerance < 0 or
+            start < low-tolerance-1e-9 or stop > high+tolerance+1e-9 or
+            min(high, stop)-max(low, start) <= 1e-12):
+        raise ValueError('INVALID_SHAFT_CONTACT_BAND')
+    return max(low, start), min(high, stop)
+
+
 class InitialSelfCollisionRecovery:
     """Bound a shallow initial overlap; every existing contact must retreat."""
     def __init__(self, config):
@@ -324,6 +342,7 @@ def make_collision_checker(urdf, recipe, conservative_convex=False, *, tool_pres
     transverse /= np.linalg.norm(transverse)
     rotation = np.column_stack((transverse, np.cross(shaft_axis, transverse), shaft_axis))
     contacts = recipe['shaft_contacts']
+    contact_endpoint_tolerance = recipe.get('shaft_contact_endpoint_tolerance_m', 0.)
     if not set(contacts).issubset(names):
         raise ValueError('UNKNOWN_SHAFT_CONTACT_LINK')
     def shaft_queries(contact_bands):
@@ -333,14 +352,11 @@ def make_collision_checker(urdf, recipe, conservative_convex=False, *, tool_pres
             spans = [tuple(ends)]
             if name in contact_bands:
                 center, half_length = contact_bands[name]['center_m'], contact_bands[name]['half_length_m']
-                if (not np.isfinite([center, half_length]).all() or half_length <= 0 or
-                        center-half_length < ends[0]-1e-9 or center+half_length > ends[1]+1e-9):
-                    raise ValueError('INVALID_SHAFT_CONTACT_BAND')
+                start, stop = _shaft_contact_span(ends, center, half_length, contact_endpoint_tolerance)
                 # Cylinder cut faces bound each allowed contact band precisely;
                 # unlike skipping a hand mesh this still checks the rest of the rod.
                 if not check_grasp_contacts:
-                    spans = [(ends[0], max(ends[0],center-half_length)),
-                             (min(ends[1],center+half_length), ends[1])]
+                    spans = [(ends[0], start), (stop, ends[1])]
             segments[name] = []
             for a, b in spans:
                 if b-a<=1e-12:continue  # Contact bands may meet either physical end.
@@ -583,6 +599,7 @@ def make_collision_checker(urdf, recipe, conservative_convex=False, *, tool_pres
                 'tool_body_representation':'convex_outer' if conservative_convex else 'cad_mesh',
                 'mesh_pairs': len(geometry.collisionPairs),
                 'excluded_tree_distance': 2, 'shaft_contacts': contacts,
+                'shaft_contact_endpoint_tolerance_m': contact_endpoint_tolerance,
                 'grasp_contact_checked': check_grasp_contacts,
                 'grasp_contact_test': 'inner_cylinder_mesh_intersection' if check_grasp_contacts else 'legacy_band_exemption',
                 'grasp_penetration_limit_m': grasp_penetration if check_grasp_contacts else None,

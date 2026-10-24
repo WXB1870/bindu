@@ -1,4 +1,4 @@
-"""Production solve guard checks with a native-call substitute; no ROS/hardware."""
+"""Production solve/contact guard checks; no ROS or hardware."""
 import ast
 import ctypes as c
 import math
@@ -8,6 +8,7 @@ from types import SimpleNamespace as S
 import unittest
 from unittest.mock import Mock
 import numpy as np
+from bindu_kinematics.tool_geometry import _shaft_contact_span
 
 SOURCE=Path(__file__).resolve().parents[2]/'src/capabilities/bindu_kinematics/bindu_kinematics/bimanual.py'
 TREE=ast.parse(SOURCE.read_text())
@@ -15,6 +16,77 @@ TREE=ast.parse(SOURCE.read_text())
 # native construction, and every solve executes the full production method.
 TREE.body=[n for n in TREE.body if not (isinstance(n,ast.ImportFrom) and n.module=='ament_index_python.packages')]
 NS={};exec(compile(TREE,str(SOURCE),'exec'),NS);QP=NS['BimanualQP']
+
+
+class ShaftContactBandTests(unittest.TestCase):
+    ends = (-.44, .1)
+
+    def test_default_keeps_strict_endpoint_check(self):
+        np.testing.assert_allclose(_shaft_contact_span(self.ends, -.34, .1), (-.44, -.24))
+        with self.assertRaisesRegex(ValueError, 'INVALID_SHAFT_CONTACT_BAND'):
+            _shaft_contact_span(self.ends, -.3432, .1)
+
+    def test_recorded_recenterings_clip_only_the_outside_part(self):
+        import json
+        config=Path(__file__).resolve().parents[2]/'src/integration/bindu_runtime/config/robots/snowbot/bimanual_snowbot_real.json'
+        tolerance=json.loads(config.read_text())['demo']['shaft_contact_endpoint_tolerance_m']
+        for center in (-.3431461408896104, -.3431818229817779, -.34047735756758685,
+                       -.3404849855910973, -.3404773575675868, -.3404779169447534):
+            with self.subTest(center=center):
+                start,stop=_shaft_contact_span(self.ends, center, .1, tolerance)
+                self.assertEqual(start, self.ends[0])
+                self.assertAlmostEqual(stop, center+.1)
+
+    def test_both_ends_have_six_centimetres_of_capture_margin(self):
+        for center in (-.34-.06, .06, -.34-.1, .1):
+            with self.subTest(center=center):
+                start,stop=_shaft_contact_span(self.ends, center, .1, .1)
+                self.assertGreaterEqual(start, self.ends[0])
+                self.assertLessEqual(stop, self.ends[1])
+                self.assertLess(start, stop)
+        for center in (-.34-.1001, .1001):
+            with self.subTest(center=center), self.assertRaisesRegex(ValueError, 'INVALID_SHAFT_CONTACT_BAND'):
+                _shaft_contact_span(self.ends, center, .1, .1)
+
+    def test_a_band_outside_the_rod_is_rejected_even_inside_the_margin(self):
+        for center in (-.48, .14):
+            with self.subTest(center=center), self.assertRaisesRegex(ValueError, 'INVALID_SHAFT_CONTACT_BAND'):
+                _shaft_contact_span(self.ends, center, .02, .1)
+
+    def test_invalid_numbers_and_geometry_still_reject(self):
+        for args in ((self.ends, -.34, .1, -.1), (self.ends, -.34, 0., .1),
+                     (self.ends, -.34, -.1, .1), (self.ends, float('nan'), .1, .1),
+                     (self.ends, -.34, float('inf'), .1), (self.ends, -.34, .1, float('nan')),
+                     (self.ends, -.34, .1, float('inf')), (self.ends, -.34, .1, True),
+                     ((-.44, -.44), -.34, .1, .1), ((-.44,), -.34, .1, .1)):
+            with self.subTest(args=args), self.assertRaisesRegex(ValueError, 'INVALID_SHAFT_CONTACT_BAND'):
+                _shaft_contact_span(*args)
+
+    def test_production_query_layout_keeps_full_rod_for_non_contact_bodies(self):
+        # Exercise the real layout builder with shape dimensions only; no
+        # collision engine or fabricated distance result is needed here.
+        tree=ast.parse(SOURCE.with_name('tool_geometry.py').read_text())
+        layout=next(n for n in ast.walk(tree) if isinstance(n,ast.FunctionDef) and n.name=='shaft_queries')
+        shape=lambda radius,length:S(radius=radius,length=length)
+        for check_contacts in (False,True):
+            namespace=dict(np=np,names=['hand','base'],ends=np.array(self.ends),radius=.018,
+                grasp_penetration=.005,geometry_kind='rod',has_pan=False,
+                recipe={'left_grip_in_tool_m':[0.,0.,0.]},shaft_axis=np.array([1.,0.,0.]),
+                check_grasp_contacts=check_contacts,contact_endpoint_tolerance=.1,
+                _shaft_contact_span=_shaft_contact_span,fcl=S(Cylinder=shape,Capsule=shape))
+            exec(compile(ast.Module(body=[layout],type_ignores=[]),str(SOURCE),'exec'),namespace)
+            parts,queries,_,_=namespace['shaft_queries']({'hand':{'center_m':-.4,'half_length_m':.1}})
+            base=[parts[i] for body,i in queries if body==1]
+            hand=[parts[i] for body,i in queries if body==0]
+            self.assertEqual(len(base),1);self.assertEqual(len(hand),1)
+            for _,cylinder,center in base+hand:
+                self.assertGreaterEqual(center[0]-cylinder.length/2.,self.ends[0]-1e-12)
+                self.assertLessEqual(center[0]+cylinder.length/2.,self.ends[1]+1e-12)
+            self.assertAlmostEqual(base[0][1].length,.54)
+            self.assertAlmostEqual(base[0][1].radius,.018)
+            self.assertAlmostEqual(hand[0][1].length,.54 if check_contacts else .4)
+            self.assertAlmostEqual(hand[0][1].radius,.013 if check_contacts else .018)
+
 
 class UnheldGraspPolicyTests(unittest.TestCase):
     def solver(self,policy='enforce',distance=.0,angle=.0):
