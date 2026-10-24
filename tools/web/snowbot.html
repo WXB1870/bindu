@@ -448,6 +448,9 @@ function explainReason(reason){
   if((reason||'').includes('TOOL_BELOW_GROUND'))return '工具候选路径被场景的触地策略阻断，请核对工具长度与场景配置。';
   if((reason||'').includes('BIMANUAL_TOOL_TRANSFORM'))return '工具目标位姿未通过校验。';
   if((reason||'').includes('STOP_UNCONFIRMED'))return '控制器尚未确认机器人停稳。';
+  if((reason||'').includes('COMMAND_TIMEOUT'))return '运动目标未及时更新，已触发停止保护；请先排查控制链停顿，确认停止后再恢复。';
+  if((reason||'').includes('INVALID_LEASE'))return '本次控制权已失效，不能继续原动作；请查看首故障，确认停止后再恢复。';
+  if((reason||'').includes('PICO_LEASE_RENEW_TIMEOUT'))return '控制权续租回复超时，已取消本次动作并进入停止确认。';
   if((reason||'').includes('LIMIT'))return '目标触发关节或工作范围限制。';
   return reason?'执行检查未通过：'+reason:'等待状态更新。';
 }

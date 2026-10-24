@@ -269,7 +269,8 @@ class PicoNode(RuntimeNode):
         if (msg.run_id!=self.run_id or msg.runtime_mode!=self.runtime_mode or
                 msg.component!='execution' and msg.task_id!='pico_'+self.instance_id):return
         if msg.component=='execution':
-            owned = msg.task_id=='pico_'+self.instance_id or (not msg.task_id and
+            owned = (msg.task_id=='pico_'+self.instance_id or
+                getattr(msg,'command_id','').startswith(self.instance_id+'_')) or (not msg.task_id and
                 (self.tool_request is not None or self.lease is not None or self.control.fault_active))
             if not owned:return
             if msg.state=='STOP_CHECK':
@@ -626,16 +627,30 @@ class PicoNode(RuntimeNode):
                 fit_duration=fit_duration,simulated_actuator=self.simulation)))
             started=self.now();command_id=self.instance_id+'_'+str(intent.token)+'_'+uuid.uuid4().hex[:8]
             deadline=time.monotonic()+duration+6.;renew_at=0.;next_submit=0.
+            renewal=None;renewal_started=0.
             while time.monotonic()<deadline:
                 self.current(intent)
                 state,measured=self.reading();now=self.now()
+                if (state.instance_id==execution_instance_id and
+                        state.command_id.startswith(command_id+'_') and state.state in ('STOPPING','FAILED') and
+                        state.code not in ('OK','CANCELED','SHUTDOWN')):
+                    raise RuntimeError(state.code)
                 if state.instance_id!=execution_instance_id or not state.lease_active or state.lease_epoch!=lease.epoch:
                     raise RuntimeError('PICO_EXECUTION_AUTHORITY_CHANGED')
                 for n,(side,best) in tuple(recovery_progress.items()):
                     if side*(measured[n]-best)>self.profile.feedback_tolerances['joint_position']:
                         raise RuntimeError('PREPARE_LIMIT_RECOVERY_MOVED_OUTWARD:'+n)
                     recovery_progress[n]=(side,min(best,measured[n]) if side>0 else max(best,measured[n]))
-                if state.command_id.startswith(command_id+'_') and state.state=='FAILED':raise RuntimeError(state.code)
+                if renewal is not None:
+                    if time.monotonic()-renewal_started>=2.:
+                        raise RuntimeError('PICO_LEASE_RENEW_TIMEOUT')
+                    if renewal.done():
+                        reply=renewal.result()
+                        if not reply.ok:raise RuntimeError(reply.code)
+                        if (reply.lease_id!=lease.lease_id or reply.epoch!=lease.epoch or
+                                reply.profile_hash!=self.profile.digest):
+                            raise RuntimeError('PICO_EXECUTION_AUTHORITY_CHANGED')
+                        renewal=None;renew_at=time.monotonic()+.2
                 if (now>=started+duration and seconds(state.feedback_stamp)>=started+duration and
                         all(abs(measured[n]-v)<arrival_tolerance for n,v in zip(self.names,end) if n in arrival_names) and
                         (recovery is None or all(self.profile.limits[n][0]<=measured[n]<=self.profile.limits[n][1]
@@ -650,11 +665,12 @@ class PicoNode(RuntimeNode):
                         error_rad={n:float(v-measured[n]) for n,v in zip(self.names,end)},
                         measured_at_rest=True)))
                     return
-                if time.monotonic()>renew_at:
-                    reply=await self.wait(self.leases.call_async(Lease.Request(operation='renew',
-                        lease_id=lease.lease_id,epoch=lease.epoch)))
-                    if not reply.ok:raise RuntimeError(reply.code)
-                    renew_at=time.monotonic()+.2
+                if renewal is None and time.monotonic()>=renew_at:
+                    # A slow renewal reply must not suspend fresh target supply.
+                    # The executor still enforces lease expiry on every submit.
+                    renewal=self.leases.call_async(Lease.Request(operation='renew',
+                        lease_id=lease.lease_id,epoch=lease.epoch))
+                    renewal_started=time.monotonic()
                 if now>=next_submit:
                     sample=curve.sample(min(duration,max(0.,now-started)+(0. if self.position_contract else .12)))
                     point=JointTrajectoryPoint(positions=list(sample.q),velocities=list(sample.v),
