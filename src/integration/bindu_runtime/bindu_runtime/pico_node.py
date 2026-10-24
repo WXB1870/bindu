@@ -54,6 +54,7 @@ class PicoNode(RuntimeNode):
         self.declare_parameter('tool_config',str(share/'config/robots/snowbot/bimanual_snowbot_shovel.json'),descriptor=ParameterDescriptor(read_only=True))
         self.declare_parameter('model_root',str(Path(get_package_share_directory('bindu_description'))/'urdf'),descriptor=ParameterDescriptor(read_only=True))
         self.declare_parameter('device_backend','kinematic',descriptor=ParameterDescriptor(read_only=True))
+        self.declare_parameter('position_protocol','legacy_guard',descriptor=ParameterDescriptor(read_only=True))
         self.declare_parameter('gripper_config','',descriptor=ParameterDescriptor(read_only=True))
         self.declare_parameter('base_config','',descriptor=ParameterDescriptor(read_only=True))
         self.declare_parameter('command_enabled',False,descriptor=ParameterDescriptor(read_only=True))
@@ -133,6 +134,12 @@ class PicoNode(RuntimeNode):
         self.prepare_position_tolerance=float(self.cfg.get('prepare_position_tolerance_rad',.002))
         if not math.isfinite(self.prepare_position_tolerance) or self.prepare_position_tolerance<=0:
             raise ValueError('PICO_PREPARE_TOLERANCE_INVALID')
+        self.prepare_limit_max=float(self.cfg.get('prepare_limit_recovery_max_rad',0.))
+        if (not math.isfinite(self.prepare_limit_max) or
+                not 0<=self.prepare_limit_max<=self.prepare_position_tolerance):
+            raise ValueError('PICO_PREPARE_LIMIT_RECOVERY_CONFIG')
+        if self.simulation or self.get_parameter('position_protocol').value!='session_v3':
+            self.prepare_limit_max=0.
         self.control=PicoControl(initial_load=initial_load,simulation_demo=self.simulation_demo,
                                  max_age=float(self.tool_cfg['input_max_age']),guided_loading=self.position_contract,
                                  dual_modes=self.position_contract,direct_grippers=self.position_contract,
@@ -146,9 +153,13 @@ class PicoNode(RuntimeNode):
                 raise ValueError('PICO_PREPARE_RECOVERY_REQUIRES_SIMULATION_POSITION')
             from bindu_kinematics.tool_geometry import InitialSelfCollisionRecovery
             validation_cfg['prepare_collision_recovery']=InitialSelfCollisionRecovery(recovery).config
+        validation_cfg['prepare_limit_recovery_max_rad']=self.prepare_limit_max
+        validation_cfg['prepare_reference_max_offset_rad']=self.prepare_position_tolerance
         self.validator=BimanualWorker(validation_cfg,self.profile,preload_path_checks=True)
         self.validation_result=None
         self.prepare_recovery=None
+        self.prepare_limit_reference=None
+        self.prepare_limit_start=None
         self.frames={};self.state=self.mode=None;self.handoff_complete=False
         self.tool_goal=None;self.tool_result=None;self.tool_phase='inactive'
         self.lease=None;self.pending_intent=None;self.running=None
@@ -167,6 +178,8 @@ class PicoNode(RuntimeNode):
         self.leases=self.create_client(Lease,'execution/lease')
         self.submit=self.create_client(SubmitMotion,'execution/submit')
         self.stop_client=self.create_client(ControlExecution,'execution/control')
+        self.prepare_hold_client=(self.create_client(Trigger,'execution/held_reference')
+                                  if self.position_contract and not self.simulation else None)
         self.ready_client=self.create_client(Trigger,'teleop/tool_ready')
         self.arms_ready_client=self.create_client(Trigger,'teleop/arms_ready') if self.position_contract else None
         self.record_client=self.create_client(SetBool,'recorder/capture') if self.recording_enabled else None
@@ -502,6 +515,36 @@ class PicoNode(RuntimeNode):
             self.stop_unconfirmed(request,type(exc).__name__+':'+str(exc))
         if self.lease is ownership:self.lease=None
 
+    async def prepare_hold_reference(self,intent,*,lease=None,previous=None):
+        """Authenticate the stopped PAUSE again after every ownership transition."""
+        self.current(intent)
+        if not self.prepare_hold_client or self.stop_request is not None:
+            raise RuntimeError('PREPARE_LIMIT_RECOVERY_HOLD_REQUIRED')
+        reply=await self.wait(self.prepare_hold_client.call_async(Trigger.Request()))
+        self.current(intent)
+        if not reply.success:raise RuntimeError(reply.message)
+        try:
+            data=json.loads(reply.message);s,q=self.reading()
+            if (s.stop_failures or s.state not in ('READY','CANCELED','SUCCEEDED') or
+                    s.lease_active is not (lease is not None) or
+                    data['instance_id']!=s.instance_id or data['profile_hash']!=self.profile.digest or
+                    data['lease_id']!=(lease.lease_id if lease else '') or
+                    data['epoch']!=(lease.epoch if lease else s.lease_epoch) or
+                    data['revision']!=s.revision or
+                    not 0<=self.now()-data['stamp']<=self.tool_cfg['feedback_max_age'] or
+                    set(data['positions'])!=set(self.names) or
+                    any(type(data[k]) is not int or data[k]<=0 for k in ('boot_id','session','sequence')) or
+                    not joints_at_rest(s.joints,self.names,.005)):
+                raise ValueError('identity')
+            if previous is not None and any(data[k]!=previous[k] for k in
+                    ('instance_id','profile_hash','boot_id','session','sequence','positions')):
+                raise ValueError('hold changed')
+            if any(not math.isfinite(v) or not self.profile.limits[n][0]<=v<=self.profile.limits[n][1]
+                   for n,v in data['positions'].items()):raise ValueError('limits')
+        except (KeyError,TypeError,ValueError) as exc:
+            raise RuntimeError('PREPARE_LIMIT_RECOVERY_HOLD_CHANGED') from exc
+        return data
+
     async def move(self,intent,targets,duration,*,fit_duration=False):
         self.current(intent)
         if not self.feedback().stopped:raise RuntimeError('PICO_MOTION_REQUIRES_STOP')
@@ -529,8 +572,26 @@ class PicoNode(RuntimeNode):
                 if time.monotonic()>deadline:raise RuntimeError('PICO_LEASE_FEEDBACK_TIMEOUT')
                 await self.pause()
             s,q=self.reading();end=[targets.get(n,q[n]) for n in self.names]
+            recovery=(getattr(self,'prepare_limit_reference',None)
+                      if intent.operation=='prepare' else None)
+            recovery_progress={}
+            if recovery is not None:
+                from bindu_kinematics.bimanual_worker import prepare_limit_reference
+                held=await self.prepare_hold_reference(intent,lease=lease,previous=recovery)
+                s,q=self.reading()
+                if any(abs(q[n]-self.prepare_limit_start[n])>.0001 for n in self.names):
+                    raise RuntimeError('PREPARE_STATE_CHANGED')
+                start=prepare_limit_reference(self.profile,self.names,q,held['positions'],targets,
+                                             self.prepare_limit_max,self.prepare_position_tolerance)
+                recovery_progress={n:(-1 if q[n]<self.profile.limits[n][0] else 1,q[n])
+                    for n in self.names if not self.profile.limits[n][0]<=q[n]<=self.profile.limits[n][1]}
+                # Reuse the existing conservative collision-escape speed cap.
+                if recovery_progress:
+                    speed=self.cfg.get('prepare_collision_recovery',{}).get('max_joint_speed_rad_s',.05)
+                    duration=max(duration,2.5*max(abs(start[n]-v) for n,v in zip(self.names,end))/speed)
+            else:
+                start=prepare_reference(self.profile,self.names,q) if self.position_contract and intent.operation=='prepare' else q
             revision=s.revision;segment=0
-            start=prepare_reference(self.profile,self.names,q) if self.position_contract and intent.operation=='prepare' else q
             before=State.rest(tuple(start[n] for n in self.names));after=State.rest(tuple(end))
             curve=Curve.between(0.,duration,before,after)
             if not curve.valid(self.profile,self.names):raise RuntimeError('PICO_MOTION_LIMITS')
@@ -555,9 +616,15 @@ class PicoNode(RuntimeNode):
                 state,measured=self.reading();now=self.now()
                 if state.instance_id!=execution_instance_id or not state.lease_active or state.lease_epoch!=lease.epoch:
                     raise RuntimeError('PICO_EXECUTION_AUTHORITY_CHANGED')
+                for n,(side,best) in tuple(recovery_progress.items()):
+                    if side*(measured[n]-best)>self.profile.feedback_tolerances['joint_position']:
+                        raise RuntimeError('PREPARE_LIMIT_RECOVERY_MOVED_OUTWARD:'+n)
+                    recovery_progress[n]=(side,min(best,measured[n]) if side>0 else max(best,measured[n]))
                 if state.command_id.startswith(command_id+'_') and state.state=='FAILED':raise RuntimeError(state.code)
                 if (now>=started+duration and seconds(state.feedback_stamp)>=started+duration and
                         all(abs(measured[n]-v)<arrival_tolerance for n,v in zip(self.names,end)) and
+                        (recovery is None or all(self.profile.limits[n][0]<=measured[n]<=self.profile.limits[n][1]
+                                                 for n in self.names)) and
                         joints_at_rest(state.joints,self.names,.005)):
                     self.event('PICO_ACTUATOR_ARRIVED',json.dumps(dict(operation=intent.operation,
                         position_tolerance_rad=arrival_tolerance,
@@ -602,6 +669,8 @@ class PicoNode(RuntimeNode):
     async def validate_prepare(self,intent,targets=None,*,allow_recovery=True):
         self.current(intent);s,q=self.reading()
         self.prepare_recovery=None
+        self.prepare_limit_reference=None
+        self.prepare_limit_start=None
         if targets is None and self.prepare_positions is None:
             raise RuntimeError('PICO_PREPARE_PRESET_REQUIRED')
         if not joints_at_rest(s.joints,self.names,.005 if self.position_contract else 1e-6):raise RuntimeError('PREPARE_REQUIRES_STATIONARY_START')
@@ -616,20 +685,33 @@ class PicoNode(RuntimeNode):
             if time.monotonic()>end:raise RuntimeError('PICO_PREPARE_VALIDATOR_TIMEOUT')
             await self.pause()
         names=[n for g in self.tool_cfg['resource_groups'] for n in self.profile.groups[g]]
-        reference=prepare_reference(self.profile,names,q) if self.position_contract and not gripper_move else q
+        reference=q
+        if self.position_contract and not gripper_move and getattr(self,'prepare_limit_max',0.):
+            from bindu_kinematics.bimanual_worker import prepare_limit_reference
+            held=await self.prepare_hold_reference(intent)
+            reference=prepare_limit_reference(self.profile,names,q,held['positions'],target,
+                                             self.prepare_limit_max,self.prepare_position_tolerance)
+            self.prepare_limit_reference=held
+            self.prepare_limit_start=dict(q)
+        elif self.position_contract and not gripper_move:
+            reference=prepare_reference(self.profile,names,q)
         extra={}
         if reference!=q:
             extra['reference']=reference
             self.event('PICO_PREPARE_BOUNDARY_REFERENCE',json.dumps(dict(
                 measured={n:q[n] for n in names if q[n]!=reference[n]},
                 reference={n:reference[n] for n in names if q[n]!=reference[n]},
-                tolerance_rad=self.profile.feedback_tolerances['joint_position'])))
+                reference_source='confirmed_pause' if self.prepare_limit_reference else 'boundary_roundoff',
+                tolerance_rad=(self.prepare_position_tolerance if self.prepare_limit_reference else
+                               self.profile.feedback_tolerances['joint_position']))))
         self.validation_result=None
         # Holding A explicitly requests an empty-hand return. Validate the
         # robot path without preserving a previously captured tool grasp.
         operation='gripper_path' if gripper_move else 'prepare_path'
         if allow_recovery and operation=='prepare_path' and self.cfg.get('prepare_collision_recovery'):
             operation='prepare_recovery_path'
+        if self.prepare_limit_reference is not None:
+            operation='prepare_limit_recovery_path'
         self.event('PICO_PREPARE_VALIDATION',json.dumps(dict(operation=operation,load_state=self.control.load,
             load_state_checked=gripper_move,tool_present=gripper_move,coupling_checked=False,
             measured_grasp_policy='unheld_test' if self.unheld_test else 'enforce')))
@@ -776,7 +858,9 @@ class PicoNode(RuntimeNode):
                 target=await self.validate_prepare(intent)
                 _,measured=self.reading()
                 error=max(abs(measured[n]-q) for n,q in target.items())
-                if self.position_contract and error<self.prepare_position_tolerance and not self.prepare_recovery:
+                if (self.position_contract and error<self.prepare_position_tolerance and not self.prepare_recovery and
+                        (not getattr(self,'prepare_limit_reference',None) or
+                         all(self.profile.limits[n][0]<=measured[n]<=self.profile.limits[n][1] for n in target))):
                     self.event('PICO_PREPARE_ALREADY_REACHED',json.dumps(dict(max_joint_error_rad=error,
                         position_tolerance_rad=self.prepare_position_tolerance)))
                 else:

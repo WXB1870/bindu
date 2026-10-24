@@ -157,6 +157,7 @@ def assemble(context):
                          'pico_config':pico_config,'device_backend':backend,'recording_enabled':recorder_enabled,
                          'gripper_config':value('gripper_config'),
                          'base_config':base_config, 'command_enabled':enabled('command_enabled','false'),
+                         'position_protocol':value('position_protocol','legacy_guard'),
                          'simulation_demo':pico_demo}]))
     nodes.append(Node(package='bindu_runtime', executable='vr_input', namespace=ns,
                       condition=IfCondition(LaunchConfiguration('vr_enabled')), output='screen',

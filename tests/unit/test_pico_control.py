@@ -300,6 +300,111 @@ class ScenarioRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 node.validate_prepare.assert_awaited_once()
 
 
+class LimitRecoveryRuntimeTests(unittest.IsolatedAsyncioTestCase):
+    def held_node(self):
+        from types import SimpleNamespace as S
+        from unittest.mock import Mock,AsyncMock
+        node=ScenarioRuntimeTests.production('prepare_hold_reference')
+        node.current=Mock();node.stop_request=None;node.now=lambda:10.
+        node.names=('joint',);node.profile=S(digest='profile',limits={'joint':(-1.,1.)})
+        node.tool_cfg={'feedback_max_age':.1}
+        state=S(instance_id='executor',lease_active=False,lease_epoch=2,revision=3,
+                state='CANCELED',stop_failures=[],joints=S(name=['joint'],velocity=[0.]))
+        node.reading=Mock(return_value=(state,{'joint':-1.01}))
+        value=dict(instance_id='executor',profile_hash='profile',lease_id='',epoch=2,
+                   revision=3,stamp=9.99,positions={'joint':-.995},boot_id=1,session=2,sequence=3)
+        node.prepare_hold_client=S(call_async=Mock(return_value=S()))
+        node.wait=AsyncMock(return_value=S(success=True,message=json.dumps(value)))
+        return node,state,value
+
+    async def test_hold_snapshot_is_read_only_and_bound_to_current_state_and_pause(self):
+        from types import SimpleNamespace as S
+        node,state,value=self.held_node();intent=S(token=1)
+        self.assertEqual(await node.prepare_hold_reference(intent),value)
+        for key,bad in [('instance_id','other'),('epoch',1),('revision',4),('stamp',9.),
+                        ('boot_id',0),('positions',{'joint':-1.001})]:
+            changed=dict(value,**{key:bad});node.wait.return_value=S(success=True,message=json.dumps(changed))
+            with self.subTest(key=key),self.assertRaisesRegex(RuntimeError,'HOLD_CHANGED'):
+                await node.prepare_hold_reference(intent)
+        node.wait.return_value=S(success=True,message=json.dumps(value));state.stop_failures=['vendor_hold']
+        with self.assertRaisesRegex(RuntimeError,'HOLD_CHANGED'):await node.prepare_hold_reference(intent)
+        state.stop_failures=[];state.lease_active=True;value.update(lease_id='lease',epoch=3);state.lease_epoch=3
+        node.wait.return_value=S(success=True,message=json.dumps(value));lease=S(lease_id='lease',epoch=3)
+        self.assertEqual(await node.prepare_hold_reference(intent,lease=lease,previous=dict(value)),value)
+        with self.assertRaisesRegex(RuntimeError,'HOLD_CHANGED'):
+            await node.prepare_hold_reference(intent,lease=lease,previous=dict(value,sequence=1))
+
+    async def test_a_validates_raw_measured_prefix_then_the_legal_held_reference_path(self):
+        from types import SimpleNamespace as S
+        from unittest.mock import Mock,AsyncMock
+        node=ScenarioRuntimeTests.production('validate_prepare')
+        node.current=Mock();node.event=Mock();node.position_contract=True;node.unheld_test=False
+        node.prepare_positions={'joint':.2};node.names=('joint',);node.cfg={}
+        node.prepare_limit_max=.017453292519943295;node.prepare_position_tolerance=.035
+        node.control=S(load='held');node.tool_cfg={'resource_groups':['arm']}
+        node.profile=S(groups={'arm':['joint']},limits={'joint':(-1.,1.)},feedback_tolerances={'joint_position':.002})
+        measured={'joint':-1.01};state=S(joints=S(name=['joint'],velocity=[0.]))
+        node.reading=Mock(return_value=(state,measured))
+        node.prepare_hold_reference=AsyncMock(return_value={'positions':{'joint':-.995}})
+        def submit(operation,token,feedback,target,**extra):
+            node.validation_result=('result',token,{});return True
+        node.validator=S(ready=True,busy=False,startup_timeout=1.,submit=Mock(side_effect=submit))
+        self.assertEqual(await node.validate_prepare(S(token=1)),{'joint':.2})
+        node.validator.submit.assert_called_once_with('prepare_limit_recovery_path',1,measured,[.2],reference={'joint':-.995})
+        self.assertEqual(measured,{'joint':-1.01})
+        self.assertEqual(node.prepare_limit_start,measured)
+
+    async def movement(self,*,outward=False,hold_error=False):
+        from types import SimpleNamespace as S
+        from unittest.mock import Mock,AsyncMock
+        from bindu_contracts.profile import Profile
+        from bindu_execution.interpolation import Curve,State
+        import uuid
+        node=ScenarioRuntimeTests.production('move');clock=[0.]
+        node.move.__func__.__globals__.update(time=S(monotonic=lambda:clock[0]),Curve=Curve,State=State,
+            Lease=S(Request=lambda **kw:S(**kw)),SubmitMotion=S(Request=lambda **kw:S(**kw)),
+            MotionCommand=lambda **kw:S(**kw),JointTrajectoryPoint=lambda **kw:S(**kw),
+            Duration=lambda **kw:S(**kw),stamp=lambda t:t,uuid=uuid)
+        lo=-.5974532925199433;actual=-.6073604822158813;held=-.596094062733137
+        node.profile=Profile('fixture',{'arm':['joint']},{'joint':[lo,2.61]},.5,('joint_position',),'profile',
+            feedback_tolerances={'joint_position':.002})
+        state=S(instance_id='executor',lease_active=True,lease_epoch=2,revision=1,
+                command_id='',state='CANCELED',joints=S(name=['joint'],velocity=[0.]))
+        node.state=state;node.current=Mock();node.feedback=lambda:S(stopped=True)
+        node.prepare_position_tolerance=.035;node.prepare_limit_max=.017453292519943295
+        node.prepare_limit_reference={'positions':{'joint':held}};node.prepare_limit_start={'joint':actual}
+        node.prepare_hold_reference=AsyncMock(return_value=node.prepare_limit_reference)
+        if hold_error:node.prepare_hold_reference.side_effect=RuntimeError('PREPARE_LIMIT_RECOVERY_HOLD_CHANGED')
+        node.position_contract=True;node.names=('joint',);node.groups=('arm',);node.cfg={};node.simulation=False
+        node.instance_id='pico';node.runtime_mode='real'
+        lease=S(ok=True,lease_id='lease',epoch=2,profile_hash='profile')
+        node.leases=S(call_async=Mock(side_effect=lambda request:lease if request.operation=='acquire' else S(ok=True)))
+        async def wait(value,*args,**kw):return value
+        node.wait=wait;node.now=lambda:clock[0];node.release_lease=AsyncMock();node.event=Mock()
+        def reading():
+            q=actual if not clock[0] else actual-.003 if outward else .2
+            state.feedback_stamp=S(sec=int(clock[0]),nanosec=0)
+            return state,{'joint':q}
+        node.reading=reading
+        async def pause():clock[0]=.01 if outward else 41.
+        node.pause=pause;node.submit=S(call_async=Mock(return_value=S(accepted=True,revision=2)))
+        try:await node.move(S(token=1,operation='prepare'),{'joint':.2},12.)
+        finally:node.release_lease.assert_awaited_once()
+        return node,held,lo
+
+    async def test_recovery_starts_at_confirmed_reference_and_returns_inside_hard_bounds(self):
+        node,held,lo=await self.movement()
+        command=node.submit.call_async.call_args.args[0].command
+        self.assertAlmostEqual(command.positions[0],held)
+        self.assertGreaterEqual(command.positions[0],lo)
+        node.prepare_hold_reference.assert_awaited_once()
+
+    async def test_changed_hold_or_further_outward_motion_aborts_and_releases(self):
+        for options,reason in [({'hold_error':True},'HOLD_CHANGED'),({'outward':True},'MOVED_OUTWARD')]:
+            with self.subTest(options=options),self.assertRaisesRegex(RuntimeError,reason):
+                await self.movement(**options)
+
+
 class PrepareReturnPathTests(unittest.IsolatedAsyncioTestCase):
     async def arrival(self,operation='prepare',error=.0284,velocity=0.,fresh=True,stop_error=None):
         from types import SimpleNamespace as S

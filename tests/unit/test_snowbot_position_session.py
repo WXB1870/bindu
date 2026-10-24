@@ -603,6 +603,10 @@ class TargetWireTests(unittest.TestCase):
         self.d.node.instance_id='adapter'
         sent=self.d.publishers['arms'].publish.call_count
         old_request=self.d.io.pause_request
+        # A can validate the exact completed hold before acquiring authority.
+        idle=self.d.read_held_reference(None,S())
+        self.assertTrue(idle.success,idle.message)
+        self.assertEqual(json.loads(idle.message)['lease_id'],'')
         lease,epoch=self.rig.engine.acquire('follow',tuple(CONTROL_GROUPS),2.,self.rig.now)
         self.assertIsNone(self.d.io.pause_request)
         self.assertEqual(self.d.io.captured_pause_request,old_request)

@@ -175,7 +175,7 @@ class PositionSessionDevices:
         """Read the confirmed PAUSE point without acquiring or sending anything."""
         engine = self.node.engine
         try:
-            if (self.node.closing or not engine.lease_id or engine.active or
+            if (self.node.closing or engine.active or
                     engine.stopping or engine.stop_fault or self.io.stop_failures):
                 raise RuntimeError('SNOWBOT_HELD_REFERENCE_REQUIRES_STOPPED_LEASE')
             identity = getattr(self.io, 'pause_request', None) or self.io.captured_pause_request
@@ -186,6 +186,12 @@ class PositionSessionDevices:
                    for n, q in targets.items()):
                 raise RuntimeError('SNOWBOT_HELD_REFERENCE_LIMIT')
             obs = self.health.observation
+            # A may inspect a completed PAUSE before acquiring its own lease.
+            # This remains a read-only snapshot, not an ownership grant.
+            from bindu_hardware.snowbot_session import SLOTS
+            if any(not math.isfinite(obs.speed[SLOTS.index(n)]) or abs(obs.speed[SLOTS.index(n)])>.005
+                   for n in CONTROL_NAMES):
+                raise RuntimeError('SNOWBOT_HELD_REFERENCE_NOT_STATIONARY')
             reply.success, reply.message = True, json.dumps(dict(
                 instance_id=self.node.instance_id, profile_hash=self.io.profile.digest,
                 lease_id=engine.lease_id, epoch=engine.epoch, revision=engine.revision,

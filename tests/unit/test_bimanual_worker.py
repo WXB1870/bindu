@@ -174,5 +174,35 @@ class WorkerReceiptTests(unittest.TestCase):
             self.poll(worker, 4000.25)
 
 
+class PrepareLimitReferenceTests(unittest.TestCase):
+    def fixture(self):
+        from types import SimpleNamespace as S
+        return S(limits={'r3':(-.5974532925199433,2.611745329251994),'other':(-1.,1.)},
+                 feedback_tolerances={'joint_position':.002})
+
+    def test_recorded_excursion_uses_explicit_held_reference_without_clipping_feedback(self):
+        from bindu_kinematics.bimanual_worker import prepare_limit_reference
+        measured={'r3':-.6073604822158813,'other':.1}
+        held={'r3':-.596094062733137,'other':.09};target={'r3':-.431745,'other':.2}
+        result=prepare_limit_reference(self.fixture(),tuple(held),measured,held,target,.017453292519943295,.035)
+        self.assertEqual(result,held)
+        self.assertEqual(measured['r3'],-.6073604822158813)
+        self.assertIsNot(result,held)
+
+    def test_large_excursion_unconfirmed_layout_and_outward_return_are_rejected(self):
+        from bindu_kinematics.bimanual_worker import prepare_limit_reference
+        profile=self.fixture();names=('r3','other')
+        for measured,held,target,cap in [
+            ({'r3':-.63,'other':.1},{'r3':-.59,'other':.1},{'r3':-.43,'other':.1},.017),
+            ({'r3':-.607,'other':.1},{'r3':-.598,'other':.1},{'r3':-.43,'other':.1},.017),
+            ({'r3':-.607,'other':.1},{'r3':-.59,'other':.1},{'r3':-.595,'other':.1},.017),
+            ({'r3':-.607,'other':.1},{'r3':-.55,'other':.1},{'r3':-.43,'other':.1},.017),
+            ({'r3':float('nan'),'other':.1},{'r3':-.59,'other':.1},{'r3':-.43,'other':.1},.017),
+            ({'r3':-.607,'other':.1},{'r3':-.59},{'r3':-.43,'other':.1},.017),
+            ({'r3':-.607,'other':.1},{'r3':-.59,'other':.1},{'r3':-.43,'other':.1},0.)]:
+            with self.subTest(measured=measured,held=held,target=target),self.assertRaises(ValueError):
+                prepare_limit_reference(profile,names,measured,held,target,cap,.035)
+
+
 if __name__ == '__main__':
     unittest.main()

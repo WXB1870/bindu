@@ -6,6 +6,33 @@ import time
 import gc
 
 
+def prepare_limit_reference(profile, names, feedback, reference, target,
+                            max_excursion, max_tracking_offset):
+    """Validate an explicit inward A return from an authenticated held reference.
+
+    The caller authenticates the PAUSE identity. Raw measured positions remain
+    the geometry-validation start; all commanded references stay inside limits.
+    """
+    if (not all(math.isfinite(x) and x > 0 for x in (max_excursion, max_tracking_offset)) or
+            set(reference) != set(names) or not set(names) <= set(feedback) or
+            not set(names) <= set(target)):
+        raise ValueError('PREPARE_LIMIT_RECOVERY_LAYOUT')
+    result = dict(reference)
+    for name in names:
+        q, held, end = feedback[name], reference[name], target[name]
+        lo, hi = profile.limits[name]
+        if (not all(math.isfinite(x) for x in (q, held, end)) or
+                not lo <= held <= hi or not lo <= end <= hi or
+                max(lo-q, q-hi, 0.) > max_excursion or abs(held-q) > max_tracking_offset):
+            raise ValueError('PREPARE_LIMIT_RECOVERY_BOUND:'+name)
+        margin = profile.feedback_tolerances['joint_position']
+        if (q < lo and (held < q or end < held or end < lo+margin) or
+                q > hi and (held > q or end > held or end > hi-margin)):
+            raise ValueError('PREPARE_LIMIT_RECOVERY_NOT_INWARD:'+name)
+        result[name] = held
+    return result
+
+
 def _run(config, profile, requests, results, preload_path_checks=False):
     solver = None
     try:
@@ -49,7 +76,7 @@ def _run(config, profile, requests, results, preload_path_checks=False):
                 elif operation == 'capture': value=solver.capture(feedback,grasp_mode)
                 elif operation == 'loaded_prepare_path':
                     value=solver.check_loaded_prepare(feedback,target)
-                elif operation in ('prepare_path','prepare_recovery_path','gripper_path'):
+                elif operation in ('prepare_path','prepare_recovery_path','prepare_limit_recovery_path','gripper_path'):
                     import numpy as np
                     loaded=operation=='gripper_path'
                     check=path_check(loaded)
@@ -59,6 +86,8 @@ def _run(config, profile, requests, results, preload_path_checks=False):
                     after=np.array([target.get(n,feedback[n]) for n in names]) if loaded else np.array(target)
                     if before.shape!=after.shape or not np.isfinite(after).all():
                         raise ValueError('PREPARE_JOINT_LAYOUT')
+                    if operation=='prepare_limit_recovery_path' and reference is None:
+                        raise ValueError('PREPARE_LIMIT_RECOVERY_HOLD_REQUIRED')
                     for name,q in zip(names,after):
                         if not profile.limits[name][0]<=q<=profile.limits[name][1]:
                             raise ValueError('PREPARE_JOINT_LIMIT')
@@ -68,9 +97,14 @@ def _run(config, profile, requests, results, preload_path_checks=False):
                         # the exact reference path; never hide a CAD collision.
                         start=np.array([reference[n] for n in names])
                         tolerance=profile.feedback_tolerances['joint_position']
+                        limit_recovery=operation=='prepare_limit_recovery_path'
+                        if limit_recovery:
+                            prepare_limit_reference(profile,names,feedback,reference,
+                                dict(zip(names,after)),config['prepare_limit_recovery_max_rad'],
+                                config['prepare_reference_max_offset_rad'])
                         if (loaded or not np.isfinite(start).all() or
                                 any(not profile.limits[n][0]<=q<=profile.limits[n][1] for n,q in zip(names,start)) or
-                                np.max(np.abs(start-before))>tolerance):
+                                not limit_recovery and np.max(np.abs(start-before))>tolerance):
                             raise ValueError('PREPARE_START_JOINT_LIMIT')
                         count=max(1,int(np.ceil(np.max(np.abs(start-before))/.001)))
                         prefix=[]
@@ -88,7 +122,7 @@ def _run(config, profile, requests, results, preload_path_checks=False):
                         value=check(samples)
                     except ValueError as exc:
                         recovery=config.get('prepare_collision_recovery')
-                        if (operation!='prepare_recovery_path' or not recovery or
+                        if (operation not in ('prepare_recovery_path','prepare_limit_recovery_path') or not recovery or
                                 not str(exc).startswith('SELF_COLLISION:') or not str(exc).endswith(' t=0.0')):
                             raise
                         from .tool_geometry import InitialSelfCollisionRecovery
