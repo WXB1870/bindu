@@ -74,6 +74,24 @@ class WaistTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             targets(plan, plan.dwell+plan.move_seconds, initial, limits)
 
+    def test_held_arms_near_limits_do_not_require_excursion_margin(self):
+        plan = make_plan()
+        initial = {n: 0. for n in NAMES}
+        limits = {n: (-2., 2.) for n in NAMES}
+        initial['arm_l_joint_2'] = -.00026365293888375163
+        initial['arm_r_joint_2'] = .0003834951785393059
+        limits['arm_l_joint_2'] = (-.0017453292519943296, math.pi)
+        limits['arm_r_joint_2'] = (-math.pi, .0017453292519943296)
+        for offset in (-plan.amplitude, 0., plan.amplitude):
+            t = (plan.dwell+3*plan.move_seconds+2*plan.dwell if offset < 0 else
+                 plan.dwell+plan.move_seconds if offset > 0 else 0.)
+            output = targets(plan, t, initial, limits)
+            self.assertAlmostEqual(output['body_joint_1'], offset)
+            self.assertTrue(all(output[n] == initial[n] for n in NAMES if n != 'body_joint_1'))
+        initial['arm_r_joint_2'] = limits['arm_r_joint_2'][1]+.0001
+        with self.assertRaisesRegex(ValueError, 'TEST_POSITION_LIMIT:arm_r_joint_2'):
+            targets(plan, 0., initial, limits)
+
     def test_stale_simulated_busy_or_missing_measurements_refused(self):
         checked_state(state(), 10.01, 2., 2.01, 'hash')
         stopped = state(); stopped.state = stopped.code = 'CANCELED'

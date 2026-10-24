@@ -110,8 +110,11 @@ def targets(plan, elapsed, initial, limits):
     offset, _, _ = plan.sample(elapsed)
     q = {n: initial[n] for n in NAMES}
     q['body_joint_1'] += offset
-    if any(not math.isfinite(q[n]) or not limits[n][0]+.01 <= q[n] <= limits[n][1]-.01 for n in NAMES):
-        raise ValueError('TEST_POSITION_LIMIT')
+    for n in NAMES:
+        # Extra excursion clearance applies only to the axis being moved.
+        margin = .01 if n == 'body_joint_1' else 0.
+        if not math.isfinite(q[n]) or not limits[n][0]+margin <= q[n] <= limits[n][1]-margin:
+            raise ValueError('TEST_POSITION_LIMIT:'+n)
     return q
 
 
