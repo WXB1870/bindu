@@ -84,6 +84,130 @@ class DiagnosticTests(unittest.TestCase):
             self.assertEqual(saved['status'],[0x40]*20)
 
 
+class WrenchObserverTests(unittest.TestCase):
+    @staticmethod
+    def message(values=(1.,2.,3.,4.,5.,6.), sec=10, frame='left_sensor'):
+        return S(header=S(stamp=S(sec=sec,nanosec=7),frame_id=frame),
+                 wrench=S(force=S(**dict(zip('xyz',values[:3]))),
+                          torque=S(**dict(zip('xyz',values[3:])))))
+
+    def observer(self, writer=None):
+        records=[];subscriptions=[]
+        node=S(create_subscription=lambda *args:subscriptions.append(args) or object())
+        modules={'geometry_msgs':S(),'geometry_msgs.msg':S(WrenchStamped=object),
+                 'rclpy.qos':S(QoSProfile=lambda **kw:kw,
+                     ReliabilityPolicy=S(BEST_EFFORT='best_effort'),
+                     DurabilityPolicy=S(VOLATILE='volatile'))}
+        with patch.dict('sys.modules',modules):
+            observer=diagnostics.WrenchObserver(node,writer or S(record=lambda *args:records.append(args)),'run')
+        return observer,records,subscriptions
+
+    def test_subscribes_to_both_existing_topics_without_control_ports(self):
+        observer,records,subscriptions=self.observer()
+        self.assertEqual([s[1] for s in subscriptions],list(observer.TOPICS.values()))
+        for subscription in subscriptions:
+            self.assertEqual(subscription[3],dict(depth=10,reliability='best_effort',durability='volatile'))
+        # One message argument must suffice on Humble; side cannot be overwritten by message metadata.
+        subscriptions[1][2](self.message(frame='right_sensor'))
+        self.assertEqual(records[-1][0],'wrench-right')
+        self.assertEqual(observer.received,dict(left=0,right=1))
+        self.assertFalse(records[0][1]['pdo_correlated'])
+
+    def test_detaches_all_six_components_and_keeps_unknown_sensor_validity(self):
+        for values in ((0.,)*6,(1.,2.,3.,4.,5.,6.),(float('nan'),2.,3.,4.,5.,6.)):
+            observer,records,_=self.observer();msg=self.message(values)
+            with patch.object(diagnostics.time,'time',return_value=10.1),patch.object(diagnostics.time,'monotonic',return_value=1.):
+                observer.receive('left',msg)
+            row=records[-1][1];msg.wrench.force.x=99.
+            self.assertEqual(row['publication_stamp_ns'],10_000_000_007)
+            self.assertEqual(row['frame_id'],'left_sensor')
+            self.assertEqual(row['force'][1:],list(values[1:3]))
+            self.assertEqual(row['torque'],list(values[3:]))
+            self.assertNotEqual(row['force'][0],99.)
+            self.assertEqual(row['finite'],all(x==x for x in values))
+            for key in ('sensor_valid','sensor_data_no','sensor_age_s'):self.assertIsNone(row[key])
+            for key in ('calibration_verified','units_verified','publisher_identity_verified','pdo_correlated'):
+                self.assertFalse(row[key])
+
+    def test_missing_sides_and_stale_publications_do_not_become_valid_force(self):
+        observer,_,_=self.observer()
+        empty=observer.sample(10.,1.)
+        self.assertEqual(empty['sides']['left']['received'],0)
+        self.assertIsNone(empty['sides']['left']['publication_stamp_ns'])
+        self.assertFalse(empty['sides']['right']['recently_received'])
+        with patch.object(diagnostics.time,'time',return_value=10.1),patch.object(diagnostics.time,'monotonic',return_value=1.):
+            observer.receive('left',self.message())
+        self.assertTrue(observer.sample(10.1,1.1)['sides']['left']['publication_fresh'])
+        stale=observer.sample(10.4,1.4)
+        self.assertFalse(stale['sides']['left']['publication_fresh'])
+        self.assertFalse(stale['sides']['left']['recently_received'])
+        for stamp in (0,8,12):
+            with patch.object(diagnostics.time,'time',return_value=10.),patch.object(diagnostics.time,'monotonic',return_value=2.):
+                observer.receive('right',self.message(sec=stamp))
+            status=observer.sample(10.,2.)
+            self.assertTrue(status['sides']['right']['recently_received'])
+            self.assertFalse(status['sides']['right']['publication_fresh'])
+            self.assertIsNone(status['sensor_valid'])
+        self.assertFalse(observer.sample(10.,1.)['sides']['right']['recently_received'])
+
+    def test_sampler_is_independent_per_side_and_keeps_invalidity_changes(self):
+        sampler=diagnostics.DiagnosticSampler();kept=dict(left=0,right=0)
+        value=dict(frame_id='sensor',finite=True,publication_fresh=True)
+        for tick in range(1000):
+            for side in kept:kept[side]+=sampler.keep('wrench-'+side,value,tick*.001)
+        self.assertTrue(all(90<=n<=101 for n in kept.values()),kept)
+        self.assertEqual(sampler.sampled_out,2000-sum(kept.values()))
+        self.assertTrue(sampler.keep('wrench-left',dict(value,finite=False),.9991))
+        self.assertTrue(sampler.keep('wrench-left',dict(value,publication_fresh=False),.9992))
+        self.assertEqual(len(sampler.last),2)
+
+    def test_async_writer_saves_both_sides_and_invalid_numbers_without_filling(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);writer=diagnostics.DiagnosticWriter(root/'diagnostics.jsonl')
+            observer,_,_=self.observer(writer)
+            observer.receive('left',self.message((float('nan'),1.,2.,3.,4.,5.)))
+            observer.receive('right',self.message((0.,)*6,frame='right_sensor'))
+            writer.close()
+            left=json.loads((root/'wrench-left.jsonl').read_text())['data']
+            right=json.loads((root/'wrench-right.jsonl').read_text())['data']
+            self.assertEqual(left['force'][0],'nan');self.assertFalse(left['finite'])
+            self.assertEqual(right['force'],[0.,0.,0.]);self.assertIsNone(right['sensor_valid'])
+            self.assertTrue((root/'wrench-capture.jsonl').is_file())
+            self.assertEqual(writer.status()['error'],'');self.assertEqual(writer.status()['dropped'],0)
+
+    def test_live_observer_wires_force_capture_only_for_real_vendor_diagnostics(self):
+        from contextlib import redirect_stdout
+        from tools.teleop import snowbot_live
+        for mode,backend in (('real','snowbot_vendor'),('simulation','kinematic')):
+            with self.subTest(mode=mode),tempfile.TemporaryDirectory() as directory:
+                root=Path(directory);model=root/'model.urdf';model.write_text('offline fixture')
+                config=root/'tool.json';config.write_text('{}')
+                robot=S(tool_config=config,urdf=model,display_urdf=model,profile=S(digest='profile',limits={'joint':(-1.,1.)}))
+                subscriptions={};snapshots=[];alive=iter((True,False))
+                node=S(create_subscription=lambda cls,topic,callback,qos:subscriptions.setdefault(topic,callback),destroy_node=lambda:None)
+                def spin_once(node,**kwargs):
+                    for side,topic in diagnostics.WrenchObserver.TOPICS.items():
+                        if topic in subscriptions:subscriptions[topic](self.message(frame=side+'_sensor'))
+                modules={'rclpy':S(init=lambda **kw:None,create_node=lambda name:node,ok=lambda:next(alive),
+                                 spin_once=spin_once,try_shutdown=lambda:None,executors=S(ExternalShutdownException=RuntimeError)),
+                    'rclpy.signals':S(SignalHandlerOptions=S(NO=0,ALL=1)),
+                    'rclpy.qos':S(QoSProfile=lambda **kw:kw,ReliabilityPolicy=S(BEST_EFFORT='best_effort'),DurabilityPolicy=S(VOLATILE='volatile')),
+                    'geometry_msgs':S(),'geometry_msgs.msg':S(WrenchStamped=object),
+                    'std_msgs.msg':S(String=object),'rcl_interfaces.msg':S(Log=S(WARN=30)),
+                    'bindu_interfaces.msg':S(**{k:object for k in ('ExecutionState','RuntimeEvent','VRInput','MotionCommand','GripperState','TeleopModeState')}),
+                    'bindu_runtime.common':S(EVENT_QOS=object()),
+                    'bindu_runtime.robot_setup':S(RobotSetup=S(load=lambda path:robot)),
+                    'tools.teleop.snowbot_errors':S(EndEffectorErrors=lambda *a:S(sample=lambda *a:{}),pinocchio_fk=lambda *a:None)}
+                args=S(robot_config=config,run_id='run',runtime_mode=mode,device_backend=backend,
+                       state_file=None,trace_file=root/'diagnostics.jsonl',namespace='fixture',duration=0.)
+                with patch.dict('sys.modules',modules),redirect_stdout(StringIO()):snowbot_live.observe(args,publish=snapshots.append)
+                expected=mode=='real'
+                self.assertEqual((root/'wrench-left.jsonl').exists(),expected)
+                self.assertEqual((root/'wrench-right.jsonl').exists(),expected)
+                self.assertEqual('wrench_capture' in snapshots[0],expected)
+                if expected:self.assertEqual(snapshots[0]['wrench_capture']['sides']['left']['received'],1)
+
+
 class SamplingTests(unittest.TestCase):
     def test_regular_input_is_capped_per_hand_before_ros_serialization(self):
         sampler=diagnostics.DiagnosticSampler()

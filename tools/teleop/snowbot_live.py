@@ -84,12 +84,14 @@ def observe(args, publish=None, stop=None):
     diagnostics=DiagnosticWriter(args.trace_file) if args.trace_file else None
     pdo_observer = None
     ros_logs = None
+    wrench_observer = None
     if real_vendor:
         from tools.teleop.snowbot_pdo import PdoObserver
         pdo_observer = PdoObserver(node, diagnostics)
         if diagnostics:
-            from tools.teleop.snowbot_diagnostics import RosLogObserver
+            from tools.teleop.snowbot_diagnostics import RosLogObserver, WrenchObserver
             ros_logs = RosLogObserver(node, diagnostics, args.run_id)
+            wrench_observer = WrenchObserver(node, diagnostics, args.run_id)
     ns = '/'+args.namespace.strip('/')
     def execution(msg):
         latest.update(state=msg)
@@ -179,6 +181,7 @@ def observe(args, publish=None, stop=None):
             if 0 <= now-latest['physics'].get('stamp',0) <= .2:data['physics']=latest['physics']
             if diagnostics:data['diagnostics']=diagnostics.status()
             if ros_logs:data['log_capture']=ros_logs.status()
+            if wrench_observer:data['wrench_capture']=wrench_observer.sample(now, time.monotonic())
             if publish:
                 publish(data)
             elif args.state_file:

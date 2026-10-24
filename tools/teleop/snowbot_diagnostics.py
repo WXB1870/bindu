@@ -67,6 +67,9 @@ def sampling_policy(stream, value):
     elif stream in ('vr-health', 'physics-health', 'pdo-health'):
         period = 1.
         state = _fields(value, 'ready valid code reason reasons fault_mask valid_mask operation_enabled_mask')
+    elif stream in ('wrench-left', 'wrench-right'):
+        period = .01
+        state = _fields(value, 'frame_id finite publication_fresh')
     elif stream == 'diagnostics':
         state = _fields(value, 'valid execution code')
     elif stream == 'runtime-events':
@@ -199,6 +202,60 @@ class RosLogObserver:
     def status(self):
         return dict(scope='observed_rosout_warn_plus', received=self.received,
                     loggers=self.LOGGERS, plain_stdio_captured=False)
+
+
+class WrenchObserver:
+    """Log legacy wrist topics without claiming sensor validity or PDO alignment."""
+    TOPICS = {side: '/force_sensor/'+side+'/wrench' for side in ('left', 'right')}
+
+    def __init__(self, node, writer, run_id):
+        from functools import partial
+        from geometry_msgs.msg import WrenchStamped
+        from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
+        self.writer, self.run_id = writer, run_id
+        self.latest = {}
+        self.received = dict.fromkeys(self.TOPICS, 0)
+        qos = QoSProfile(depth=10, reliability=ReliabilityPolicy.BEST_EFFORT,
+                         durability=DurabilityPolicy.VOLATILE)
+        self.subscriptions = [node.create_subscription(WrenchStamped, topic,
+                              partial(self.receive, side), qos) for side, topic in self.TOPICS.items()]
+        writer.record('wrench-capture', dict(kind='capture_started', run_id=run_id, topics=self.TOPICS,
+            default_max_logged_hz_per_side=100, reliability='best_effort', durability='volatile',
+            stamp_semantics='publisher_header_not_sensor_sample_time', pdo_correlated=False,
+            sensor_valid=None, sensor_data_no=None, sensor_age_s=None,
+            calibration_verified=False, units_verified=False, publisher_identity_verified=False))
+
+    def receive(self, side, msg):
+        now, steady = time.time(), time.monotonic()
+        stamp_ns = msg.header.stamp.sec*1_000_000_000+msg.header.stamp.nanosec
+        force = [float(getattr(msg.wrench.force, axis)) for axis in ('x', 'y', 'z')]
+        torque = [float(getattr(msg.wrench.torque, axis)) for axis in ('x', 'y', 'z')]
+        finite = all(math.isfinite(v) for v in force+torque)
+        age = now-stamp_ns*1e-9
+        self.received[side] += 1
+        self.latest[side] = (stamp_ns, steady, msg.header.frame_id, finite)
+        self.writer.record('wrench-'+side, dict(run_id=self.run_id, side=side, topic=self.TOPICS[side],
+            frame_id=msg.header.frame_id, publication_stamp_ns=stamp_ns, publication_age_s=age,
+            received_ros=now, received_monotonic=steady, force=force, torque=torque, finite=finite,
+            publication_fresh=stamp_ns>0 and 0<=age<=.2,
+            sensor_valid=None, sensor_data_no=None, sensor_age_s=None,
+            calibration_verified=False, units_verified=False, publisher_identity_verified=False,
+            pdo_correlated=False))
+
+    def sample(self, now, steady):
+        sides = {}
+        for side in self.TOPICS:
+            last = self.latest.get(side)
+            age = now-last[0]*1e-9 if last else None
+            receive_age = steady-last[1] if last else None
+            sides[side] = dict(received=self.received[side], frame_id=last[2] if last else None,
+                publication_stamp_ns=last[0] if last else None, publication_age_s=age,
+                receive_age_s=receive_age, recently_received=last is not None and 0<=receive_age<=.2,
+                publication_fresh=last is not None and last[0]>0 and 0<=age<=.2,
+                finite=last[3] if last else None)
+        return dict(source='legacy_wrench_topics', sides=sides, pdo_correlated=False,
+                    sensor_valid=None, sensor_data_no=None, sensor_age_s=None,
+                    calibration_verified=False, units_verified=False, publisher_identity_verified=False)
 
 
 class DiagnosticWriter:
