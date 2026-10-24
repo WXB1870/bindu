@@ -53,7 +53,7 @@ class Plan:
         return 0., 0., 0.
 
 
-def make_plan(degrees=20., speed=.25, acceleration=.5, jerk=10.):
+def make_plan(degrees=1., speed=.02, acceleration=.05, jerk=1.):
     for value, maximum in ((degrees, 20.), (speed, .375), (acceleration, 2.25), (jerk, 162.)):
         if type(value) not in (float, int) or not math.isfinite(value) or not 0 < value <= maximum:
             raise ValueError('TEST_ENVELOPE_EXCEEDED')
@@ -370,10 +370,10 @@ def analyze(path):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--axis', choices=NAMES[:2], default='body_joint_1', help='only this waist target changes')
-    parser.add_argument('--degrees', type=float, default=20., help='excursion each way, <=20 deg')
-    parser.add_argument('--speed', type=float, default=.25, help='rad/s, <=0.375 and selected profile')
-    parser.add_argument('--acceleration', type=float, default=.5, help='rad/s^2, <=2.25 and selected profile')
-    parser.add_argument('--jerk', type=float, default=10., help='rad/s^3, <=162')
+    parser.add_argument('--degrees', type=float, default=1., help='code-scale excursion each way; default 1 deg, <=20')
+    parser.add_argument('--speed', type=float, default=.02, help='code-scale rad/s; default .02, <=0.375 and selected profile')
+    parser.add_argument('--acceleration', type=float, default=.05, help='code-scale rad/s^2; default .05, <=2.25 and selected profile')
+    parser.add_argument('--jerk', type=float, default=1., help='code-scale rad/s^3; default 1, <=162')
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument('--execute', action='store_true', help='operator only: acquire 16-axis lease and send targets')
     mode.add_argument('--analyze', type=Path, help='offline analysis of an existing capture')
