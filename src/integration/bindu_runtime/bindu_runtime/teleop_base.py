@@ -31,14 +31,17 @@ class TeleopBase:
             qos = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
                              durability=DurabilityPolicy.VOLATILE)
             self.publisher = node.create_publisher(Twist, self.cfg['cmd_vel_topic'], qos)
-            node.create_subscription(Odometry, self.cfg['odom_topic'], self.on_odom,
-                QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT))
+            if self.cfg['require_feedback']:
+                node.create_subscription(Odometry, self.cfg['odom_topic'], self.on_odom,
+                    QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT))
         self.core.inhibit(self.disabled_reason, node.now())
 
     def ingest(self, pair, now):
         self.core.ingest(*pair, now, time.monotonic())
 
     def on_odom(self, msg):
+        if not self.cfg['require_feedback']:
+            return
         now, clock = self.node.now(), time.monotonic()
         velocity = msg.twist.twist
         if not self.graph_ok or msg.child_frame_id != self.cfg['feedback_frame']:
@@ -61,16 +64,19 @@ class TeleopBase:
         own = lambda info: (info.node_name == self.node.get_name() and
                            info.node_namespace == self.node.get_namespace())
         receivers = self.node.get_subscriptions_info_by_topic(self.cfg['cmd_vel_topic'])
-        feedback = self.node.get_publishers_info_by_topic(self.cfg['odom_topic'])
         def named(info, key):
             return (not self.cfg[key] or
                 info.node_namespace.rstrip('/')+'/'+info.node_name == self.cfg[key])
         self.graph_ok = (len(pubs) == 1 and own(pubs[0]) and bool(receivers) and
             all(info.topic_type == 'geometry_msgs/msg/Twist' for info in receivers) and
-            any(named(info, 'receiver_node') for info in receivers) and
-            len(feedback) == 1 and feedback[0].topic_type == 'nav_msgs/msg/Odometry' and
-            named(feedback[0], 'feedback_node'))
-        if self.graph_ok:
+            any(named(info, 'receiver_node') for info in receivers))
+        if self.graph_ok and self.cfg['require_feedback']:
+            feedback = self.node.get_publishers_info_by_topic(self.cfg['odom_topic'])
+            self.graph_ok = (len(feedback) == 1 and
+                feedback[0].topic_type == 'nav_msgs/msg/Odometry' and named(feedback[0], 'feedback_node'))
+        if not self.graph_ok:
+            self.graph_reason = 'BASE_ENDPOINTS_UNAVAILABLE_OR_MULTIPLE_WRITERS'
+        elif self.cfg['require_feedback']:
             raw_gid = getattr(feedback[0], 'endpoint_gid', None)
             try:
                 gid = bytes(raw_gid) if raw_gid is not None else b''
@@ -85,8 +91,6 @@ class TeleopBase:
                 self.graph_ok = False
                 self.feedback_source_fault = True
                 self.graph_reason = 'BASE_FEEDBACK_SOURCE_CHANGED_RESTART_REQUIRED'
-        else:
-            self.graph_reason = 'BASE_ENDPOINTS_UNAVAILABLE_OR_MULTIPLE_WRITERS'
         if not self.graph_ok:
             self.core.feedback_velocity = None
             self.core.stationary_since = None
@@ -121,9 +125,11 @@ class TeleopBase:
             receiver_node=self.cfg['receiver_node'], feedback_node=self.cfg['feedback_node'],
             driver_watchdog_s=self.cfg['driver_watchdog_s'],
             require_driver_watchdog=self.cfg['require_driver_watchdog'],
+            require_feedback=self.cfg['require_feedback'],
             requested=list(self.core.target) if fresh else None, command=list(self.core.command),
             measured=list(self.core.feedback_velocity) if self.core.healthy(now, clock) else None,
-            stop_confirmed=self.core.stopped(now, clock) if self.writable else None,
+            stop_confirmed=(self.core.stopped(now, clock)
+                            if self.writable and self.cfg['require_feedback'] else None),
             source_id=self.core.source, seq=self.core.seq,
             input_stamp=self.core.input_stamp if self.core.source else None)
 

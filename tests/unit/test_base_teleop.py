@@ -180,6 +180,52 @@ class BaseTests(unittest.TestCase):
                     validate_base_config(dict(self.cfg, **{key: value}))
 
 
+class WithoutFeedbackTests(unittest.TestCase):
+    pair = BaseTests.pair
+    def setUp(self):
+        self.cfg = dict(json.loads(CONFIG.read_text()), require_feedback=False)
+        self.base = BaseTeleop(self.cfg)
+        self.now, self.seq, self.source = 10., 0, 'headset'
+
+    def step(self, *args, **kwargs):
+        # Exercise the same input path with no Odometry observations at all.
+        with patch.object(self.base, 'observe'):
+            return BaseTests.step(self, *args, **kwargs)
+
+    def test_neutral_rearms_without_claiming_measured_stop(self):
+        self.assertEqual(self.step(left=(0., -1.)), ZERO)
+        self.assertEqual(self.step(left=(0., -1.)), ZERO)
+        self.assertFalse(self.base.armed)
+        self.step()
+        self.assertTrue(self.base.armed)
+        self.assertFalse(self.base.healthy(self.now, self.now))
+        self.assertFalse(self.base.stopped(self.now, self.now))
+        self.assertGreater(self.step(left=(0., -1.))[0], 0.)
+        self.step(allowed=False)
+        self.assertEqual(self.step(left=(0., -1.)), ZERO)
+        self.step()
+        self.assertGreater(self.step(left=(0., -1.))[0], 0.)
+        self.now += .3
+        self.assertEqual(self.base.tick(self.now, self.now, allowed=True), ZERO)
+        self.assertFalse(self.base.armed)
+
+    def test_feedback_exception_preserves_input_timeout_and_source_rearm(self):
+        self.step()
+        self.step()
+        self.assertGreater(self.step(left=(0., -1.))[0], 0.)
+        self.now += .26
+        self.base.last_tick = self.now-.02
+        self.assertEqual(self.base.tick(self.now, self.now, allowed=True), ZERO)
+        self.assertEqual(self.base.reason, 'BASE_INPUT_TIMEOUT')
+        self.source = 'new-headset'
+        self.assertEqual(self.step(left=(0., -1.)), ZERO)
+        self.step()
+        self.assertGreater(self.step(left=(0., -1.))[0], 0.)
+        pair = self.pair(left=(0., -1.))
+        self.base.ingest(replace(pair[0], stick=()), pair[1], self.now, self.now)
+        self.assertEqual(self.base.command, ZERO)
+        self.assertFalse(self.base.armed)
+
 class DecodeTests(unittest.TestCase):
     def test_real_controller_fields_pass_through_without_changing_buttons(self):
         pose = np.eye(4).ravel(order='F').tolist()
@@ -274,6 +320,58 @@ class AdapterTests(unittest.TestCase):
         for invalid in ('false', 0, None):
             with self.subTest(invalid=invalid), self.assertRaisesRegex(ValueError, 'require_driver_watchdog'):
                 validate_base_config(dict(original, require_driver_watchdog=invalid))
+
+    def test_no_feedback_policy_keeps_output_exclusivity_without_odom_or_stop_claim(self):
+        node = self.node()
+        cfg = dict(json.loads(CONFIG.read_text()), require_driver_watchdog=False,
+                   require_feedback=False, receiver_node='/car_control')
+        with patch.object(self.adapter.json, 'loads', return_value=cfg):
+            bridge = self.adapter.TeleopBase(node, CONFIG, True)
+        node.create_subscription.assert_not_called()
+        own = S(node_name='pico_control', node_namespace='/bindu_snowbot')
+        node.get_publishers_info_by_topic = Mock(return_value=[own])
+        node.get_subscriptions_info_by_topic = Mock(return_value=[S(
+            node_name='car_control', node_namespace='/', topic_type='geometry_msgs/msg/Twist')])
+        bridge.check_graph(10.)
+        self.assertTrue(bridge.graph_ok)
+        node.get_publishers_info_by_topic.assert_called_once_with('/cmd_vel')
+        view = bridge.snapshot()
+        self.assertIsNone(view['stop_confirmed'])
+        self.assertIsNone(view['measured'])
+        self.assertFalse(view['require_feedback'])
+        bridge.on_odom(object())  # Disabled feedback must never be consumed.
+        node.get_publishers_info_by_topic.return_value = [own, own]
+        bridge.check_graph(10.2)
+        self.assertFalse(bridge.graph_ok)
+        for invalid in ('false', 0, None):
+            with self.subTest(invalid=invalid), self.assertRaisesRegex(ValueError, 'require_feedback'):
+                validate_base_config(dict(cfg, require_feedback=invalid))
+
+    def test_pico_stop_condition_ignores_only_explicitly_disabled_base_feedback(self):
+        import ast
+        from bindu_teleoperation.pico import PicoFeedback
+        path = SHARE/'bindu_runtime/pico_node.py'
+        cls = next(n for n in ast.parse(path.read_text()).body if isinstance(n, ast.ClassDef) and n.name == 'PicoNode')
+        method = next(n for n in cls.body if getattr(n, 'name', '') == 'feedback')
+        namespace = dict(PicoFeedback=PicoFeedback, seconds=lambda stamp: stamp,
+                         joints_at_rest=lambda *args: True, time=S(monotonic=lambda: 10.))
+        exec(compile(ast.Module(body=[method], type_ignores=[]), str(path), 'exec'), namespace)
+        state = S(lease_active=False, state='IDLE', reference=S(name=[]), joints=object(), feedback_stamp=10.)
+        owner = S(reading=lambda: (state, {}), position_ops=S(modes=lambda **kw: ('closed', 'closed'), stopped=lambda: True),
+            control=S(phase='standby'), handoff_complete=False, names=[], stop_request=None, now=lambda: 10.)
+        for required in (True, False):
+            core = S(healthy=Mock(return_value=False), stopped=Mock(return_value=False))
+            owner.base = S(writable=True, cfg=dict(require_feedback=required), core=core)
+            result = namespace['feedback'](owner)
+            self.assertEqual(result.healthy, not required)
+            self.assertEqual(result.stopped, not required)
+            if not required:
+                core.healthy.assert_not_called()
+                owner.stop_request = dict(failed=True, deadline=20.)
+                self.assertFalse(namespace['feedback'](owner).healthy)
+                owner.stop_request = None
+                owner.reading = Mock(side_effect=RuntimeError('PICO_STOP_UNCONFIRMED:ARM_FAULT'))
+                self.assertFalse(namespace['feedback'](owner).healthy)
 
     def test_site_pins_both_car_control_endpoints(self):
         node, bridge, _, feedback = self.writable()

@@ -174,6 +174,8 @@ PICO外层与工具内层共用 `bindu_runtime.stop_evidence.stop_feedback_match
 
 真实写入要求原`command_enabled=true`；默认`require_driver_watchdog=true`还要求填入**已确认的底盘驱动独立断流超时**`driver_watchdog_s`（最多0.5 s），否则底盘只读且不阻断已有手臂操作。操作者明确接受暂缓下层断流停车时，可仅在现场配方显式设`require_driver_watchdog=false`；未知的超时仍为`null`并在状态中显示，不伪造保护能力。该选择保留上层输入过期／暂停／停止的零速请求，不承诺上层进程退出后的自动停车。字段只描述接入条件，不会配置底层驱动。`receiver_node`／`feedback_node`可绑定已核实的ROS端点节点；`feedback_frame`必须匹配实际`Odometry.child_frame_id`，不根据机器人模型名猜测。118实际独立`/car_control`提供`/cmd_vel`／`/odom`和`base_link`，专属配方由Snowbot维护。适配器要求唯一反馈发布实例、后续新鲜测量及100 ms连续低速窗口才确认停止；零速已发不等于停稳。身份检查范围与Humble接口限制见执行契约，不把ROS图绑定视为逐消息身份校验。模拟模式只显示同一映射的请求，不发布真实`/cmd_vel`，尚未接入底盘物理仿真；头部跟随仍未实现。
 
+底盘反馈默认 `require_feedback=true`。操作者明确暂不接反馈时，仅在专属配方设置 `require_feedback=false`：不订阅或依赖 `/odom`，不把底盘反馈加入 PICO 总停止条件；新鲜输入回中后即可接管，仍检查独占输出、接收端、许可、输入过期和变化率。上肢的真实反馈与停止屏障保持原逻辑。此时状态的 `measured`／`stop_confirmed` 为 `null`，表示未测量／未确认，不用已发零速伪造实体停稳；恢复默认配置后重新启用反馈绑定和持续停稳窗口。
+
 ### 相对位姿映射
 
 Snowbot统一位置配方使用`vr_tool_mapping=hand_line_midpoint`，模拟与实机接口共用：双手柄中点增量控制双握点中点，手柄连线的相对转向与剥离连线转动后的双腕轴向转角合成整体旋转。平移与整体旋转共用固定基座方向，重接合仅重锁输入和工具基准，不重新旋转操作坐标系。刚握与虚握使用同一输入映射；杆轴改变不要求左手腕同时转动。旧配方未配置此字段时保留原腕姿映射。

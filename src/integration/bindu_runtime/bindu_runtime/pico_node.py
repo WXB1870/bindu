@@ -234,7 +234,7 @@ class PicoNode(RuntimeNode):
                 modes.append(next((m for m in ('closed','open','virtual') if abs(value-cfg[m])<.003),'unknown'))
             stopped=((self.handoff_complete or not s.lease_active) and s.state not in ('RUNNING','STOPPING') and not s.reference.name and
                      joints_at_rest(s.joints,self.names,.005) and (not self.position_ops or self.position_ops.stopped()))
-            if self.base and self.base.writable:
+            if self.base and self.base.writable and self.base.cfg['require_feedback']:
                 clock = time.monotonic()
                 if not self.base.core.healthy(self.now(), clock):
                     raise RuntimeError('BASE_FEEDBACK_UNAVAILABLE')
