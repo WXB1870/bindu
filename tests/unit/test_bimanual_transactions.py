@@ -579,6 +579,29 @@ class BimanualTransactions(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(rig.commands,[])
         self.assertTrue(rig.node.stop_unconfirmed)
 
+    async def test_tool_capture_passes_confirmed_hold_without_copying_measured_offset(self):
+        rig=Rig();rig.node.trajectory_reference=True
+        held=(.01,.02,.03);captures=[]
+        async def held_reference(lease,revision):return held
+        rig.node.held_reference=held_reference
+        original=rig.solve
+        def solve(operation,token,feedback,target,**kwargs):
+            if operation=='capture':captures.append((dict(feedback),kwargs['reference']))
+            return original(operation,token,feedback,target,**kwargs)
+        rig.node.worker.submit=solve
+        # End after capture to isolate handoff from simulated servo telemetry.
+        original_pause=rig.pause
+        async def pause():
+            await original_pause()
+            if any(e[0]=='BIMANUAL_CAPTURED' for e in rig.events):rig.goal.is_cancel_requested=True
+        rig.node.pause=pause
+        await rig.run()
+        self.assertEqual(captures[0][1],held)
+        self.assertNotEqual(tuple(captures[0][0][n] for n in rig.node.names),held)
+        event=json.loads(next(e[1] for e in rig.events if e[0]=='BIMANUAL_CAPTURED'))
+        self.assertEqual(event['capture_basis'],'confirmed_hold')
+        self.assertEqual(tuple(event['capture_reference'].values()),held)
+
     async def test_release_regrip_uses_new_baselines_without_process_restart(self):
         rig=Rig(transition='regrip')
         result=await rig.run()

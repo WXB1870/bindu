@@ -175,6 +175,9 @@ class PicoNode(RuntimeNode):
         if self.position_contract:
             from .pico_position import PositionOperations
             self.position_ops = PositionOperations(self, self.get_parameter('gripper_config').value)
+        self.independent_grippers=bool(self.position_ops and
+            self.position_ops.config.get('independent_trigger_control',False))
+        self.control.independent_grippers=self.independent_grippers
         self.leases=self.create_client(Lease,'execution/lease')
         self.submit=self.create_client(SubmitMotion,'execution/submit')
         self.stop_client=self.create_client(ControlExecution,'execution/control')
@@ -228,6 +231,8 @@ class PicoNode(RuntimeNode):
     def feedback(self):
         try:
             s,q=self.reading()
+            if self.position_ops and getattr(self,'independent_grippers',False):
+                for side in ('left','right'):self.position_ops.reading(side)
             modes=list(self.position_ops.modes(require_stationary=self.control.phase!='following')) if self.position_ops else []
             for side in (() if self.position_ops else ('left','right')):
                 cfg=self.cfg['grippers'][side];value=q[cfg['joint']]
@@ -344,10 +349,11 @@ class PicoNode(RuntimeNode):
         for i,m in enumerate((a,b)):
             hand_allowed=allowed and (self.control.teleop_mode!='independent_arms' or self.control.squeeze_released[i])
             self.projected.publish(VRInput(stamp=m.stamp,source_id=m.source_id+':'+self.instance_id,runtime_mode=m.runtime_mode,
-                seq=m.seq,side=m.side,pose=m.pose,grip=m.grip if hand_allowed else 0.,trigger=0. if self.position_contract else m.trigger,
+                seq=m.seq,side=m.side,pose=m.pose,grip=m.grip if hand_allowed else 0.,trigger=m.trigger if getattr(self,'independent_grippers',False) or not self.position_contract else 0.,
                 init=False,stop=self.control.phase=='locked' or not self.handoff_complete,valid=m.valid,clutch_seq=m.clutch_seq,
                 mapping=PICO_MAPPING,buttons=0 if self.position_contract else m.buttons,
-                button_edges=[0]*8 if self.position_contract else m.button_edges,
+                button_edges=([0]*6+list(m.button_edges[6:8]) if getattr(self,'independent_grippers',False) else
+                              [0]*8 if self.position_contract else m.button_edges),
                 virtual_grip=self.control.virtual,stick=m.stick))
 
     async def pause(self):
@@ -755,10 +761,13 @@ class PicoNode(RuntimeNode):
         f=self.feedback()
         if not f.healthy:raise RuntimeError('PICO_FEEDBACK_UNAVAILABLE')
         if not f.stopped:raise RuntimeError('PICO_MODE_REQUIRES_STOPPED')
-        if mode=='bimanual_tool' and not self.unheld_test and getattr(self,'automatic_close_grippers',False):
+        if mode=='bimanual_tool' and not self.unheld_test and not getattr(self,'independent_grippers',False) and getattr(self,'automatic_close_grippers',False):
             await self.position_ops.close_grippers(intent,allow_command=intent.operation in ('select_mode','confirm_tool'))
             self.current(intent)
-        if mode=='bimanual_tool' and self.unheld_test:
+        if mode=='bimanual_tool' and getattr(self,'independent_grippers',False):
+            self.operator_grasp_positions={}
+            self.control.virtual=False
+        elif mode=='bimanual_tool' and self.unheld_test:
             if self.control.load=='held':raise RuntimeError('PICO_UNHELD_TEST_WITH_HELD_LOAD')
             self.operator_grasp_positions={}
             self.control.virtual=False
@@ -776,7 +785,7 @@ class PicoNode(RuntimeNode):
                 reference_source='measured_rigid')))
         elif mode=='bimanual_tool' and self.position_ops and not self.position_ops.config['calibrated']:
             raise RuntimeError('PICO_TOOL_GRASP_UNCONFIRMED_UNCALIBRATED')
-        if mode=='bimanual_tool' and not self.unheld_test and not self.operator_grasp and (f.modes[0]!='closed' or f.modes[1] not in ('closed','virtual')):
+        if mode=='bimanual_tool' and not getattr(self,'independent_grippers',False) and not self.unheld_test and not self.operator_grasp and (f.modes[0]!='closed' or f.modes[1] not in ('closed','virtual')):
             raise RuntimeError('PICO_GRIPPER_CONFIRMATION_REQUIRED')
         client=self.arms_ready_client if mode=='independent_arms' else self.ready_client
         end=time.monotonic()+self.tool_cfg.get('worker_startup_timeout',30.)
@@ -913,7 +922,7 @@ class PicoNode(RuntimeNode):
             else:await self.cancel_tool()
             self.current(intent)
             read_only=intent.operation in ('prepare','confirm_tool','follow','select_mode')
-            if (getattr(self,'automatic_close_grippers',False) and not self.unheld_test and
+            if (getattr(self,'automatic_close_grippers',False) and not getattr(self,'independent_grippers',False) and not self.unheld_test and
                     (intent.operation=='confirm_tool' or intent.operation=='select_mode' and intent.value=='bimanual_tool')):
                 read_only=False
             if intent.operation=='prepare':
@@ -947,7 +956,7 @@ class PicoNode(RuntimeNode):
                         self.current(intent)
                         target=await self.validate_prepare(intent,allow_recovery=False)
                     await self.move(intent,target,self.cfg['prepare_duration'],fit_duration=self.simulation_demo)
-                if getattr(self,'automatic_close_grippers',False) and not self.unheld_test:
+                if getattr(self,'automatic_close_grippers',False) and not getattr(self,'independent_grippers',False) and not self.unheld_test:
                     read_only=False
                     await self.position_ops.close_grippers(intent)
                     self.current(intent)
@@ -1048,7 +1057,7 @@ class PicoNode(RuntimeNode):
         feedback=self.feedback()
         if self.state and not self.state.lease_active and feedback.healthy and feedback.stopped:
             self.handoff_complete=True
-        if self.position_ops and not self.unheld_test and self.control.teleop_mode=='bimanual_tool' and feedback.healthy:
+        if self.position_ops and not getattr(self,'independent_grippers',False) and not self.unheld_test and self.control.teleop_mode=='bimanual_tool' and feedback.healthy:
             if (not self.operator_grasp and not self.control.pending and feedback.stopped and
                     self.control.phase in ('checking','standby','tool_standby') and
                     feedback.modes[1] in ('closed','virtual')):

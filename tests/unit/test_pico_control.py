@@ -14,6 +14,22 @@ from tests.support.pico import Rig
 
 
 class ScenarioRuntimeTests(unittest.IsolatedAsyncioTestCase):
+    def test_independent_grippers_do_not_interrupt_follow_or_lock_mode_switch(self):
+        r=Rig(load='held',guided=True,dual=True,direct=True)
+        r.core.independent_grippers=True;r.core.teleop_mode='bimanual_tool'
+        r.core.phase='following';r.grips=[1.,1.];r.step()
+        r.triggers=[1.,1.]
+        self.assertEqual(r.step(),[]);self.assertEqual(r.core.phase,'following')
+        r.triggers=[0.,0.]
+        self.assertEqual(r.step(),[]);self.assertEqual(r.core.phase,'following')
+        r.core.phase='standby';r.grips=[0.,0.];r.step()
+        result=r.click(1,1)
+        self.assertEqual(result[-1].operation,'select_mode')
+        self.assertEqual(result[-1].value,'independent_arms')
+        r.complete();r.modes=('unknown','virtual');r.core.emit('confirm_tool')
+        r.complete();self.assertFalse(r.core.virtual)
+
+
     async def test_b_recovery_rechecks_exact_stop_before_clearing_latch(self):
         from types import SimpleNamespace as S
         from unittest.mock import Mock,AsyncMock

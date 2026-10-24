@@ -138,11 +138,11 @@ class TimingSummaries(unittest.TestCase):
         namespace=dict(time=S(monotonic=lambda:clock.mono),json=json,seconds=lambda x:x,
                        VRFrame=VRFrame,VRInput=lambda **kw:S(**kw),PICO_MAPPING=PICO_MAPPING)
         exec(compile(ast.Module(body=[method],type_ignores=[]),str(path),'exec'),namespace)
-        events=[]
+        events=[];projected=[]
         owner=S(matches_mode=lambda m:True,frames={},last_pair_at=None,base=None,
                 now=lambda:clock.ros,event=lambda *v:events.append(v),
                 control=PicoControl(),feedback=lambda:PicoFeedback(clock.ros,True,('closed','closed')),
-                last_prepare_check=None,release_until=0.,projected=S(publish=lambda m:None),
+                last_prepare_check=None,release_until=0.,projected=S(publish=projected.append),
                 instance_id='offline',position_contract=True,handoff_complete=True)
         def pair(seq):
             for side in ('left','right'):
@@ -159,6 +159,32 @@ class TimingSummaries(unittest.TestCase):
         clock.mono+=RECORDED_GAP;pair(3)
         data=json.loads([v[1] for v in events if v[0]=='PICO_INPUT_DELIVERY_GAP'][-1])
         self.assertEqual(data['interval_s'],0.)
+        # Same production projection now carries only independent trigger edges.
+        owner.independent_grippers=True;owner.control.independent_grippers=True
+        pair(4)
+        left=owner.frames['left']
+        left.trigger=1.;left.button_edges=(0,)*6+(1,0);left.seq=5
+        namespace['on_frame'](owner,left)
+        right=owner.frames['right'];right.seq=5
+        namespace['on_frame'](owner,right)
+        outgoing=projected[-2]
+        self.assertEqual(outgoing.trigger,1.)
+        self.assertEqual(list(outgoing.button_edges),[0]*6+[1,0])
+        path=ROOT/'src/integration/bindu_runtime/bindu_runtime/bimanual_tool_node.py'
+        definition=next(n for n in ast.parse(path.read_text()).body if isinstance(n,ast.ClassDef) and n.name=='BimanualToolNode')
+        method=next(n for n in definition.body if getattr(n,'name','')=='on_frame')
+        exec(compile(ast.Module(body=[method],type_ignores=[]),str(path),'exec'),namespace)
+        tool=S(matches_mode=lambda m:True,frames={},simulation=False,busy=True,
+               gripper_cfg={'independent_trigger_control':True},axial_position_ready=lambda:False)
+        namespace['on_frame'](tool,outgoing)
+        self.assertFalse(tool.frames['left'].stop)
+        outgoing.trigger=0.;outgoing.button_edges=[0]*6+[1,1];outgoing.seq+=1
+        namespace['on_frame'](tool,outgoing)
+        self.assertFalse(tool.frames['left'].stop)
+        outgoing.stop=True
+        namespace['on_frame'](tool,outgoing)
+        self.assertTrue(tool.frames['left'].stop)
+
         self.assertAlmostEqual(data['monotonic_interval_s'],RECORDED_GAP)
 
     def test_diagnostic_stages_do_not_suppress_each_other_or_clock_anomaly(self):

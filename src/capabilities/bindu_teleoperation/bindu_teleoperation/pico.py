@@ -64,6 +64,7 @@ class PicoControl:
         self.pending = None
         self.desired = ['closed','closed']
         self.direct_grippers = direct_grippers
+        self.independent_grippers = False
         self.gripper_update_token = None
         self.manual_targets = [None,None]
         self.effects = []
@@ -270,6 +271,9 @@ class PicoControl:
         delta=[c-p for c,p in zip(counts,self.previous)];self.previous=tuple(counts)
         presses=[bool(delta[2*i] and self.armed[i]) for i in range(8)]
         releases=[bool(delta[2*i+1]) for i in range(8)]
+        if self.independent_grippers:
+            # Trigger edges travel on the separate leased gripper path.
+            for i in (3,7):presses[i]=releases[i]=False
         for i,held in enumerate(states):
             if not held:self.armed[i]=True
         if left.stop or right.stop or states[1] or delta[2]:
@@ -409,7 +413,7 @@ class PicoControl:
             self.phase,self.reason='standby','OPEN_REQUIRES_LOADING_AND_SUPPORT'
             self.emit('stop');return
         if presses[6]:self.effects.append(PicoIntent(self.generation,'record'));return
-        if self.phase=='following' and not independent and ((presses[0] and states[0]) or releases[0]):
+        if not self.independent_grippers and self.phase=='following' and not independent and ((presses[0] and states[0]) or releases[0]):
             desired=states[0]
             if desired!=self.virtual:
                 self.phase='switching';self.emit('switch_grasp',desired)
@@ -421,7 +425,7 @@ class PicoControl:
                         self.reason='MODE_SWITCH_REQUIRES_STOP'
                     else:
                         target='bimanual_tool' if independent else 'independent_arms'
-                        if target=='independent_arms' and self.load=='held':
+                        if not self.independent_grippers and target=='independent_arms' and self.load=='held':
                             self.reason='PICO_TOOL_HELD_REQUIRES_TOOL_MODE';return
                         self.phase='selecting_mode';self.emit('select_mode',target)
                     return
@@ -451,9 +455,9 @@ class PicoControl:
             if self.dual_modes and (states[4] or states[5]):return
             if (self.guided_loading or self.phase=='tool_standby') and engage and self.rest(now):
                 if not independent:self.squeeze_released=[False,False]
-                if independent and self.load=='held':
+                if not self.independent_grippers and independent and self.load=='held':
                     self.squeeze_released=[False,False];self.reason='PICO_TOOL_HELD_REQUIRES_TOOL_MODE';return
-                if not independent and states[0]!=self.virtual:
+                if not self.independent_grippers and not independent and states[0]!=self.virtual:
                     if self.guided_loading and self.armed[0]:
                         self.phase='switching';self.emit('switch_grasp',states[0])
                     else:self.reason='CONFIRM_GRASP_CHANGE_BEFORE_REENGAGE'
@@ -539,7 +543,7 @@ class PicoControl:
             self.squeeze_released=[False,False]
         elif operation=='confirm_tool':
             self.phase,self.reason='tool_standby','TOOL_GRASP_VERIFIED'
-            self.virtual=bool(self.feedback and self.feedback.modes[1]=='virtual')
+            self.virtual=bool(not self.independent_grippers and self.feedback and self.feedback.modes[1]=='virtual')
             self.desired=['closed','virtual' if self.virtual else 'closed']
             self.squeeze_released=[False,False]
         elif operation=='switch_grasp':
@@ -602,6 +606,7 @@ class PicoControl:
                     stick=list(f.stick) if fresh and f.stick else None,
                     button_edges=list(f.button_edges) if fresh else None,
                     position_m=[f.pose[i] for i in (3,7,11)] if fresh else None)
+        view['independent_grippers']=self.independent_grippers
         if self.guided_loading:view['operator_guide']=loading_guide(view,self.feedback.modes if self.feedback else ())
         return view
 
@@ -653,10 +658,10 @@ def loading_guide(view, modes):
             return dict(title='检查未通过，保持待命',detail=detail,key='握',step='retry')
         if view.get('teleop_mode')=='independent_arms':
             return dict(title='握住哪侧，就控制哪侧手臂',
-                        detail='侧握先松再握；松握后扳机开合，A 准备，B 切模式',key='握',step='engage')
+                        detail=('侧握先松再握；扳机随时按住打开、松开闭合，A 准备，B 切模式' if view.get('independent_grippers') else '侧握先松再握；松握后扳机开合，A 准备，B 切模式'),key='握',step='engage')
         if view.get('dual_modes'):
             return dict(title='双侧先松握，再同时握住控制工具',
-                        detail='松任一侧暂停；松握后扳机开合，A 准备，B 切模式',key='握',step='engage')
+                        detail=('松任一侧暂停；扳机随时按住打开、松开闭合，A 准备，B 切模式' if view.get('independent_grippers') else '松任一侧暂停；松握后扳机开合，A 准备，B 切模式'),key='握',step='engage')
         return dict(title='松开双侧握，再同时握住接合',
                     detail='从当前位置建立跟随基准；A 可选回准备位，左摇杆单独装卸',key='握',step='engage')
     if phase=='load_check':

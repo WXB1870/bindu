@@ -500,6 +500,27 @@ class NativeBimanual(unittest.TestCase):
         self.feedback=dict.fromkeys(self.qp.model_names,0.)
         self.feedback.update(self.pose)
 
+    def test_tool_capture_keeps_nominal_anchor_and_measured_grasp_separate(self):
+        qp=BimanualQP(dict(self.config,reference_kinematics=True),self.profile)
+        self.addCleanup(qp.close)
+        measured=dict(self.feedback)
+        baseline=np.array([measured[n] for n in qp.names]);baseline[-1]+=.01
+        actual_tool=qp.capture(measured);actual_grasp=qp.grasp_reference.copy()
+        with patch.object(qp,'check_path',wraps=qp.check_path) as check:
+            target=qp.capture(measured,reference=baseline)
+        np.testing.assert_allclose(qp.grasp_reference,actual_grasp)
+        np.testing.assert_allclose(check.call_args.args[1],baseline)
+        check_feedback=dict(measured);check_feedback.update(zip(qp.names,baseline))
+        expected=np.empty((4,4),dtype=np.float64)
+        self.assertTrue(qp.lib.bq_tool_pose(qp.handle,qp._ptr(qp._q(check_feedback)),qp.nq,qp._ptr(expected)))
+        np.testing.assert_allclose(target,expected)
+        # Invalid references and actual out-of-bounds feedback still reject capture.
+        with self.assertRaisesRegex(ValueError,'REFERENCE_LAYOUT'):
+            qp.capture(measured,reference=[float('nan')]*len(baseline))
+        invalid=dict(measured);invalid[qp.names[0]]=qp.limits[qp.names[0]][1]+.001
+        with self.assertRaisesRegex(ValueError,'MEASURED_POSITION_LIMIT'):
+            qp.capture(invalid,reference=[invalid[n] for n in qp.names])
+
     def test_iteration_limit_retains_capture_only_after_checking_unchanged_reference(self):
         target=self.qp.capture(self.feedback)
         reference=tuple(self.feedback[n] for n in self.qp.names)

@@ -19,7 +19,8 @@ class Rig:
     def __init__(self, *, require_driver_ack=True, **changes):
         self.profile = Profile.load(CONFIG/'snowbot_real_position.json')
         self.config = json.loads((CONFIG/'snowbot_grippers_real.json').read_text())
-        self.config.update(calibrated=True, **changes)
+        self.config.update(calibrated=True, independent_trigger_control=False)
+        self.config.update(changes)
         self.now, self.steady, self.idle = 10., 100., True
         self.q = dict.fromkeys(self.profile.limits, 0.)
         self.v = dict.fromkeys(self.q, 0.)
@@ -75,6 +76,40 @@ class Rig:
 
 
 class GripperTests(unittest.TestCase):
+    def test_independent_trigger_edges_and_contact_do_not_require_endpoint(self):
+        r=Rig(require_driver_ack=False,independent_trigger_control=True,motion_timeout=.2)
+        r.core.input(r.frame('left',1,1.,(1,0)))
+        r.core.input(r.frame('right',1))
+        self.assertFalse(r.sent)  # No held-key replay on startup.
+        r.core.input(r.frame('left',2,0.,(1,1)))
+        self.assertEqual(r.sent[-1][1],r.config['grippers']['left']['closed'])
+        r.core.input(r.frame('left',3,1.,(2,1)))
+        self.assertEqual(r.sent[-1][1],r.config['grippers']['left']['open'])
+        for k in range(4,25):
+            r.step(track=False)
+            r.core.input(r.frame('left',k,1.,(2,1)))
+            r.core.input(r.frame('right',k))
+        c=r.core.channels['left']
+        self.assertEqual(c['state'],'CANCELED')
+        self.assertEqual(c['code'],'MANUAL_ENDPOINT_STOPPED')
+        self.assertFalse(r.core.fault)
+        self.assertFalse(r.core.snapshot('left')['position_reached'])
+        r.core.input(r.frame('left',25,0.,(2,2)))
+        self.assertEqual(r.sent[-1][1],r.config['grippers']['left']['closed'])
+        r.core.input(r.frame('left',26,stop=True))
+        self.assertFalse(r.core.lease_id)
+
+    def test_independent_trigger_stream_expiry_and_ambiguous_edges_stop(self):
+        for fault in ('timeout','edges'):
+            r=Rig(require_driver_ack=False,independent_trigger_control=True)
+            for side in SIDES:r.core.input(r.frame(side,1))
+            r.core.input(r.frame('left',2,1.,(1,0)))
+            self.assertTrue(r.core.lease_id)
+            if fault=='timeout':r.step(15,track=False)
+            else:r.core.input(r.frame('left',3,1.,(2,1)))
+            self.assertFalse(r.core.lease_id)
+
+
     def test_manual_endpoint_residuals_finish_after_hold_without_claiming_grasp(self):
         r=Rig();r.config['calibrated']=False
         for side,value in (('left',-.024568),('right',.010498)):
@@ -810,6 +845,15 @@ class CoordinatorStopBarrierTests(unittest.TestCase):
         ops.node.wait=wait
         asyncio.run(ops.release())
         self.assertTrue(ops.stopped())
+
+    def test_independent_gripper_travel_does_not_block_modes_but_global_stop_waits(self):
+        ops,clock=self.rig();ops.lease=None;ops.lease_instance=None
+        ops.config['independent_trigger_control']=True;ops.node.control=S(phase='standby')
+        ops.states['left'].state='MOVING';ops.states['left'].measured_velocity=.1
+        self.assertTrue(ops.stopped())
+        ops.node.control.phase='locked';self.assertFalse(ops.stopped())
+        ops.node.control.phase='standby';clock.value+=.3
+        self.assertFalse(ops.stopped())
 
     def test_missing_stale_or_moving_feedback_never_reports_stopped(self):
         for condition in ('empty','one_side','stale','moving'):
