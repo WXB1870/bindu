@@ -53,7 +53,7 @@ class Plan:
         return 0., 0., 0.
 
 
-def make_plan(degrees=1., speed=.02, acceleration=.05, jerk=1.):
+def make_plan(degrees=1., speed=.1, acceleration=.5, jerk=10.):
     for value, maximum in ((degrees, 20.), (speed, .375), (acceleration, 2.25), (jerk, 162.)):
         if type(value) not in (float, int) or not math.isfinite(value) or not 0 < value <= maximum:
             raise ValueError('TEST_ENVELOPE_EXCEEDED')
@@ -63,7 +63,7 @@ def make_plan(degrees=1., speed=.02, acceleration=.05, jerk=1.):
     return Plan(distance, math.ceil(duration/.02)*.02)
 
 
-def checked_state(msg, now, received, steady, profile_hash, *, owned=False, epoch=0):
+def checked_state(msg, now, received, steady, profile_hash, *, owned=False, epoch=0, stationary=True):
     feedback_age = now-(msg.feedback_stamp.sec+msg.feedback_stamp.nanosec*1e-9)
     if (msg.runtime_mode != 'real' or msg.simulated or msg.device_backend != 'snowbot_vendor' or
             msg.profile_hash != profile_hash or msg.stop_failures or
@@ -85,7 +85,7 @@ def checked_state(msg, now, received, steady, profile_hash, *, owned=False, epoc
     q, v = dict(zip(msg.joints.name, msg.joints.position)), dict(zip(msg.joints.name, msg.joints.velocity))
     if any(n not in q or not all(math.isfinite(x) for x in (q[n], v[n])) for n in NAMES):
         raise RuntimeError('MEASUREMENT_MISSING_OR_NONFINITE')
-    if not owned and any(abs(v[n]) > .01 for n in NAMES):
+    if stationary and not owned and any(abs(v[n]) > .01 for n in NAMES):
         raise RuntimeError('MEASUREMENT_NOT_STATIONARY')
     return q, v
 
@@ -166,6 +166,7 @@ def execute(args, plan):
     topic = '/'+args.vendor_namespace.strip('/') if args.vendor_namespace.strip('/') else ''
     latest = {}; lease = None; failure = None; last_pdo = None; progress = time.monotonic()
     task = 'waist-test-'+uuid.uuid4().hex
+    submitted = set()
 
     def record(kind, data):
         log.write(json.dumps(json_value(dict(kind=kind, steady=time.monotonic(), data=data)), allow_nan=False)+'\n')
@@ -188,8 +189,10 @@ def execute(args, plan):
             latest['logged'] = now
 
     def event(msg):
-        if msg.task_id == task and msg.state in ('REJECTED', 'FAILED'):
-            latest['error'] = msg.code
+        if msg.task_id == task or msg.command_id in submitted:
+            record('event', dict(state=msg.state, code=msg.code, command_id=msg.command_id))
+            if msg.state in ('TARGET_REJECTED', 'DEVICE_FEEDBACK_DETAIL', 'REJECTED', 'FAILED'):
+                latest.setdefault('error', msg.code)
 
     node.create_subscription(ExecutionState, ns+'/execution/state', state, 10)
     node.create_subscription(PositionObservation, topic+'/bindu/position/observation', pdo, qos_profile_sensor_data)
@@ -211,18 +214,18 @@ def execute(args, plan):
         spin_until(future.done, .25)
         reply = future.result()
         if not (reply.ok if hasattr(reply, 'ok') else reply.accepted):
-            raise RuntimeError(reply.code)
+            raise RuntimeError(latest.get('error', reply.code))
         return reply
 
     try:
         spin_until(lambda: 'state' in latest and 'pdo' in latest and leases.service_is_ready() and
                    submit.service_is_ready() and checked_pdo_source(node.get_publishers_info_by_topic(
                        topic+'/bindu/position/observation'), discovering=True), 5.)
-        def check(owned=False):
+        def check(owned=False, *, settling=False):
             now, steady = node.get_clock().now().nanoseconds*1e-9, time.monotonic()
             msg, received = latest['state']
             q, v = checked_state(msg, now, received, steady, robot.profile.digest,
-                                 owned=owned, epoch=lease.epoch if lease else 0)
+                                 owned=owned, epoch=lease.epoch if lease else 0, stationary=not settling)
             obs, received = latest['pdo']
             checked_pdo(obs, now, received, steady, boot)
             if steady-progress > .05 or latest.get('error'):
@@ -232,11 +235,33 @@ def execute(args, plan):
             return q, v
 
         boot = latest['pdo'][0].boot_id
-        initial, _ = check()
+        initial, _ = check(settling=True)
         # Require advancing samples before acquiring any ownership.
         sample = latest['pdo'][0].pdo_sample
         spin_until(lambda: latest['pdo'][0].pdo_sample > sample, .1)
-        initial, _ = check()
+        # A READY/instantaneous low-speed sample can precede another settling
+        # swing. Observe all owned joints before acquiring any lease or sending.
+        deadline = time.monotonic()+5.
+        rest_since = None
+        rest_q = None
+        while True:
+            initial, velocity = check(settling=True)
+            obs = latest['pdo'][0]
+            worst = max(((abs(velocity[n]), n) for n in NAMES),
+                        default=(0., ''))
+            worst = max(worst, max((abs(obs.speed[slot]), n) for n, slot in zip(NAMES, SLOTS)))
+            now = time.monotonic()
+            if worst[0] > .005:
+                rest_since = rest_q = None
+            elif rest_since is None or any(abs(initial[n]-rest_q[n]) > .001 for n in NAMES):
+                rest_since, rest_q = now, dict(initial)
+            elif now-rest_since >= .2:
+                record('settled', dict(window_s=now-rest_since, speed_limit=.005,
+                                       position_range_limit=.001, max_speed=worst[0]))
+                break
+            if now >= deadline:
+                raise RuntimeError('TEST_NOT_SETTLED:axis='+worst[1]+';speed='+str(worst[0]))
+            rclpy.spin_once(node, timeout_sec=.005)
         for t in (0., plan.dwell+plan.move_seconds, plan.dwell+3*plan.move_seconds+2*plan.dwell):
             targets(plan, t, initial, robot.profile.limits, axis)
         record('plan', dict(task=task, robot_config=str(robot.path), profile_hash=robot.profile.digest,
@@ -267,6 +292,7 @@ def execute(args, plan):
                 lease_id=lease.lease_id, epoch=lease.epoch, mode='joint_target',
                 resource_groups=list(GROUPS), stamp=stamp(node.get_clock().now().nanoseconds*1e-9),
                 valid_for=.2, joint_names=list(NAMES), positions=[goal[n] for n in NAMES])
+            submitted.add(msg.command_id)
             call(submit, SubmitMotion.Request(command=msg))
             record('target', dict(elapsed=elapsed, joint=axis, position=goal[axis],
                                   **({'yaw': goal[axis]} if axis == 'body_joint_1' else {})))
@@ -371,9 +397,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--axis', choices=NAMES[:2], default='body_joint_1', help='only this waist target changes')
     parser.add_argument('--degrees', type=float, default=1., help='code-scale excursion each way; default 1 deg, <=20')
-    parser.add_argument('--speed', type=float, default=.02, help='code-scale rad/s; default .02, <=0.375 and selected profile')
-    parser.add_argument('--acceleration', type=float, default=.05, help='code-scale rad/s^2; default .05, <=2.25 and selected profile')
-    parser.add_argument('--jerk', type=float, default=1., help='code-scale rad/s^3; default 1, <=162')
+    parser.add_argument('--speed', type=float, default=.1, help='code-scale rad/s; default .1, <=0.375 and selected profile')
+    parser.add_argument('--acceleration', type=float, default=.5, help='code-scale rad/s^2; default .5, <=2.25 and selected profile')
+    parser.add_argument('--jerk', type=float, default=10., help='code-scale rad/s^3; default 10, <=162')
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument('--execute', action='store_true', help='operator only: acquire 16-axis lease and send targets')
     mode.add_argument('--analyze', type=Path, help='offline analysis of an existing capture')

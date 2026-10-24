@@ -55,13 +55,13 @@ class WaistTests(unittest.TestCase):
             with self.subTest(values=values), self.assertRaises(ValueError):
                 make_plan(*values)
 
-    def test_default_small_slow_excursion(self):
+    def test_default_small_faster_excursion(self):
         plan = make_plan()
         self.assertAlmostEqual(math.degrees(plan.amplitude), 1.)
         peak = plan.sample(plan.dwell+plan.move_seconds/2)
-        self.assertGreater(peak[1], .019)
-        self.assertLessEqual(peak[1], .02)
-        self.assertAlmostEqual(plan.duration, 11.56)
+        self.assertGreater(peak[1], .068)
+        self.assertLessEqual(peak[1], .1)
+        self.assertAlmostEqual(plan.duration, 6.92)
 
     def test_only_yaw_target_changes_and_limits_keep_margin(self):
         plan = make_plan()
@@ -178,12 +178,12 @@ class WaistTests(unittest.TestCase):
         self.assertFalse(result['starts_driver'])
         self.assertEqual(result['axis'], 'body_joint_1')
         self.assertEqual(result['degrees'], 1.)
-        self.assertEqual(result['requested_speed'], .02)
-        self.assertEqual(result['requested_acceleration'], .05)
-        self.assertLessEqual(result['target_peak_speed'], .02)
-        self.assertLessEqual(result['target_peak_acceleration'], .05)
-        self.assertLessEqual(result['target_peak_jerk'], 1.)
-        self.assertEqual(result['requested_jerk'], 1.)
+        self.assertEqual(result['requested_speed'], .1)
+        self.assertEqual(result['requested_acceleration'], .5)
+        self.assertLessEqual(result['target_peak_speed'], .1)
+        self.assertLessEqual(result['target_peak_acceleration'], .5)
+        self.assertLessEqual(result['target_peak_jerk'], 10.)
+        self.assertEqual(result['requested_jerk'], 10.)
         self.assertEqual(json_value([float('nan'), float('-inf')]), [None, None])
 
     def test_pitch_analysis_selects_pitch_even_when_pdo_precedes_plan(self):
@@ -211,13 +211,18 @@ class WaistTests(unittest.TestCase):
     def test_actual_runner_with_memory_ros_holds_arms_and_releases_on_fault(self):
         # Execute the real runner with in-memory ROS objects and a virtual clock.
         # No launch, socket, ROS runtime or hardware process exists in this test.
-        for axis, inject_fault in ((n, f) for n in NAMES[:2] for f in (False, True)):
+        cases = [(n, f, 'rest') for n in NAMES[:2] for f in (False, True)]
+        cases += [('body_joint_1', False, scenario) for scenario in
+                  ('transient', 'moving', 'moving_pdo', 'drifting', 'reject')]
+        for axis, inject_fault, scenario in cases:
             clock = S(value=10.)
             requests = []; commands = []; subscriptions = {}
             current = {n: .1 for n in NAMES}; owned = S(value=False)
 
             def msg(**kwargs):
                 return S(**kwargs)
+
+            test_case = self
 
             class Client:
                 def __init__(self, service):
@@ -230,12 +235,19 @@ class WaistTests(unittest.TestCase):
                     if self.service.endswith('/lease'):
                         requests.append(request.operation)
                         if request.operation == 'acquire':
+                            if scenario == 'transient':
+                                test_case.assertGreaterEqual(clock.value, 10.65-1e-8)
                             owned.value = True
                         if request.operation == 'release':
                             owned.value = False
                         response = S(ok=True, lease_id='lease', epoch=1, profile_hash='hash')
                     else:
                         commands.append(request.command)
+                        if scenario == 'reject':
+                            subscriptions['/bindu_snowbot/events'](S(task_id='',
+                                command_id=request.command.command_id, state='TARGET_REJECTED',
+                                code='SNOWBOT_TARGET:trajectory_takeover_seed'))
+                            return S(done=lambda: True, result=lambda: S(accepted=False, code='INVALID_LEASE'))
                         current.update(zip(request.command.joint_names, request.command.positions))
                         response = S(accepted=True)
                     return S(done=lambda: True, result=lambda: response)
@@ -266,8 +278,15 @@ class WaistTests(unittest.TestCase):
                 clock.value += .005
                 s = state(); s.feedback_stamp = s.stamp = stamp(clock.value)
                 s.lease_active = owned.value; s.lease_epoch = 1; s.lease_resources = list(waist.GROUPS)
+                if scenario == 'drifting' and not owned.value:
+                    current['body_joint_2'] = .1+.01*(clock.value-10.)
                 s.joints.position = [current[n] for n in NAMES]
-                p = pdo(); p.header.stamp = stamp(clock.value); p.pdo_sample = round(clock.value*1000)
+                if not owned.value and (scenario == 'moving' or scenario == 'transient' and clock.value < 10.45):
+                    s.joints.velocity[1] = -.00995
+                p = pdo();
+                if not owned.value and scenario == 'moving_pdo':
+                    p.speed[19] = -.00995
+                p.header.stamp = stamp(clock.value); p.pdo_sample = round(clock.value*1000)
                 p.reference_valid = p.output_valid = True
                 p.source_stamp_ns = p.expires_at_ns = 0
                 p.reference_position = p.output_position = [current[n] for n in (*NAMES[2:], *NAMES[:2])]
@@ -299,13 +318,26 @@ class WaistTests(unittest.TestCase):
                     waist.time, 'monotonic', lambda: clock.value):
                 args = S(axis=axis, robot_config=Path('/memory/robot.json'), output=Path(directory)/'capture.jsonl',
                          namespace='bindu_snowbot', vendor_namespace='/', speed=.25, acceleration=.5, jerk=10.)
-                if inject_fault:
+                blocked = scenario in ('moving', 'moving_pdo', 'drifting')
+                if blocked or scenario == 'reject':
+                    error = 'TEST_NOT_SETTLED' if blocked else 'trajectory_takeover_seed'
+                    with self.assertRaisesRegex(RuntimeError, error):
+                        waist.execute(args, make_plan())
+                elif inject_fault:
                     with self.assertRaisesRegex(RuntimeError, 'PDO_NOT_READY'):
                         waist.execute(args, make_plan())
                 else:
                     waist.execute(args, make_plan())
                 rows = [json.loads(line) for line in args.output.read_text().splitlines()]
-                self.assertEqual(rows[-1]['data']['completed'], not inject_fault)
+                self.assertEqual(rows[-1]['data']['completed'], not inject_fault and not blocked and scenario != 'reject')
+                if blocked:
+                    self.assertEqual(requests, [])
+                    self.assertEqual(commands, [])
+                    continue
+                if scenario == 'reject':
+                    self.assertIn('trajectory_takeover_seed', rows[-1]['data']['error'])
+                    self.assertNotIn('INVALID_LEASE', rows[-1]['data']['error'])
+                self.assertTrue(any(row['kind'] == 'settled' for row in rows))
                 self.assertEqual(next(r['data']['axis'] for r in rows if r['kind'] == 'plan'), axis)
             self.assertTrue(commands)
             self.assertEqual(requests[0], 'acquire')
