@@ -175,6 +175,23 @@ class WorkerReceiptTests(unittest.TestCase):
 
 
 class PrepareLimitReferenceTests(unittest.TestCase):
+    def test_inward_recovery_is_not_blocked_by_an_in_bounds_partner_residual(self):
+        from bindu_kinematics.bimanual_worker import prepare_limit_reference
+        measured={'r3':-.5999302864074707,'other':-.21214474737644196}
+        held={'r3':-.5868355631828308,'other':-.25267574191093445}
+        target={'r3':-.431745,'other':-.1}
+        self.assertEqual(prepare_limit_reference(self.fixture(),tuple(held),measured,held,target,
+                         .017453292519943295,.035),held)
+
+    def test_both_real_recipes_add_one_degree_to_the_existing_all_axis_reserve(self):
+        import json,math
+        from pathlib import Path
+        root=Path(__file__).resolve().parents[2]/'src/integration/bindu_runtime/config/robots/snowbot'
+        for name in ('bimanual_snowbot_real.json','bimanual_snowbot_shovel.json'):
+            cfg=json.loads((root/name).read_text())
+            self.assertAlmostEqual(cfg['posture_reference_margin_rad'],.01+math.radians(1.))
+            self.assertEqual(cfg['posture_policy']['reference'],'initial_capture')
+
     def fixture(self):
         from types import SimpleNamespace as S
         return S(limits={'r3':(-.5974532925199433,2.611745329251994),'other':(-1.,1.)},

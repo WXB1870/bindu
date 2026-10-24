@@ -538,7 +538,7 @@
     }
   },
   "reference_kinematics": true,
-  "posture_reference_margin_rad": 0.01,
+  "posture_reference_margin_rad": 0.027453292519943295,
   "input_frame": "car_base_link",
   "tool_velocity_feedforward": true
 }
