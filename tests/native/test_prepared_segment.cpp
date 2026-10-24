@@ -309,6 +309,40 @@ void small_streaming_motion_does_not_switch_braking_policy() {
         for(size_t i=0;i<3;++i) {close(final.q[i],last_goal[i]);close(final.v[i],0.);close(final.a[i],0.);}
     }
 }
+void advancing_trend_does_not_pull_back_a_leading_reference() {
+    // Reduced from the new right-J4 braking window: the reference leads the
+    // current point, while the incoming target trend remains forward. The old
+    // extrapolated-position quintic reverses although braking need not do so.
+    auto ls=limits(2);
+    for(auto& l:ls) {l.velocity=1.;l.acceleration=4.5;l.jerk=162.;}
+    const JointState initial{{-.2605050369877396,.2605050369877396},
+                             {.0180928285337732,-.0180928285337732},
+                             {-1.411099971719527,1.411099971719527},{}};
+    const std::vector<double> goal{-.2862692492499629,.2862692492499629};
+    const auto path=PreparedSegment::tracking_target(ls,initial,goal,
+        {.18657061768173155,-.18657061768173155},0.,20.,5.);
+    continuous(initial,path.sample(0.));
+    const auto endpoint=path.sample(path.describe().front().duration);
+    for(size_t i=0;i<2;++i)
+        require(std::abs(endpoint.q[i]-goal[i])<=.2*ls[i].velocity+1e-9,"preview displacement exceeded");
+    for(int k=0;k<=100;++k) {
+        const auto s=path.sample(k*.001);bounded(ls,s);
+        require(s.v[0]>=-1e-8&&s.v[1]<=1e-8,"advancing trend pulled back leading reference");
+        close(s.q[0],-s.q[1]);close(s.v[0],-s.v[1]);
+    }
+    // Continuation is optional; loss of the stream must still converge to the
+    // actual goal behind it, not an extrapolated hold point.
+    for(int k=0;k<=1000;++k) bounded(ls,path.sample(path.end()*k/1000.));
+    const auto end=path.sample(path.end()+1.);
+    for(size_t i=0;i<2;++i) {close(end.q[i],goal[i]);close(end.v[i],0.);close(end.a[i],0.);}
+    const auto seed=path.sample(.02);
+    const auto reversed=PreparedSegment::tracking_target(ls,seed,{-.35,.35},{-.2,.2},.02,20.,5.);
+    continuous(seed,reversed.sample(.02));
+    require(reversed.sample(.02+reversed.describe().front().duration).v[0]<0.,"real input reversal suppressed");
+    const auto stop=PreparedSegment::stop(ls,seed,.02,5.);continuous(seed,stop.sample(.02));
+    const auto stopped=stop.sample(stop.end()+1.);
+    close(stopped.v[0],0.);close(stopped.v[1],0.);
+}
 }
 int main() {
     try {
@@ -317,6 +351,7 @@ int main() {
         continuous_streams();
         velocity_aware_targets();
         small_streaming_motion_does_not_switch_braking_policy();
+        advancing_trend_does_not_pull_back_a_leading_reference();
         std::cout<<"prepared segment: synchronized/moving/retarget/stop/buffer tests passed; zero sampling allocations\n";
     }catch(const std::exception& e) {std::cerr<<e.what()<<'\n';return 1;}
 }
