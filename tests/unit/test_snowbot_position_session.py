@@ -94,11 +94,11 @@ class PositionSessionTests(unittest.TestCase):
 
     def test_target_stream_pause_has_own_fixed_stop_deadline(self):
         source = SourceEnvelope(11, lambda: self.now, target_stream=True)
-        motion = self.motion()
+        motion = self.motion(valid_for=.4)
         ordinary = source.command(motion)
         self.now += .01
         pause = source.command(None, pause=True)
-        self.assertEqual(ordinary['expires_at_ns']-ordinary['source_stamp_ns'], 200_000_000)
+        self.assertEqual(ordinary['expires_at_ns']-ordinary['source_stamp_ns'], 300_000_000)
         self.assertEqual(pause['expires_at_ns']-pause['source_stamp_ns'], 2_000_000_000)
         self.assertEqual(pause['operation'], 2)
         self.now += .02
@@ -106,6 +106,24 @@ class PositionSessionTests(unittest.TestCase):
         self.assertEqual(pause['expires_at_ns'], pause['source_stamp_ns']+2_000_000_000)
         legacy = SourceEnvelope(12, lambda: self.now).command(None, pause=True)
         self.assertEqual(legacy['expires_at_ns']-legacy['source_stamp_ns'], 200_000_000)
+
+    def test_target_stream_ttl_uses_original_source_and_never_extends_short_commands(self):
+        for stamp in (10., 1_792_567_890.1234567):
+            for valid_for, ttl in ((.15, 150_000_000), (.4, 300_000_000)):
+                with self.subTest(stamp=stamp, valid_for=valid_for):
+                    self.now = stamp+.1
+                    source = SourceEnvelope(11, lambda: self.now, target_stream=True)
+                    motion = self.motion(stamp=stamp, valid_for=valid_for)
+                    packet = source.command(motion)
+                    self.assertEqual(packet['source_stamp_ns'], round(stamp*1e9))
+                    self.assertEqual(packet['expires_at_ns'], round(stamp*1e9)+ttl)
+                    self.now += .02
+                    self.assertIsNone(source.command(motion))
+                    self.assertEqual(source.sequence, 1)
+                    self.now = stamp+min(valid_for, .3)
+                    with self.assertRaisesRegex(RuntimeError, 'EXPIRED'):
+                        source.command(self.motion(command_id='new-id-same-old-source',
+                                                   stamp=stamp, valid_for=valid_for))
 
     def test_ros_publication_without_pdo_progress_is_rejected(self):
         self.health.require(CONTROL_GROUPS)
@@ -503,6 +521,7 @@ class TargetWireTests(unittest.TestCase):
         d.takeover_pending = None
         d.takeover_previous_hold = None
         d.io.trajectory_reference = True
+        d.io.target_stream = True
         d.io.supports_rigid_reference = True
         d.node.event = Mock(); d.node.get_logger = Mock()
         d.arm_type = lambda: S(meta=S(), command=S(), trajectory=S(effective_at_ns=0,
@@ -798,7 +817,7 @@ class TargetWireTests(unittest.TestCase):
         packet=self.d.publishers['arms'].publish.call_args.args[0]
         if confirm_takeover:self.d.receive_receipt(self.receipt(packet))
         # Executor/feedback continue while the target producer has no new input.
-        for _ in range(27):
+        for _ in range(47):
             self.update_target_feedback();engine.tick(self.rig.now)
         self.rig.now+=.02;self.rig.steady+=.02
         self.update_target_feedback()
@@ -814,10 +833,10 @@ class TargetWireTests(unittest.TestCase):
         self.assertEqual(packet.meta.source_command_id,motion.command_id)
         self.assertEqual(packet.meta.operation,0)
         self.assertEqual(packet.meta.source_stamp_ns,round(motion.stamp*1e9))
-        self.assertEqual(packet.meta.expires_at_ns,round(motion.stamp*1e9)+200_000_000)
+        self.assertEqual(packet.meta.expires_at_ns,round(motion.stamp*1e9)+300_000_000)
         self.assertIsNone(self.rig.engine.stopping)
         self.assertEqual(self.rig.engine.lease_id,motion.lease_id)
-        self.assertEqual(old.meta.expires_at_ns,old.meta.source_stamp_ns+200_000_000)
+        self.assertEqual(old.meta.expires_at_ns,old.meta.source_stamp_ns+300_000_000)
         for _ in range(5):self.d.brake_before_source_expiry(self.rig.engine)
         self.assertEqual(self.d.publishers['arms'].publish.call_count,2)
 
@@ -827,7 +846,7 @@ class TargetWireTests(unittest.TestCase):
         packet=self.d.publishers['arms'].publish.call_args.args[0]
         self.assertEqual(packet.meta.operation,2)
         self.assertFalse(self.rig.engine.lease_id)
-        self.assertEqual(old.meta.expires_at_ns,old.meta.source_stamp_ns+200_000_000)
+        self.assertEqual(old.meta.expires_at_ns,old.meta.source_stamp_ns+300_000_000)
         self.assertEqual(self.d.publishers['arms'].publish.call_count,2)
 
     def test_replacement_still_obeys_endpoint_health_before_dispatch(self):
@@ -866,6 +885,27 @@ class TargetWireTests(unittest.TestCase):
         self.d.node.count_publishers = lambda topic: int(topic == '/bindu/position/command')
         self.d.check_ready = PositionSessionDevices.check_ready.__get__(self.d)
         self.rig.io.check_ready = self.d.check_ready
+
+    def test_longer_source_ttl_brakes_at_240ms_without_renewal(self):
+        self.production_readiness()
+        motion = self.source_motion()
+        self.rig.engine.submit(motion, self.rig.now); self.rig.engine.tick(self.rig.now)
+        first = self.d.publishers['arms'].publish.call_args.args[0]
+        self.d.receive_receipt(self.receipt(first))
+        for _ in range(47):  # 235 ms; the former 140 ms boundary now passes.
+            self.update_target_feedback(); self.rig.engine.tick(self.rig.now)
+            self.d.brake_before_source_expiry(self.rig.engine)
+            self.assertIsNone(self.rig.engine.stopping)
+            self.assertEqual(self.d.publishers['arms'].publish.call_count, 1)
+        self.update_target_feedback()
+        self.d.brake_before_source_expiry(self.rig.engine)
+        pause = self.d.publishers['arms'].publish.call_args.args[0]
+        self.assertEqual(round((self.rig.now-motion.stamp)*1e9), 240_000_000)
+        self.assertEqual(pause.meta.operation, 2)
+        self.assertFalse(self.rig.engine.lease_id)
+        self.assertEqual(first.meta.expires_at_ns, round(motion.stamp*1e9)+300_000_000)
+        for _ in range(10): self.d.brake_before_source_expiry(self.rig.engine)
+        self.assertEqual(self.d.publishers['arms'].publish.call_count, 2)
 
     def source_motion(self, command_id='move', *, age=0., valid_for=.4):
         from bindu_contracts.contracts import Motion
@@ -922,7 +962,7 @@ class TargetWireTests(unittest.TestCase):
 
     def test_effective_source_deadline_rejects_before_acceptance_without_stop_footprint(self):
         from bindu_execution.executor import Rejected
-        for age, valid_for in ((.2, .4), (.21, .4), (.1, .1)):
+        for age, valid_for in ((.3, .4), (.31, .4), (.1, .1)):
             with self.subTest(age=age, valid_for=valid_for):
                 self.setUp(); self.production_readiness()
                 motion = self.source_motion(age=age, valid_for=valid_for)
@@ -939,7 +979,7 @@ class TargetWireTests(unittest.TestCase):
 
     def test_expiry_between_acceptance_and_first_tick_has_no_phantom_stop(self):
         self.production_readiness()
-        motion = self.source_motion(age=.199)
+        motion = self.source_motion(age=.299)
         self.rig.engine.submit(motion, self.rig.now)
         self.update_target_feedback()
         self.rig.engine.tick(self.rig.now)
@@ -955,16 +995,16 @@ class TargetWireTests(unittest.TestCase):
         packet = self.d.publishers['arms'].publish.call_args.args[0]
         self.assertEqual(packet.meta.operation, 1)
         self.assertEqual(packet.meta.source_command_id, fresh.command_id)
-        self.assertEqual(packet.meta.expires_at_ns-packet.meta.source_stamp_ns, 200_000_000)
+        self.assertEqual(packet.meta.expires_at_ns-packet.meta.source_stamp_ns, 300_000_000)
 
     def test_unsent_expired_candidate_preserves_prior_real_send_for_pause(self):
         self.production_readiness()
-        first = self.source_motion('first', age=.1995)
+        first = self.source_motion('first', age=.2995)
         self.rig.engine.submit(first, self.rig.now); self.rig.engine.tick(self.rig.now)
         self.d.receive_receipt(self.receipt(self.d.publishers['arms'].publish.call_args.args[0]))
         previous = dict(self.rig.io.targets)
         for name in self.target: self.target[name] += .001
-        late = self.source_motion('late-next', age=.199)
+        late = self.source_motion('late-next', age=.299)
         self.rig.engine.submit(late, self.rig.now)
         self.update_target_feedback(); self.rig.engine.tick(self.rig.now)
         self.assertEqual(self.d.publishers['arms'].publish.call_count, 2)

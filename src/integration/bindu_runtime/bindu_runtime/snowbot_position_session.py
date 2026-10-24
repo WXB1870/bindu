@@ -26,6 +26,7 @@ def sampled_nominal_reference(state, names, epoch, now, max_age, *, wait_until=N
 class PositionSessionIO(SnowbotIO):
     requesting_pause = False
     trajectory_reference = False
+    target_stream = False
     servo_reference = None
     captured_pause_request = None
 
@@ -37,7 +38,7 @@ class PositionSessionIO(SnowbotIO):
         self.stop_group_sets = (('waist', 'left_arm', 'right_arm'),)
 
     def validate_motion(self, motion, now):
-        SourceEnvelope.validate_motion(motion, now)
+        SourceEnvelope.validate_motion(motion, now, target_stream=self.target_stream)
 
     def capture(self, groups):
         if set(groups) != CONTROL_GROUPS:
@@ -145,6 +146,7 @@ class PositionSessionDevices:
                             simulated=False, check_ready=self.check_ready, check_health=self.check_health)
         self.io.source_motion = None
         self.io.trajectory_reference = bool(self.health.reference_mode)
+        self.io.target_stream = self.health.reference_mode == 2
         self.io.supports_rigid_reference = self.health.reference_mode == 2
         self.io.stop_confirmation_window = .1 if self.health.reference_mode == 2 else 0.
         self.io.stop_confirmation_max_gap = ROS_FEEDBACK_TIMEOUT_S

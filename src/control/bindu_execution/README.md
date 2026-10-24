@@ -111,7 +111,7 @@ ROS_LOCALHOST_ONLY=1 ROS_DOMAIN_ID=209 python3 -m tests.integration.validate_exe
 
 `describe()`导出每个真实片段的`(start, duration, source_duration, source_elapsed, controls[axis])`；位置控制点采用Bernstein基，每轴4个（cubic）或6个（quintic）。`source_duration==0`时按`elapsed/duration`求值，否则按`(elapsed+source_elapsed)/source_duration`保留原曲线裁剪区间。`from_description(description, limits)`只在非实时侧重建导数、核验片段时间／`q/v/a`接续、动态限制及最终静止条件，不拟合、重排或重定时。轴序、源身份、原期限、时钟异常和真实停止确认由调用方管理；取样、派生帧和心跳都不能续期。到达采样端点也不能报告机器人实际到达。Python同名类提供`target`／`stop`／`describe`／`from_description`／`sample_into`。
 
-`session_v3`是纯位置目标流协议（wire 5、reference 2、目标配方version 2）。上层退休曲线发送及跨层提前量配置；旧`session_v2`配方拒绝加载。目标轴序为左臂J1～J7、右臂J1～J7、腰部J1～J2，单位rad；动态界逐轴取profile与发送端只读启动参数`trajectory_max_velocity`（默认0.25 rad/s）、`trajectory_max_acceleration`（默认0.5 rad/s²）及固定162 rad/s³的较小值。消息同时保留session、源command／lease／epoch／profile身份、sequence、源时间及原始期限；中层只透传，派生帧、接纳、采样和心跳不续期。普通目标原始TTL最多200 ms；纯目标流PAUSE作为独立停止命令，由源端一次生成固定2 s原始期限，须在该期限内完成制动参考并转入固定保持，不续期旧目标或授权恢复运动。旧follower／trajectory及阻抗PAUSE仍最多200 ms；新停止命令须与更新后的三层配对。
+`session_v3`是纯位置目标流协议（wire 5、reference 2、目标配方version 2）。上层退休曲线发送及跨层提前量配置；旧`session_v2`配方拒绝加载。目标轴序为左臂J1～J7、右臂J1～J7、腰部J1～J2，单位rad；动态界逐轴取profile与发送端只读启动参数`trajectory_max_velocity`（默认0.25 rad/s）、`trajectory_max_acceleration`（默认0.5 rad/s²）及固定162 rad/s³的较小值。消息同时保留session、源command／lease／epoch／profile身份、sequence、源时间及原始期限；中层只透传，派生帧、接纳、采样和心跳不续期。普通目标原始TTL最多300 ms（旧follower／trajectory及阻抗普通目标仍为200 ms）；纯目标流PAUSE作为独立停止命令，由源端一次生成固定2 s原始期限，须在该期限内完成制动参考并转入固定保持，不续期旧目标或授权恢复运动。旧follower／trajectory及阻抗PAUSE仍最多200 ms；新停止命令须与更新后的三层配对。
 
 servo在非实时后台从已采用名义轨迹的未来`q/v/a`快照调用`tracking_target`生成共同时间的联合五次曲线。速度趋势由相邻已提交目标及原始源时间差估计，避免投递／接纳抖动进入导数；采用40 ms导数平滑并限制在逐轴速度帽的80%，为追赶保留余量。这不是上层QP直接提供的速度，也不再滤波目标位置。位置外推至多相当于200 ms趋势位移，较长连接同时降低终点速度，随后接回原目标的有限静止尾段，整段解析认证位置／速度／加速度／急动度。若趋势不可行，或任一轴在未来40 ms匀速趋势模型中的位置误差比原曲线更大，则回退原`target`；该局部比较不保证未来输入任意变化时都更快。首次目标、重复位置、超过100 ms或不足5 ms的源间隔、PAUSE与重新接管清除趋势。消息、原有效期和停止判据不变；周期线程只验证版本、期限及接续条件后切换，拒绝或迟到结果不更新趋势历史。
 
@@ -119,7 +119,7 @@ servo在非实时后台从已采用名义轨迹的未来`q/v/a`快照调用`trac
 
 纯位置PAUSE在原期限内完成制动参考后，由servo复用本地固定参考保持；不再接收运动点也不因2 s到期撤使能。原source时间与期限保持不变，仅继续新鲜的本地采样，普通运动断流及反馈／Fault／撤权／采样超时保护保留。Bindu仍先核对同一PAUSE的有效保持回执，再要求100 ms内新鲜、持续推进的实测满足原速度界及固定实测锚点的位置变化界；名义到位误差单独诊断，不作为target_stream暂停停稳的前提。回执缺失、速度超界或窗口内漂移不能报告停稳，原停止总预算不延长。下发保持、实测停稳与运动目标到达分别判定。
 
-真机target_stream在明确开放写入后，通过正常租约／接管／PAUSE链路完成一次实测原位带电保持；就绪前不接收跟随租约，失败不自动再次使能。Squeeze只控制跟随。目标生产者断流时，执行端在原目标期限前60 ms请求PAUSE；本地控制线程停滞仍受底层watchdog约束，不能保证在设备或控制故障时继续带电。
+真机target_stream在明确开放写入后，通过正常租约／接管／PAUSE链路完成一次实测原位带电保持；就绪前不接收跟随租约，失败不自动再次使能。Squeeze只控制跟随。目标生产者断流时，执行端在原目标期限前60 ms请求PAUSE：300 ms上限对应源年龄240 ms，显式更短的TTL仍按原值提前制动，启动原位保持目标仍为200 ms。源时间不重置，重复tick／派生帧不续期；本地控制线程停滞仍受底层watchdog约束，不能保证在设备或控制故障时继续带电。
 
 首次／恢复接管保留一次接纳握手，避免op1在中层或DDS的latest缓存被普通目标覆盖；等待期间上层只保留最新目标，原接管期限不变。接纳后普通目标不逐段等待回执；PAUSE立即绕过该等待。接纳／拒绝通过`/bindu/position/servo_receipt`或周期状态观察，配置20 ms执行tick，submit也可触发发送，50 Hz不是硬限频。真实生效以servo采样身份与时刻判断，参考终点不表示真实到达；正常暂停、期限失效、撤权、Fault和STOP_UNCONFIRMED分别保留。目标配置周期及servo名义1 ms采样不变，本地准备预算和离线对比证据在[Snowbot运行说明](../../../../../snowbot/运行与验证.md#执行侧联合目标流)。真实手柄到运动、调度尾峰及持载停止仍待现场验收。
 

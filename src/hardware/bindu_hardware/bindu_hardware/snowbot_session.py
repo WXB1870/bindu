@@ -12,6 +12,8 @@ CONTROL_MASK = sum(SLOT_MASKS[g] for g in CONTROL_GROUPS)
 # ROS delivery can lag the local PDO sampler. Keep these budgets independent.
 ROS_FEEDBACK_TIMEOUT_S = .04
 PDO_MAX_AGE_S = .02
+MOTION_MAX_TTL_S = .2
+TARGET_STREAM_MAX_TTL_S = .3
 SLOTS = [*(f'arm_l_joint_{i}' for i in range(1, 9)),
          *(f'arm_r_joint_{i}' for i in range(1, 9)),
          'head_joint_1', 'head_joint_2', 'body_joint_1', 'body_joint_2']
@@ -295,17 +297,19 @@ class SourceEnvelope:
     """One envelope per accepted Motion; executor ticks cannot renew a target."""
     def __init__(self, session, now, *, target_stream=False):
         self.session, self.now = session, now
+        self.target_stream = target_stream
         # A new PAUSE authorizes only braking. Its original deadline is fixed
-        # here; ordinary motion and legacy/impedance TTLs remain 200 ms.
+        # here, independently of the ordinary target's source deadline.
         self.pause_valid_for = 2. if target_stream else .2
         self.sequence = 0
         self.last_id = None
         self.takeover = True
 
     @staticmethod
-    def validate_motion(motion, now):
+    def validate_motion(motion, now, *, target_stream=False):
         """Check the same effective source deadline before software acceptance."""
-        expires = motion.stamp + min(.2, motion.valid_for)
+        maximum = TARGET_STREAM_MAX_TTL_S if target_stream else MOTION_MAX_TTL_S
+        expires = motion.stamp + min(maximum, motion.valid_for)
         if (not all(math.isfinite(value) for value in (motion.stamp, motion.valid_for, now)) or
                 motion.valid_for <= 0 or not motion.stamp <= now < expires):
             raise RuntimeError('SNOWBOT_SOURCE_COMMAND_EXPIRED')
@@ -317,7 +321,8 @@ class SourceEnvelope:
         if not pause and motion.command_id == self.last_id:
             return None
         source = self.now() if pause else motion.stamp
-        expires = source+self.pause_valid_for if pause else self.validate_motion(motion, self.now())
+        expires = source+self.pause_valid_for if pause else self.validate_motion(
+            motion, self.now(), target_stream=self.target_stream)
         if not source <= self.now() < expires:
             raise RuntimeError('SNOWBOT_SOURCE_COMMAND_EXPIRED')
         self.sequence += 1
@@ -326,8 +331,9 @@ class SourceEnvelope:
         if not pause:
             self.last_id = motion.command_id
         source_ns = round(source*1e9)
+        maximum = TARGET_STREAM_MAX_TTL_S if self.target_stream else MOTION_MAX_TTL_S
         ttl_ns = (round(self.pause_valid_for*1e9) if pause else
-                  min(200_000_000, round(motion.valid_for*1e9)))
+                  min(round(maximum*1e9), round(motion.valid_for*1e9)))
         return dict(session=self.session, sequence=self.sequence,
                     source_stamp_ns=source_ns, expires_at_ns=source_ns+ttl_ns,
                     operation=operation)
