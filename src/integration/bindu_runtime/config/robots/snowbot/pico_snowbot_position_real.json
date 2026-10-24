@@ -6,6 +6,7 @@
   "initial_load_state": "unknown",
   "prepare_duration": 12.0,
   "prepare_position_tolerance_rad": 0.035,
+  "prepare_limit_recovery_max_rad": 0.017453292519943295,
   "prepare_positions_rad": {
     "body_joint_1": 0.11854734088355395,
     "body_joint_2": 0.06670601088026042,
