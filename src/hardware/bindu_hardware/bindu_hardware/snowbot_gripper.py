@@ -83,6 +83,7 @@ class GripperController:
         self.q, self.v, self.current = {}, {}, {}
         self.invalid, self.fault = '', ''
         self.last_tick = None
+        self.recovery_since = None
         self.vr = {}
         self.authorized_at = 0.
         self.trigger_opened = dict.fromkeys(SIDES, False)
@@ -103,11 +104,16 @@ class GripperController:
                 or set(current) != set(SIDES)):
             self.invalid = 'GRIPPER_FEEDBACK_INVALID'
             raise ValueError(self.invalid)
+        previous = self.feedback_stamp
         self.feedback_stamp, self.received_at, self.received_steady = stamp, now, self.steady()
         if any(not self.profile.limits[n][0] <= q[n] <= self.profile.limits[n][1] for n in names):
             self.invalid = 'GRIPPER_FEEDBACK_OUT_OF_LIMIT'
             raise ValueError(self.invalid)
         self.q, self.v, self.current, self.invalid = dict(q), dict(v), dict(current), ''
+        if (self.fault and stamp-previous <= self.cfg['feedback_max_age'] and
+                all(abs(v[n]) <= self.cfg['velocity_tolerance'] for n in names)):
+            if self.recovery_since is None:self.recovery_since = self.steady()
+        else:self.recovery_since = None
 
     def require_feedback(self):
         age = self.cfg['feedback_max_age']
@@ -183,6 +189,13 @@ class GripperController:
 
     def command(self, operation, side, lease_id, epoch, sequence, stamp, valid_for, *, position=0.,
                 load_state='unknown', external_support=False):
+        if operation == 'recover':
+            if (side or lease_id or self.lease_id or epoch != self.epoch or
+                    not math.isfinite(valid_for) or not 0 < valid_for <= .4 or
+                    not math.isfinite(stamp) or not 0 <= self.now()-stamp < valid_for):
+                raise RuntimeError('GRIPPER_RECOVERY_AUTHORITY')
+            self.recover()
+            return
         self.check_lease(lease_id, epoch)
         self.require_write()
         if not self.cfg['calibrated'] and (operation not in ('authorize_direct','open','close','hold') or
@@ -265,6 +278,8 @@ class GripperController:
         health = self.require_feedback()
         ack = self._send(side, target, False)
         c.update(state='MOVING', code='TARGET_SENT', touched=True, target=target, ack=ack,
+                 direct=self.direct_authorized and not grasp,
+                 manual_close=self.direct_authorized and not grasp and target==closed,
                  arrival_tolerance=target_position_tolerance(self.cfg,direct=self.direct_authorized and not grasp),
                  sent_at=self.now(), sample=health['sample'], settled=None, feedback_sequence=self.feedback_stamp,
                  deadline=self.now()+self.cfg['motion_timeout'], steady_deadline=self.steady()+self.cfg['motion_timeout'])
@@ -276,11 +291,31 @@ class GripperController:
 
     def fail(self, code):
         self.fault = 'GRIPPER_STOP_UNCONFIRMED:'+code
+        self.recovery_since = None
         self.lease_id, self.owner, self.authorized = '', '', False
         self.grasp_authorized = self.direct_authorized = False
         for c in self.channels.values():
             if c['touched']:
                 c.update(state='FAULT', code=self.fault)
+
+    def recover(self):
+        """Operator acknowledgment of a stationary manual hold; sends nothing."""
+        if (self.require_driver_ack or self.lease_id or not self.arms_idle() or
+                self.fault != 'GRIPPER_STOP_UNCONFIRMED:HOLD_TIMEOUT'):
+            raise RuntimeError(self.fault or 'GRIPPER_RECOVERY_NOT_REQUIRED')
+        health = self.require_feedback()
+        if (self.recovery_since is None or self.steady()-self.recovery_since < self.cfg['settle_time'] or
+                any(abs(self.v[JOINTS[s]]) > self.cfg['velocity_tolerance'] for s in SIDES)):
+            raise RuntimeError('GRIPPER_RECOVERY_REQUIRES_REST')
+        for side,c in self.channels.items():
+            if c['touched'] and (not c.get('direct') or
+                    not health['operation_enabled_mask'] & MASKS[side] or
+                    abs(self.q[JOINTS[side]]-c['hold']) > c.get('hold_tolerance',self.cfg['position_tolerance'])):
+                raise RuntimeError('GRIPPER_RECOVERY_HOLD_UNCONFIRMED:'+side)
+        self.fault = ''
+        self.epoch += 1
+        for c in self.channels.values():
+            c.update(state='CANCELED',code='OPERATOR_RECOVERED',touched=False)
 
     def _hold(self, side, result, code):
         c = self.channels[side]
@@ -292,6 +327,7 @@ class GripperController:
         position = self.q[JOINTS[side]]
         ack = self._send(side, position, True)
         c.update(state='STOPPING', code=code, hold=position, ack=ack, sent_at=self.now(), sample=health['sample'],
+                 hold_tolerance=target_position_tolerance(self.cfg,direct=c.get('direct',False)),
                  deadline=self.now()+self.cfg['stop_timeout'], steady_deadline=self.steady()+self.cfg['stop_timeout'],
                  result=result, result_code=code, settled=None, feedback_sequence=self.feedback_stamp)
 
@@ -338,14 +374,15 @@ class GripperController:
                 if now >= c['deadline'] or steady >= c['steady_deadline']:
                     if c['state'] == 'STOPPING':
                         raise RuntimeError('HOLD_TIMEOUT')
-                    self._hold(side, 'FAILED', 'POSITION_TIMEOUT')
+                    self._hold(side, 'CANCELED' if c.get('manual_close') else 'FAILED',
+                               'CLOSE_STOPPED' if c.get('manual_close') else 'POSITION_TIMEOUT')
                     continue
                 # Native commands have no sequence ACK or hold ACK. Confirm only
                 # the requested position against advancing measured samples.
                 target = c['hold'] if c['state'] == 'STOPPING' else c['target']
                 if self.require_driver_ack and c['state'] == 'STOPPING':
                     target = health['gripper_hold_position'][SIDES.index(side)]
-                tolerance=c['arrival_tolerance'] if c['state']=='MOVING' else self.cfg['position_tolerance']
+                tolerance=c['arrival_tolerance'] if c['state']=='MOVING' else c['hold_tolerance']
                 arrived = (health['sample'] > c['sample']
                     and health.get('operation_enabled_mask', 0) & MASKS[side]
                     and self.feedback_stamp > c['sent_at']

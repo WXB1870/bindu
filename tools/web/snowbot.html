@@ -463,8 +463,9 @@ function operatorState(p,online,fresh,pcFresh,tracked,execution={}){
   if(!pcFresh)return {...result,status:'遥操作状态未知',reason:'关节反馈已收到，PICO 控制状态未更新。',next:'保持松握，检查遥操作节点。',tone:'bad'};
   if(execution.execution==='FAILED'&&execution.task_id==='startup_hold')return {...result,status:'启动接管失败',reason:'关节反馈正常；启动接管未完成，停止尚未确认。',next:'保持双侧握松开，排查控制会话接纳与停止确认；当前不能进入准备。',key:'',tone:'bad'};
   if(p.phase==='locked'){
-    if(p.recovery_required)return {...result,status:'设备／采样异常 · 锁定',next:'保持松握；需现场排查设备、采样与停止协议，恢复有效反馈和停止确认后重新建立控制会话。',tone:'bad'};
-    if(p.stop_failure)return {...result,status:'停止未确认',next:'保持双侧握松开；停止请求未完成，查看下方停止失败与协议证据。',tone:'bad'};
+    if(p.reason?.startsWith('RECOVERY_BLOCKED:'))return {...result,status:'恢复条件未满足',reason:explainReason(p.reason.slice(17)),next:'松开握把和扳机，排除提示原因后按 B 重新复核。',key:'B',tone:'bad'};
+    if(p.recovery_required)return {...result,status:'设备／采样异常 · 锁定',next:'保持松握；排除异常后按 B 复核反馈与停止状态。',key:'B',tone:'bad'};
+    if(p.stop_failure)return {...result,status:'停止未确认',next:'松开握把和扳机，按 B 复核当前停稳状态；未确认时会说明原因。',key:'B',tone:'bad'};
     return {...result,status:p.stop_confirmed===true?'已停止（锁定）':'停止未确认',next:p.stop_confirmed===true?'排除原因，松开双侧握后按 B 恢复待命。':'保持双侧握松开，等待停稳确认。',key:p.stop_confirmed===true?'B':'',tone:'bad'};
   }
   if(p.idle_input_lost&&['standby','tool_standby','load_check'].includes(p.phase))return {...result,status:'等待手柄输入',reason:'手柄输入暂停，机器人已停稳，当前操作步骤已保留。',next:'保持松握，等待输入恢复后继续当前步骤。'};
