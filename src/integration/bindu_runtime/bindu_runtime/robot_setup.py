@@ -14,6 +14,24 @@ from bindu_contracts.profile import Profile
 from bindu_teleoperation.config import load_config
 
 
+# Compatibility of two exported model descriptions, not device accuracy goals.
+# Six-decimal CAD exports can differ at the last digit after conversion.
+MODEL_TRANSLATION_TOLERANCE_M = 1e-6
+MODEL_ROTATION_TOLERANCE_RAD = 1e-5
+MODEL_AXIS_TOLERANCE = 1e-6
+
+
+def matching_kinematics(expected, actual):
+    if actual is None or len(expected) != 12 or len(actual) != 12 or expected[:3] != actual[:3]:
+        return False
+    tolerances = ((MODEL_TRANSLATION_TOLERANCE_M,) * 3 +
+                  (MODEL_ROTATION_TOLERANCE_RAD,) * 3 +
+                  (MODEL_AXIS_TOLERANCE,) * 3)
+    return all(math.isfinite(a) and math.isfinite(b) and
+               math.isclose(a, b, rel_tol=0., abs_tol=tolerance)
+               for a, b, tolerance in zip(expected[3:], actual[3:], tolerances))
+
+
 def resolve_file(value, owner, packages=None):
     if not isinstance(value, str) or not value:
         raise ValueError('ROBOT_CONFIG_PATH')
@@ -162,9 +180,7 @@ class RobotSetup:
         # describe the same motion, including fixed flange/tool frame offsets.
         for name, expected in kinematics.items():
             actual = display_kinematics.get(name)
-            if (actual is None or expected[:3] != actual[:3] or
-                    any(not math.isclose(a, b, rel_tol=0., abs_tol=1e-10)
-                        for a, b in zip(expected[3:], actual[3:]))):
+            if not matching_kinematics(expected, actual):
                 raise ValueError('ROBOT_DISPLAY_KINEMATICS:' + name)
         single = {side: resolve_file(value, path, packages)
                   for side, value in teleop['single_arm'].items()}

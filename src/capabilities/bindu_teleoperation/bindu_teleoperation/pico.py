@@ -45,6 +45,10 @@ class PicoControl:
         self.last_input_timeout=None
         self.max_age, self.prepare_hold = max_age, prepare_hold
         self.phase, self.reason = 'checking', 'WAITING_FOR_INPUT_AND_FEEDBACK'
+        self.fault_active = False
+        self.first_fault = self.stop_failure = self.request_failure = None
+        self.recovery_required = ''
+        self.fault_acknowledged_at = float('-inf')
         self.generation = 0
         self.source, self.retired = None, set()
         self.seq, self.stamp = -1, float('-inf')
@@ -123,7 +127,33 @@ class PicoControl:
             left_squeeze_released=bool('left' in hands and hands['left'].grip<.3),
             right_squeeze_released=bool('right' in hands and hands['right'].grip<.3))
 
+    def record_fault(self, code, stamp, *, kind='fault', device=False):
+        """Keep source-time first fault and independent stop/request failures."""
+        if not code or not math.isfinite(stamp) or stamp <= self.fault_acknowledged_at:
+            return
+        if not self.fault_active:
+            self.first_fault = self.stop_failure = self.request_failure = None
+            self.recovery_required = ''
+            self.fault_active = True
+        value = dict(code=code, stamp=stamp)
+        if kind == 'request' or 'REQUEST_NOT_CURRENT' in code:
+            if self.request_failure is None:self.request_failure = value
+        if kind != 'request' and 'REQUEST_NOT_CURRENT' not in code and (kind == 'stop' or 'STOP_UNCONFIRMED' in code):
+            if self.stop_failure is None:self.stop_failure = value
+        secondary = kind in ('stop','request') or 'STOP_UNCONFIRMED' in code or 'REQUEST_NOT_CURRENT' in code
+        # Delayed ROS events may reveal an earlier source fault. A consequence
+        # can never replace an already observed root, even with an older stamp.
+        if (self.first_fault is None or not secondary and
+                (self.first_fault['kind'] in ('stop','request') or stamp < self.first_fault['stamp'])):
+            self.first_fault = dict(value, kind=('stop' if 'STOP_UNCONFIRMED' in code else
+                                                'request' if 'REQUEST_NOT_CURRENT' in code else kind))
+        if device or any(s in code for s in ('DEVICE_', 'SNOWBOT_PDO_',
+                'SNOWBOT_TARGET_REJECTED:', 'REFERENCE_GENERATION_FAILED', 'CLOCK_RESET')):
+            self.recovery_required = 'device_inspection'
+        return True
+
     def lock(self, reason, now):
+        self.record_fault(reason, now)
         if self.phase != 'locked' or self.pending and self.pending.operation != 'stop':
             if self.guided_loading and self.phase == 'loading':
                 self.load, self.load_source = 'unknown', 'interrupted_loading'
@@ -272,8 +302,11 @@ class PicoControl:
                                             else 'OPEN_REQUIRES_LOADING_AND_SUPPORT')
             self.prepare_blocked=True;self.emit('stop');return
         if self.phase=='locked':
-            if presses[5] and self.rest(now) and all(f.grip<.3 for f in pair) and not self.pending:
+            if (presses[5] and self.rest(now) and all(f.grip<.3 for f in pair) and
+                    not self.pending and not self.recovery_required and not self.stop_failure):
                 self.phase,self.reason='standby','RECOVERED_TO_STANDBY'
+                self.fault_active=False
+                self.fault_acknowledged_at=now
                 self.loading_opened=[False,False]
                 self.armed=[not h for h in states]
                 self.squeeze_released=[True,True]
@@ -447,12 +480,20 @@ class PicoControl:
         operation,value=self.pending.operation,self.pending.value
         self.pending=None
         if not success:
+            if operation=='stop' and self.phase=='locked':
+                self.record_fault(reason or 'PICO_OPERATION_FAILED', now,kind='stop')
+                # The stop result is a consequence, not a replacement root.
+                self.changed_at=now
+                return True
             # Only the backend can attest either a read-only rejection or a
             # completed stop after an arrival timeout. Neither means arrival.
             arrival_failure=(stopped_failure and operation=='prepare' and
                              reason.startswith('RuntimeError:PICO_ACTUATOR_FEEDBACK_TIMEOUT:'))
             retry=((rejected or arrival_failure) and self.guided_loading and self.rest(now) and
                    self.frames and 0<=now-self.stamp<=self.max_age)
+            if not retry:
+                self.record_fault(reason or 'PICO_OPERATION_FAILED', now,
+                                  kind='stop' if operation=='stop' else 'fault')
             self.phase,self.reason='standby' if retry else 'locked',reason or 'PICO_OPERATION_FAILED'
             self.squeeze_released=[False,False]
             self.a_since=None
@@ -522,6 +563,9 @@ class PicoControl:
 
     def snapshot(self, now=None):
         view = dict(phase=self.phase,reason=self.reason,generation=self.generation,
+                    first_fault=self.first_fault,stop_failure=self.stop_failure,
+                    request_failure=self.request_failure,fault_active=self.fault_active,
+                    recovery_required=self.recovery_required,
                     teleop_mode=self.teleop_mode,dual_modes=self.dual_modes,
                     mode_target=self.pending.value if self.pending and self.pending.operation=='select_mode' else None,
                     source_id=self.source,load_state=self.load,load_source=self.load_source,external_support=self.supported,

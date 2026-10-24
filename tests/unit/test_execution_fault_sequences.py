@@ -64,6 +64,11 @@ class ExecutionFaultSequences(unittest.TestCase):
                     -.01 if state['fault'] == 'clock_reset' else .01)
                 steady[0] += .01
                 engine.tick(now)
+                if state['fault']=='partial_write':
+                    events=list(engine.events)
+                    detail=next(i for i,e in enumerate(events) if e.state=='DEVICE_COMMAND_DETAIL')
+                    self.assertIn('PARTIAL_WRITE:',events[detail].code)
+                    self.assertTrue(any(e.state in ('STOPPING','FAILED') for e in events[detail+1:]))
                 self.assertFalse(engine.lease_id)
                 self.assertTrue(set(stops) >= {'left','right','base'})
                 deadlines = (engine.stop_deadline,engine.stop_steady_deadline)

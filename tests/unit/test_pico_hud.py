@@ -14,6 +14,14 @@ from tests.support.pico import Rig
 
 
 class PicoHUDTests(unittest.TestCase):
+    def test_device_barrier_or_stop_failure_never_offers_b_recovery(self):
+        from bindu_teleoperation.vr.hud import hud_spec
+        base=self.view('locked',stop_confirmed=True,fault_active=True)
+        for details in (dict(recovery_required='device_inspection'),
+                        dict(stop_failure=dict(code='PICO_STOP_UNCONFIRMED'))):
+            spec=hud_spec({**base,**details})
+            self.assertNotIn('B 恢复',spec['action'])
+
     def test_arrival_timeout_does_not_claim_arrival_or_unconfirmed_stop(self):
         from bindu_teleoperation.vr.hud import hud_spec
         for stopped in (False,True):

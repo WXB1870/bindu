@@ -5,12 +5,13 @@ import sys
 
 from tests.support.paths import ROOT
 
-PICO_TESTS=('test_pico_control','test_pico_loading','test_pico_mapping','test_pico_hud','test_pico_grasp')
+PICO_TESTS=('test_pico_control','test_pico_loading','test_pico_mapping','test_pico_hud','test_pico_grasp',
+            'test_bimanual_stop_handoff')
 SUITES={
     'base':('test_base_teleop',),
     'core':('test_interpolation','test_execution_fault_sequences','test_system_contracts','test_runtime_mode'),
     'pico':PICO_TESTS,
-    'vr':PICO_TESTS+('test_base_teleop','test_independent_arms','test_vr_timing','test_one_euro','test_teleoperation','test_teleop_modes',
+    'vr':PICO_TESTS+('test_base_teleop','test_independent_arms','test_vr_timing','test_vr_pipeline','test_bimanual_worker','test_bimanual_transactions','test_one_euro','test_teleoperation','test_teleop_modes',
           'test_snowbot_adapter','test_snowbot_gripper','test_snowbot_physics','test_snowbot_isaac_io',
           'test_snowbot_position_session','test_snowbot_live','test_snowbot_errors','test_snowbot_diagnostics','test_snowbot_pdo','test_teleop_deployment'),
 }

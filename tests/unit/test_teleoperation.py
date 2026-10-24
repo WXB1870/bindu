@@ -108,6 +108,41 @@ class VRConnectivityTests(unittest.TestCase):
                                   mapping='pico_snowbot_v1', buttons=1)
                           for side in ('left', 'right'))
 
+    def test_input_only_entry_cannot_import_control_even_with_real_recipe_environment(self):
+        import builtins
+        from io import StringIO
+        from unittest.mock import Mock,patch
+        from tools.teleop import vr_connectivity as entry
+        importing=builtins.__import__
+        def input_import(name,*args,**kwargs):
+            if name.startswith(('rclpy','bindu_runtime','bindu_hardware','bindu_execution','bindu_kinematics')):
+                raise AssertionError('input-only entry imported control: '+name)
+            return importing(name,*args,**kwargs)
+        receiver=Mock();receiver.poll.return_value=self.pair
+        output=StringIO()
+        with patch('builtins.__import__',side_effect=input_import), \
+                patch('subprocess.Popen',side_effect=AssertionError('input entry launched process')), \
+                patch.dict('os.environ',BINDU_VR_CONFIG=str(ROOT/'src/integration/bindu_runtime/config/deployments/snowbot_vr_real.json'),ROS_DISTRO='jazzy'), \
+                patch('bindu_teleoperation.vr.receiver.VuerReceiver',return_value=receiver) as construct, \
+                patch.object(entry.time,'monotonic',side_effect=[10.,10.001,10.002,10.02]), \
+                patch.object(entry.time,'time',return_value=10.002), \
+                patch.object(entry.time,'sleep'),patch('sys.stdout',output):
+            self.assertEqual(entry.main(['--duration','.01']),0)
+        self.assertTrue(construct.call_args.args[0]['connectivity_check'])
+        receiver.poll.assert_called_once();receiver.close.assert_called_once()
+        self.assertIn('INPUT_LIVE',output.getvalue())
+
+    def test_input_only_entry_rejects_production_write_and_recipe_flags_before_receiver(self):
+        from io import StringIO
+        from unittest.mock import patch
+        from tools.teleop import vr_connectivity as entry
+        for args in (['--enable-commands'],['--config','snowbot_vr_real.json']):
+            with self.subTest(args=args),patch('sys.stderr',StringIO()), \
+                    patch('bindu_teleoperation.vr.receiver.VuerReceiver') as receiver:
+                with self.assertRaises(SystemExit) as ended:entry.main(args)
+                self.assertEqual(ended.exception.code,2)
+                receiver.assert_not_called()
+
     def test_waiting_live_and_stale_do_not_reuse_pose_or_buttons(self):
         self.assertEqual(self.monitor.snapshot(10.)['mode'], 'INPUT_WAITING')
         self.monitor.ingest(self.pair)

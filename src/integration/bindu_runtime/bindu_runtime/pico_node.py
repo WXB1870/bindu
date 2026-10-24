@@ -25,6 +25,7 @@ from bindu_execution.interpolation import Curve, State
 from bindu_interfaces.srv import Lease, SubmitMotion, ControlExecution, PicoContext
 from bindu_interfaces.action import SelectTeleopMode, TeleopSession
 from .common import RuntimeNode, seconds, stamp, spin, joints_at_rest
+from .stop_evidence import stop_feedback_matches
 
 
 class Superseded(RuntimeError):
@@ -73,12 +74,19 @@ class PicoNode(RuntimeNode):
                                      ('kinematic',) if self.simulation else ('snowbot_vendor',))):
             raise ValueError('PICO_ACTUATOR_BACKEND_UNAVAILABLE:'+self.backend)
         self.tool_cfg=json.loads(Path(self.get_parameter('tool_config').value).read_text())
+        self.automatic_close_grippers=self.cfg.get('automatic_close_grippers',False)
+        if type(self.automatic_close_grippers) is not bool or (self.automatic_close_grippers and not self.position_contract):
+            raise ValueError('PICO_AUTO_CLOSE_CONFIG')
+        policy=self.tool_cfg.get('measured_grasp_policy','enforce')
+        if policy not in ('enforce','unheld_test'):
+            raise ValueError('PICO_MEASURED_GRASP_POLICY')
+        self.unheld_test=policy=='unheld_test'
         confirmation=self.tool_cfg.get('tool_grasp_confirmation','calibrated')
         if confirmation not in ('calibrated','operator'):
             raise ValueError('PICO_TOOL_GRASP_CONFIRMATION_CONFIG')
         self.operator_grasp=confirmation=='operator'
         self.operator_grasp_positions={}
-        if self.operator_grasp and (not self.position_contract or
+        if self.operator_grasp and not self.unheld_test and (not self.position_contract or
                 self.tool_cfg.get('grasp_reference_source')!='measured_rigid'):
             raise ValueError('PICO_OPERATOR_GRASP_REQUIRES_MEASURED_RIGID')
         if (not self.tool_cfg.get('right_axial_grasp') or self.tool_cfg.get('collision_scope')!='configured_tool_geometry' or
@@ -144,7 +152,8 @@ class PicoNode(RuntimeNode):
         self.frames={};self.state=self.mode=None;self.handoff_complete=False
         self.tool_goal=None;self.tool_result=None;self.tool_phase='inactive'
         self.lease=None;self.pending_intent=None;self.running=None
-        self.waiters=set();self.stop_deadline=None;self.release_until=0.;self.recording=None;self.record_future=None
+        self.waiters=set();self.stop_request=None;self.release_until=0.;self.recording=None;self.record_future=None
+        self.tool_request=None
         self.last_status=0.;self.last_phase=None
         self.last_prepare_check=None
         self.last_context_at=self.control.context_at
@@ -188,9 +197,13 @@ class PicoNode(RuntimeNode):
 
     def reading(self):
         s=self.state
+        if s and ((self.lease is not None and s.instance_id!=self.lease[1]) or
+                (self.tool_request is not None and (s.instance_id!=self.tool_request['instance_id'] or
+                    s.lease_active and s.lease_epoch!=self.tool_request['epoch']))):
+            raise RuntimeError('PICO_EXECUTION_AUTHORITY_CHANGED')
         if s is not None and s.stop_failures:
             raise RuntimeError('PICO_STOP_UNCONFIRMED:'+s.code)
-        if (s is None or s.device_backend!=self.backend or s.simulated != self.simulation or
+        if (s is None or s.profile_hash!=self.profile.digest or s.device_backend!=self.backend or s.simulated != self.simulation or
                 not 0<=self.now()-seconds(s.feedback_stamp)<=self.tool_cfg['feedback_max_age'] or
                 len(s.joints.name)!=len(s.joints.position) or len(set(s.joints.name))!=len(s.joints.name) or
                 not all(math.isfinite(q) for q in s.joints.position)):
@@ -213,6 +226,11 @@ class PicoNode(RuntimeNode):
                 if not self.base.core.healthy(self.now(), clock):
                     raise RuntimeError('BASE_FEEDBACK_UNAVAILABLE')
                 stopped = stopped and self.base.core.stopped(self.now(), clock)
+            # A new executor's idle display cannot erase an outstanding stop.
+            if self.stop_request is not None:
+                if self.stop_request['failed'] or time.monotonic()>=self.stop_request['deadline']:
+                    raise RuntimeError('PICO_STOP_UNCONFIRMED')
+                stopped=False
             return PicoFeedback(seconds(s.feedback_stamp),stopped,tuple(modes))
         except RuntimeError as exc:
             return PicoFeedback(0.,False,healthy=False,fault=str(exc))
@@ -231,7 +249,27 @@ class PicoNode(RuntimeNode):
 
     def on_motion_event(self,msg):
         if (msg.run_id!=self.run_id or msg.runtime_mode!=self.runtime_mode or
-                msg.task_id!='pico_'+self.instance_id):return
+                msg.component!='execution' and msg.task_id!='pico_'+self.instance_id):return
+        if msg.component=='execution':
+            owned = msg.task_id=='pico_'+self.instance_id or (not msg.task_id and
+                (self.tool_request is not None or self.lease is not None or self.control.fault_active))
+            if not owned:return
+            if msg.state=='STOP_CHECK':
+                try:detail=json.loads(msg.code)
+                except (ValueError,TypeError):return
+                if not isinstance(detail,dict):return
+                self.stop_diagnostic=detail
+                observed=detail.get('observed') or {}
+                if (isinstance(observed,dict) and type(observed.get('session_reason')) is int and
+                        observed['session_reason']>=3):
+                    code='SNOWBOT_SESSION_STOPPED:'+str(observed['session_reason'])
+                    if self.control.record_fault(code,seconds(msg.stamp),device=True):
+                        self.control.lock(code,self.now())
+            elif (msg.state in ('STOPPING','FAILED','DEVICE_FEEDBACK_DETAIL','DEVICE_COMMAND_DETAIL') and
+                    msg.code not in ('CANCELED','OK','SHUTDOWN')):
+                if self.control.record_fault(msg.code,seconds(msg.stamp)):
+                    self.control.lock(msg.code,self.now())
+            return
         if msg.state in ('BIMANUAL_CAPTURED','BIMANUAL_ENDED'):
             self.motion_limit=None
         elif msg.state=='BIMANUAL_QP_RESULT':
@@ -248,10 +286,18 @@ class PicoNode(RuntimeNode):
         a,b=self.frames['left'],self.frames['right']
         if a.source_id!=b.source_id or a.seq!=b.seq:return
         now=self.now()
-        if self.last_pair_at is not None and now-self.last_pair_at>.1:
+        received_monotonic=time.monotonic()
+        previous_monotonic=getattr(self,'last_pair_monotonic',None)
+        monotonic_gap=None if previous_monotonic is None else received_monotonic-previous_monotonic
+        if self.last_pair_at is not None and (now-self.last_pair_at>.1 or
+                monotonic_gap is not None and monotonic_gap>.1):
             self.event('PICO_INPUT_DELIVERY_GAP',json.dumps(dict(
-                interval_s=now-self.last_pair_at,input_age_s=now-seconds(a.stamp),seq=a.seq)))
+                interval_s=now-self.last_pair_at,interval_clock='ros_callback',
+                monotonic_interval_s=monotonic_gap,
+                input_age_s=now-seconds(a.stamp),source_stamp_s=seconds(a.stamp),
+                source_id=a.source_id,seq=a.seq)))
         self.last_pair_at=now
+        self.last_pair_monotonic=received_monotonic
         pair=tuple(VRFrame(m.source_id,m.seq,seconds(m.stamp),m.side,tuple(m.pose),m.grip,m.trigger,
                           m.init,m.stop,m.valid,m.clutch_seq,m.mapping,m.buttons,tuple(int(v) for v in m.button_edges),m.virtual_grip,
                           tuple(m.stick))
@@ -309,48 +355,176 @@ class PicoNode(RuntimeNode):
             await self.pause()
         return future.result()
 
-    async def stopped(self,requested,timeout=6.,release=False):
-        if self.stop_deadline is None:self.stop_deadline=time.monotonic()+timeout
-        while time.monotonic()<self.stop_deadline:
-            f=self.feedback();s=self.state
-            if s and s.stop_failures:raise RuntimeError('PICO_STOP_UNCONFIRMED')
-            if f.healthy and f.stopped and f.stamp>=requested and (not release or not s.lease_active):
-                self.stop_deadline=None
+    def begin_stop_wait(self,instance_id,epoch,lease_active):
+        if self.stop_request is not None:
+            self.stop_unconfirmed(self.stop_request,'PREVIOUS_REQUEST_UNCONFIRMED')
+        self.stop_request=dict(instance_id=instance_id,epoch=epoch,lease_active=lease_active,
+            requested=self.now(),deadline=time.monotonic()+6.,failed=False)
+        self.handoff_complete=False
+        return self.stop_request
+
+    def stop_unconfirmed(self,request,reason):
+        # A delayed coroutine must not fail/clear a newer request or goal.
+        if request is self.stop_request and request['failed']:
+            raise RuntimeError('PICO_STOP_UNCONFIRMED:'+request.get('failure_reason','PREVIOUS_REQUEST_UNCONFIRMED'))
+        self.control.record_fault('PICO_STOP_UNCONFIRMED:'+reason,self.now(),
+                                  kind='request' if reason=='REQUEST_NOT_CURRENT' else 'stop')
+        if request is self.stop_request and not request['failed']:
+            request['failed']=True
+            request['failure_reason']=reason
+            s=self.state
+            self.event('PICO_STOP_UNCONFIRMED',json.dumps(dict(
+                reason=reason,requested_instance_id=request['instance_id'],expected_epoch=request['epoch'],
+                expected_lease_active=request['lease_active'],requested_at=request['requested'],
+                deadline_monotonic=request['deadline'],
+                observed_instance_id=s.instance_id if s else None,
+                observed_epoch=s.lease_epoch if s else None,state=s.state if s else None,
+                code=s.code if s else None)))
+        raise RuntimeError('PICO_STOP_UNCONFIRMED:'+reason)
+
+    async def stopped(self,request,*,clear=True):
+        if request is not self.stop_request:
+            self.stop_unconfirmed(request,'REQUEST_NOT_CURRENT')
+        if request['failed']:
+            raise RuntimeError('PICO_STOP_UNCONFIRMED:'+request.get('failure_reason','PREVIOUS_REQUEST_UNCONFIRMED'))
+        while time.monotonic()<request['deadline']:
+            if request is not self.stop_request:
+                self.stop_unconfirmed(request,'REQUEST_NOT_CURRENT')
+            if request['failed']:
+                raise RuntimeError('PICO_STOP_UNCONFIRMED:'+request.get('failure_reason','PREVIOUS_REQUEST_UNCONFIRMED'))
+            s=self.state
+            if s and (s.stop_failures or 'EMERGENCY_STOP' in s.code or s.code=='STOP_FEEDBACK_TIMEOUT'):
+                self.stop_unconfirmed(request,'EXECUTION_STOP_FAILED')
+            try:s,_=self.reading()
+            except RuntimeError:
+                await self.pause();continue
+            if (stop_feedback_matches(s,instance_id=request['instance_id'],epoch=request['epoch'],
+                    lease_active=request['lease_active'],profile_hash=self.profile.digest,
+                    simulated=self.simulation,requested=request['requested'],now=self.now(),
+                    max_age=self.tool_cfg['feedback_max_age'],
+                    at_rest=lambda joints:joints_at_rest(joints,self.names,.005)) and
+                    (not self.position_ops or self.position_ops.stopped())):
+                if clear:self.stop_request=None
                 return
             await self.pause()
-        raise RuntimeError('PICO_STOP_UNCONFIRMED')
+        self.stop_unconfirmed(request,'DEADLINE_EXPIRED')
 
     async def cancel_tool(self):
-        if self.tool_goal is not None:
-            await self.wait(self.tool_goal.cancel_goal_async())
-            if self.tool_result is not None:await self.wait(self.tool_result,7.)
-            self.tool_goal=self.tool_result=None;self.tool_phase='inactive'
-        requested=self.now()
-        await self.stopped(requested,release=True)
+        if self.stop_request is not None:
+            return await self.stopped(self.stop_request)
+        if self.lease is not None:
+            await self.release_lease()
+        goal,result=self.tool_goal,self.tool_result
+        context=self.tool_request
+        if context is None:
+            s=self.state
+            request=self.begin_stop_wait(s.instance_id if s and goal is None else '',
+                                         s.lease_epoch if s else -1,False)
+        else:
+            context['canceling']=True
+            request=self.begin_stop_wait(context['instance_id'],context['epoch']+1,False)
+        try:
+            if goal is None and context is not None:
+                # A timed-out send_goal can still be accepted later. Settle
+                # that exact request and cancel its handle; idle is no proof.
+                future=context['future']
+                handle=await self.wait(future,max(0.,request['deadline']-time.monotonic()))
+                if self.tool_request is not context:self.stop_unconfirmed(request,'TOOL_REQUEST_CHANGED')
+                if handle.accepted:
+                    goal=self.tool_goal=handle
+                    result=self.tool_result=handle.get_result_async()
+                else:
+                    # An explicitly rejected Action never acquired a lease.
+                    request['epoch']=context['epoch']-1
+            if goal is not None:
+                await self.wait(goal.cancel_goal_async(),min(2.,max(0.,request['deadline']-time.monotonic())))
+                if result is None:self.stop_unconfirmed(request,'TOOL_RESULT_MISSING')
+                ended=await self.wait(result,min(7.,max(0.,request['deadline']-time.monotonic())))
+                code=ended.result.code
+                if 'STOP_UNCONFIRMED' in code:
+                    self.stop_unconfirmed(request,'TOOL_STOP_UNCONFIRMED')
+                prefix='BIMANUAL_LEASE_NOT_ACQUIRED:'
+                if code.startswith(prefix):
+                    try:proof=json.loads(code[len(prefix):])
+                    except (ValueError,TypeError):
+                        self.stop_unconfirmed(request,'TOOL_NO_GRANT_EVIDENCE_INVALID')
+                    if (context is None or not isinstance(proof,dict) or
+                            proof.get('instance_id')!=context['instance_id'] or
+                            proof.get('profile_hash')!=self.profile.digest or
+                            type(proof.get('epoch')) is not int or proof['epoch']!=context['epoch']-1):
+                        self.stop_unconfirmed(request,'TOOL_NO_GRANT_EVIDENCE_MISMATCH')
+                    request['epoch']=proof['epoch']
+                if (self.tool_goal is not goal or self.tool_result is not result or
+                        self.tool_request is not context):
+                    self.stop_unconfirmed(request,'TOOL_GOAL_CHANGED')
+            await self.stopped(request)
+        except Exception as exc:
+            if str(exc).startswith('PICO_STOP_UNCONFIRMED:'):raise
+            self.stop_unconfirmed(request,type(exc).__name__+':'+str(exc))
+        self.tool_goal=self.tool_result=None;self.tool_phase='inactive'
+        self.tool_request=None
 
     async def release_lease(self):
         if self.lease is None:return
-        lease=self.lease;self.lease=None
-        reply=await self.wait(self.stop_client.call_async(ControlExecution.Request(operation='hold',
-            lease_id=lease.lease_id,epoch=lease.epoch)))
-        if not reply.ok:raise RuntimeError(reply.code)
-        await self.stopped(self.now())
-        reply=await self.wait(self.leases.call_async(Lease.Request(operation='release',lease_id=lease.lease_id,epoch=lease.epoch)))
-        if not reply.ok:raise RuntimeError(reply.code)
-        await self.stopped(self.now(),release=True)
+        if self.stop_request is not None:
+            return await self.stopped(self.stop_request)
+        ownership=self.lease
+        lease,instance_id=ownership
+        pending_grant=hasattr(lease,'done')
+        request=self.begin_stop_wait(instance_id,-1 if pending_grant else lease.epoch,True)
+        try:
+            if pending_grant:
+                lease=await self.wait(lease,max(0.,request['deadline']-time.monotonic()))
+                if self.lease is not ownership:self.stop_unconfirmed(request,'LEASE_REQUEST_CHANGED')
+                if lease.profile_hash!=self.profile.digest:self.stop_unconfirmed(request,'PROFILE_MISMATCH')
+                request['epoch']=lease.epoch
+                if not lease.ok:
+                    if lease.lease_id:self.stop_unconfirmed(request,'LEASE_NOT_OWNED')
+                    request['lease_active']=False
+                    await self.stopped(request)
+                    self.lease=None
+                    return
+            reply=await self.wait(self.stop_client.call_async(ControlExecution.Request(operation='hold',
+                lease_id=lease.lease_id,epoch=lease.epoch)),min(2.,max(0.,request['deadline']-time.monotonic())))
+            if reply.ok:await self.stopped(request,clear=False)
+            elif reply.code!='INVALID_LEASE':self.stop_unconfirmed(request,reply.code)
+            # Keep one original deadline across hold and release. INVALID_LEASE
+            # only permits checking the already-revoked next epoch below.
+            request.update(epoch=lease.epoch+1,lease_active=False,requested=self.now())
+            reply=await self.wait(self.leases.call_async(Lease.Request(operation='release',lease_id=lease.lease_id,epoch=lease.epoch)),
+                min(2.,max(0.,request['deadline']-time.monotonic())))
+            if not reply.ok and not (reply.code=='INVALID_LEASE' and not reply.lease_id and
+                    reply.epoch==lease.epoch+1 and reply.profile_hash==self.profile.digest):
+                self.stop_unconfirmed(request,reply.code)
+            await self.stopped(request)
+        except Exception as exc:
+            if str(exc).startswith('PICO_STOP_UNCONFIRMED:'):raise
+            self.stop_unconfirmed(request,type(exc).__name__+':'+str(exc))
+        if self.lease is ownership:self.lease=None
 
     async def move(self,intent,targets,duration,*,fit_duration=False):
         self.current(intent)
         if not self.feedback().stopped:raise RuntimeError('PICO_MOTION_REQUIRES_STOP')
         arrival_tolerance=self.prepare_position_tolerance if intent.operation=='prepare' else .002
-        lease=await self.wait(self.leases.call_async(Lease.Request(operation='acquire',
-            owner=self.instance_id,resources=list(self.groups))))
-        if not lease.ok:raise RuntimeError(lease.code)
-        self.lease=lease
+        execution_instance_id=self.state.instance_id
+        future=self.leases.call_async(Lease.Request(operation='acquire',
+            owner=self.instance_id,resources=list(self.groups)))
+        self.lease=(future,execution_instance_id)
+        try:
+            lease=await self.wait(future)
+            if not lease.ok or lease.profile_hash!=self.profile.digest:
+                raise RuntimeError(lease.code if not lease.ok else 'PROFILE_MISMATCH')
+        except Exception:
+            # A lost grant reply is not a rejected grant. Cleanup settles that
+            # exact future before releasing, or retains an unconfirmed barrier.
+            await self.release_lease()
+            raise
+        self.lease=(lease,execution_instance_id)
         try:
             self.current(intent)
             deadline=time.monotonic()+1.
-            while not (self.state and self.state.lease_active and self.state.lease_epoch==lease.epoch):
+            while not (self.state and self.state.instance_id==execution_instance_id and
+                       self.state.lease_active and self.state.lease_epoch==lease.epoch):
                 self.current(intent)
                 if time.monotonic()>deadline:raise RuntimeError('PICO_LEASE_FEEDBACK_TIMEOUT')
                 await self.pause()
@@ -379,6 +553,8 @@ class PicoNode(RuntimeNode):
             while time.monotonic()<deadline:
                 self.current(intent)
                 state,measured=self.reading();now=self.now()
+                if state.instance_id!=execution_instance_id or not state.lease_active or state.lease_epoch!=lease.epoch:
+                    raise RuntimeError('PICO_EXECUTION_AUTHORITY_CHANGED')
                 if state.command_id.startswith(command_id+'_') and state.state=='FAILED':raise RuntimeError(state.code)
                 if (now>=started+duration and seconds(state.feedback_stamp)>=started+duration and
                         all(abs(measured[n]-v)<arrival_tolerance for n,v in zip(self.names,end)) and
@@ -430,6 +606,8 @@ class PicoNode(RuntimeNode):
             raise RuntimeError('PICO_PREPARE_PRESET_REQUIRED')
         if not joints_at_rest(s.joints,self.names,.005 if self.position_contract else 1e-6):raise RuntimeError('PREPARE_REQUIRES_STATIONARY_START')
         gripper_move=targets is not None
+        if gripper_move and self.unheld_test and self.control.load=='held':
+            raise RuntimeError('PICO_UNHELD_TEST_WITH_HELD_LOAD')
         target=targets if gripper_move else {n:self.prepare_positions[n]
                 for g in self.tool_cfg['resource_groups'] for n in self.profile.groups[g]}
         end=time.monotonic()+self.validator.startup_timeout
@@ -447,14 +625,14 @@ class PicoNode(RuntimeNode):
                 reference={n:reference[n] for n in names if q[n]!=reference[n]},
                 tolerance_rad=self.profile.feedback_tolerances['joint_position'])))
         self.validation_result=None
-        # Explicit A return is independent of load metadata and the captured
-        # two-hand grasp. The operator observes the tool; robot CAD, joint
-        # limits, fresh stopped feedback and cancellation remain mandatory.
+        # Holding A explicitly requests an empty-hand return. Validate the
+        # robot path without preserving a previously captured tool grasp.
         operation='gripper_path' if gripper_move else 'prepare_path'
         if allow_recovery and operation=='prepare_path' and self.cfg.get('prepare_collision_recovery'):
             operation='prepare_recovery_path'
         self.event('PICO_PREPARE_VALIDATION',json.dumps(dict(operation=operation,load_state=self.control.load,
-            load_state_checked=False,tool_present=gripper_move,coupling_checked=False)))
+            load_state_checked=gripper_move,tool_present=gripper_move,coupling_checked=False,
+            measured_grasp_policy='unheld_test' if self.unheld_test else 'enforce')))
         if not self.validator.submit(operation,intent.token,q,
                                      target if gripper_move else [target[n] for n in names],**extra):
             raise RuntimeError('PICO_PREPARE_VALIDATOR_BUSY')
@@ -476,7 +654,17 @@ class PicoNode(RuntimeNode):
         f=self.feedback()
         if not f.healthy:raise RuntimeError('PICO_FEEDBACK_UNAVAILABLE')
         if not f.stopped:raise RuntimeError('PICO_MODE_REQUIRES_STOPPED')
-        if mode=='bimanual_tool' and self.operator_grasp:
+        if mode=='bimanual_tool' and not self.unheld_test and getattr(self,'automatic_close_grippers',False):
+            await self.position_ops.close_grippers(intent,allow_command=intent.operation in ('select_mode','confirm_tool'))
+            self.current(intent)
+        if mode=='bimanual_tool' and self.unheld_test:
+            if self.control.load=='held':raise RuntimeError('PICO_UNHELD_TEST_WITH_HELD_LOAD')
+            self.operator_grasp_positions={}
+            self.control.virtual=False
+            self.event('PICO_UNHELD_TEST_READY',json.dumps(dict(operation=intent.operation,
+                measured_grasp_policy='unheld_test',physical_grasp_confirmed=False,
+                grasp_sensor_confirmed=False,reference_source='measured_relative')))
+        elif mode=='bimanual_tool' and self.operator_grasp:
             # Explicit tool-mode selection / two-hand engagement confirms the
             # physical grip. Keep raw modes unknown; never invent calibration.
             states={side:self.position_ops.reading(side) for side in ('left','right')}
@@ -487,7 +675,7 @@ class PicoNode(RuntimeNode):
                 reference_source='measured_rigid')))
         elif mode=='bimanual_tool' and self.position_ops and not self.position_ops.config['calibrated']:
             raise RuntimeError('PICO_TOOL_GRASP_UNCONFIRMED_UNCALIBRATED')
-        if mode=='bimanual_tool' and not self.operator_grasp and (f.modes[0]!='closed' or f.modes[1] not in ('closed','virtual')):
+        if mode=='bimanual_tool' and not self.unheld_test and not self.operator_grasp and (f.modes[0]!='closed' or f.modes[1] not in ('closed','virtual')):
             raise RuntimeError('PICO_GRIPPER_CONFIRMATION_REQUIRED')
         client=self.arms_ready_client if mode=='independent_arms' else self.ready_client
         end=time.monotonic()+self.tool_cfg.get('worker_startup_timeout',30.)
@@ -495,7 +683,20 @@ class PicoNode(RuntimeNode):
             self.current(intent)
             if client.service_is_ready():
                 reply=await self.wait(client.call_async(Trigger.Request()))
-                if reply.success:return
+                if reply.success:
+                    self.current(intent)
+                    if mode=='bimanual_tool' and self.operator_grasp and not self.unheld_test and self.control.load!='held':
+                        # Invalidate older context declarations. The in-flight
+                        # operation remains fenced by its unchanged pending token,
+                        # independently of this context generation.
+                        self.control.load,self.control.load_source='held','operator_tool_confirmation'
+                        self.control.context_at=self.now()
+                        self.control.generation+=1
+                        self.event('PICO_LOAD_OPERATOR_CONFIRMED',json.dumps(dict(
+                            load_state='held',load_source=self.control.load_source,
+                            generation=self.control.generation,operation=intent.operation,
+                            physical_grasp_confirmed_by='operator',grasp_sensor_confirmed=False)))
+                    return
                 if reply.message not in ('BIMANUAL_WORKER_NOT_READY','BIMANUAL_PREFLIGHT_PENDING'):
                     raise RuntimeError(reply.message)
             await self.pause()
@@ -524,15 +725,27 @@ class PicoNode(RuntimeNode):
 
     async def follow(self,intent):
         self.current(intent)
+        if not self.feedback().stopped:raise RuntimeError('PICO_MOTION_REQUIRES_STOP')
+        state,_=self.reading()
+        if state.lease_active:raise RuntimeError('PICO_EXECUTION_AUTHORITY_CHANGED')
+        context=dict(instance_id=state.instance_id,epoch=state.lease_epoch+1,
+                     token=intent.token,canceling=False,future=None)
+        self.tool_request=context
         self.release_until=self.now()+.1
         future=self.tools.send_goal_async(TeleopSession.Goal(task_id='pico_'+self.instance_id,
-            resource_group=self.control.teleop_mode,duration=3600.),feedback_callback=self.tool_feedback)
+            resource_group=self.control.teleop_mode,duration=3600.),
+            feedback_callback=lambda msg:self.tool_feedback(msg,context))
+        context['future']=future
         def fence(f):
             handle=f.result()
-            if handle.accepted and (not self.control.pending or self.control.pending.token!=intent.token):
+            if handle.accepted and (self.tool_request is not context or context['canceling'] or
+                    not self.control.pending or self.control.pending.token!=intent.token):
                 handle.cancel_goal_async()
         future.add_done_callback(fence)
-        self.tool_goal=await self.wait(future)
+        handle=await self.wait(future)
+        if self.tool_request is not context or context['canceling']:
+            raise Superseded('PICO_OPERATION_SUPERSEDED')
+        self.tool_goal=handle
         if not self.tool_goal.accepted:self.tool_goal=None;raise RuntimeError('PICO_TOOL_SESSION_REJECTED')
         self.tool_result=self.tool_goal.get_result_async()
         self.current(intent)
@@ -544,8 +757,9 @@ class PicoNode(RuntimeNode):
             await self.pause()
         raise RuntimeError('PICO_FOLLOW_CAPTURE_TIMEOUT')
 
-    def tool_feedback(self,msg):
-        self.tool_phase=msg.feedback.mode
+    def tool_feedback(self,msg,context):
+        if context is self.tool_request and not context['canceling']:
+            self.tool_phase=msg.feedback.mode
 
     async def perform(self,intent):
         ok=False;reason='';read_only=False;rejected=False;canceled=False;stopped_failure=False
@@ -553,15 +767,18 @@ class PicoNode(RuntimeNode):
             await self.cancel_tool()
             self.current(intent)
             read_only=intent.operation in ('prepare','confirm_tool','follow','select_mode')
+            if (getattr(self,'automatic_close_grippers',False) and not self.unheld_test and
+                    (intent.operation=='confirm_tool' or intent.operation=='select_mode' and intent.value=='bimanual_tool')):
+                read_only=False
             if intent.operation=='prepare':
-                # A return validates the measured robot path without making a
-                # load declaration or preserving the previous coupled grasp.
+                # A is the operator's explicit empty-hand return request.
                 if not self.position_contract and self.control.load!='empty':raise RuntimeError('PICO_PREPARE_REQUIRES_EMPTY')
                 target=await self.validate_prepare(intent)
                 _,measured=self.reading()
                 error=max(abs(measured[n]-q) for n,q in target.items())
-                if self.position_contract and error<.002 and not self.prepare_recovery:
-                    self.event('PICO_PREPARE_ALREADY_REACHED',json.dumps(dict(max_joint_error_rad=error)))
+                if self.position_contract and error<self.prepare_position_tolerance and not self.prepare_recovery:
+                    self.event('PICO_PREPARE_ALREADY_REACHED',json.dumps(dict(max_joint_error_rad=error,
+                        position_tolerance_rad=self.prepare_position_tolerance)))
                 else:
                     read_only=False
                     recovery=self.prepare_recovery
@@ -574,6 +791,10 @@ class PicoNode(RuntimeNode):
                         self.current(intent)
                         target=await self.validate_prepare(intent,allow_recovery=False)
                     await self.move(intent,target,self.cfg['prepare_duration'],fit_duration=self.simulation_demo)
+                if getattr(self,'automatic_close_grippers',False) and not self.unheld_test:
+                    read_only=False
+                    await self.position_ops.close_grippers(intent)
+                    self.current(intent)
             elif intent.operation=='manual_grippers':
                 if (not self.position_ops or self.control.phase!='gripper_control' or
                         not self.control.frames or any(f.grip>=.3 for f in self.control.frames)):
@@ -596,7 +817,7 @@ class PicoNode(RuntimeNode):
                 await self.select_tool_mode(intent,intent.value)
             elif intent.operation=='switch_grasp':
                 if self.position_contract:
-                    if self.operator_grasp or not self.position_ops.axial_available:
+                    if self.unheld_test or self.operator_grasp or not self.position_ops.axial_available:
                         raise RuntimeError('PICO_AXIAL_GRASP_UNAVAILABLE')
                     target=self.position_ops.grasp_target(intent.value)
                     await self.validate_prepare(intent,target)
@@ -668,10 +889,10 @@ class PicoNode(RuntimeNode):
             if item is not None:self.validation_result=item
         except RuntimeError as exc:
             if self.control.pending and self.control.pending.operation=='prepare':self.control.lock(str(exc),self.now())
-        if self.state and not self.state.lease_active and self.feedback().healthy:
-            self.handoff_complete=True
         feedback=self.feedback()
-        if self.position_ops and self.control.teleop_mode=='bimanual_tool' and feedback.healthy:
+        if self.state and not self.state.lease_active and feedback.healthy and feedback.stopped:
+            self.handoff_complete=True
+        if self.position_ops and not self.unheld_test and self.control.teleop_mode=='bimanual_tool' and feedback.healthy:
             if (not self.operator_grasp and not self.control.pending and feedback.stopped and
                     self.control.phase in ('checking','standby','tool_standby') and
                     feedback.modes[1] in ('closed','virtual')):
@@ -730,11 +951,11 @@ class PicoNode(RuntimeNode):
                 capabilities=dict(prepare=self.prepare_positions is not None,
                     independent_arms=self.position_contract,mode_switch=self.position_contract,
                     grippers=bool(self.position_ops.config['calibrated'] or self.position_ops.config.get('allow_uncalibrated_direct', False)) if self.position_ops else True,
-                    axial_grasp=not self.operator_grasp and self.position_ops.axial_available if self.position_ops else True),
-                tool_grasp_confirmation='operator' if self.operator_grasp else 'calibrated',
+                    axial_grasp=not self.unheld_test and (not self.operator_grasp and self.position_ops.axial_available if self.position_ops else True)),
+                measured_grasp_policy='unheld_test' if self.unheld_test else 'enforce',
+                tool_grasp_confirmation='unheld_test' if self.unheld_test else 'operator' if self.operator_grasp else 'calibrated',
                 execution_state=self.state.state if self.state is not None else 'unavailable',
                 feedback_age_s=self.now()-seconds(self.state.feedback_stamp) if self.state is not None else None)
-            raw=tuple(self.frames.values())
             feedback=self.feedback()
             view.update(motion_stopped=feedback.healthy and feedback.stopped,
                 tool_ground_policy=self.tool_cfg['demo']['acceptance'].get('ground_policy','required'),
@@ -749,11 +970,9 @@ class PicoNode(RuntimeNode):
                 stop_confirmed=(self.control.rest(self.now()) and self.control.pending is None and
                                 self.running is None and self.handoff_complete),
                 grasp_applied=None if self.control.teleop_mode=='independent_arms' else
-                    'right_axial' if self.control.virtual else 'rigid',
-                tracking_valid={f.side:bool(f.valid and 0<=self.now()-seconds(f.stamp)<=self.control.max_age) for f in raw})
-            view['raw_input_age_s']=max((self.now()-seconds(f.stamp) for f in raw),default=None)
-            view['raw_input_valid']=(len(raw)==2 and all(f.valid for f in raw) and
-                len({(f.source_id,f.seq) for f in raw})==1)
+                    'right_axial' if self.control.virtual else 'rigid')
+            view.update(self.input_status(self.now()))
+            view['stop_diagnostic']=getattr(self,'stop_diagnostic',None)
             if self.base:
                 view['base'] = self.base.snapshot()
             self.display.publish(String(data=json.dumps(view)))
@@ -761,6 +980,22 @@ class PicoNode(RuntimeNode):
             if self.last_phase!=(self.control.phase,self.control.reason):
                 self.last_phase=(self.control.phase,self.control.reason)
                 self.event('PICO_STATE',json.dumps(view))
+
+    def input_status(self, now):
+        """Display the coordinated pair without hiding raw tracking loss."""
+        raw = tuple(self.frames.values())
+        pair = self.control.frames or ()
+        ages = [now-seconds(f.stamp) for f in raw]
+        tracking = {f.side: bool(f.valid and 0 <= age <= self.control.max_age)
+                    for f, age in zip(raw, ages)}
+        same_source = bool(len(raw) == len(pair) == 2 and
+                           all(f.source_id == pair[0].source_id for f in raw))
+        valid = bool(same_source and all(tracking.values()) and
+                     all(f.valid and 0 <= now-f.stamp <= self.control.max_age for f in pair) and
+                     all(f.seq >= pair[0].seq for f in raw))
+        return dict(tracking_valid=tracking,
+                    raw_input_age_s=max(ages, default=None), raw_input_valid=valid,
+                    input_pair_pending=bool(valid and any(f.seq != pair[0].seq for f in raw)))
 
     def destroy_node(self):
         if self.base:

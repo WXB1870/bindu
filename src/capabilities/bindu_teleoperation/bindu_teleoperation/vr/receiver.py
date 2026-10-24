@@ -12,6 +12,7 @@ import struct
 import time
 import tempfile
 import uuid
+import sys
 from pathlib import Path
 from dataclasses import replace
 import numpy as np
@@ -106,6 +107,19 @@ def quick_ack(sock):
     except OSError:return False
 
 
+async def acknowledge_controller(ws, sequence):
+    """Flush a transport reply for real input; never generate or renew a frame.
+
+    WebSocket control replies are independent of scene rendering. In particular,
+    the peer need not wait for the next display update to receive a TCP reply.
+    Wireless loss can still exhaust the unchanged source TTL.
+    """
+    try:
+        await asyncio.wait_for(ws.ping(struct.pack('!Q', sequence)), timeout=.005)
+    except (OSError, RuntimeError, asyncio.TimeoutError):
+        pass  # Input freshness and the native watchdog remain authoritative.
+
+
 def controller_socket_status(sock):
     """Read kernel evidence separately from browser and server-loop clocks."""
     if sock is None:return {}
@@ -124,14 +138,47 @@ def controller_socket_status(sock):
     return result
 
 
+async def _controller_websocket(request, handler):
+    # Vuer 0.0.60 closes the socket but returns None. aiohttp still needs the
+    # prepared response after the controller disconnects.
+    from vuer.server import websocket_handler
+    response = None
+
+    async def downlink(request, ws):
+        nonlocal response
+        response = ws
+        return await handler(request, ws)
+
+    await websocket_handler(request, downlink, compress=False)
+    if response is None:
+        raise RuntimeError('VR_WEBSOCKET_RESPONSE_UNAVAILABLE')
+    return response
+
+
 def _serve(config, output, feedback, health):
     try:
         from vuer import Vuer
         from vuer.schemas import MotionControllers, Scene, Grid
 
         controller_sockets={}
+        controller_ack=None
 
         class LocalVuer(Vuer):
+            if config.get('input_timing_enabled',False):
+                async def bound_fn(self,session_proxy):
+                    # This is after Vuer's MessagePack decode, before its
+                    # handler task is scheduled. It is not socket arrival.
+                    upstream=super().bound_fn(session_proxy)
+                    try:
+                        outgoing=await upstream.__anext__()
+                        while True:
+                            event=yield outgoing
+                            if event.etype=='CONTROLLER_MOVE':
+                                event.bindu_dispatched_monotonic=time.monotonic()
+                            outgoing=await upstream.asend(event)
+                    finally:
+                        await upstream.aclose()
+
             async def socket_index(self, request):
                 # Vuer 0.0.60's HTTPS fallback omits the page's explicit port.
                 # Keep the locally served page and socket on the same origin.
@@ -148,8 +195,7 @@ def _serve(config, output, feedback, health):
                     return Response(text=html.replace('<head>',
                         '<head><script src="/static/client-timing.js"></script>', 1),
                         content_type='text/html', headers={'Cache-Control': 'no-store'})
-                from vuer.server import websocket_handler
-                return await websocket_handler(request,self.downlink,compress=False)
+                return await _controller_websocket(request,self.downlink)
 
             async def downlink(self, request, ws):
                 sock=request.transport.get_extra_info('socket') if request.transport else None
@@ -210,13 +256,14 @@ def _serve(config, output, feedback, health):
                 websocket_clients=len(app.ws),last_event_stamp=last_event,
                 controller_fps=60 if config.get('mapping')=='pico_snowbot_v1' else 30,
                 socket=controller_socket_status(controller_sockets.get(id(app.ws.get(owner.CURRENT_WS_ID)))) if owner else {},
-                stage='websocket_handler',stamp_semantics='server_event_receipt'))
+                stage='websocket_handler',stamp_semantics='server_report_wall_clock',
+                last_event_stamp_semantics='controller_handler_entry_wall_clock'))
             last_report=now;loop_delay=0.
         from .connectivity import VRConnectivity
         connectivity = VRConnectivity() if config.get('connectivity_check') else None
 
         async def on_controller(event, session):
-            nonlocal owner, identity, seq, clutch_seq, previous_grip, stop_latched, counters, last_event
+            nonlocal owner, identity, seq, clutch_seq, previous_grip, stop_latched, counters, last_event, controller_ack
             if owner is None or owner.CURRENT_WS_ID not in app.ws:
                 owner, identity = session, uuid.uuid4().hex
                 clutch_seq = {'left': 0, 'right': 0}
@@ -229,8 +276,9 @@ def _serve(config, output, feedback, health):
             quick_ack(controller_sockets.get(id(app.ws.get(session.CURRENT_WS_ID))))
             seq += 1
             now = time.time()
+            handler_started=time.monotonic()
             emit_health(controller_timing.observe(getattr(event, 'bindu_timing', None),
-                now, time.monotonic(), identity, seq))
+                now, handler_started, identity, seq))
             gap=now-last_event if last_event is not None else None
             last_event=now
             if now-last_report>=1. or gap is not None and gap>.1:report_health(now,gap)
@@ -250,7 +298,15 @@ def _serve(config, output, feedback, health):
             # A single queue item keeps the two sides from separate event epochs together.
             if connectivity is not None:
                 connectivity.ingest(tuple(paired))
-            _latest_put(output, ('frame', tuple(paired) if len(paired) == 2 else paired[0]))
+            packet=('frame',tuple(paired) if len(paired)==2 else paired[0])
+            if config.get('input_timing_enabled',False):
+                packet+= (dict(handler_started=handler_started,frame_ready=time.monotonic(),
+                               dispatched=getattr(event,'bindu_dispatched_monotonic',None)),)
+            _latest_put(output,packet)
+            if config.get('mapping')=='pico_snowbot_v1' and (controller_ack is None or controller_ack.done()):
+                ws=app.ws.get(session.CURRENT_WS_ID)
+                if ws is not None and hasattr(ws,'ping'):
+                    controller_ack=asyncio.create_task(acknowledge_controller(ws,seq))
 
         async def display(session):
             nonlocal owner, latest_display, display_received
@@ -318,6 +374,7 @@ class VuerReceiver:
         self.health = ctx.Queue(maxsize=128)
         self.process = ctx.Process(target=_serve, args=(config, self.output, self.feedback, self.health), daemon=True)
         self.process.start()
+        self.last_delivery=None
 
     def display(self, snapshot):
         # Wall clock is shared on supported hosts, including macOS Python <3.10.
@@ -325,15 +382,24 @@ class VuerReceiver:
 
     def poll(self):
         latest = None
+        self.last_delivery=None
         for _ in range(4):
             try:
-                kind, item = self.output.get_nowait()
+                packet = self.output.get_nowait()
             except queue.Empty:
                 break
+            kind,item=packet[:2]
             if kind == 'error':
+                self.last_delivery=None
                 raise RuntimeError('VR_RECEIVER_FAILED: ' + item)
             latest = item
+            if len(packet)==3:
+                first=item[0] if isinstance(item,tuple) else item
+                self.last_delivery=dict(packet[2],source_id=first.source_id,seq=first.seq,
+                    dequeued=time.monotonic(),shared_monotonic=not(sys.platform=='darwin' and sys.version_info<(3,10)))
+            else:self.last_delivery=None
         if not self.process.is_alive():
+            self.last_delivery=None
             raise RuntimeError('VR_RECEIVER_EXITED')
         return latest
 

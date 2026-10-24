@@ -70,6 +70,16 @@ class IndependentSessionTests(unittest.TestCase):
             with self.subTest(change=change),self.assertRaisesRegex(ValueError,'PAIR_INVALID'):
                 self.session.ingest(left,replace(right,**change),self.now)
 
+    def test_one_side_stale_does_not_partially_ingest_the_fresh_side(self):
+        self.engage([1.,1.])
+        left,right=(h.frame for h in self.session.hands)
+        previous=(self.session.seq,self.session.grasp_generation,self.session.target.copy())
+        now=self.now+.26
+        with self.assertRaisesRegex(ValueError,'VR_PAIR_INVALID'):
+            self.session.ingest(replace(left,seq=left.seq+1,stamp=now),right,now)
+        self.assertEqual((self.session.seq,self.session.grasp_generation),previous[:2])
+        np.testing.assert_array_equal(self.session.target,previous[2])
+
 
 class IndependentNativeTests(unittest.TestCase):
     def setUp(self):
@@ -85,6 +95,20 @@ class IndependentNativeTests(unittest.TestCase):
             Path(self.cfg['urdf']).parent/recipe['display_urdf'],recipe,
             conservative_convex=True,tool_present=False,validation_only=True)
         self.feedback={n:0. for n in self.solver.model_names}
+
+    def test_guarded_iteration_failure_keeps_both_arm_references_without_candidate(self):
+        target=self.solver.capture_independent(self.feedback)
+        reference=[0.]*len(self.solver.names)
+        check=self.solver.check_independent_path
+        with patch.object(self.solver.lib,'bq_solve_independent',return_value=0), \
+                patch.object(self.solver,'_error',return_value='QP_ITERATION_LIMIT_ZERO_FEASIBLE'), \
+                patch.object(self.solver,'check_independent_path',wraps=check) as guard:
+            with self.assertRaisesRegex(ValueError,'^BIMANUAL_QP_DEFERRED$'):
+                self.solver.solve_independent(self.feedback,target,active_mask=1,reference=reference,dt=.01)
+        self.assertTrue(self.solver.captured)
+        self.assertEqual(guard.call_count,1)
+        out,_=self.solver.solve_independent(self.feedback,target,active_mask=1,reference=reference,dt=.02)
+        np.testing.assert_allclose(out,reference,atol=1e-12)
 
     def test_recorded_collision_candidates_shrink_without_ending_control(self):
         data=json.loads((ROOT/'tests/config/teleoperation/snowbot_candidate_steps.json').read_text())

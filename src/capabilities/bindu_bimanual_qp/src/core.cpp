@@ -483,8 +483,12 @@ SolveResult QpController::solve(const pinocchio::SE3 &desired_tool, double dt,
     }
     out.solve_time_us += qp_->results.info.solve_time;
     out.qp_status = static_cast<int>(qp_->results.info.status);
+    if (!qp_->results.x.allFinite()) {
+      out.reason = "QP nonfinite output";
+      reset();
+      return out;
+    }
     if (qp_->results.info.status != proxsuite::proxqp::QPSolverOutput::PROXQP_SOLVED ||
-        !qp_->results.x.allFinite() ||
         (qp_->results.x.array() < lower.array()-config_.equality_tolerance).any() ||
         (qp_->results.x.array() > upper.array()+config_.equality_tolerance).any()) {
       reset();
@@ -507,6 +511,15 @@ SolveResult QpController::solve(const pinocchio::SE3 &desired_tool, double dt,
     return out;
   }
   const bool zero_feasible = (lower.array() <= 0.0).all() && (upper.array() >= 0.0).all();
+  // Only an exhausted iteration budget with a feasible zero velocity can
+  // defer this sample. Nonfinite/invalid SOLVED output and actual infeasibility
+  // retain the ordinary failure path. The caller must still validate the
+  // measured-to-reference path and its wall deadline before deferring.
+  if (out.qp_status == static_cast<int>(proxsuite::proxqp::QPSolverOutput::PROXQP_MAX_ITER_REACHED)
+      && zero_feasible) {
+    out.reason = "QP_ITERATION_LIMIT_ZERO_FEASIBLE";
+    return out;
+  }
   out.reason = "QP infeasible after closure recovery scaling (status " +
                std::to_string(out.qp_status) + ", zero feasible " +
                (zero_feasible ? "yes" : "no") + ")";

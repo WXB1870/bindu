@@ -11,6 +11,13 @@ import time
 from bindu_contracts.contracts import Feedback
 
 
+class CommandNotSent(RuntimeError):
+    """A single-packet adapter proved failure before calling its transport.
+
+    Transport-call failures remain unknown and must retain a stop footprint.
+    """
+
+
 GROUPS = {
     'waist': ['body_joint_1', 'body_joint_2'],
     'head': ['head_joint_1', 'head_joint_2'],
@@ -305,12 +312,17 @@ class SnowbotIO:
                for n, q in target.items()):
             raise RuntimeError('SNOWBOT_JOINT_LIMIT')
         packet = dict(target)
+        may_have_sent = True
         try:
             self._send(packet)
+        except CommandNotSent:
+            may_have_sent = False
+            raise
         finally:
-            # A multi-topic send can fail after one packet was delivered.
-            # Keep its full footprint so cancellation also covers that packet.
-            self.targets.update(packet)
+            # Preserve earlier sends, including partial or unknown delivery.
+            # Only a proven pre-transport failure adds no new stop footprint.
+            if may_have_sent:
+                self.targets.update(packet)
         self.reference.update(packet)
 
     def write_base(self, velocity):

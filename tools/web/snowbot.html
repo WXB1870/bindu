@@ -360,6 +360,7 @@ details[open]>summary:after { transform: rotate(225deg); }
       <details id="diagnostics"><summary class="diagnostic-head">诊断详情</summary><div class="diagnostic-body">
         <dl class="diagnostic-list"><dt>操作流程</dt><dd><span class="pill" id="demo-mode">流程待确认</span></dd><dt>事件记录</dt><dd class="event-record muted" id="record-state">诊断未记录</dd><dt>状态代码</dt><dd id="reason-code" class="reason-code mono">WAITING</dd><dt>工具装载</dt><dd id="load">未知</dd><dt>装载状态来源</dt><dd id="load-source">—</dd><dt>准备条件</dt><dd id="prepare-checks">—</dd><dt>控制映射</dt><dd id="mapping-info">—</dd><dt>距最近输入</dt><dd id="input-age">—</dd><dt>模型更新帧数</dt><dd id="frame-count">0</dd><dt>会话标识</dt><dd id="run-id" class="mono">等待会话</dd></dl>
         <dl class="diagnostic-list" id="pdo-diagnostics" hidden><dt>总线采样</dt><dd id="pdo-status">等待补充反馈</dd><dt>驱动故障轴</dt><dd id="pdo-faults">未知</dd></dl>
+        <dl class="diagnostic-list" id="fault-diagnostics" hidden><dt>首故障（源时间）</dt><dd id="first-fault" class="reason-code mono">—</dd><dt>停止失败</dt><dd id="stop-failure" class="reason-code mono">—</dd><dt>请求失效</dt><dd id="request-failure" class="reason-code mono">—</dd><dt>停止协议</dt><dd id="stop-protocol" class="reason-code mono">—</dd></dl>
         <div id="joint-comparison" hidden><p>上层位置目标与实测（rad）</p><table><thead><tr><th>关节</th><th>目标</th><th>实测</th><th>差值</th></tr></thead><tbody id="joint-comparison-rows"></tbody></table></div>
         <div id="raw-controllers"></div>
         <div class="diagnostic-export"><a href="/export" download>导出诊断<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.25" aria-hidden="true"><path d="M4 12 12 4M4 4h8v8"/></svg></a></div>
@@ -431,6 +432,10 @@ function explainReason(reason){
   }
   if((reason||'').includes('joint position outside hard limits'))return '实测关节位置超出本次配方的允许边界，接管已拒绝；请核对下方关节名、位置与范围。';
   if((reason||'').includes('PICO_AXIAL_GRASP_UNAVAILABLE'))return '夹爪尚未标定或未配置虚握开度。';
+  if((reason||'').includes('PICO_GRIPPER_OPERATION_FAILED'))return '夹爪开合未完成（'+(reason.includes(':left:')?'左侧':reason.includes(':right:')?'右侧':'待核对侧别')+'），工具跟随未启动；请核对实测开度和反馈。';
+  if((reason||'').includes('PICO_GRIPPERS_CLOSING'))return '双臂已停稳，正在闭合夹爪并等待实测到位。';
+  if((reason||'').includes('PICO_AUTO_CLOSE_REQUIRES_RELEASED_TRIGGER'))return '自动闭爪前请松开左右扳机。';
+  if((reason||'').includes('PICO_GRIPPERS_CLOSE_BEFORE_TOOL_MODE'))return '夹爪尚未闭合到位；请停稳后重新选择工具模式。';
   if((reason||'').includes('PICO_GRASP_POSITION_CHANGED'))return '夹爪开度偏离当前握持方式，已停止跟随。';
   if((reason||'').includes('LEFT_GRIPPER_NOT_CLOSED')||(reason||'').includes('LEFT_NOT_CLOSED_STATIONARY'))return '左夹爪尚未闭合停稳，无法换握。';
   if((reason||'').includes('PREPARE_TOOL_COUPLING'))return '回准备位的候选路径会改变双手握持关系，已拒绝执行。';
@@ -451,12 +456,17 @@ function prepareFailures(check){
   return Object.entries(check?.checks||{}).filter(([,v])=>v===false).map(([k])=>labels[k]||k).join('；');
 }
 function operatorState(p,online,fresh,pcFresh,tracked,execution={}){
-  const result={status:phases[p.phase]||'状态待确认',reason:explainReason(p.reason),next:'保持松握，等待控制条件确认。',key:'',tone:'warn'};
+  const root=p.fault_active&&p.first_fault?.code||p.reason;
+  const result={status:phases[p.phase]||'状态待确认',reason:explainReason(root),next:'保持松握，等待控制条件确认。',key:'',tone:'warn'};
   if(!online)return {...result,status:'网页连接中断',reason:'未收到操作台服务的最新状态，画面可能保留末帧。',next:'保持松握，检查本机状态服务。',tone:'bad'};
   if(!fresh)return {...result,status:'关节反馈不可用',reason:'当前模型不能代表最新机器人姿态。',next:'保持松握，等待关节反馈恢复。',tone:'bad'};
   if(!pcFresh)return {...result,status:'遥操作状态未知',reason:'关节反馈已收到，PICO 控制状态未更新。',next:'保持松握，检查遥操作节点。',tone:'bad'};
   if(execution.execution==='FAILED'&&execution.task_id==='startup_hold')return {...result,status:'启动接管失败',reason:'关节反馈正常；启动接管未完成，停止尚未确认。',next:'保持双侧握松开，排查控制会话接纳与停止确认；当前不能进入准备。',key:'',tone:'bad'};
-  if(p.phase==='locked')return {...result,status:p.stop_confirmed===true?'已停止（锁定）':'停止未确认',next:p.stop_confirmed===true?'排除原因，松开双侧握后按 B 恢复待命。':'保持双侧握松开，等待停稳确认。',key:p.stop_confirmed===true?'B':'',tone:'bad'};
+  if(p.phase==='locked'){
+    if(p.recovery_required)return {...result,status:'设备／采样异常 · 锁定',next:'保持松握；需现场排查设备、采样与停止协议，恢复有效反馈和停止确认后重新建立控制会话。',tone:'bad'};
+    if(p.stop_failure)return {...result,status:'停止未确认',next:'保持双侧握松开；停止请求未完成，查看下方停止失败与协议证据。',tone:'bad'};
+    return {...result,status:p.stop_confirmed===true?'已停止（锁定）':'停止未确认',next:p.stop_confirmed===true?'排除原因，松开双侧握后按 B 恢复待命。':'保持双侧握松开，等待停稳确认。',key:p.stop_confirmed===true?'B':'',tone:'bad'};
+  }
   if(p.idle_input_lost&&['standby','tool_standby','load_check'].includes(p.phase))return {...result,status:'等待手柄输入',reason:'手柄输入暂停，机器人已停稳，当前操作步骤已保留。',next:'保持松握，等待输入恢复后继续当前步骤。'};
   if(p.operator_guide?.title&&['standby','loading','load_check','gripper_control'].includes(p.phase))return {...result,status:p.operator_guide.title,reason:p.operator_guide.step==='retry'?explainReason(p.reason):result.reason,next:p.operator_guide.detail,key:p.operator_guide.key};
   if(p.phase==='selecting_mode')return {...result,status:'正在切换到'+(p.mode_target==='independent_arms'?'普通双臂':'扫雪工具'),reason:'正在检查目标模式条件。',next:'保持松握；切换完成后仍待命，不自动运动。',key:'B'};
@@ -646,7 +656,7 @@ function controlMode(p,fresh){
     hint:'松开双侧握，停稳后切换到'+(independent?'扫雪耦合':'普通双臂'),key:true,pending:''};
   if(p.phase==='selecting_mode'){
     result.pending=target?'正在切换 → '+target:'正在检查模式切换';result.hint='保持双侧握松开，等待切换确认';result.key=false;
-  }else if(p.phase==='locked'){result.hint=p.stop_confirmed===true?'恢复待命；恢复后再切换模式':'等待停稳确认后恢复待命';result.key=p.stop_confirmed===true;}
+  }else if(p.phase==='locked'){result.hint=p.recovery_required?'设备／采样异常，需现场排查后重新建立会话':p.stop_failure?'停止请求失败，查看停止协议':p.stop_confirmed===true?'恢复待命；恢复后再切换模式':'等待停稳确认后恢复待命';result.key=p.stop_confirmed===true&&!p.recovery_required&&!p.stop_failure;}
   else if(['loading','load_check'].includes(p.phase))result.hint='确认当前装卸步骤';
   else if(p.dual_modes!==true){result.hint='按右侧提示继续当前操作';result.key=false;}
   else if(p.tool_grasp_confirmation==='operator'&&independent&&result.key){result.hint='人工确认铲已握稳后，松握按 B 切扫雪；不依赖夹爪标定';}
@@ -668,7 +678,7 @@ function render(data,online){
   const rawAge=p.raw_input_age_s,vrFresh=pcFresh&&finite(rawAge)&&rawAge>=0&&rawAge<=.25;
   const tracked=vrFresh&&p.input_fresh===true&&p.raw_input_valid===true;
   const state=operatorState(p,online,fresh,pcFresh,tracked,data);
-  badge('system-health',!online?'状态服务断连':!fresh?'反馈不可用':!pcFresh?'PICO 状态过期':p.phase==='locked'?'反馈正常 · 控制锁定':tracked?'反馈在线':'等待手柄',!online||!fresh||!pcFresh?'bad':p.phase==='locked'?'warn':tracked?'good':'warn');
+  badge('system-health',!online?'状态服务断连':!fresh?'反馈不可用':!pcFresh?'PICO 状态过期':p.phase==='locked'?'反馈正常 · 控制锁定':tracked?(p.input_pair_pending?'反馈在线 · 输入配对中':'反馈在线'):'等待手柄',!online||!fresh||!pcFresh?'bad':p.phase==='locked'?'warn':tracked?'good':'warn');
   const modelLive=viewer&&meshConnected&&fresh&&modelMeshes>0&&data.model&&finite(data.model.updated_at)&&Math.max(0,data.server_time-data.model.updated_at)<=2;
   const modelPreview=data.model?.pose_source==='model_preview';
   badge('model-health',modelLive?'模型实时更新':meshConnected&&!modelMeshes?'场景加载中':meshConnected&&modelPreview?'静态模型预览':meshConnected?'模型保持末帧':'模型未连接',modelLive?'good':'warn');
@@ -678,7 +688,12 @@ function render(data,online){
   if(viewer)overlay.textContent=!online?'状态服务断连，模型可能保留最后一帧。':modelPreview?'静态模型预览，尚未收到有效关节反馈；不代表机器人当前姿态。':!fresh?'关节反馈已过期，当前显示为最后一帧。':!meshConnected?'模型服务连接中，正在重试…':!modelMeshes?'正在载入机器人模型…':'模型尚未确认更新，当前显示可能保留末帧。';
   text('phase',state.status);$('phase').className='phase '+state.tone;$('control-panel').dataset.tone=state.tone;
   text('reason',state.reason);text('next-step',state.next);text('action-key',state.key);$('action-key').hidden=!state.key;
-  text('reason-code',pcFresh?p.reason||'—':data.code||'STATE_UNAVAILABLE');
+  text('reason-code',pcFresh?(p.fault_active&&p.first_fault?.code||p.reason||'—'):data.code||'STATE_UNAVAILABLE');
+  $('fault-diagnostics').hidden=!p.first_fault;
+  const faultText=f=>f?`${f.code} · ${new Date(f.stamp*1000).toLocaleTimeString('zh-CN',{hour12:false})}.${String(Math.round(f.stamp*1000)%1000).padStart(3,'0')}`:'—';
+  text('first-fault',faultText(p.first_fault));text('stop-failure',faultText(p.stop_failure));text('request-failure',faultText(p.request_failure));
+  const stop=p.stop_diagnostic;
+  text('stop-protocol',stop?`请求 ${stop.sequence??'—'} / 观测 ${stop.observed?.command_sequence??'—'} · reason=${stop.observed?.session_reason??'—'} · ${stop.ack_reason||stop.reason}${stop.servo_rejection?.reason?' · servo: '+stop.servo_rejection.reason:''}`:'—');
   const grasp=graspState(p,pcFresh);
   text('axial-grasp',grasp.axial);$('axial-grasp').className=grasp.tone;
   document.querySelector('#guide-axial span').textContent=grasp.guide;

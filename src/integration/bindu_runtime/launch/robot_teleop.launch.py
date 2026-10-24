@@ -19,7 +19,7 @@ def generate_launch_description():
                 'single_arm_enabled':'true','recorder_enabled':'true','position_contract':'false',
                 'command_enabled':'false','vendor_namespace':'/snowbot','position_protocol':'legacy_guard','execution_mode':'position','gripper_config':'','physics_config':'','base_config':'',
                 'arm_receiver_node':'','servo_receiver_node':'','mid_receiver_node':'',
-                'vr_enabled': 'false', 'host': '127.0.0.1', 'port': '8012',
+                'vr_enabled': 'false', 'input_timing_enabled':'false', 'host': '127.0.0.1', 'port': '8012',
                 'cert_file': '', 'key_file': ''}
     defaults.update({key:str(value) for key,value in TARGET_STREAM_LIMIT_DEFAULTS.items()})
     return LaunchDescription([DeclareLaunchArgument(k, default_value=v) for k, v in defaults.items()]

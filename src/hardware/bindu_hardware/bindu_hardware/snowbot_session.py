@@ -86,11 +86,25 @@ class SessionHealth:
 
     def state(self, layer, msg):
         stamp = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
-        if (msg.layer != layer or not math.isfinite(stamp) or not 0 <= self.now()-stamp <= .2 or
-                stamp <= self.states.get(layer, (0., None))[0]):
+        now = self.now()
+        if (msg.layer != layer or msg.header.stamp.sec < 0 or
+                not 0 <= msg.header.stamp.nanosec < 1_000_000_000 or
+                not math.isfinite(stamp) or stamp <= 0 or not math.isfinite(now) or now < stamp):
+            raise ValueError('SNOWBOT_SESSION_STATE_INVALID:'+layer)
+        previous = self.states.get(layer)
+        if previous is not None and stamp <= previous[0]:
+            current = previous[1]
+            identity = ('instance_id', 'wire_version', 'reference_mode',
+                        'control_source', 'stop_policy', 'feedback_boot_id')
+            if (getattr(msg, 'instance_id', 0) and
+                    all(getattr(msg, key, None) == getattr(current, key, None) for key in identity)):
+                return False  # Old telemetry cannot delete or renew newer health.
+            raise ValueError('SNOWBOT_SESSION_STATE_INVALID:'+layer)
+        if now-stamp > .2:
             raise ValueError('SNOWBOT_SESSION_STATE_INVALID:'+layer)
         self.states[layer] = stamp, msg
         self.received[layer] = self.steady()
+        return True
 
     def confirmed_hold(self, request):
         """Return the adopted fixed reference, never physical-stop confirmation.
@@ -112,6 +126,10 @@ class SessionHealth:
             return str(exc)
         obs = self.observation
         session, sequence, boot, baseline = request
+        # A disabled/interrupted session cannot acknowledge a braking PAUSE.
+        # Report the device barrier before the incidental sequence mismatch.
+        if self.reference_mode and obs.session_reason >= 3:
+            return 'SESSION_TERMINATED:'+str(obs.session_reason)
         checks = ((obs.boot_id == boot, 'BOOT_MISMATCH'),
                   (obs.session_selected, 'SESSION_NOT_SELECTED'),
                   (obs.session == session, 'SESSION_MISMATCH'),
@@ -231,7 +249,13 @@ def stop_diagnostic(health, engine, now):
     elif now >= engine.stop_deadline or steady >= engine.stop_steady_deadline:
         reason = 'STOP_BUDGET_EXPIRED'
     window = getattr(engine, 'stop_rest_window', None)
+    device_fault = bool(obs and getattr(obs, 'session_reason', 0) >= 3)
+    servo = health.states.get('servo', (None, None))[1]
     return dict(reason=reason, ack_reason=ack_reason, session=session, sequence=sequence,
+        recovery_required=('device_inspection' if device_fault else
+                           'stop_confirmation' if ack_reason or engine.stop_fault else 'measured_rest'),
+        servo_rejection={key:getattr(servo,key,None) for key in
+                         ('rejected_session','rejected_sequence','reason')},
         boot_id=boot, baseline_sample=baseline,
         observed={key:getattr(obs, key, None) for key in ('boot_id', 'pdo_sample', 'session',
             'command_sequence', 'session_reason', 'session_selected', 'hold_valid', 'hold_sample',
@@ -278,13 +302,22 @@ class SourceEnvelope:
         self.last_id = None
         self.takeover = True
 
+    @staticmethod
+    def validate_motion(motion, now):
+        """Check the same effective source deadline before software acceptance."""
+        expires = motion.stamp + min(.2, motion.valid_for)
+        if (not all(math.isfinite(value) for value in (motion.stamp, motion.valid_for, now)) or
+                motion.valid_for <= 0 or not motion.stamp <= now < expires):
+            raise RuntimeError('SNOWBOT_SOURCE_COMMAND_EXPIRED')
+        return expires
+
     def command(self, motion, *, pause=False):
         if not pause and motion is None:
             raise RuntimeError('SNOWBOT_SOURCE_MOTION_REQUIRED')
         if not pause and motion.command_id == self.last_id:
             return None
         source = self.now() if pause else motion.stamp
-        expires = source + (self.pause_valid_for if pause else min(.2, motion.valid_for))
+        expires = source+self.pause_valid_for if pause else self.validate_motion(motion, self.now())
         if not source <= self.now() < expires:
             raise RuntimeError('SNOWBOT_SOURCE_COMMAND_EXPIRED')
         self.sequence += 1

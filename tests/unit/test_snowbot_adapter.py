@@ -582,6 +582,18 @@ class SnowbotAdapterTests(unittest.TestCase):
 
 
 class SnowbotStopDiagnosticTests(unittest.TestCase):
+    def test_interrupted_device_session_cannot_ack_pause_or_recover_as_stream_loss(self):
+        self.obs.command_sequence=10;self.obs.session_reason=7
+        self.obs.reference_valid=self.obs.output_valid=False
+        self.obs.hold_valid=False
+        self.assertIsNone(self.health.confirmed_hold(self.io.pause_request))
+        result=self.diagnose(self.health,self.engine,self.now)
+        self.assertEqual(result['ack_reason'],'SESSION_TERMINATED:7')
+        self.assertEqual(result['recovery_required'],'device_inspection')
+        self.assertEqual(result['sequence'],12)
+        self.assertEqual(result['observed']['command_sequence'],10)
+        self.assertFalse(result['observed']['reference_valid'])
+
     def setUp(self):
         from bindu_hardware.snowbot_session import CONTROL_NAMES, SessionHealth, stop_diagnostic
         self.diagnose=stop_diagnostic
@@ -793,6 +805,7 @@ class SnowbotRosBindingTests(unittest.TestCase):
         from bindu_runtime.snowbot_adapter import SnowbotDevices
         binding = SnowbotGrippers.__new__(SnowbotGrippers)
         binding.health = Mock()
+        binding.session_protocol = False
         devices = SnowbotDevices.__new__(SnowbotDevices)
         devices.node = Mock()
         devices.node.get_clock.return_value.now.return_value.nanoseconds = 10_000_000_000

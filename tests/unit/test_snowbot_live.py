@@ -42,6 +42,15 @@ assert.equal(operatorState(p,true,false,true,true,e).status,'关节反馈不可�
 assert.equal(operatorState(p,false,true,true,true,e).status,'网页连接中断');
 assert.equal(operatorState(p,true,true,false,true,e).status,'遥操作状态未知');
 assert.equal(operatorState(p,true,true,true,true,{}).status,'停止未确认');
+const stream={...p,stop_confirmed:true,fault_active:true,first_fault:{code:'COMMAND_TIMEOUT'}};
+assert.equal(operatorState(stream,true,true,true,true).reason,'COMMAND_TIMEOUT');
+assert.equal(operatorState(stream,true,true,true,true).key,'B');
+const device={...stream,recovery_required:'device_inspection'};
+assert.equal(operatorState(device,true,true,true,true).key,'');
+assert.match(operatorState(device,true,true,true,true).next,/现场排查/);
+const failed={...stream,stop_failure:{code:'STOP_UNCONFIRMED'}};
+assert.equal(operatorState(failed,true,true,true,true).key,'');
+assert.equal(operatorState(failed,true,true,true,true).reason,'COMMAND_TIMEOUT');
 """
         result=subprocess.run([node,'-e',code],capture_output=True,text=True)
         self.assertEqual(result.returncode,0,result.stderr)
@@ -302,8 +311,8 @@ class SimulationEntryTests(unittest.TestCase):
                 control,_=entry.commands(args)
                 self.assertEqual(args.config,config)
                 self.assertEqual(args.host,'0.0.0.0')
-                self.assertEqual(args.cert_file,str(base/'server.crt'))
-                self.assertEqual(args.key_file,str(base/'server.key'))
+                self.assertEqual(Path(args.cert_file),(base/'server.crt').resolve())
+                self.assertEqual(Path(args.key_file),(base/'server.key').resolve())
                 self.assertIn('host:=0.0.0.0',control)
                 explicit=entry.parse_args(['--config',str(fallback)])
                 self.assertEqual(explicit.host,'127.0.0.1')

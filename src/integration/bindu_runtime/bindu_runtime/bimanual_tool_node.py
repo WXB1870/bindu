@@ -19,6 +19,10 @@ from bindu_interfaces.action import TeleopSession as TeleopAction
 from bindu_interfaces.msg import VRInput, ExecutionState, RecorderHealth, MotionCommand, TeleopModeState, ToolPoseInput
 from bindu_interfaces.srv import Lease, SubmitMotion, ControlExecution
 from .common import MODE_STATE_MAX_AGE, RuntimeNode, seconds, stamp, spin, joints_at_rest
+from .stop_evidence import stop_feedback_matches
+
+
+WORKER_POLL_PERIOD = .005
 
 
 class BimanualToolNode(RuntimeNode):
@@ -95,6 +99,9 @@ class BimanualToolNode(RuntimeNode):
         self.frames={}
         self.state=self.health=self.mode_state=None
         self.busy=False
+        self.stop_unconfirmed=False
+        self.diagnostic_error=''
+        self.execution_instance_id=''
         self.grasp_continuation=None
         self.pause_control=ToolPause()
         group=ReentrantCallbackGroup()
@@ -116,7 +123,7 @@ class BimanualToolNode(RuntimeNode):
             lambda m:self.store_mode_message('mode_state',m),QoSProfile(depth=1,
                 reliability=ReliabilityPolicy.RELIABLE,durability=DurabilityPolicy.TRANSIENT_LOCAL))
         self.waiters=set()
-        self.create_timer(.005,self.poll_worker)
+        self.create_timer(WORKER_POLL_PERIOD,self.poll_worker)
         self.create_service(Trigger,'teleop/tool_ready',self.ready)
         if self.independent_enabled:self.create_service(Trigger,'teleop/arms_ready',self.arms_ready)
         self.create_service(SetBool,'teleop/tool_pause',self.request_pause)
@@ -195,6 +202,16 @@ class BimanualToolNode(RuntimeNode):
             self.worker_error=str(exc)
             self.event('BIMANUAL_WORKER_FAILED',self.worker_error)
 
+    def startup_input_ready(self, after):
+        # A new Action must never consume a STOP projection left by the previous
+        # handoff. Wait for an actual subsequent paired input; do not restamp it.
+        # Fresh STOP/invalid input still reaches the ordinary rejection guards.
+        if self.input_source != 'vr':
+            return True
+        left,right=self.frames.get('left'),self.frames.get('right')
+        return bool(left and right and left.source_id==right.source_id and
+                    left.seq==right.seq and min(left.stamp,right.stamp)>after)
+
     def ready(self,request,reply):
         return self.preflight(reply,'bimanual_tool')
 
@@ -202,7 +219,8 @@ class BimanualToolNode(RuntimeNode):
         return self.preflight(reply,'independent_arms')
 
     def preflight(self,reply,mode):
-        reason=self.worker_error or ('' if self.worker.ready else 'BIMANUAL_WORKER_NOT_READY')
+        reason=('BIMANUAL_EXECUTION_STOP_UNCONFIRMED' if getattr(self,'stop_unconfirmed',False) else
+                self.worker_error or ('' if self.worker.ready else 'BIMANUAL_WORKER_NOT_READY'))
         s=self.state
         if not reason and (self.busy or s is None or s.profile_hash!=self.profile.digest or
                 s.simulated != self.simulation or not 0<=self.now()-seconds(s.feedback_stamp)<=self.cfg['feedback_max_age']):
@@ -231,6 +249,8 @@ class BimanualToolNode(RuntimeNode):
         return reply
 
     def check(self, require_input=True):
+        if getattr(self,'stop_unconfirmed',False):
+            raise RuntimeError('BIMANUAL_EXECUTION_STOP_UNCONFIRMED')
         now=self.now()
         m=self.mode_state
         if (m is None or m.profile_hash != self.profile.digest or
@@ -243,6 +263,19 @@ class BimanualToolNode(RuntimeNode):
         if (s is None or s.profile_hash != self.profile.digest or s.simulated != self.simulation or
                 not 0 <= now-seconds(s.feedback_stamp) <= self.cfg['feedback_max_age']):
             raise RuntimeError('BIMANUAL_FEEDBACK_STALE')
+        if s.stop_failures:
+            raise RuntimeError('BIMANUAL_EXECUTION_STOP_UNCONFIRMED')
+        if (getattr(s,'missing_feedback_groups',()) or
+                len(s.joints.name)!=len(s.joints.position) or
+                len(s.joints.name)!=len(s.joints.velocity) or
+                len(set(s.joints.name))!=len(s.joints.name) or
+                not all(math.isfinite(q) for q in (*s.joints.position,*s.joints.velocity)) or
+                not set(self.names)<=set(s.joints.name)):
+            raise RuntimeError('BIMANUAL_FEEDBACK_INVALID')
+        measured=dict(zip(s.joints.name,s.joints.position))
+        if any(not self.profile.limits[n][0]-1e-9<=measured[n]<=self.profile.limits[n][1]+1e-9
+               for n in self.names):
+            raise RuntimeError('BIMANUAL_MEASURED_POSITION_LIMIT')
         if getattr(self,'require_recording',True) and (self.health is None or not self.health.ready or not 0 <= now-seconds(self.health.stamp)<.75):
             raise RuntimeError('RECORDER_UNAVAILABLE')
         if not require_input:
@@ -289,6 +322,9 @@ class BimanualToolNode(RuntimeNode):
         return future.result()
 
     def begin_stop(self,lease,release=False):
+        # This identity is captured before acquire is dispatched. An idle
+        # replacement executor cannot attest to the original executor's stop.
+        instance_id=self.execution_instance_id
         requested=self.now()
         deadline=time.monotonic()+self.profile.stop_timeout+.5
         if release:
@@ -297,14 +333,17 @@ class BimanualToolNode(RuntimeNode):
         else:
             future=self.control_client.call_async(ControlExecution.Request(operation='hold',
                 lease_id=lease.lease_id,epoch=lease.epoch))
-        return future,requested,deadline
+        return future,requested,deadline,instance_id
 
-    async def execution_revision(self,lease,minimum=0):
+    async def execution_revision(self,lease,minimum=0,*,instance_id=None):
         """Read a fresh revision for this lease; late state cannot move it back."""
+        if instance_id is None:
+            instance_id=self.execution_instance_id
         deadline=time.monotonic()+.7
         while time.monotonic()<deadline:
             s=self.state
-            if (s and s.lease_active and s.lease_epoch==lease.epoch and
+            if (s and instance_id and s.instance_id==instance_id and
+                    s.lease_active and s.lease_epoch==lease.epoch and
                     s.profile_hash==self.profile.digest and s.simulated==self.simulation and
                     s.revision>=minimum and
                     0<=self.now()-seconds(s.feedback_stamp)<=self.cfg['feedback_max_age']):
@@ -340,16 +379,30 @@ class BimanualToolNode(RuntimeNode):
         if not await self.stop(lease,request=request):
             return False,accepted,revision
         # Require the stop's newer state, never a delayed pre-stop snapshot.
-        revision=await self.execution_revision(lease,revision+1)
+        revision=await self.execution_revision(lease,revision+1,instance_id=request[3])
         if rejection:
             raise RuntimeError(rejection)
         return True,accepted,revision
 
-    async def stop(self,lease,release=False,*,request=None):
-        instance_id=self.state.instance_id if self.state else ''
-        future,requested,deadline=request or self.begin_stop(lease,release)
-        revoked_epoch=None
+    def cleanup_event(self,name,detail,task_id=''):
+        # Cleanup and its stop barrier must survive a failed diagnostic sink.
         try:
+            self.event(name,detail,task_id)
+        except Exception as exc:
+            self.diagnostic_error=name+':'+type(exc).__name__+':'+str(exc)
+            try:
+                self.get_logger().warning(self.diagnostic_error,throttle_duration_sec=5.)
+            except Exception:
+                pass  # The retained field remains inspectable if logging also fails.
+
+    async def stop(self,lease,release=False,*,request=None):
+        instance_id=self.execution_instance_id
+        requested=self.now()
+        expected_epoch=lease.epoch+1 if release else lease.epoch
+        revoked_epoch=None
+        reason='DEADLINE_EXPIRED'
+        try:
+            future,requested,deadline,instance_id=request or self.begin_stop(lease,release)
             reply=await self.wait(future)
             if not reply.ok:
                 # A timeout may already have revoked this lease and begun braking.
@@ -357,30 +410,33 @@ class BimanualToolNode(RuntimeNode):
                 if not (release and reply.code=='INVALID_LEASE' and instance_id and
                         not reply.lease_id and reply.epoch==lease.epoch+1 and
                         reply.profile_hash==self.profile.digest):
-                    return False
+                    raise RuntimeError('BIMANUAL_STOP_REPLY_REJECTED:'+reply.code)
                 revoked_epoch=reply.epoch
             while time.monotonic()<deadline:
                 s=self.state
                 if s and ('EMERGENCY_STOP' in s.code or s.code == 'STOP_FEEDBACK_TIMEOUT'):
-                    return False
+                    raise RuntimeError('BIMANUAL_EXECUTION_STOP_FAILED:'+s.code)
                 if revoked_epoch is not None and not (s and
                         s.instance_id==instance_id and s.lease_epoch==revoked_epoch and
                         s.profile_hash==self.profile.digest and s.simulated==self.simulation and
                         not s.lease_active):
                     await self.pause()
                     continue
-                if (s and s.state not in ('RUNNING','STOPPING') and not s.stop_failures and seconds(s.feedback_stamp)>=requested and
-                        0 <= self.now()-seconds(s.feedback_stamp)<self.cfg['feedback_max_age'] and
-                        not s.reference.name and
-                        joints_at_rest(s.joints, self.names, .005) and
-                        (not release or not s.lease_active)):
+                if stop_feedback_matches(s,instance_id=instance_id,epoch=expected_epoch,
+                        lease_active=not release,profile_hash=self.profile.digest,simulated=self.simulation,
+                        requested=requested,now=self.now(),max_age=self.cfg['feedback_max_age'],
+                        at_rest=lambda joints:joints_at_rest(joints,self.names,.005)):
                     return True
                 await self.pause()
-        except RuntimeError:
-            pass
+        except Exception as exc:
+            reason=type(exc).__name__+':'+str(exc) if not isinstance(exc,RuntimeError) else str(exc)
+        self.stop_unconfirmed=True
         s=self.state
-        self.event('BIMANUAL_STOP_UNCONFIRMED',json.dumps({
+        self.cleanup_event('BIMANUAL_STOP_UNCONFIRMED',json.dumps({
+            'reason':reason,
             'state':s.state if s else '', 'code':s.code if s else '',
+            'requested_instance_id':instance_id,'observed_instance_id':s.instance_id if s else '',
+            'expected_epoch':expected_epoch,'observed_epoch':s.lease_epoch if s else None,
             'lease_active':s.lease_active if s else None,
             'reference_count':len(s.reference.name) if s else None,
             'max_controlled_velocity':max((abs(v) for n,v in zip(s.joints.name,s.joints.velocity)
@@ -398,7 +454,7 @@ class BimanualToolNode(RuntimeNode):
         reference=AcceptedReference(self.cfg.get('max_integration_interval',.1),
             max_sample_gap=self.cfg.get('integration_max_sample_gap'))
         result=TeleopAction.Result(simulated=self.simulation)
-        lease=pending=renewal=None
+        lease=acquisition=pending=renewal=None
         accepted=0
         stopped=True
         canceled=False
@@ -407,6 +463,7 @@ class BimanualToolNode(RuntimeNode):
         work_seq=-1
         work_stamp=0.
         work_sampled_at=0.
+        work_sampled_monotonic=0.
         work_positions=None
         work_target=None
         work_dt=None
@@ -418,24 +475,62 @@ class BimanualToolNode(RuntimeNode):
         trajectory_sample_at=None
         last_mode='idle'
         last_grasp_generation=0
+        deferral=None
+        reference_deadline=None
+        def end_deferral(outcome):
+            nonlocal deferral
+            if deferral is not None:
+                self.event('BIMANUAL_SOLVE_DEFERRED_END',json.dumps(dict(deferral,
+                    outcome=outcome,duration_s=time.monotonic()-deferral['started_at'],
+                    session_code=getattr(result,'code',''))),goal.request.task_id)
+                deferral=None
         self.worker_result=None
         self.preflight_status=''
+        acquisition_epoch=None
+        def rejected_acquisition_code(reply):
+            if (not reply.lease_id and reply.epoch==acquisition_epoch and
+                    reply.profile_hash==self.profile.digest and self.state is not None and
+                    self.state.instance_id==self.execution_instance_id):
+                # The same Action result carries explicit no-grant evidence;
+                # its coordinator must still observe fresh baseline-epoch rest.
+                return 'BIMANUAL_LEASE_NOT_ACQUIRED:'+json.dumps(dict(
+                    instance_id=self.execution_instance_id,epoch=reply.epoch,
+                    profile_hash=reply.profile_hash,reason=reply.code))
+            return reply.code
         try:
-            lease=await self.wait(self.lease_client.call_async(Lease.Request(operation='acquire',
-                owner=session.identity,resources=list(self.groups))))
-            if not lease.ok or lease.profile_hash != self.profile.digest:
-                raise RuntimeError(lease.code if not lease.ok else 'PROFILE_MISMATCH')
+            if getattr(self,'stop_unconfirmed',False):
+                raise RuntimeError('BIMANUAL_EXECUTION_STOP_UNCONFIRMED')
+            self.execution_instance_id=self.state.instance_id if self.state else ''
+            if not self.execution_instance_id:
+                raise RuntimeError('BIMANUAL_EXECUTION_REVISION_UNAVAILABLE')
+            # Even a transport exception may follow request dispatch.
+            stopped=False
+            acquisition_epoch=self.state.lease_epoch
+            acquisition=self.lease_client.call_async(Lease.Request(operation='acquire',
+                owner=session.identity,resources=list(self.groups)))
+            lease=await self.wait(acquisition)
+            if not lease.ok:
+                stopped=True  # Explicit rejection did not grant this session control.
+                raise RuntimeError(rejected_acquisition_code(lease))
+            if lease.profile_hash != self.profile.digest:
+                raise RuntimeError('PROFILE_MISMATCH')
             # Service round-trips can span a DDS scheduling gap. Wait for
             # fresh mode, input, feedback and recorder samples before moving.
+            startup_input_after=self.now()
             startup_deadline=time.monotonic()+.7
             while True:
                 if self.mode_state and self.mode_state.generation!=session.generation:
                     raise RuntimeError('BIMANUAL_MODE_GENERATION_CHANGED')
-                try: self.check();break
+                try:
+                    self.check()
+                    if not self.startup_input_ready(startup_input_after):
+                        raise RuntimeError('BIMANUAL_START_INPUT_PENDING')
+                    break
                 except RuntimeError:
                     if time.monotonic()>=startup_deadline: raise
                     await self.pause()
             submit_revision=await self.execution_revision(lease)
+            execution_instance_id=self.execution_instance_id
             self.event('BIMANUAL_STARTED',json.dumps({'session_id':session.identity,
                 'teleop_mode':mode.mode,
                 'mode_generation':session.generation,'resource_groups':self.groups,
@@ -462,23 +557,17 @@ class BimanualToolNode(RuntimeNode):
                 self.check(require_input=self.pause_control.phase=='follow')
                 if self.mode_state.generation != session.generation:
                     raise RuntimeError('BIMANUAL_MODE_GENERATION_CHANGED')
-                if pending is not None and self.pause_control.phase!='pausing':
-                    if pending.done():
-                        reply=pending.result()
-                        if not reply.accepted: raise RuntimeError(reply.code)
-                        submit_revision=max(submit_revision,reply.revision)
-                        reference.accept(*pending_reference)
-                        if self.trajectory_reference:
-                            trajectory_bootstrap=False
-                            trajectory_reference_deadline=time.monotonic()+reference.max_sample_gap
-                        self.event('BIMANUAL_SUBMIT_TIMING',json.dumps({
-                            'input_seq':work_seq,'reference_sampled_at':reference.sampled_at,
-                            'acknowledged_at':self.now(),'submit_round_trip_s':now-pending_at,
-                            'server_monotonic_s':now}),goal.request.task_id)
-                        pending_reference=None
-                        accepted+=1
-                        pending=None
-                    elif now-pending_at>.7: raise RuntimeError('BIMANUAL_SUBMIT_TIMEOUT')
+                s=self.state
+                if s.command_id.startswith(session.identity+'_') and s.state=='FAILED':
+                    raise RuntimeError(s.code)
+                if (s.instance_id!=execution_instance_id or not s.lease_active or
+                        s.lease_epoch!=lease.epoch):
+                    raise RuntimeError('BIMANUAL_EXECUTION_AUTHORITY_CHANGED')
+                if (pending is not None and self.pause_control.phase!='pausing' and
+                        now-pending_at>.7):
+                    raise RuntimeError('BIMANUAL_SUBMIT_TIMEOUT')
+                if deferral is not None and now>=reference_deadline:
+                    raise RuntimeError('BIMANUAL_SOLVE_DEFERRED_TIMEOUT')
                 if renewal is not None:
                     if renewal.done():
                         if not renewal.result().ok: raise RuntimeError('LEASE_RENEW_FAILED')
@@ -489,6 +578,7 @@ class BimanualToolNode(RuntimeNode):
                         lease_id=lease.lease_id,epoch=lease.epoch))
                     renewal_at,next_renewal=now,now+.3
                 if self.pause_control.phase == 'pausing':
+                    end_deferral('intent_interrupted')
                     worker_token+=1
                     self.worker_result=None
                     awaiting=''
@@ -529,6 +619,7 @@ class BimanualToolNode(RuntimeNode):
                         continue
                     session.ingest(left,right,self.now())
                 if session.grasp_generation != last_grasp_generation:
+                    end_deferral('grasp_changed')
                     worker_token+=1
                     self.worker_result=None
                     awaiting=''
@@ -549,6 +640,7 @@ class BimanualToolNode(RuntimeNode):
                     continue
                 if session.mode != last_mode:
                     if session.mode == 'idle':
+                        end_deferral('clutch_released')
                         worker_token+=1
                         self.worker_result=None
                         awaiting=''
@@ -562,6 +654,32 @@ class BimanualToolNode(RuntimeNode):
                         pending_reference=None
                     last_mode=session.mode
                     self.event('BIMANUAL_CLUTCH',session.mode,goal.request.task_id)
+                # Validate source/clutch/grasp transitions before a receipt can
+                # advance local integration. A submitted command may already
+                # have executed; stop/settle it without reviving its reference.
+                if pending is not None and self.pause_control.phase!='pausing':
+                    if pending.done():
+                        reply=pending.result()
+                        if not reply.accepted: raise RuntimeError(reply.code)
+                        if not work_stamp<=self.now()<work_stamp+self.cfg['command_max_age']:
+                            raise RuntimeError('BIMANUAL_SUBMIT_EXPIRED')
+                        reference.accept(*pending_reference)
+                        reference_deadline=work_sampled_monotonic+reference.max_sample_gap
+                        end_deferral('software_acceptance')
+                        submit_revision=max(submit_revision,reply.revision)
+                        if self.trajectory_reference:
+                            trajectory_bootstrap=False
+                            trajectory_reference_deadline=time.monotonic()+reference.max_sample_gap
+                        self.event('BIMANUAL_SUBMIT_TIMING',json.dumps({
+                            'input_seq':work_seq,'reference_sampled_at':reference.sampled_at,
+                            'acceptance_scope':'software_execution_service',
+                            'executor_instance_id':execution_instance_id,'lease_epoch':lease.epoch,
+                            'source_stamp':work_stamp,'source_valid_for_s':self.cfg['command_max_age'],
+                            'acknowledged_at':self.now(),'submit_round_trip_s':now-pending_at,
+                            'server_monotonic_s':now}),goal.request.task_id)
+                        pending_reference=None
+                        accepted+=1
+                        pending=None
                 s=self.state
                 if (s.command_id.startswith(session.identity+'_') and s.state=='FAILED'):
                     raise RuntimeError(s.code)
@@ -575,8 +693,49 @@ class BimanualToolNode(RuntimeNode):
                             self.event('BIMANUAL_GEOMETRY_STEP',json.dumps(dict(geometry,
                                 input_seq=work_seq,control_sampled_at=work_sampled_at)),goal.request.task_id)
                         if kind=='error':
+                            if awaiting=='solve' and value=='BIMANUAL_QP_DEFERRED':
+                                # Zero QP velocity is not device stop evidence.
+                                # The previously accepted motion may still run
+                                # under its original interface/expiry. Nothing
+                                # below resubmits it or authorizes a hold.
+                                if (pending is not None or s.state=='STOPPING' or
+                                        s.state=='FAILED' and s.command_id.startswith(session.identity+'_')):
+                                    raise RuntimeError('BIMANUAL_SOLVE_DEFERRED_UNCONFIRMED')
+                                if (not 0<=self.now()-work_sampled_at<=reference.max_interval or
+                                        not 0<=now-work_sampled_monotonic<=reference.max_interval):
+                                    raise RuntimeError('BIMANUAL_RESULT_STALE')
+                                if reference_deadline is None or now>=reference_deadline:
+                                    raise RuntimeError('BIMANUAL_SOLVE_DEFERRED_TIMEOUT')
+                                if deferral is None:
+                                    deferral=dict(count=0,started_at=now,first_input_seq=work_seq,
+                                        deadline_monotonic=reference_deadline,
+                                        count_limit=math.ceil((reference_deadline-now)/WORKER_POLL_PERIOD),
+                                        count_limit_basis='remaining_reference_budget / worker_poll_period')
+                                    self.event('BIMANUAL_SOLVE_DEFERRED',json.dumps({
+                                        'code':value,'input_seq':work_seq,'input_stamp':work_stamp,
+                                        'control_sampled_at':work_sampled_at,'integration_dt':work_dt,
+                                        'sample_gap_s':work_gap,'grasp_mode':session.grasp_mode,
+                                        'feedback':work_feedback,'joint_names':self.names,
+                                        'reference':work_reference,'target':work_target,
+                                        'execution_state':s.state,'execution_command_id':s.command_id,
+                                        'stop_confirmed':False,'waiting_policy':'no_new_command_original_contract_expires',
+                                        'deadline_monotonic':reference_deadline,
+                                        'count_limit':deferral['count_limit']}),goal.request.task_id)
+                                deferral['count']+=1
+                                deferral['last_input_seq']=work_seq
+                                if deferral['count']>=deferral['count_limit']:
+                                    raise RuntimeError('BIMANUAL_SOLVE_DEFERRED_LIMIT')
+                                awaiting=''
+                                # Keep the accepted reference/time unchanged.
+                                # work_seq requires a fresh frame; source TTL,
+                                # execution failure and sample-gap budgets all
+                                # continue to run. Never resubmit an old hold.
+                                await self.pause()
+                                continue
                             self.event('BIMANUAL_WORK_REJECTED',json.dumps({
                                 'code':value,'operation':awaiting,'input_seq':work_seq,'input_stamp':work_stamp,
+                                'constraint':geometry.get('constraint') if geometry else None,
+                                'timing':geometry.get('timing') if geometry else None,
                                 'control_sampled_at':work_sampled_at,'integration_dt':work_dt,'sample_gap_s':work_gap,
                                 'grasp_mode':session.grasp_mode,'feedback':work_feedback,
                                 'joint_names':self.names,'reference':work_reference,'target':work_target}),goal.request.task_id)
@@ -588,6 +747,7 @@ class BimanualToolNode(RuntimeNode):
                             # No motion was submitted while capturing. Start the
                             # integration clock here; capture latency is not dt.
                             reference.capture(work_positions,self.now())
+                            reference_deadline=time.monotonic()+reference.max_sample_gap
                             trajectory_bootstrap=True
                             trajectory_reference_deadline=None
                             trajectory_sample_at=None
@@ -656,6 +816,7 @@ class BimanualToolNode(RuntimeNode):
                     worker_token+=1
                     operation='capture' if session.anchor_tool is None else 'solve'
                     sampled_at=self.now()
+                    sampled_monotonic=time.monotonic()
                     # A capture and this loop can share a clock tick. The next
                     # fresh controller frame will provide a positive interval.
                     if operation=='solve' and sampled_at<=reference.sampled_at:
@@ -709,12 +870,14 @@ class BimanualToolNode(RuntimeNode):
                         self.check()
                         measured=dict(zip(self.state.joints.name,self.state.joints.position))
                         sampled_at=self.now()
+                        sampled_monotonic=time.monotonic()
                     if self.worker.submit(operation,worker_token,measured,session.target,
                                           reference=baseline,dt=dt,grasp_mode=session.grasp_mode,
                                           target_stamp=session.stamp):
                         awaiting=operation
                         work_seq,work_stamp=session.seq,session.stamp
                         work_sampled_at,work_dt=sampled_at,dt
+                        work_sampled_monotonic=sampled_monotonic
                         work_gap=gap
                         work_positions=(baseline if operation=='capture' and baseline is not None else
                                         tuple(measured[n] for n in self.names))
@@ -726,31 +889,61 @@ class BimanualToolNode(RuntimeNode):
                     accepted_commands=accepted))
                 await self.pause()
             result.code='CANCELED' if canceled else 'TELEOP_SESSION_COMPLETE'
-        except (RuntimeError,ValueError,KeyError) as exc:
+        except Exception as exc:
             result.code=str(exc)
             if result.code=='BIMANUAL_MODE_NOT_SELECTED':
                 mode=self.mode_state
-                self.event('BIMANUAL_MODE_DIAGNOSTIC',json.dumps({
+                self.cleanup_event('BIMANUAL_MODE_DIAGNOSTIC',json.dumps({
                     'mode':mode.mode if mode else '', 'phase':mode.phase if mode else '',
                     'generation':mode.generation if mode else None,
                     'age':self.now()-seconds(mode.stamp) if mode else None}),
                     goal.request.task_id)
         finally:
-            if lease is not None and lease.ok:
-                stopped=await self.stop(lease,release=True)
-            if pending is not None:
+            try:
                 try:
-                    if (await self.wait(pending)).accepted: accepted+=1
-                except RuntimeError:
-                    self.event('BIMANUAL_SUBMIT_UNCONFIRMED',session.identity,goal.request.task_id)
-            if not stopped: result.code+=':STOP_UNCONFIRMED'
-            if canceled and stopped and result.code=='CANCELED' and isinstance(session,BimanualSession):
-                self.grasp_continuation=session.stopped_continuation(self.now())
-            result.accepted_commands=accepted
-            result.success=result.code=='TELEOP_SESSION_COMPLETE'
-            self.event('BIMANUAL_ENDED',json.dumps({'session_id':session.identity,
-                'code':result.code,'accepted':accepted}),goal.request.task_id)
-            self.busy=False
+                    end_deferral('session_ended')
+                except Exception as exc:
+                    if getattr(result,'code','') in ('','TELEOP_SESSION_COMPLETE','CANCELED'):
+                        result.code='BIMANUAL_DIAGNOSTIC_FAILED:'+str(exc)
+                    self.cleanup_event('BIMANUAL_DIAGNOSTIC_FAILED',str(exc),goal.request.task_id)
+            finally:
+                try:
+                    if acquisition is not None and lease is None:
+                        # Settle the exact unknown request without inferring its
+                        # outcome from an idle/replacement executor snapshot.
+                        stopped=False
+                        try:
+                            lease=await self.wait(acquisition)
+                            stopped=not lease.ok
+                            if stopped:
+                                code=rejected_acquisition_code(lease)
+                                if code.startswith('BIMANUAL_LEASE_NOT_ACQUIRED:'):result.code=code
+                        except Exception as exc:
+                            self.cleanup_event('BIMANUAL_LEASE_UNCONFIRMED',
+                                session.identity+':'+str(exc),goal.request.task_id)
+                    if lease is not None and lease.ok:
+                        stopped=await self.stop(lease,release=True)
+                    if pending is not None:
+                        try:
+                            if (await self.wait(pending)).accepted: accepted+=1
+                        except Exception as exc:
+                            self.cleanup_event('BIMANUAL_SUBMIT_UNCONFIRMED',
+                                session.identity+':'+str(exc),goal.request.task_id)
+                except Exception as exc:
+                    stopped=False
+                    self.cleanup_event('BIMANUAL_CLEANUP_FAILED',str(exc),goal.request.task_id)
+                finally:
+                    stopped=stopped and not getattr(self,'stop_unconfirmed',False)
+                    if not stopped:
+                        self.stop_unconfirmed=True
+                        result.code+=':STOP_UNCONFIRMED'
+                    self.busy=False
+                    result.accepted_commands=accepted
+                    result.success=result.code=='TELEOP_SESSION_COMPLETE'
+                if canceled and stopped and result.code=='CANCELED' and isinstance(session,BimanualSession):
+                    self.grasp_continuation=session.stopped_continuation(self.now())
+                self.cleanup_event('BIMANUAL_ENDED',json.dumps({'session_id':session.identity,
+                    'code':result.code,'accepted':accepted}),goal.request.task_id)
         if result.success: goal.succeed()
         elif canceled and stopped: goal.canceled()
         else: goal.abort()

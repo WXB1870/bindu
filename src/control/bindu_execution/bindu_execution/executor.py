@@ -412,6 +412,7 @@ class Executor:
         except ValueError:
             self.halt(now, 'REFERENCE_GENERATION_FAILED', revoke=True, emergency=True)
         except RuntimeError as exc:
+            self.emit(now, self.active, 'DEVICE_COMMAND_DETAIL', str(exc))
             self.halt(now, 'DEVICE_COMMAND_REJECTED'+
                       (':'+str(exc) if str(exc).startswith('PARTIAL_WRITE:') else ''),
                       revoke=True, emergency=True)
@@ -442,6 +443,7 @@ class Executor:
         except ValueError:
             self.halt(now, 'REFERENCE_GENERATION_FAILED', revoke=True, emergency=True)
         except RuntimeError as exc:
+            self.emit(now, motion, 'DEVICE_COMMAND_DETAIL', str(exc))
             self.halt(now, 'DEVICE_COMMAND_REJECTED'+
                       (':'+str(exc) if str(exc).startswith('PARTIAL_WRITE:') else ''),
                       revoke=True, emergency=True)

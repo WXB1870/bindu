@@ -20,6 +20,10 @@ class PositionOperations:
             raise ValueError('PICO_GRIPPER_CONFIG_MODE_MISMATCH')
         self.states = {}
         self.lease = None
+        self.lease_instance = None
+        self.acquire_future = None
+        self.release_pending = False
+        self.stop_unconfirmed = False
         self.sequence = 0
         self.leases = node.create_client(Lease, 'gripper/lease')
         self.control = node.create_client(GripperControl, 'gripper/control')
@@ -33,8 +37,11 @@ class PositionOperations:
 
     def reading(self, side):
         n = self.node
+        if self.stop_unconfirmed:
+            raise RuntimeError('PICO_GRIPPER_STOP_UNCONFIRMED')
         msg = self.states.get(side)
         if (msg is None or n.state is None or msg.instance_id != n.state.instance_id or
+                self.lease_instance is not None and msg.instance_id != self.lease_instance or
                 not msg.feedback_valid or not (msg.calibrated or self.config.get('allow_uncalibrated_direct', False)) or
                 not 0 <= n.now()-seconds(msg.stamp) <= .2 or
                 not 0 <= n.now()-seconds(msg.feedback_stamp) <= .2 or
@@ -75,11 +82,26 @@ class PositionOperations:
         return {JOINTS['right']:self.config['grippers']['right']['virtual' if virtual else 'closed']}
 
     def stopped(self):
-        # A gripper fault is never hidden by the arm executor being idle.
-        return all(s.state not in ('MOVING','STOPPING','FAULT') for s in self.states.values())
+        if (self.stop_unconfirmed or self.acquire_future is not None or self.release_pending or
+                self.lease is not None):
+            return False
+        try:
+            return all(s.state not in ('MOVING','STOPPING','FAULT') and
+                abs(s.measured_velocity) <= self.config['velocity_tolerance']
+                for s in (self.reading(side) for side in SIDES))
+        except RuntimeError:
+            return False
+
+    def lease_states(self):
+        states = [self.reading(side) for side in SIDES]
+        if self.lease is None or not all(s.epoch == self.lease.epoch and s.lease_active and
+                s.owner == self.node.instance_id for s in states):
+            raise RuntimeError('PICO_GRIPPER_LEASE_FEEDBACK_MISMATCH')
+        return states
 
     async def request(self, operation, side='', **kwargs):
         n = self.node
+        self.lease_states()
         self.sequence += 1
         response = await n.wait(self.control.call_async(GripperControl.Request(
             operation=operation, side=side, lease_id=self.lease.lease_id,
@@ -88,50 +110,130 @@ class PositionOperations:
         if not response.accepted:
             raise RuntimeError(response.code)
 
-    async def release(self):
-        if self.lease is None:
-            return
-        n, lease = self.node, self.lease
-        try:
-            started = n.now()
-            response = await n.wait(self.leases.call_async(Lease.Request(
-                operation='release', lease_id=lease.lease_id, epoch=lease.epoch)))
-            if not response.ok:
-                raise RuntimeError(response.code)
-            end = time.monotonic()+self.config['stop_timeout']+.5
-            while True:
-                states = [self.reading(s) for s in SIDES]
-                if all(seconds(s.feedback_stamp) > started and s.epoch > lease.epoch and
-                       not s.lease_active and s.state not in ('MOVING','STOPPING') for s in states):
-                    break
-                if time.monotonic() > end:
-                    raise RuntimeError('PICO_GRIPPER_STOP_UNCONFIRMED')
-                await n.pause()
-        finally:
-            self.lease = None
-
-    async def move_grippers(self, intent, *, direct=False):
+    async def acquire(self, resources):
+        if self.stop_unconfirmed or self.acquire_future is not None:
+            raise RuntimeError('PICO_GRIPPER_STOP_UNCONFIRMED')
+        if self.lease is not None:
+            raise RuntimeError('PICO_GRIPPER_LEASE_ACTIVE')
         n = self.node
-        targets={s:m for s,m in zip(SIDES,intent.value) if not direct or m is not None}
-        if not targets or any(m not in ('open','closed') for m in targets.values()):
-            raise RuntimeError('PICO_GRIPPER_TARGET_INVALID')
         for side in SIDES:
             self.reading(side)
-        lease = await n.wait(self.leases.call_async(Lease.Request(operation='acquire',
-            owner=n.instance_id, resources=[GROUPS[s] for s in (SIDES if direct else targets)])))
+        self.lease_instance = n.state.instance_id
+        end = time.monotonic()+2.
+        try:
+            future = self.leases.call_async(Lease.Request(operation='acquire',
+                owner=n.instance_id, resources=list(resources)))
+            self.acquire_future = future
+            lease = await n.wait(future, timeout=max(0., end-time.monotonic()))
+        except Exception as exc:
+            # A timed-out request may still acquire at the original executor.
+            # Retain its Future and latch; a replacement's idle is no evidence.
+            self.stop_unconfirmed = True
+            raise RuntimeError('PICO_GRIPPER_STOP_UNCONFIRMED:ACQUIRE_RESULT_UNKNOWN') from exc
+        self.acquire_future = None
         if not lease.ok:
+            self.lease_instance = None
             raise RuntimeError(lease.code)
         self.lease, self.sequence = lease, 0
         try:
+            if lease.profile_hash != n.profile.digest:
+                raise RuntimeError('PICO_GRIPPER_PROFILE_MISMATCH')
+            while True:
+                if time.monotonic() >= end:
+                    raise RuntimeError('PICO_GRIPPER_LEASE_FEEDBACK_TIMEOUT')
+                try:
+                    self.lease_states()
+                    break
+                except RuntimeError:
+                    if time.monotonic() >= end:
+                        raise RuntimeError('PICO_GRIPPER_LEASE_FEEDBACK_TIMEOUT')
+                    await n.pause()
+        except Exception:
+            await self.release()
+            raise
+        return lease
+
+    async def release(self):
+        if self.stop_unconfirmed:
+            raise RuntimeError('PICO_GRIPPER_STOP_UNCONFIRMED')
+        if self.lease is None:
+            return
+        n, lease = self.node, self.lease
+        started = n.now()
+        self.release_pending = True
+        end = time.monotonic()+self.config['stop_timeout']+.5
+        try:
+            response = await n.wait(self.leases.call_async(Lease.Request(
+                operation='release', lease_id=lease.lease_id, epoch=lease.epoch)),
+                timeout=max(0., min(2., end-time.monotonic())))
+            already_revoked=(not response.ok and response.code=='GRIPPER_STALE_LEASE' and
+                not response.lease_id and response.profile_hash==n.profile.digest and
+                response.epoch==lease.epoch+1)
+            if ((not response.ok and not already_revoked) or
+                    response.profile_hash != n.profile.digest or response.epoch != lease.epoch+1):
+                raise RuntimeError('PICO_GRIPPER_RELEASE_AUTHORITY_UNKNOWN')
+            while time.monotonic() < end:
+                states = [self.reading(s) for s in SIDES]
+                if all(s.instance_id == self.lease_instance and seconds(s.feedback_stamp) > started and
+                       s.epoch == lease.epoch+1 and not s.lease_active and
+                       s.state not in ('MOVING','STOPPING') and
+                       abs(s.measured_velocity) <= self.config['velocity_tolerance'] for s in states):
+                    self.lease = None
+                    self.lease_instance = None
+                    self.release_pending = False
+                    return
+                await n.pause()
+            raise RuntimeError('PICO_GRIPPER_STOP_UNCONFIRMED')
+        except Exception as exc:
+            self.stop_unconfirmed = True
+            # Keep the original ownership until confirmed; neither B, a late
+            # reply nor a reconnect may turn an unknown stop into permission.
+            raise RuntimeError('PICO_GRIPPER_STOP_UNCONFIRMED:'+str(exc)) from exc
+
+    async def close_grippers(self, intent, *, allow_command=True):
+        """Confirm configured closed endpoints; this is not contact/force evidence."""
+        n = self.node
+        n.current(intent)
+        if not n.feedback().healthy or not n.feedback().stopped:
+            raise RuntimeError('PICO_AUTO_CLOSE_REQUIRES_STOPPED')
+        tolerance = target_position_tolerance(self.config, direct=True)
+        def closed():
+            return all(s.state not in ('MOVING', 'STOPPING', 'FAILED') and
+                abs(s.measured_position-self.config['grippers'][side]['closed']) <= tolerance and
+                abs(s.measured_velocity) <= self.config['velocity_tolerance']
+                for side in SIDES for s in (self.reading(side),))
+        if not closed():
+            if not allow_command:
+                raise RuntimeError('PICO_GRIPPERS_CLOSE_BEFORE_TOOL_MODE')
+            if not n.control.frames or any(f.trigger >= .3 for f in n.control.frames):
+                raise RuntimeError('PICO_AUTO_CLOSE_REQUIRES_RELEASED_TRIGGER')
+            n.control.reason = 'PICO_GRIPPERS_CLOSING'
+            n.event('PICO_AUTO_CLOSE_STARTED', json.dumps(dict(operation=intent.operation)))
+            await self.move_grippers(intent, direct=True, targets=dict.fromkeys(SIDES, 'closed'))
             n.current(intent)
-            if direct:
+            if not closed():
+                raise RuntimeError('PICO_GRIPPERS_CLOSED_FEEDBACK_REQUIRED')
+        n.event('PICO_AUTO_CLOSE_READY', json.dumps(dict(operation=intent.operation,
+            measured={side:self.reading(side).measured_position for side in SIDES},
+            calibrated=self.config['calibrated'], grasp_sensor_confirmed=False)))
+
+    async def move_grippers(self, intent, *, direct=False, targets=None):
+        n = self.node
+        automatic = targets is not None
+        targets = dict(targets) if automatic else {s:m for s,m in zip(SIDES,intent.value) if not direct or m is not None}
+        if not targets or any(m not in ('open','closed') for m in targets.values()):
+            raise RuntimeError('PICO_GRIPPER_TARGET_INVALID')
+        lease = await self.acquire([GROUPS[s] for s in (SIDES if direct else targets)])
+        try:
+            n.current(intent)
+            if direct and not automatic:
                 n.control.gripper_update_token=intent.token
             await self.request('authorize_direct' if direct else 'authorize_loading', load_state=n.control.load,
                                external_support=False if direct else n.control.supported)
             expected, sent_modes, failed, renew_at = {}, {}, {}, 0.
             while True:
                 n.current(intent)
-                if direct:
+                if direct and not automatic:
                     targets={s:m for s,m in zip(SIDES,n.control.pending.value) if m is not None}
                 for side, mode in targets.items():
                     if sent_modes.get(side)==mode:
@@ -152,8 +254,8 @@ class PositionOperations:
                     if (s.state=='FAILED' and s.epoch==lease.epoch and
                             s.control_sequence>=expected[side][1] and
                             seconds(s.stamp)>expected[side][2]):
-                        if not direct or s.code!='POSITION_TIMEOUT':
-                            raise RuntimeError('PICO_GRIPPER_OPERATION_FAILED')
+                        if automatic or not direct or s.code!='POSITION_TIMEOUT':
+                            raise RuntimeError('PICO_GRIPPER_OPERATION_FAILED:'+side+':'+s.code)
                         # FAILED/POSITION_TIMEOUT follows confirmed local hold.
                         # Keep the partner's command/lease and await a NEW input
                         # for this side. Never retry or report this target reached.
@@ -163,7 +265,7 @@ class PositionOperations:
                                 measured=s.measured_position,epoch=s.epoch,
                                 control_sequence=s.control_sequence)))
                         failed[side]=s.code
-                if direct:
+                if direct and not automatic:
                     n.control.reason=('GRIPPER_POSITION_TIMEOUT:'+','.join(sorted(failed)) if failed else
                                       'TRIGGERS_CONTROL_INDIVIDUAL_GRIPPERS')
                 reached={side:(s.position_reached and s.epoch==lease.epoch and
@@ -183,7 +285,7 @@ class PositionOperations:
                     renew_at = time.monotonic()+.2
                 await n.pause()
         finally:
-            if direct:
+            if direct and not automatic:
                 n.control.gripper_update_token=None
             await self.release()
 
@@ -195,11 +297,7 @@ class PositionOperations:
         if self.modes()[0] != 'closed':
             raise RuntimeError('PICO_LEFT_GRIPPER_NOT_CLOSED')
         target = self.config['grippers']['right']['virtual' if intent.value else 'closed']
-        lease = await n.wait(self.leases.call_async(Lease.Request(operation='acquire',
-            owner=n.instance_id, resources=[GROUPS['right']])))
-        if not lease.ok:
-            raise RuntimeError(lease.code)
-        self.lease, self.sequence = lease, 0
+        lease = await self.acquire([GROUPS['right']])
         try:
             n.current(intent)
             await self.request('authorize_grasp')

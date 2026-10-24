@@ -58,6 +58,10 @@ Isaac 物理实验在 [shovel_control.py](../../../tools/simulation/shovel_contr
 | [bimanual.py](bindu_kinematics/bimanual.py) / [bimanual_worker.py](bindu_kinematics/bimanual_worker.py) | 双臂 QP 的 C ABI 封装与隔离工作进程 |
 | [tool_geometry.py](bindu_kinematics/tool_geometry.py) | 工具／机器人 CAD 几何查询 |
 
+双臂 worker 的 `worker_timeout` / `worker_startup_timeout` 是父进程收到结果的单调时间预算，包含队列和调度等待；不能解读为纯 QP 计算耗时。轮询先核对期限，再消费结果。超时、子进程退出或初始化致命错误锁存故障并撤销 ready，迟到结果不会恢复就绪或允许再次提交；恢复须显式替换 worker，并沿上层既有停止确认、反馈校验与重新捕获流程重入。期限内的普通求解拒绝仍作为本次操作错误交给调用方处理，不自动重试。纯内存时序回归见 [test_bimanual_worker.py](../../../tests/unit/test_bimanual_worker.py)，不启动 ROS 或求解进程。
+
+真实Snowbot配方的握持位置误差上限为30 mm、旋转上限0.04 rad，QP与几何校验总预算50 ms；杆体对机器人的最小净距仍为20 mm。接触区在每次实测捕获时定位，固定宽度与实体杆长取交集；越出实体杆的握点仍拒绝。在线仅判通过／拒绝时，AABB下界达到对应门槛即可跳过精确距离查询；完整报告仍计算最小距离。预算也覆盖测量到旧参考的基线校验，未完成校验不会作为安全参考返回。
+
 ## 接入与验证
 
 双臂配置入口：[Snowbot 雪铲](../../integration/bindu_runtime/config/robots/snowbot/bimanual_snowbot_shovel.json)。IK 与 QP 各有可选依赖；使用对应能力前，按 [运行与验证](../../../运行与验证.md) 安装并构建。
