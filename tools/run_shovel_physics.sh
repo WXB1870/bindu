@@ -11,7 +11,11 @@ if [ "${1:-}" = --vr ]; then
   bindu_ros=true
   shift
 fi
-if [ "${1:-}" = --kinematic ]; then
+if [ "${1:-}" = --task-feedback ]; then
+  bindu_script="$bindu_root/tests/physics/validate_shovel_isaac.py"
+  shift
+  set -- --task-feedback-comparison "$@"
+elif [ "${1:-}" = --kinematic ]; then
   bindu_script="$bindu_root/tests/physics/validate_shovel_isaac.py"
   shift
 elif [ "${1:-}" = --live ]; then

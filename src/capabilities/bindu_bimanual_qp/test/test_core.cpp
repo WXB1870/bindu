@@ -318,6 +318,122 @@ TEST_F(CoreTest, SharedWaistMovesToolWithoutChangingRelativeGrasp) {
   EXPECT_LT((kin.relativeErrorJacobian() * result.velocity).norm(), 5e-4);
 }
 
+TEST_F(CoreTest, MeasuredTaskDoesNotResetAcceptedPositionOrCommandModel) {
+  const Eigen::VectorXd measured=robot_->positions();
+  const auto left=robot_->leftPose(), right=robot_->rightPose();
+  auto command=measured;
+  command[robot_->qIndex("left_joint_1")]+=.08;
+  robot_->update(command);
+  datq::Config config; config.posture_gain=0.;
+  datq::QpController controller(*robot_,*kin_,config,robot_->activePositions());
+  controller.independentArms();
+  const Eigen::VectorXd reference=robot_->activePositions();
+  for (int k=0;k<20;++k) {
+    const auto result=controller.solve(left,.01,reference,
+        Eigen::Matrix<double,6,1>::Zero(),nullptr,&right,3,&measured,.12);
+    ASSERT_TRUE(result.ok) << result.reason;
+    EXPECT_LT(result.velocity.norm(),1e-8);
+    EXPECT_LT((robot_->positions()-command).norm(),1e-12);
+    // The command remains .08 ahead; it is not measured + a tiny new step.
+    EXPECT_LT((reference+.01*result.velocity-reference).norm(),1e-10);
+  }
+}
+
+TEST_F(CoreTest, MeasuredTaskJacobianMatchesIndependentMeasuredKinematics) {
+  const Eigen::VectorXd measured=robot_->positions();
+  auto target=robot_->leftPose(); target.translation().x()+=.01;
+  const auto right=robot_->rightPose();
+  auto command=measured; command[robot_->qIndex("left_joint_1")]+=.08;
+  robot_->update(command);
+  const Eigen::VectorXd reference=robot_->activePositions();
+  datq::Config config; config.posture_gain=0.;
+  datq::QpController controller(*robot_,*kin_,config,reference);
+  controller.independentArms();
+  const auto result=controller.solve(target,.01,reference,
+      Eigen::Matrix<double,6,1>::Zero(),nullptr,&right,1,&measured,.12);
+  ASSERT_TRUE(result.ok) << result.reason;
+  robot_->update(measured);
+  const auto expected=controller.solve(target,.01,reference,
+      Eigen::Matrix<double,6,1>::Zero(),nullptr,&right,1);
+  ASSERT_TRUE(expected.ok) << expected.reason;
+  EXPECT_LT((result.velocity-expected.velocity).norm(),1e-6);
+  robot_->update(command);
+}
+
+TEST_F(CoreTest, MeasuredTaskWaistLeadReallocatesToArmsWithoutWholeStepScaling) {
+  datq::RobotModel robot(TEST_URDF_PATH,"left_ee","right_ee","tool_frame",
+                        left_names_,right_names_,{"waist_joint"});
+  auto command=robot.positions();
+  command[robot.qIndex("waist_joint")]=.12;
+  command[robot.qIndex("left_joint_2")]=.6;
+  command[robot.qIndex("left_joint_4")]=-.8;
+  command[robot.qIndex("right_joint_2")]=.55;
+  command[robot.qIndex("right_joint_4")]=-.75;
+  robot.update(command); datq::RigidToolKinematics kin(robot); kin.capture();
+  const Eigen::VectorXd reference=robot.activePositions();
+  auto measured=command; measured[robot.qIndex("waist_joint")]=0.;
+  robot.update(measured);
+  Eigen::Matrix<double,6,1> shift=Eigen::Matrix<double,6,1>::Zero(); shift[5]=.04;
+  const auto target=kin.toolPose()*pinocchio::exp6(shift);
+  robot.update(command);
+  datq::Config config; config.posture_gain=0.;
+  datq::QpController controller(robot,kin,config,reference,1);
+  const auto result=controller.solve(target,.01,reference,
+      Eigen::Matrix<double,6,1>::Zero(),nullptr,nullptr,3,&measured,.12);
+  ASSERT_TRUE(result.ok) << result.reason;
+  EXPECT_LE(result.velocity[0],1e-12);
+  EXPECT_GT(result.velocity.tail(12).norm(),1e-4);
+  EXPECT_LT((kin.relativeErrorJacobian()*result.velocity).norm(),5e-4);
+  EXPECT_LT((robot.positions()-command).norm(),1e-12);
+}
+
+TEST_F(CoreTest, SharedFeedbackTracksWaistWithoutChasingStaticArmResidual) {
+  datq::RobotModel robot(TEST_URDF_PATH,"left_ee","right_ee","tool_frame",
+                        left_names_,right_names_,{"waist_joint"});
+  auto command=robot.positions();
+  command[robot.qIndex("waist_joint")]=.08;
+  command[robot.qIndex("left_joint_2")]=.6;
+  command[robot.qIndex("left_joint_4")]=-.8;
+  command[robot.qIndex("right_joint_2")]=.55;
+  command[robot.qIndex("right_joint_4")]=-.75;
+  robot.update(command);datq::RigidToolKinematics kin(robot);kin.capture();
+  const Eigen::VectorXd reference=robot.activePositions();
+  auto measured=command;measured[robot.qIndex("waist_joint")]=0.;
+  robot.update(measured);const auto target=kin.toolPose();
+  measured[robot.qIndex("left_joint_1")]+=.02;
+  robot.update(command);
+  datq::Config config;config.posture_gain=0.;
+  datq::QpController controller(robot,kin,config,reference,1);
+  const auto held=controller.solve(target,.01,reference,
+      Eigen::Matrix<double,6,1>::Zero(),nullptr,nullptr,3,&measured,.12,true);
+  ASSERT_TRUE(held.ok) << held.reason;
+  EXPECT_LT(held.velocity.norm(),1e-8);
+  // Actual waist advances; arm references must react without resetting the
+  // pending waist command or chasing the unchanged arm feedback offset.
+  measured[robot.qIndex("waist_joint")]=.01;
+  const auto moved=controller.solve(target,.01,reference,
+      Eigen::Matrix<double,6,1>::Zero(),nullptr,nullptr,3,&measured,.12,true);
+  ASSERT_TRUE(moved.ok) << moved.reason;
+  EXPECT_GT(moved.velocity.norm(),1e-4);
+  EXPECT_LT((robot.positions()-command).norm(),1e-12);
+}
+
+TEST_F(CoreTest, MeasuredTaskRejectsPhysicalHardViolationAndInvalidBudget) {
+  const Eigen::VectorXd reference=robot_->activePositions();
+  auto measured=robot_->positions();
+  measured[robot_->qIndex("left_joint_1")]=robot_->upperLimits()[0]+.01;
+  datq::Config config;
+  datq::QpController controller(*robot_,*kin_,config,reference);
+  const auto target=kin_->toolPose();
+  const auto bad=controller.solve(target,.01,reference,
+      Eigen::Matrix<double,6,1>::Zero(),nullptr,nullptr,3,&measured,.12);
+  EXPECT_FALSE(bad.ok); EXPECT_EQ(bad.reason,"joint position outside hard limits");
+  measured=robot_->positions();
+  const auto invalid=controller.solve(target,.01,reference,
+      Eigen::Matrix<double,6,1>::Zero(),nullptr,nullptr,3,&measured,0.);
+  EXPECT_FALSE(invalid.ok);
+}
+
 TEST_F(CoreTest, SharedMotionCostPrefersArmsWithoutLockingWaist) {
   datq::RobotModel robot(TEST_URDF_PATH, "left_ee", "right_ee", "tool_frame",
                          left_names_, right_names_, {"waist_joint"});

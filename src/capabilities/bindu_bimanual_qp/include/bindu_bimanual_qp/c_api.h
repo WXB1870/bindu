@@ -96,6 +96,18 @@ int bq_solve(void *handle, const double *q, int nq, const double *reference, int
 int bq_solve_tracking(void *handle, const double *q, int nq, const double *reference, int n,
                         const double *target, const double *world_velocity, const double *measured_tool, double dt,
                         double *out, double *metrics);
+/* Additive ABI v1: measured task FK/Jacobians and per-joint lead bounds.
+ * q remains the command model state for closure/posture; measured_q follows
+ * the same full model layout. Integration still starts at reference. A nonnull
+ * right target selects independent arms (active_mask); otherwise tool closure.
+ * max_lead is the caller's existing soft tracking reserve, not a new allowance.
+ * shared_task_feedback=1 uses measured shared joints and commanded arm joints
+ * for the task only; measured_q still supplies all physical safety bounds. */
+int bq_solve_feedback(void *handle, const double *q, int nq, const double *measured_q,
+                      const double *reference, int n, const double *target, const double *right,
+                      int active_mask, int shared_task_feedback,
+                      const double *world_velocity, const double *measured_tool,
+                      double max_lead, double dt, double *out, double *metrics);
 int bq_tool_pose(void *handle, const double *q, int nq, double *out);
 int bq_relative_pose(void *handle, const double *q, int nq, double *out);
 /* Additive ABI v1 ordinary-arms capability. No rigid-tool closure equality;

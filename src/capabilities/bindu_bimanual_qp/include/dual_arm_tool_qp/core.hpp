@@ -144,7 +144,9 @@ public:
                     const Eigen::VectorXd &reference,
                     const Eigen::Matrix<double, 6, 1> &world_velocity = Eigen::Matrix<double, 6, 1>::Zero(),
                     const pinocchio::SE3 *measured_tool = nullptr,
-                    const pinocchio::SE3 *desired_right = nullptr, int active_mask = 3);
+                    const pinocchio::SE3 *desired_right = nullptr, int active_mask = 3,
+                    const Eigen::VectorXd *measured_q = nullptr, double max_lead = 0.,
+                    bool shared_task_feedback = false);
   const Config &config() const { return config_; }
 
 private:

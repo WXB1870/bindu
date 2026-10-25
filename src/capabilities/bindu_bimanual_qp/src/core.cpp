@@ -343,7 +343,9 @@ SolveResult QpController::solve(const pinocchio::SE3 &desired_tool, double dt,
                                 const Eigen::VectorXd &reference,
                                 const Eigen::Matrix<double, 6, 1> &world_velocity,
                                 const pinocchio::SE3 *measured_tool,
-                                const pinocchio::SE3 *desired_right, int active_mask) {
+                                const pinocchio::SE3 *desired_right, int active_mask,
+                                const Eigen::VectorXd *measured_q, double max_lead,
+                                bool shared_task_feedback) {
   SolveResult out;
   out.velocity = Eigen::VectorXd::Zero(robot_.variables());
   if (!kin_.captured()) { out.reason = "grasp not captured"; return out; }
@@ -362,12 +364,48 @@ SolveResult QpController::solve(const pinocchio::SE3 &desired_tool, double dt,
   if (!e_rel.allFinite() || out.relative_error > config_.max_relative_error) {
     out.reason = "relative pose safety threshold"; return out;
   }
-  // Integrate closure/Jacobians at the accepted reference, but track the
-  // measured tool: reference error alone cannot correct position-servo lag.
+  const int n = robot_.variables();
+  const Eigen::VectorXd q = robot_.activePositions();
+  Eigen::VectorXd physical_q = q;
+  Eigen::MatrixXd a = independent_ ? Eigen::MatrixXd(0,n) : kin_.relativeErrorJacobian();
+  auto task_pose = kin_.toolPose();
+  Eigen::MatrixXd task_jacobian = kin_.toolJacobian();
+  pinocchio::SE3 hands[2] = {robot_.leftPose(), robot_.rightPose()};
+  Eigen::MatrixXd hand_jacobians[2];
+  if (independent_) {
+    hand_jacobians[0]=robot_.leftJacobian(); hand_jacobians[1]=robot_.rightJacobian();
+  }
+  if (measured_q) {
+    if (measured_q->size()!=robot_.positions().size() || !measured_q->allFinite() ||
+        !std::isfinite(max_lead) || max_lead<=0.) {
+      out.reason="invalid measured task state or lead budget"; return out;
+    }
+    // Only task FK/Jacobians use the physical snapshot. Restore command
+    // kinematics for closure and posture; integration never starts at feedback.
+    const Eigen::VectorXd command_q = robot_.positions();
+    robot_.update(*measured_q);
+    physical_q = robot_.activePositions();
+    if (shared_task_feedback) {
+      Eigen::VectorXd task_q=*measured_q;
+      for (int i=shared_count_;i<n;++i) {
+        const int index=robot_.qIndex(robot_.activeJointNames()[i]);
+        task_q[index]=command_q[index];
+      }
+      robot_.update(task_q);
+    }
+    task_pose = kin_.toolPose(); task_jacobian = kin_.toolJacobian();
+    hands[0]=robot_.leftPose(); hands[1]=robot_.rightPose();
+    if (independent_) {
+      hand_jacobians[0]=robot_.leftJacobian(); hand_jacobians[1]=robot_.rightJacobian();
+    }
+    robot_.update(command_q);
+  }
+  // Legacy tracking may use measured error with command Jacobians. The
+  // measured-task path instead evaluates both at the same physical snapshot.
   const pinocchio::SE3 offset(Eigen::Matrix3d::Identity(),tracking_point_);
-  const auto actual = (measured_tool ? *measured_tool : kin_.toolPose())*offset;
+  const auto actual = (measured_tool ? *measured_tool : task_pose)*offset;
   const auto desired_point=desired_tool*offset;
-  const auto reference_point=kin_.toolPose()*offset;
+  const auto reference_point=task_pose*offset;
   auto tool_error = pinocchio::log6(actual.actInv(desired_point)).toVector().eval();
   const auto error_rotation = (reference_point.rotation().transpose()*actual.rotation()).eval();
   tool_error.head<3>() = (error_rotation*tool_error.head<3>()).eval();
@@ -381,24 +419,21 @@ SolveResult QpController::solve(const pinocchio::SE3 &desired_tool, double dt,
   target_twist.tail<3>() += local * world_velocity.tail<3>();
   clampTwist(target_twist, config_.max_linear_speed, config_.max_angular_speed);
 
-  const int n = robot_.variables();
-  Eigen::MatrixXd jt = offset.inverse().toActionMatrix()*kin_.toolJacobian();
+  Eigen::MatrixXd jt = offset.inverse().toActionMatrix()*task_jacobian;
   Eigen::VectorXd task_twist = target_twist;
-  Eigen::MatrixXd a = independent_ ? Eigen::MatrixXd(0,n) : kin_.relativeErrorJacobian();
   if (independent_) {
     jt.resize(12,n); task_twist.resize(12);
     for (int side=0; side<2; ++side) {
-      const auto &actual_hand = side==0 ? robot_.leftPose() : robot_.rightPose();
+      const auto &actual_hand = hands[side];
       const auto &desired = side==0 ? desired_tool : *desired_right;
       Eigen::Matrix<double,6,1> twist = config_.tool_gain * pinocchio::log6(actual_hand.actInv(desired)).toVector();
       if (!twist.allFinite()) { out.reason="invalid independent arm target"; return out; }
       clampTwist(twist,config_.max_linear_speed,config_.max_angular_speed);
-      jt.middleRows(6*side,6) = side==0 ? robot_.leftJacobian() : robot_.rightJacobian();
+      jt.middleRows(6*side,6) = hand_jacobians[side];
       task_twist.segment(6*side,6) = twist;
     }
   }
   Eigen::VectorXd b = -config_.relative_gain * e_rel;
-  const Eigen::VectorXd q = robot_.activePositions();
   const Eigen::VectorXd nominal_velocity = config_.posture_gain * (nominal_ - q);
   Eigen::MatrixXd h = jt.transpose() * jt +
       (config_.posture_weight + config_.regularization) * Eigen::MatrixXd::Identity(n, n);
@@ -421,7 +456,7 @@ SolveResult QpController::solve(const pinocchio::SE3 &desired_tool, double dt,
   for (int i = 0; i < n; ++i) {
     const double vmax = robot_.velocityLimits()[i];
     const double lo = robot_.lowerLimits()[i], hi = robot_.upperLimits()[i];
-    if (q[i] < lo-position_roundoff || q[i] > hi+position_roundoff ||
+    if (physical_q[i] < lo-position_roundoff || physical_q[i] > hi+position_roundoff ||
         reference[i] < lo-position_roundoff || reference[i] > hi+position_roundoff) {
       out.reason = "joint position outside hard limits"; return out;
     }
@@ -433,31 +468,39 @@ SolveResult QpController::solve(const pinocchio::SE3 &desired_tool, double dt,
         ? std::min(config_.damper_gain, vmax/config_.limit_margin)
         : config_.damper_gain;
     lower[i] = std::max({-vmax, (lo-ref)/dt,
-        std::min(0., slope * (lo-q[i])),
+        std::min(0., slope * (lo-physical_q[i])),
         std::min(0., slope * (lo-ref))});
     upper[i] = std::min({vmax, (hi-ref)/dt,
-        std::max(0., slope * (hi-q[i])),
+        std::max(0., slope * (hi-physical_q[i])),
         std::max(0., slope * (hi-ref))});
     if (have_posture_policy_) {
       // Additional posture envelope is a hard task bound. Physical limit_margin
       // remains relative to the model/profile bounds, not this comfort envelope.
       const double pl = posture_lower_[i], pu = posture_upper_[i];
-      if (q[i]<pl-position_roundoff || q[i]>pu+position_roundoff ||
+      if (physical_q[i]<pl-position_roundoff || physical_q[i]>pu+position_roundoff ||
           reference[i]<pl-position_roundoff || reference[i]>pu+position_roundoff) {
         out.reason = "joint position outside posture envelope"; return out;
       }
       lower[i] = std::max({lower[i], (pl-ref)/dt,
-                           config_.damper_gain*(pl-q[i]), config_.damper_gain*(pl-ref)});
+                           config_.damper_gain*(pl-physical_q[i]), config_.damper_gain*(pl-ref)});
       upper[i] = std::min({upper[i], (pu-ref)/dt,
-                           config_.damper_gain*(pu-q[i]), config_.damper_gain*(pu-ref)});
+                           config_.damper_gain*(pu-physical_q[i]), config_.damper_gain*(pu-ref)});
       // Reserve measured servo error inside the unchanged physical envelope.
       // A recapture can lie in the reserve: allow inward recovery and prohibit
       // further outward velocity, without a position jump at mode transitions.
       const double il=pl+posture_reference_margin_, iu=pu-posture_reference_margin_;
-      lower[i] = std::max({lower[i], std::min(0.,config_.damper_gain*(il-q[i])),
+      lower[i] = std::max({lower[i], std::min(0.,config_.damper_gain*(il-physical_q[i])),
                                    std::min(0.,config_.damper_gain*(il-ref))});
-      upper[i] = std::min({upper[i], std::max(0.,config_.damper_gain*(iu-q[i])),
+      upper[i] = std::min({upper[i], std::max(0.,config_.damper_gain*(iu-physical_q[i])),
                                    std::max(0.,config_.damper_gain*(iu-ref))});
+    }
+    if (measured_q) {
+      // Reallocate within this QP before the caller's final coupled guard.
+      // Already inside the transport reserve: bound the next command point.
+      // Already outside it: allow hold/inward recovery, never force a reset.
+      const double lead = reference[i]-physical_q[i];
+      lower[i]=std::max(lower[i],std::min(0.,(-max_lead-lead)/dt));
+      upper[i]=std::min(upper[i],std::max(0.,( max_lead-lead)/dt));
     }
     if (independent_ && (i<shared_count_ ||
         (i<shared_count_+robot_.leftVariables() ? !(active_mask&1) : !(active_mask&2)))) {
@@ -492,8 +535,8 @@ SolveResult QpController::solve(const pinocchio::SE3 &desired_tool, double dt,
     inequality_lower = Eigen::VectorXd::Constant(2*n,-1.e20);
     inequality_upper = Eigen::VectorXd::Zero(2*n);
     for (int i=0; i<n; ++i) {
-      const double dl = std::min(q[i],reference[i])-robot_.lowerLimits()[i];
-      const double du = robot_.upperLimits()[i]-std::max(q[i],reference[i]);
+      const double dl = std::min(physical_q[i],reference[i])-robot_.lowerLimits()[i];
+      const double du = robot_.upperLimits()[i]-std::max(physical_q[i],reference[i]);
       inequalities(i,i) = -std::clamp(1.-dl/avoidance_margin_,0.,1.);
       inequalities(n+i,i) = std::clamp(1.-du/avoidance_margin_,0.,1.);
       inequalities(i,n+i) = inequalities(n+i,n+i) = -1.;

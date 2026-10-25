@@ -49,9 +49,9 @@ class BimanualQP:
         if type(self.reference_kinematics) is not bool:
             raise ValueError('BIMANUAL_REFERENCE_KINEMATICS_CONFIG')
         self.tracking_feedback = config.get('tracking_feedback', 'measured')
-        if not isinstance(self.tracking_feedback, str) or self.tracking_feedback not in ('measured', 'reference'):
+        if not isinstance(self.tracking_feedback, str) or self.tracking_feedback not in ('measured', 'reference', 'measured_task', 'measured_shared'):
             raise ValueError('BIMANUAL_TRACKING_FEEDBACK_CONFIG')
-        if self.tracking_feedback == 'reference' and not self.reference_kinematics:
+        if self.tracking_feedback in ('reference', 'measured_task', 'measured_shared') and not self.reference_kinematics:
             raise ValueError('BIMANUAL_REFERENCE_TRACKING_REQUIRES_REFERENCE_KINEMATICS')
         self.feedforward = config.get('tool_velocity_feedforward', False)
         if type(self.feedforward) is not bool:
@@ -128,6 +128,12 @@ class BimanualQP:
             except AttributeError as exc:
                 raise ValueError('BIMANUAL_TRACKING_ABI_MISSING: rebuild bindu_bimanual_qp') from exc
             fn.argtypes, fn.restype = [p,array,i,array,i,array,array,array,c.c_double,array,array], i
+        if self.tracking_feedback in ('measured_task','measured_shared'):
+            try:
+                fn = lib.bq_solve_feedback
+            except AttributeError as exc:
+                raise ValueError('BIMANUAL_MEASURED_TASK_ABI_MISSING: rebuild bindu_bimanual_qp') from exc
+            fn.argtypes,fn.restype=[p,array,i,array,array,i,array,array,i,i,array,array,d,d,array,array],i
         self.native_config = NativeConfig()
         if not lib.bq_config_defaults(c.byref(self.native_config), c.sizeof(NativeConfig)):
             raise ValueError('BIMANUAL_CONFIG_ABI_MISMATCH')
@@ -676,6 +682,7 @@ class BimanualQP:
             if type(active_mask) is not int or not 1<=active_mask<=3:
                 raise ValueError('INDEPENDENT_ARMS_CLUTCH_MASK')
             q=self._q(feedback)
+            measured_q=q
             reference=np.ascontiguousarray(reference,dtype=np.float64)
             measured=np.array([feedback[n] for n in self.names])
             if reference.shape!=measured.shape or not np.isfinite(reference).all():
@@ -683,7 +690,7 @@ class BimanualQP:
             self._check_measured_limits(measured)
             if np.max(np.abs(reference-measured))>self.max_reference_error:
                 raise ValueError('BIMANUAL_REFERENCE_TRACKING_ERROR')
-            if self.tracking_feedback == 'reference':
+            if self.tracking_feedback in ('reference', 'measured_task', 'measured_shared'):
                 q = q.copy()
                 q[[self.model_names.index(n) for n in self.names]] = reference
             poses=np.asarray(targets,dtype=float)
@@ -691,9 +698,15 @@ class BimanualQP:
             left,right=(self._transform(pose) for pose in poses)
             out=np.empty(len(self.names));metrics=np.empty(3)
             native_at=time.perf_counter()
-            ok=self.lib.bq_solve_independent(self.handle,self._ptr(q),self.nq,
+            if self.tracking_feedback in ('measured_task','measured_shared'):
+                ok=self.lib.bq_solve_feedback(self.handle,self._ptr(q),self.nq,self._ptr(measured_q),
                     self._ptr(reference),len(self.names),self._ptr(left),self._ptr(right),active_mask,
-                    dt,self._ptr(out),self._ptr(metrics))
+                    int(self.tracking_feedback=='measured_shared'),
+                    None,None,.8*self.max_reference_error,dt,self._ptr(out),self._ptr(metrics))
+            else:
+                ok=self.lib.bq_solve_independent(self.handle,self._ptr(q),self.nq,
+                        self._ptr(reference),len(self.names),self._ptr(left),self._ptr(right),active_mask,
+                        dt,self._ptr(out),self._ptr(metrics))
             native_us=(time.perf_counter()-native_at)*1e6
             if not ok:
                 self._native_failure(feedback,reference,started,cpu_started,native_us,
@@ -737,6 +750,10 @@ class BimanualQP:
         only in the default 'measured' mode.
         Freshness and frame alignment are the caller's responsibility; explicit
         correction bounds are required and excessive disagreement rejects.
+        'measured_task' also uses measured task Jacobians and bounds each joint's
+        lead inside the QP; command closure/posture and integration stay nominal.
+        'measured_shared' limits that task-state substitution to shared joints;
+        commanded arms do not integrate their measured compliance offsets.
         """
         if not self.captured:
             raise ValueError('BIMANUAL_NOT_CAPTURED')
@@ -757,6 +774,7 @@ class BimanualQP:
         if not math.isfinite(dt) or not 0 < dt <= self.max_interval:
             raise ValueError('BIMANUAL_INTEGRATION_INTERVAL')
         q = self._q(feedback)
+        measured_q = q
         reference = np.ascontiguousarray(reference, dtype=np.float64)
         if reference.shape != (len(self.names),) or not np.isfinite(reference).all():
             raise ValueError('BIMANUAL_REFERENCE_LAYOUT')
@@ -836,9 +854,16 @@ class BimanualQP:
                             previous[:3,3]-previous[:3,:3]@self.tracking_point)/gap
                         velocity[3:] = pin.log3(target[:3,:3] @ previous[:3,:3].T)/gap
             native_started = time.perf_counter()
-            tracking_tool = measured_tool if self.tracking_feedback == 'measured' else None
-            ok = self.lib.bq_solve_tracking(*args, self._ptr(velocity),
-                None if tracking_tool is None else self._ptr(tracking_tool), dt, self._ptr(out), self._ptr(metrics))
+            tracking_tool = measured_tool if self.tracking_feedback in ('measured', 'measured_task') else None
+            if self.tracking_feedback in ('measured_task','measured_shared'):
+                ok = self.lib.bq_solve_feedback(self.handle,self._ptr(q),self.nq,self._ptr(measured_q),
+                    self._ptr(reference),len(self.names),self._ptr(target),None,3,
+                    int(self.tracking_feedback=='measured_shared'),self._ptr(velocity),
+                    None if tracking_tool is None else self._ptr(tracking_tool),
+                    .8*self.max_reference_error,dt,self._ptr(out),self._ptr(metrics))
+            else:
+                ok = self.lib.bq_solve_tracking(*args, self._ptr(velocity),
+                    None if tracking_tool is None else self._ptr(tracking_tool), dt, self._ptr(out), self._ptr(metrics))
         else:
             native_started = time.perf_counter()
             ok = self.lib.bq_solve(*args, dt, self._ptr(out), self._ptr(metrics))

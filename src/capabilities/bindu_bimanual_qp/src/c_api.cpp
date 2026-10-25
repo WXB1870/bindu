@@ -281,6 +281,36 @@ int bq_solve_tracking(void *ptr, const double *q, int nq, const double *referenc
     metrics[2] = solved.relative_gain_scale;
   });
 }
+int bq_solve_feedback(void *ptr, const double *q, int nq, const double *measured_q,
+                      const double *reference, int n, const double *target, const double *right,
+                      int active_mask, int shared_task_feedback,
+                      const double *world_velocity, const double *measured_tool,
+                      double max_lead, double dt, double *out, double *metrics) {
+  return checked(ptr,[&](Handle &h) {
+    if (!h.qp || !reference || !measured_q || !out || !metrics || n!=h.robot->variables() ||
+        (shared_task_feedback!=0 && shared_task_feedback!=1))
+      throw std::invalid_argument("invalid measured-task layout or uncaptured solver");
+    update(h,q,nq);
+    const Eigen::VectorXd measured=Eigen::Map<const Eigen::VectorXd>(measured_q,nq);
+    const Eigen::Map<const Eigen::VectorXd> ref(reference,n);
+    Eigen::Matrix<double,6,1> velocity=Eigen::Matrix<double,6,1>::Zero();
+    if (world_velocity) velocity=Eigen::Map<const Eigen::Matrix<double,6,1>>(world_velocity);
+    const auto observed=measured_tool ? pose(measured_tool) : pinocchio::SE3::Identity();
+    const auto right_pose=right ? pose(right) : pinocchio::SE3::Identity();
+    const auto solved=h.qp->solve(pose(target),dt,ref,velocity,
+        measured_tool ? &observed : nullptr,right ? &right_pose : nullptr,active_mask,&measured,max_lead,
+        shared_task_feedback!=0);
+    if (!solved.ok) throw std::runtime_error(solved.reason);
+    const Eigen::VectorXd positions=ref.cwiseMax(h.robot->lowerLimits()).cwiseMin(
+        h.robot->upperLimits())+dt*solved.velocity;
+    if (!positions.allFinite() || (positions.array()<h.robot->lowerLimits().array()).any() ||
+        (positions.array()>h.robot->upperLimits().array()).any())
+      throw std::runtime_error("integrated position exceeds joint limit");
+    std::copy(positions.data(),positions.data()+n,out);
+    metrics[0]=solved.solve_time_us; metrics[1]=solved.relative_error;
+    metrics[2]=solved.relative_gain_scale;
+  });
+}
 int bq_tool_pose(void *ptr, const double *q, int n, double *out) {
   return checked(ptr, [&](Handle &h) { update(h,q,n); matrix(h.kin->toolPose(),out); });
 }

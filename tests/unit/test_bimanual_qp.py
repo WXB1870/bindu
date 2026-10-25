@@ -25,8 +25,10 @@ class TrackingFeedbackConfigTests(unittest.TestCase):
                 BimanualQP(dict(tracking_feedback=source), None)
 
     def test_reference_tracking_requires_reference_kinematics(self):
-        with self.assertRaisesRegex(ValueError, 'REFERENCE_TRACKING_REQUIRES_REFERENCE_KINEMATICS'):
-            BimanualQP(dict(tracking_feedback='reference'), None)
+        for source in ('reference','measured_task','measured_shared'):
+            with self.subTest(source=source), self.assertRaisesRegex(ValueError,
+                    'REFERENCE_TRACKING_REQUIRES_REFERENCE_KINEMATICS'):
+                BimanualQP(dict(tracking_feedback=source), None)
 
 
 class InitialCollisionRecoveryTests(unittest.TestCase):
@@ -706,6 +708,33 @@ class NativeBimanual(unittest.TestCase):
             errors.append(float(np.linalg.norm(actual[:3,3]-target[:3,3])))
         self.assertLess(errors[1],.003)
         self.assertLess(errors[1],errors[0]*.35)
+
+    def test_measured_task_keeps_accepted_progress_when_feedback_has_not_moved(self):
+        solver=BimanualQP(dict(self.config,reference_kinematics=True,
+            tracking_feedback='measured_task',posture_gain=0.),self.profile)
+        self.addCleanup(solver.close)
+        home=solver.capture(self.feedback);target=home.copy();target[0,3]+=.01
+        reference,_=propose(solver,self.feedback,target)
+        q=solver._q(self.feedback)
+        for n,v in zip(solver.names,reference):q[solver.model_names.index(n)]=v
+        nominal=np.empty((4,4))
+        self.assertTrue(solver.lib.bq_tool_pose(solver.handle,solver._ptr(q),solver.nq,solver._ptr(nominal)))
+        advanced,_=propose(solver,self.feedback,nominal,reference=reference)
+        measured=np.array([self.feedback[n] for n in solver.names])
+        self.assertGreater(np.linalg.norm(np.array(advanced)-measured),np.linalg.norm(np.array(reference)-measured))
+        self.assertLess(np.max(np.abs(np.array(advanced)-reference)),max(solver.speed.values())*.01+1e-6)
+        self.assertLessEqual(np.max(np.abs(np.array(advanced)-measured)),.8*solver.max_reference_error+1e-9)
+
+    def test_measured_shared_keeps_arm_reference_when_only_arm_feedback_drifts(self):
+        solver=BimanualQP(dict(self.config,reference_kinematics=True,
+            tracking_feedback='measured_shared',posture_gain=0.),self.profile)
+        self.addCleanup(solver.close)
+        target=solver.capture(self.feedback)
+        reference=np.array([self.feedback[n] for n in solver.names])
+        measured=dict(self.feedback);measured[solver.names[-1]]+=.001
+        for _ in range(10):
+            result,_=propose(solver,measured,target,reference=reference)
+            np.testing.assert_allclose(result,reference,atol=1e-8)
 
     def test_reference_jacobian_still_tracks_measured_tool_error(self):
         solver=BimanualQP({**self.config,'reference_kinematics':True},self.profile)

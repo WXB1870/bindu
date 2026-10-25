@@ -106,6 +106,8 @@ Python 调用入口为 [bindu_kinematics/bimanual.py](../bindu_kinematics/bindu_
 
 包含腰部资源的Snowbot仿真及真实腰臂配方将`shared_motion_weight`设为0.1，两轴腰部的速度正则二次项因此从0.0011增至0.1011；双臂不变。它是运动分配偏好，腰部仍可参与工具跟踪，普通双臂模式将腰部速度固定为0。真实`bimanual_snowbot_real.json`选腰部2轴及双臂14轴，腰部参与联合工具求解和同一执行会话；共享姿态边界保留，缺失腰部测量则拒绝求解。配置不改变关节速度上限或握持约束。该字段通过新增的`bq_shared_motion_weight`函数在每次捕获后设置，C结构布局仍为ABI v1；旧库缺此能力时明确要求重建。
 
+Snowbot real配方显式选择`tracking_feedback=measured_shared`：任务FK／Jacobian使用实测共享关节（腰）及已接纳双臂参考，避免提前计入未完成的腰部运动，同时不持续追偿双臂静态柔顺残差。通过增量ABI v1接口`bq_solve_feedback`在同一QP内保留命令处的闭合约束、姿态代价及积分起点；全部实测关节仍用于安全检查。每轴将既有`0.8*max_reference_error`预算纳入速度边界，先重新分配；已超过软预算时允许保持／向内恢复，不强制跳回实测。原硬跟随、几何、整组最终缩步与停止保护不变。该模式要求`reference_kinematics=true`；session_v3位置装配保留显式选择，未选择时沿用`reference`，阻抗模式仍使用名义跟踪。servo采样不替换积分起点。`measured_task`另外提供全关节实测任务运动学作离线对照，但闭环仿真出现目标累积／跟随保护，未选作真实配方。恢复纯名义方案只需将该字段设为`reference`；不得在运动中切换。仿真不证明腰部真实响应、反馈物理尺度、持杆受力或停止已验收。
+
 积分与保护字段：`max_integration_interval`缺省0.1 s且不可超过0.1 s；`max_reference_error`缺省0.15，按各关节位置单位检查参考与实测偏差，超过后要求停止并重新捕获；`sample_period`是离线采样步长，运行节点传入实际候选采样间隔。`solve_timeout_us`按墙钟约束单次候选求解，从输入校验、实测握姿准备到原生调用、限位／几何复核、结果打包和前馈样本准备；现有配置保留30 ms。返回的`solve_us`指标仍仅为QP内部累计计时，不能当作完整调用或指令往返延迟。worker往返另由`worker_timeout`约束，缺省为`solve_timeout_us/1e6 + 0.2`秒，初始化由`worker_startup_timeout`约束（缺省30秒）。这些门限不等于已验证真机延迟。
 
 Python封装的`tracking_feedback`显式选择跟踪误差来源，适用于持工具与普通双臂；缺省`measured`保持现有位置跟踪，实测工具偏差会继续产生速度并推进已接纳关节参考。设置`"tracking_feedback": "reference"`时必须同时设置`"reference_kinematics": true`：受控关节的FK／Jacobian和任务误差都由已接纳参考计算，未控制关节仍使用实测上下文。目标固定且名义位姿已到达时，不因实测受力偏移继续追偿；尚未完成的名义运动及姿态偏好仍可推进，候选仍只在执行器接纳后提交。可选`tool_feedback`继续校验标定／差异边界，但在该模式不用于任务追踪。
