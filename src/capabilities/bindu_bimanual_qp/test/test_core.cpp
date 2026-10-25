@@ -503,7 +503,10 @@ TEST_F(CoreTest, CoupledLockHoldsNonzeroWaistAndReallocatesBothDirections) {
     EXPECT_LT((kin.relativeErrorJacobian()*result.velocity).norm(),5e-4);
   }
   controller.setCoupledLockedJoints({});
-  auto goal=kin.toolPose(); goal.translation().y()+=.02;
+  // This fixture's shared joint rotates about Y: excite X/pitch, as above.
+  Eigen::Matrix<double,6,1> offset=Eigen::Matrix<double,6,1>::Zero();
+  offset[0]=.02; offset[4]=.02;
+  const auto goal=kin.toolPose()*pinocchio::exp6(offset);
   const auto unlocked=controller.solve(goal,.01,robot.activePositions());
   ASSERT_TRUE(unlocked.ok) << unlocked.reason;
   EXPECT_GT(std::abs(unlocked.velocity[0]),1e-5);
