@@ -617,6 +617,60 @@ class BimanualTransactions(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(all(c.stamp<rig.commands[0].stamp+.06 or
                             c.stamp>=rig.commands[0].stamp+.22 for c in rig.commands))
 
+    def recorded_result_rig(self, *, latest=.11581088392599603, repeat=False):
+        # vr_ee242416e7b7, 19:22:43, R6 after subtracting the prior
+        # accepted reference 0.18571220548287848 from all three positions.
+        rig=Rig(control_step=.04,steady_step=.04)
+        rig.profile=replace(rig.profile,max_speed=1.)
+        rig.node.profile=rig.engine.profile=rig.services.profile=rig.profile
+        original_update,original_solve=rig.update,rig.solve
+        def update():
+            original_update()
+            if rig.references and rig.references[0].captures and not rig.commands:
+                sample=(latest if rig.node.worker_result and rig.solve_attempts else
+                        .08549080579145929)
+                rig.node.state.joints.position[rig.node.state.joints.name.index('r')]=sample
+        def solve(operation,token,feedback,target,**kwargs):
+            rig.candidate_step=(-.03450919420854035 if repeat or not rig.solve_attempts else .001)
+            return original_solve(operation,token,feedback,target,**kwargs)
+        rig.update=update;rig.node.worker.submit=solve
+        return rig
+
+    async def test_recorded_feedback_change_discards_candidate_before_submit_and_reference_commit(self):
+        rig=self.recorded_result_rig()
+        result=await rig.run()
+        first,second=rig.solve_attempts[:2]
+        self.assertFalse(any(c.command_id.endswith('_'+str(first[1])) for c in rig.commands))
+        self.assertEqual(first[3],second[3])
+        self.assertGreater(second[2],first[2])
+        self.assertEqual(len(rig.references[0].captures),1)
+        deferred=[json.loads(e[1]) for e in rig.events if e[0]=='BIMANUAL_SOLVE_DEFERRED']
+        self.assertEqual(deferred[0]['code'],'BIMANUAL_RESULT_FEEDBACK_CHANGED')
+        self.assertGreater(deferred[0]['admission']['candidate_lead_rad'],.15)
+        self.assertLess(deferred[0]['admission']['reference_lead_rad'],.15)
+        self.assertTrue(result.success,result.code)
+        self.assertTrue(rig.commands)
+
+    async def test_current_reference_beyond_hard_guard_is_not_deferred(self):
+        rig=self.recorded_result_rig(latest=.151)
+        result=await rig.run()
+        self.assertTrue(result.code.startswith('BIMANUAL_REFERENCE_TRACKING_ERROR'),result.code)
+        self.assertFalse(rig.commands)
+        self.assertFalse(rig.references[0].commits)
+        self.assertFalse(any(e[0]=='BIMANUAL_SOLVE_DEFERRED' for e in rig.events))
+        self.assertFalse(rig.engine.lease_id)
+
+    async def test_repeated_feedback_changed_results_cannot_refresh_original_reference_budget(self):
+        rig=self.recorded_result_rig(repeat=True)
+        result=await rig.run()
+        self.assertFalse(result.success)
+        self.assertIn(result.code.split(':')[0],('BIMANUAL_INTEGRATION_INTERVAL',
+                      'BIMANUAL_SOLVE_DEFERRED_TIMEOUT','BIMANUAL_SOLVE_DEFERRED_LIMIT'))
+        self.assertFalse(rig.commands)
+        self.assertFalse(rig.references[0].commits)
+        self.assertFalse(rig.engine.lease_id)
+        self.assertGreater(len(rig.solve_attempts),1)
+
     async def test_one_guarded_iteration_failure_keeps_reference_and_uses_only_new_input(self):
         rig=Rig(solve_errors=['BIMANUAL_QP_DEFERRED'])
         result=await rig.run()
