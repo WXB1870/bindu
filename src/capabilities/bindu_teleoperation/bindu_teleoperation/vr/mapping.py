@@ -56,10 +56,8 @@ def direction_reference(config):
     return mode
 
 
-def engagement_yaw(frame, config, now):
-    """Human forward becomes base +X; remove pitch/roll, preserve fixed trim."""
-    trim=config.get('operator_yaw_rad',0.)
-    if direction_reference(config)=='fixed':return trim
+def headset_pose(frame, config, now):
+    """Validate a tracked sample without requiring a horizontal gaze."""
     if (not frame.head_pose or frame.head_source_id!=frame.source_id or
             type(frame.head_seq) is not int or frame.head_seq<1 or
             not all(type(v) in (int,float) and math.isfinite(v) for v in (now,frame.head_stamp,frame.head_age_s)) or
@@ -67,7 +65,14 @@ def engagement_yaw(frame, config, now):
             not 0<=now-frame.head_stamp<=config['input_max_age'] or
             now-frame.head_stamp+frame.head_age_s>config['input_max_age']):
         raise ValueError('VR_HEADSET_UNAVAILABLE')
-    head=robot_pose(frame.head_pose)
+    return robot_pose(frame.head_pose)
+
+
+def engagement_yaw(frame, config, now):
+    """Human forward becomes base +X; remove pitch/roll, preserve fixed trim."""
+    trim=config.get('operator_yaw_rad',0.)
+    if direction_reference(config)=='fixed':return trim
+    head=headset_pose(frame,config,now)
     forward=head[:2,0]  # Local OpenXR -Z is local robot +X.
     if np.linalg.norm(forward)<.1:
         raise ValueError('VR_HEADSET_HEADING_UNDEFINED')

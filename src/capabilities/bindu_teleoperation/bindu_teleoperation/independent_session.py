@@ -3,7 +3,7 @@ import numpy as np
 import uuid
 import math
 from .session import TeleopSession
-from .vr.mapping import relative_target, pose_matrix, engagement_yaw
+from .vr.mapping import relative_target, pose_matrix, engagement_yaw, headset_pose
 
 
 class IndependentArmsSession:
@@ -38,12 +38,16 @@ class IndependentArmsSession:
                 min(left.stamp,right.stamp)<=self.selected_at):
             raise ValueError('VR_PAIR_INVALID')
         for frame in frames:pose_matrix(frame.pose)
-        for hand,frame in zip(self.hands,frames):
-            if (hand.mode=='follow' and frame.grip>=.3 and frame.clutch_seq==hand.clutch_seq or frame.grip>.7 and
-                    (hand.released or frame.clutch_seq!=hand.clutch_seq)):
-                engagement_yaw(frame,self.cfg,now)
         if self.source is not None and left.source_id!=self.source:raise ValueError('VR_CONNECTION_CHANGED')
         if left.seq<=self.seq:return False
+        for hand,frame in zip(self.hands,frames):
+            if hand.direction_reference=='headset_on_engage':
+                if frame.grip>.7 and (hand.released or frame.clutch_seq!=hand.clutch_seq) and (
+                        hand.pressed_since is None or frame.clutch_seq!=hand.clutch_seq):
+                    engagement_yaw(frame,self.cfg,now)
+                elif (frame.grip>=.3 and frame.clutch_seq==hand.clutch_seq and
+                        (hand.mode=='follow' or hand.pressed_since is not None)):
+                    headset_pose(frame,self.cfg,now)
         previous=self.active_mask;mask=0;changed=False
         for i,(hand,frame) in enumerate(zip(self.hands,(left,right))):
             before=hand.generation

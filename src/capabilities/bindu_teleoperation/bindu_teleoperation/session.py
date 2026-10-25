@@ -3,7 +3,7 @@ import math
 import uuid
 import numpy as np
 from bindu_contracts.teleoperation import IKRequest
-from .vr.mapping import robot_pose, relative_target, direction_reference, engagement_yaw
+from .vr.mapping import robot_pose, relative_target, direction_reference, engagement_yaw, headset_pose
 from .vr.one_euro import configured_pose_filter
 
 
@@ -58,9 +58,6 @@ class TeleopSession:
         if frame.init:
             # No verified initial posture exists yet. Never silently move to zero.
             raise ValueError('VR_INIT_NOT_CONFIGURED')
-        if (self.mode=='follow' and frame.grip>=.3 and frame.clutch_seq==self.clutch_seq and
-                self.direction_reference=='headset_on_engage'):
-            engagement_yaw(frame,self.cfg,now)  # Validate tracking, retain the latched direction.
         if self.pose_filter and self.frame is not None:
             if frame.stamp < self.frame.stamp:
                 raise ValueError('VR_FILTER_TIME_ORDER')
@@ -70,6 +67,10 @@ class TeleopSession:
             raise ValueError('VR_INPUT_UNORDERED')
         if type(frame.clutch_seq) is not int or frame.clutch_seq < self.clutch_seq:
             raise ValueError('VR_CLUTCH_UNORDERED')
+        if (frame.grip>=.3 and frame.clutch_seq==self.clutch_seq and
+                (self.mode=='follow' or self.pressed_since is not None) and
+                self.direction_reference=='headset_on_engage'):
+            headset_pose(frame,self.cfg,now)  # Direction was locked at the squeeze edge.
         if frame.clutch_seq != self.clutch_seq:
             if self.pose_filter:
                 self.pose_filter.reset()

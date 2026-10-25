@@ -3,7 +3,7 @@ import math
 import uuid
 from dataclasses import dataclass
 import numpy as np
-from .vr.mapping import robot_pose, relative_target, pose_matrix, direction_reference, engagement_yaw
+from .vr.mapping import robot_pose, relative_target, pose_matrix, direction_reference, engagement_yaw, headset_pose
 from .vr.one_euro import rotation_log, rotation_exp, configured_pose_filter
 
 
@@ -224,14 +224,6 @@ class BimanualSession:
             raise ValueError('VR_CONNECTION_CHANGED')
         if left.seq <= self.seq:
             return False
-        if self.direction_reference=='headset_on_engage' and (self.mode=='follow' and
-                min(left.grip,right.grip)>=.3 and (left.clutch_seq,right.clutch_seq)==self.clutch_seq or
-                min(left.grip,right.grip)>.7 and self.released and self.pressed_since is None):
-            engagement_yaw(left,self.cfg,now)
-            engagement_yaw(right,self.cfg,now)
-            if (left.head_seq!=right.head_seq or left.head_stamp!=right.head_stamp or
-                    left.head_pose!=right.head_pose or left.head_age_s!=right.head_age_s):
-                raise ValueError('VR_HEADSET_PAIR_MISMATCH')
         if self.input_stamps is not None and any(
                 f.stamp < previous for f, previous in zip(frames, self.input_stamps)):
             raise ValueError('VR_INPUT_UNORDERED')
@@ -244,6 +236,14 @@ class BimanualSession:
                 self.clutch_seq is not None and
                 any(value < previous for value, previous in zip(clutch_seq, self.clutch_seq))):
             raise ValueError('VR_CLUTCH_UNORDERED')
+        if self.direction_reference=='headset_on_engage' and (self.mode=='follow' and
+                min(left.grip,right.grip)>=.3 and clutch_seq==self.clutch_seq or
+                min(left.grip,right.grip)>.7 and self.released):
+            headset_pose(left,self.cfg,now)
+            headset_pose(right,self.cfg,now)
+            if (left.head_seq!=right.head_seq or left.head_stamp!=right.head_stamp or
+                    left.head_pose!=right.head_pose or left.head_age_s!=right.head_age_s):
+                raise ValueError('VR_HEADSET_PAIR_MISMATCH')
         # Validate geometry before changing clutch/grasp state. A rejected
         # proposal must not consume a release counter or discard the anchor.
         if self.cfg.get('two_hand_rod'):

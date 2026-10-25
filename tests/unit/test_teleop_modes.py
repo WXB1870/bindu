@@ -617,6 +617,56 @@ class HeadsetEngagementTests(unittest.TestCase):
             session.ingest(*released,1.05)
             self.assertEqual(session.mode,'idle');self.assertIsNone(session.target)
 
+    def test_vertical_gaze_after_squeeze_keeps_the_latched_direction(self):
+        from bindu_teleoperation.independent_session import IndependentArmsSession
+        from bindu_teleoperation.vr.mapping import OPENXR_TO_ROBOT as B
+        from scipy.spatial.transform import Rotation
+        head=np.eye(4);head[:3,:3]=Rotation.from_euler('ZYX',[-np.pi/2,np.pi/2,0.]).as_matrix()
+        vertical=tuple((B.T @ head @ B).ravel())
+        for kind in (BimanualSession,IndependentArmsSession):
+            with self.subTest(kind=kind.__name__):
+                session=kind(self.cfg,1,0.)
+                self.feed(session,1.,-np.pi/2,grips=(0.,0.));self.feed(session,1.01,-np.pi/2)
+                frames=self.feed(session,1.02,-np.pi/2)
+                self.seq+=1
+                frames=[replace(f,seq=self.seq,stamp=1.04,head_pose=vertical,
+                    head_stamp=1.039,head_seq=self.seq) for f in frames]
+                session.ingest(*frames,1.04)
+                self.assertEqual(session.mode,'follow')
+                session.capture(np.eye(4) if kind is BimanualSession else np.array([np.eye(4),np.eye(4)]))
+                frames=self.feed(session,1.05,-np.pi/2,offset=.04)
+                self.seq+=1
+                frames=[replace(f,seq=self.seq,stamp=1.06,head_pose=vertical,
+                    head_stamp=1.059,head_seq=self.seq) for f in frames]
+                session.ingest(*frames,1.06)
+                target=session.target if kind is BimanualSession else session.target[0]
+                np.testing.assert_allclose(target[:3,3],[.04,0.,0.],atol=1e-12)
+                self.assertEqual(session.mode,'follow')
+
+    def test_head_tracking_loss_during_engagement_cannot_enter_follow(self):
+        from bindu_teleoperation.independent_session import IndependentArmsSession
+        for kind in (BimanualSession,IndependentArmsSession):
+            with self.subTest(kind=kind.__name__):
+                session=kind(self.cfg,1,0.)
+                self.feed(session,1.,grips=(0.,0.));frames=self.feed(session,1.01)
+                self.seq+=1
+                frames=[replace(f,seq=self.seq,stamp=1.04,head_pose=()) for f in frames]
+                with self.assertRaisesRegex(ValueError,'VR_HEADSET_UNAVAILABLE'):
+                    session.ingest(*frames,1.04)
+                self.assertEqual(session.mode,'idle');self.assertIsNone(session.target)
+
+    def test_independent_duplicate_and_source_fences_precede_head_validation(self):
+        from bindu_teleoperation.independent_session import IndependentArmsSession
+        session=IndependentArmsSession(self.cfg,1,0.)
+        self.feed(session,1.,grips=(0.,0.));self.feed(session,1.01)
+        frames=self.feed(session,1.04)
+        session.capture(np.array([np.eye(4),np.eye(4)]));target=session.target.copy()
+        self.assertFalse(session.ingest(*[replace(f,head_pose=()) for f in frames],1.04))
+        changed=[replace(f,source_id='new',seq=f.seq+1,head_pose=()) for f in frames]
+        with self.assertRaisesRegex(ValueError,'VR_CONNECTION_CHANGED'):
+            session.ingest(*changed,1.04)
+        np.testing.assert_array_equal(session.target,target)
+
 
 class AxialTriggerTests(unittest.TestCase):
     def setUp(self):
