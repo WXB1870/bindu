@@ -6,6 +6,7 @@
 #include <Eigen/Geometry>
 #include <algorithm>
 #include <cmath>
+#include <optional>
 #include <stdexcept>
 namespace bindu::execution::rigid {
 using V=Eigen::VectorXd;using M=Eigen::MatrixXd;using Pose=Eigen::Isometry3d;
@@ -87,7 +88,21 @@ struct Decision {const char* reason="no_feasible_prediction";int projection_fail
 inline PreparedSegment balanced(const JointLimits& limits,const JointState& seed,const std::vector<double>& goal,const std::vector<double>& hint,double start){
   return PreparedSegment::tracking_target(limits,seed,goal,hint,start,30.,5.);
 }
-inline bool geometryGate(Model& model,const PreparedSegment& candidate,const PreparedSegment& baseline,const Pose& grasp,double start){
+inline bool geometryGate(Model& model,const PreparedSegment& candidate,const PreparedSegment& baseline,const Pose& grasp,double start,bool compare_prefix=false){
+  // Compare the prefix a live stream actually executes before replacement.
+  // A better full-tail score can hide growing error during repeated prefixes.
+  // The caller separately retains the original whole-segment geometric guard.
+  if(compare_prefix){
+    for(int k=0;k<=25;++k){
+      const double t=start+PreparedSegment::minimum_tracking_duration*k/25.;
+      const V e=error(model.evaluate(vec(candidate.sample(t).q)),grasp);
+      const V b=error(model.evaluate(vec(baseline.sample(t).q)),grasp);
+      // Reuse the existing P95 guard's absolute 10um / 10urad slack.
+      if(e.head<3>().norm()>b.head<3>().norm()+1e-5||
+         e.tail<3>().norm()>b.tail<3>().norm()+1e-5)return false;
+    }
+    return true;
+  }
   std::vector<double> p,r,bp,br;double pmax=0,rmax=0,bpmax=0,brmax=0;
   const double duration=std::max(candidate.end(),baseline.end())-start;
   const int count=std::clamp(static_cast<int>(std::ceil(duration/.004)),2,128);
@@ -109,29 +124,74 @@ inline PreparedSegment constrained(Model& model,const JointLimits& limits,const 
   V projected;const M jac=model.jacobian(qgoal,target);
   if(!project(jac,V::Zero(6),desired,vlimits,projected)){++decision.projection_failures;decision.reason="velocity_projection";return fallback;}
   if(mode=="project")return balanced(limits,seed,goal,values(projected),start);
+  const V absolute_projected=projected;
+  // Correct position through a bounded tangent velocity. Position correction
+  // alone cannot reverse a nonzero trend; coupled projection and feasibility
+  // checks still govern the final choice. Real input reversals stay signed.
+  V corrected=desired;
+  for(size_t i=0;i<goal.size();++i){
+    const double low=desired[i]>1e-8?.5*desired[i]:-vlimits[i];
+    const double high=desired[i]<-1e-8?.5*desired[i]:vlimits[i];
+    corrected[i]=std::clamp(desired[i]+(goal[i]-seed.q[i])/.2,low,high);
+  }
+  const bool continuation_feasible=project(jac,V::Zero(6),corrected,vlimits,projected);
+  if(!continuation_feasible){++decision.projection_failures;decision.reason="continuation_projection";}
   const double max_gain=mode=="adaptive"?confidence:1.;
-  for(double multiplier:{1.,.5,.25}){const double gain=max_gain*multiplier;double duration=PreparedSegment::minimum_tracking_duration;
-    for(size_t i=0;i<goal.size();++i)duration=std::max(duration,std::abs(goal[i]-seed.q[i])/limits[i].velocity);
-    for(int attempt=0;attempt<70&&duration<30.;++attempt,duration*=1.12){++decision.attempts;
-      const double predict=std::min(.2,duration);V endq=qgoal+gain*predict*projected;
-      if(!retract(model,endq,target,limits)){++decision.projection_failures;decision.reason="endpoint_retraction";break;}
-      bool bounded=true;for(size_t i=0;i<goal.size();++i)bounded=bounded&&std::abs(endq[i]-qgoal[i])<=predict*vlimits[i]+1e-5;
-      if(!bounded){++decision.projection_failures;decision.reason="prediction_displacement";break;}
-      V endv;const M jend=model.jacobian(endq,target);
-      if(!project(jend,V::Zero(6),gain*std::min(1.,.2/duration)*desired,vlimits,endv)){++decision.projection_failures;decision.reason="endpoint_velocity";break;}
-      const double dt=1e-4;const M jp=model.jacobian(endq+dt*endv,target),jm=model.jacobian(endq-dt*endv,target);
-      V enda;if(!project(jend,-((jp-jm)/(2*dt))*endv,V::Zero(goal.size()),alimits,enda)){++decision.projection_failures;decision.reason="endpoint_acceleration";break;}
-      JointState end{values(endq),values(endv),values(enda),std::vector<double>(goal.size(),0.)};
-      auto curve=std::make_shared<Curve>(start,duration,seed,end);if(!curve->valid(limits)){decision.reason="dynamic_limits";continue;}
-      try{auto paths=fit_target(limits,end,goal,curve->end(),30.-duration,5.);paths.insert(paths.begin(),curve);auto candidate=PreparedSegment::from_curves(paths,limits);
-        if(!geometryGate(model,candidate,baseline,grasp,start)){++decision.guard_rejections;decision.reason="geometry_guard";break;}
-        // Dynamic, geometric and finite-tail checks already certify this
-        // continuation. A 40ms position-only score must not replace it with
-        // an at-rest endpoint and introduce another braking-policy switch.
-        const V e=error(model.evaluate(endq),target);decision.reason="accepted";decision.accepted=1;decision.gain=gain;decision.end_translation=e.head<3>().norm();decision.end_rotation=e.tail<3>().norm();return candidate;
-      }catch(const std::invalid_argument&){decision.reason="finite_tail";break;}
+  auto prepare=[&](bool continuation,const PreparedSegment* rigid_baseline)->std::optional<PreparedSegment>{
+    if(continuation&&!continuation_feasible)return std::nullopt;
+    const V& endpoint_desired=continuation?corrected:desired;
+    const V& tangent=continuation?projected:absolute_projected;
+    for(double multiplier:{1.,.5,.25}){const double gain=max_gain*multiplier;double duration=PreparedSegment::minimum_tracking_duration;
+      for(size_t i=0;i<goal.size();++i)duration=std::max(duration,std::abs(goal[i]-seed.q[i])/limits[i].velocity);
+      for(int attempt=0;attempt<70&&duration<30.;++attempt,duration*=1.12){++decision.attempts;
+        // Integrate a Hermite velocity from the current reference derivatives;
+        // an extrapolated absolute endpoint can pull an advancing input back.
+        const double predict=std::min(.2,duration);
+        V endq=qgoal+gain*predict*tangent;
+        if(continuation)endq=vec(seed.q)+.5*duration*(vec(seed.v)+gain*std::min(1.,.2/duration)*tangent)
+                             +duration*duration/12.*vec(seed.a);
+        if(!retract(model,endq,target,limits)){++decision.projection_failures;decision.reason="endpoint_retraction";break;}
+        bool bounded=true;for(size_t i=0;i<goal.size();++i)bounded=bounded&&std::abs(endq[i]-qgoal[i])<=predict*vlimits[i]+1e-5;
+        if(!bounded){++decision.projection_failures;decision.reason="prediction_displacement";break;}
+        V endv;const M jend=model.jacobian(endq,target);
+        if(!project(jend,V::Zero(6),gain*std::min(1.,.2/duration)*endpoint_desired,vlimits,endv)){++decision.projection_failures;decision.reason="endpoint_velocity";break;}
+        const double dt=1e-4;const M jp=model.jacobian(endq+dt*endv,target),jm=model.jacobian(endq-dt*endv,target);
+        V enda;if(!project(jend,-((jp-jm)/(2*dt))*endv,V::Zero(goal.size()),alimits,enda)){++decision.projection_failures;decision.reason="endpoint_acceleration";break;}
+        JointState end{values(endq),values(endv),values(enda),std::vector<double>(goal.size(),0.)};
+        auto curve=std::make_shared<Curve>(start,duration,seed,end);if(!curve->valid(limits)){decision.reason="dynamic_limits";continue;}
+        try{auto paths=fit_target(limits,end,goal,curve->end(),30.-duration,5.);paths.insert(paths.begin(),curve);auto candidate=PreparedSegment::from_curves(paths,limits);
+          if(!geometryGate(model,candidate,baseline,grasp,start)||
+             (rigid_baseline&&!geometryGate(model,candidate,*rigid_baseline,grasp,start,true))){
+            ++decision.guard_rejections;decision.reason="geometry_guard";break;
+          }
+          const V e=error(model.evaluate(endq),target);decision.reason=continuation?"accepted":"accepted_absolute_fallback";decision.accepted=1;decision.gain=gain;decision.end_translation=e.head<3>().norm();decision.end_rotation=e.tail<3>().norm();return candidate;
+        }catch(const std::invalid_argument&){decision.reason="finite_tail";break;}
+      }
+    }
+    return std::nullopt;
+  };
+  // Keep a certified rigid alternative for boundaries where the new endpoint
+  // cannot be used without a geometric or dynamic regression.
+  auto absolute=prepare(false,nullptr);const Decision absolute_details=decision;
+  if(!absolute)return fallback;
+  // Change only prefixes pulling a leading joint back against the projected
+  // input trend. Braking after a true input reversal must keep its original
+  // meaning; the distant finite return tail is not a live-stream reversal.
+  bool reverses=false;
+  for(int k=1;k<=25&&!reverses;++k){
+    const auto s=absolute->sample(start+PreparedSegment::minimum_tracking_duration*k/25.);
+    for(size_t i=0;i<goal.size();++i){
+      const double sign=absolute_projected[i]>1e-8?1.:(absolute_projected[i]<-1e-8?-1.:0.);
+      if(sign&&sign*(seed.q[i]-goal[i])>1e-8&&
+         sign*seed.v[i]>=-1e-8&&sign*s.v[i]<-1e-8){reverses=true;break;}
     }
   }
-  return fallback;
+  if(!reverses){decision.reason="accepted_absolute";return std::move(*absolute);}
+  auto continuation=prepare(true,&*absolute);
+  if(continuation)return std::move(*continuation);
+  decision.accepted=absolute_details.accepted;decision.gain=absolute_details.gain;
+  decision.end_translation=absolute_details.end_translation;decision.end_rotation=absolute_details.end_rotation;
+  decision.reason="accepted_absolute_fallback";
+  return std::move(*absolute);
 }
 } // namespace bindu::execution::rigid

@@ -53,6 +53,10 @@ PICO协调器管理准备、夹爪请求与控制权交接；旧模拟入口使�
 | `legacy_guard`／`session_v1` | 委托已有底层的位置跟随，不从通用执行器推定曲线导数或到达时间 |
 | `session_v3` | 上层只发送16轴联合目标及原身份／期限，与servo的`position_reference_mode=target_stream`配对；servo后台复用`PreparedSegment`生成曲线，原周期统一采样，普通发送和PAUSE不等待接纳回执 |
 
+`rigid_reference`的连续目标先保留原刚性预测。仅当其前100 ms采样预测某轴领先目标、沿投影趋势运动却即将反向时，才尝试新接续：将趋势与有界位置纠偏投影到相对位姿约束的切空间，再由当前参考速度／加速度积分生成候选终点。候选须通过原动态限值、全段几何门槛及返回实际目标的有限尾段检查；另以4 ms间隔比较其前100 ms与原刚性曲线的相对位姿误差，复用原P95检查的10 μm／10 μrad绝对裕量择优。新接续不可行时保留原刚性预测，诊断为`accepted_absolute_fallback`；无须修正时为`accepted_absolute`。这不是全程单调或实体握持保证，真实输入反向及PAUSE／期限／实测停稳语义保持原契约。
+
+原生回归[`test_rigid_prediction.cpp`](../../../tests/native/test_rigid_prediction.cpp)需要Eigen，覆盖同向输入减速后的回拉、C2、相对几何、动态限值、真实反向、边界回退及有限停止尾段；均为离线参考检查，不代表实体握持或物理停止验收。
+
 配置、动态限制及可选阻抗的配对条件在[运行装配](../../integration/bindu_runtime/README.md#扫雪遥操作)维护。两种执行路径由装配选择；上层不重复叠加底层已有的柔顺控制。场景与入口见[扫雪运行装配](../../integration/bindu_runtime/README.md#扫雪遥操作)，完整时间／停止规则见执行契约。
 
 ## 源码导航
