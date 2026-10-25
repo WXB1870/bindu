@@ -468,6 +468,24 @@ ros2 action send_goal /bindu_sim/teleop/session bindu_interfaces/action/TeleopSe
 
 
 
+### VR 完整输入记录与离线回放
+
+需要回放时，在既有统一启动命令上增加`--record-inputs`。观察进程逐条保留实际收到的`vr-raw`、`vr-projected`及`vr-health`，不抽样；其他诊断维持原策略。ROS消息原字段保留，包括双手位姿、Trigger／Squeeze、按键累计边沿、摇杆、来源／序号、头显姿态与独立采样时间。该选项仅改变观察端记录，不改变控制参数、运动写权限或源时间；不能与`--no-diagnostics`同用。默认仍为采样诊断。
+
+后台有界队列和128 MiB分卷复用现有写入器，`session.json`记录选项与配置，`diagnostics-health.json`的`input_recording`分别记录收到／写入／丢弃数量和收尾状态。此处“完整”仅指观察端收到的消息；接收器合帧、DDS未投递、观察进程启动前的数据无法补回，原始序号缺口会报告，不插值填帧。完整双手检查拒绝未收尾、写入丢失、损坏／缺失分卷、计数不符和缺侧配对；旧采样日志只能作明确标注的局部分析。
+
+回放入口不创建ROS发布者或连接设备；先检查输入，再在已加载对应数值依赖、QP安装及原始配置的环境中重算捕获段：
+
+```bash
+# 以下两条均为离线命令，路径换成已有会话目录与结果路径。
+python3 -m tests replay vr --log /绝对路径/会话目录 --output /绝对路径/input-check.json \
+  --inspect-inputs --require-full-inputs
+python3 -m tests replay vr --log /绝对路径/会话目录 --output /绝对路径/replay.json \
+  --require-full-inputs --clock received
+```
+
+默认`received`保留源端接收时间间隔，超时缺口仍触发原输入门槛；`client`仅用于明确的去传输抖动对照，不能代替原时序复现。输入身份／序号与按键保持原值，头显时间随回放时钟作同一偏移，保留相对年龄；恢复已记录的捕获参考、映射朝向与滤波历史。结果包含输入审计、捕获数据／配置与回放代码指纹。此入口使用捕获段的固定握持模式，松握／停止／模式变化处结束；不回放完整PICO协调器、租约与真实停止回执，也不证明物理跟随或受力。已有ROS状态机验证入口仍单独使用。
+
 ### VR 输入频率与超时诊断
 
 PICO的`MotionControllers`显式以60 Hz发送手柄输入，其他旧映射保持30 Hz。接收连接启用`TCP_NODELAY`，Linux逐帧重置一次性的`TCP_QUICKACK`，并关闭WebSocket压缩；不增加心跳位姿，不修改原始接收时间或250 ms输入有效期。`websocket_handler`健康日志记录发送频率、内核RTT／RTT变化和发送侧累计重传；它们与浏览器计时共同定位传输空档，不能当作单向延迟。无线丢包仍可能超过停止门限。

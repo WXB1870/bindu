@@ -56,6 +56,8 @@ VR健康采样按固定阶段分别保留1 Hz摘要，浏览器计时、服务�
 
 统一入口默认开启`--diagnostics`，显式`--no-diagnostics`才关闭，与示教采集开关独立。`control.log`／`display.log`／可选`physics.log`沿用文本格式，由同一有界后台写入器缓冲、约每秒刷新，并按128MiB分卷。管道读取持续进行，已识别的ROS WARN以上重复行按上述策略合并为`[LOG_REPEAT]`摘要，异常栈及其他文本原样保留；`process-log-health.json`分别报告合并数、队列丢弃与写入错误，不与观察器的`diagnostics-health.json`混用。网页`events.jsonl`保持原格式，也使用有界异步写入，状态见`web-log-health.json`及API的`event_log`字段；关闭诊断时只保留内存近期事件。聚合只减少本记录侧开销，不减少驱动自身打印／ROS发布或原日志落盘；突然终止可能损失缓冲内容。
 
+需要完整输入时使用统一入口的`--record-inputs`，范围、丢失检查及纯离线回放命令见[VR完整输入记录与离线回放](../../capabilities/bindu_teleoperation/README.md#vr-完整输入记录与离线回放)。
+
 ## 源码导航
 
 | 入口 | 内容 |

@@ -35,6 +35,8 @@ def commands(args):
         '--output', str(args.output/'web'), '--startup-timeout', str(args.startup_timeout)]
     if args.diagnostics:
         display += ['--trace-file', str(args.output/'diagnostics.jsonl')]
+    if getattr(args,'record_inputs',False):
+        display += ['--record-inputs']
     result=[control,display]
     if args.deployment.get('device_backend')=='external_simulation':
         result.insert(0,['bash',str(ROOT/'tools/run_shovel_physics.sh'),'--vr',
@@ -186,6 +188,9 @@ def run(args):
             manifest=dict(schema=1,run_id=args.run_id,started_at=time.time(),domain_id=args.domain_id,
                 namespace=args.namespace,diagnostics=args.diagnostics,commands=resolved_commands,configs=configs,
                 input_timing_enabled=bool(getattr(args,'input_timing',False)),
+                input_recording=dict(enabled=bool(getattr(args,'record_inputs',False)),
+                    scope='all observer-received raw/projected ROS VR messages and timing reports',
+                    upstream_completeness='not guaranteed; receiver coalescing and DDS loss remain possible'),
                 client_timing_probe=dict(path=str(probe),sha256=hashlib.sha256(probe.read_bytes()).hexdigest(),
                     clock_semantics='browser monotonic send time; never used as control freshness or one-way latency'),
                 diagnostic_format='JSONL: received_at, received_monotonic_ns, data; ROS fields retained',
@@ -264,6 +269,8 @@ def parse_args(argv=None):
                         help='默认异步记录采样输入、反馈、事件与进程输出；--no-diagnostics 关闭')
     parser.add_argument('--input-timing',action='store_true',
                         help='本次开启输入分段计时；沿用诊断日志，不改变控制时间戳或运动授权')
+    parser.add_argument('--record-inputs',action='store_true',
+                        help='完整保留观察端收到的VR输入与计时，供离线回放；其他诊断仍抽样')
     parser.add_argument('--check', action='store_true', help='仅检查环境、证书和端口')
     parser.add_argument('--check-robot', action='store_true', help='配合 --check，只读核对机器人端点、实测反馈和保护状态')
     parser.add_argument('--enable-commands', action='store_true',
@@ -284,6 +291,8 @@ def parse_args(argv=None):
     parser.add_argument('--startup-timeout', type=float, default=30.)
     parser.add_argument('--duration', type=float, default=0., help='验收用运行秒数，0 表示持续运行')
     args = parser.parse_args(argv)
+    if args.record_inputs and (not args.diagnostics or args.declare_load):
+        parser.error('--record-inputs 需要诊断日志，不能与 --no-diagnostics/--declare-load 同用')
     if args.check_robot and not args.check:
         parser.error('--check-robot 需要 --check')
     if not math.isfinite(args.robot_check_timeout) or not 0 < args.robot_check_timeout <= 30:
