@@ -618,9 +618,9 @@ ros2 topic echo /bindu_snowbot/teleop/mode_state
 ```bash
 ROS_LOCALHOST_ONLY=1 ROS_DOMAIN_ID=223 python3 -m tests.integration.validate_real_teleop \
   --output artifacts/snowbot-real-wire-check
-# 可选：无记录器的PICO完整仿真回归，含真实WebSocket接收器。
-ROS_LOCALHOST_ONLY=1 ROS_DOMAIN_ID=224 python3 -m tests integration pico \
-  --minimal --websocket-input --output artifacts/pico-minimal-check
+# 当前PICO位置链路；普通双臂与工具模式共用真实WebSocket接收器。
+ROS_LOCALHOST_ONLY=1 ROS_DOMAIN_ID=224 python3 -m tests integration position \
+  --mode simulation --teleop-mode both --websocket-input --output artifacts/position-check
 ```
 
 

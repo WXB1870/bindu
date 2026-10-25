@@ -318,32 +318,23 @@ python3 -m tests.integration.validate_bimanual --snowbot --axial-grasp --tool-po
 
 ### 验证与未接入项
 
-`VRInput`、`RecorderHealth`新增字段及`PicoContext`须与受影响节点同批重建，不能混用旧安装。以下验证自带模拟进程和已知夹具；每次选择新输出目录，不启动硬件：
+当前PICO／Snowbot位置链路统一使用`validate_position_teleop.py`，覆盖普通双臂与工具模式、准备／取消、独立夹爪、接合／重接及输入断流；WebSocket和PhysX沿同一入口显式选择。旧`validate_pico.py`的轨迹演示、短杆、刚握整段对照及旧虚握参数分支已退役，历史批次证据保留，不再作为当前运行命令。
 
 ```bash
 python3 -m tests unit pico
-python3 -m tests integration pico --output artifacts/pico-check
-python3 -m tests integration pico --crash-coordinator --output artifacts/pico-crash-check
-# 需工具配置已开启check_grasp_contacts：
-python3 -m tests integration pico --reject-virtual --output artifacts/pico-invalid-grasp-check
+# 当前上层、QP、设备适配及安装契约的完整单元分组：
+python3 -m tests unit vr
+ROS_DOMAIN_ID=191 ROS_LOCALHOST_ONLY=1 python3 -m tests integration position \
+  --mode simulation --teleop-mode both --websocket-input --output artifacts/position-check
 ```
 
-完整铲雪可使用真实 Vuer 接收端的合成手柄输入，发送 MessagePack `CONTROLLER_MOVE`、OpenXR 列主序双手矩阵及原始按键；接收器自行生成来源、序号和按键边沿，后续经过 PICO 协调器、相对映射、联合 QP 和共享执行器。验证器不发布 `VRInput`、`ToolPoseInput` 或关节命令。加载上述工作区及 Vuer／WebSocket 依赖后运行：
-
-```bash
-export ROS_DOMAIN_ID=181 ROS_LOCALHOST_ONLY=1
-export OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1
-python3 -m tests integration pico --websocket-input --shovel-cycle \
-  --operator-speed 1 --input-period .02 --output artifacts/pico-vr-shovel-check
-```
-
-`--operator-speed`只缩放模拟手柄移动速度，位姿在发包线程按当前时刻计算。X按下／释放分别等待模拟夹爪动作和QP重新捕获，期间手柄保持原位，配方时钟暂停；松Squeeze后核对停稳，再用Y锁定。每批保存原始WebSocket包、原始／投影VR帧、映射基准、目标及实际关节反馈；有界验证器暂停自身循环GC以免证据采集阻塞发送线程，运行节点的GC与时限不变。
+消息变更须成套重建。该集成入口只使用隔离本机ROS域、模拟设备或合成厂商反馈，不启动真实驱动；实际手柄、无线传输、硬件响应及持载停止另行验收。已有录制回放及物理验证见[运行与验证](../../../运行与验证.md#测试)。下列2026-10-15批次为旧验证器的冻结证据，不代表当前版本重新通过。
 
 为缩短X切换，PICO验证工作进程启动时预加载空手／持物CAD上下文，每次仍核对新鲜实测起点及完整路径；只复用几何模型，不缓存通过结果。模拟虚握小角度运动按同一速度／加速度／jerk限值缩短，缩短搜索以300 ms为下限，给120 ms参考段留出传输余量，实际选用0.356秒曲线；装卸大开合仍用配置的1.5秒。停止、到位、重捕获和初始Squeeze接合条件不变。
 
 2026-10-15进一步优化连续X换握：符合[连续换握契约](../../../动作执行契约.md)时，将重复的1秒接合等待改为80 ms；实际夹爪动作、停稳、完整路径和新基准捕获仍执行。两轮真实Vuer原始输入整套铲雪为27.03／27.10秒，两次切换等待分别0.86／0.82秒、0.97／0.80秒；此前为1.85／1.76秒、全程28.98秒。最终批2,717个反馈姿态CAD零违规，刚握／虚握握点峰值0.783／0.637 mm；绝对工具跟踪峰值269.55 mm／0.37806 rad仍按report_only记录。35项PICO及23项模式检查、12项真实WebSocket按键／断流／持铲重启回归和两包重建通过。批次索引`artifacts/mode-switch-2026-10-15/verification.json`；Isaac窗口替换为最终27.14秒实际反馈的只读回放，实体夹持和真机未验收。
 
-全程刚握对照沿用同一工具配方、模型、控制参数与保护，在上述完整铲雪命令中加`--rigid-only`，例如`--operator-speed .7 --input-period .02 --rigid-only`；只在验证器中不发送X，原始位姿／Squeeze及全部生产链路不变，不修改默认握持配置。2026-10-15本批虚握1倍档27.08秒通过；刚握1倍／0.85倍在配方13.22／12.69秒因候选杆—`body_link_2`净空19.07／19.55 mm触发20 mm保护，未完成整轮，实际已执行采样最小净空21.72／21.56 mm、CAD零违规。刚握0.7倍35.81秒完成，3,588姿态CAD零违规、握点峰值0.976 mm、最小本体净空27.30 mm，实际倒雪／回位通过；无X与虚握标志已独立核对。Isaac展示该成功档的35.86秒实际反馈、1,794个姿态，全程双手刚握。索引`artifacts/rigid-grasp-2026-10-15/verification.json`保留快档失败和慢档成功；该比较不能判断真实夹持内力。
+2026-10-15已冻结的全程刚握对照沿用同一工具配方、模型、控制参数与保护，仅验证器不发送X；旧`rigid-only`运行分支现已退役。2026-10-15本批虚握1倍档27.08秒通过；刚握1倍／0.85倍在配方13.22／12.69秒因候选杆—`body_link_2`净空19.07／19.55 mm触发20 mm保护，未完成整轮，实际已执行采样最小净空21.72／21.56 mm、CAD零违规。刚握0.7倍35.81秒完成，3,588姿态CAD零违规、握点峰值0.976 mm、最小本体净空27.30 mm，实际倒雪／回位通过；无X与虚握标志已独立核对。Isaac展示该成功档的35.86秒实际反馈、1,794个姿态，全程双手刚握。索引`artifacts/rigid-grasp-2026-10-15/verification.json`保留快档失败和慢档成功；该比较不能判断真实夹持内力。
 
 2026-10-15用户明确本场景优先验证双臂耦合，工具绝对跟踪不再强制20 mm。扫雪配置的`demo.acceptance.tool_tracking_policy=report_only`保留20 mm／0.03 rad参考值及全部实测误差，但超出参考值不单独拒绝；缺省策略仍为`required`。运动学实测验收要求握点相对几何误差≤1 mm、杆轴偏差≤0.02 rad，刚握还检查每次确认捕获后的双臂相对转角≤0.02 rad；虚握允许绕杆转动，重新刚握捕获当时转角。回位和阶段工具角度同样按策略记录参考达标情况；关节动态限值、碰撞／地面／完整杆指爪穿透、停止／断流和实际抬升检查继续保留。这些是运动学协调指标，不能代替接触载荷或实体夹持判据。
 

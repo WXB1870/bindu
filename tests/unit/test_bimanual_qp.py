@@ -464,14 +464,15 @@ class CandidateGeometryBacktracking(unittest.TestCase):
                             self.step(qp,self.cases[0])
             finally:qp.close()
 
-    def test_real_grasp_boundary_is_three_cm_and_budget_is_fifty_ms(self):
+    def test_real_recipe_retains_reviewed_grasp_and_solver_limits(self):
         cfg=json.loads((ROOT/'src/integration/bindu_runtime/config/robots/snowbot/bimanual_snowbot_real.json').read_text())
-        self.assertEqual(cfg['grasp_position_tolerance_m'],.03)
+        # Reviewed real recipe from 5b53f21; independent of simulation limits.
+        self.assertEqual(cfg['grasp_position_tolerance_m'],.06)
         self.assertEqual(cfg['grasp_rotation_tolerance_rad'],.04)
-        self.assertEqual(cfg['max_relative_error'],.06)
-        self.assertEqual(cfg['solve_timeout_us'],50000)
+        self.assertEqual(cfg['max_relative_error'],.08)
+        self.assertEqual(cfg['solve_timeout_us'],80000)
         self.assertEqual(cfg['demo']['acceptance']['min_tool_robot_clearance_m'],.02)
-        for displacement,passes in ((.0299,True),(.0301,False)):
+        for displacement,passes in ((.0599,True),(.0601,False)):
             qp=self.solver(self.cases[0]);self.addCleanup(qp.close)
             qp.grasp_position_tolerance=cfg['grasp_position_tolerance_m']
             qp.grasp_rotation_tolerance=cfg['grasp_rotation_tolerance_rad']
@@ -1233,7 +1234,10 @@ class NativeBimanual(unittest.TestCase):
         ready=dict(config['demo']['initial_positions_rad'])
         tool=solver.capture(ready)
         bad=dict(ready)
-        bad['arm_r_joint_7']+=.1
+        bad['arm_r_joint_7']-=.1
+        lo,hi=profile.limits['arm_r_joint_7']
+        self.assertLessEqual(lo,bad['arm_r_joint_7'])
+        self.assertLessEqual(bad['arm_r_joint_7'],hi)
         # The hands are still within the distance gate, but cannot hold this
         # rigid shaft in its configured orientation.
         with self.assertRaisesRegex(ValueError,'BIMANUAL_GRASP_POSE'):
