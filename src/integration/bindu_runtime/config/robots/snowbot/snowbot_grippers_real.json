@@ -12,7 +12,7 @@
   "feedback_max_age": 0.2,
   "command_ttl": 0.2,
   "grippers": {
-    "left": {"open": -0.4, "closed": 0.0, "kp": 100.0, "kd": 30.0, "max_speed": 0.2},
-    "right": {"open": 0.4, "closed": 0.0, "virtual": 0.02, "kp": 100.0, "kd": 30.0, "max_speed": 0.2}
+    "left": {"open": -0.4, "closed": 0.0, "kp": 100.0, "kd": 30.0, "max_speed": 0.3},
+    "right": {"open": 0.4, "closed": 0.0, "virtual": 0.02, "kp": 100.0, "kd": 30.0, "max_speed": 0.3}
   }
 }

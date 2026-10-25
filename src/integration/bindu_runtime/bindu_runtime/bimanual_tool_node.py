@@ -718,9 +718,37 @@ class BimanualToolNode(RuntimeNode):
                         if geometry is not None and geometry['scale']<1.:
                             self.event('BIMANUAL_GEOMETRY_STEP',json.dumps(dict(geometry,
                                 input_seq=work_seq,control_sampled_at=work_sampled_at)),goal.request.task_id)
+                        admission=None
+                        if kind=='result' and awaiting=='solve':
+                            # A solver result is bounded against its sampled
+                            # feedback. Recheck the complete candidate against
+                            # the current observation before any submission.
+                            self.check(require_input=self.pause_control.phase=='follow')
+                            s=self.state
+                            if (s.instance_id!=execution_instance_id or not s.lease_active or
+                                    s.lease_epoch!=lease.epoch):
+                                raise RuntimeError('BIMANUAL_EXECUTION_AUTHORITY_CHANGED')
+                            positions,metrics=value
+                            if len(positions)!=len(self.names) or not all(math.isfinite(q) for q in positions):
+                                raise RuntimeError('BIMANUAL_NONFINITE_RESULT')
+                            measured=dict(zip(s.joints.name,s.joints.position))
+                            limit=float(self.cfg.get('max_reference_error',.15))
+                            if not math.isfinite(limit) or limit<=0:
+                                raise RuntimeError('BIMANUAL_REFERENCE_LIMIT_CONFIG')
+                            leads=[abs(q-measured[n]) for n,q in zip(self.names,positions)]
+                            reference_lead=max(abs(q-measured[n]) for n,q in zip(self.names,work_reference))
+                            admission=dict(feedback_stamp=seconds(s.feedback_stamp),
+                                feedback={n:measured[n] for n in self.names},
+                                candidate_lead_rad=max(leads),reference_lead_rad=reference_lead,
+                                worst_candidate_joint=self.names[max(range(len(leads)),key=leads.__getitem__)],
+                                reserve_rad=.8*limit,hard_limit_rad=limit)
+                            if reference_lead>limit:
+                                kind,value='error','BIMANUAL_REFERENCE_TRACKING_ERROR'
+                            elif max(leads)>.8*limit+1e-9:
+                                kind,value='error','BIMANUAL_RESULT_FEEDBACK_CHANGED'
                         if kind=='error':
-                            if awaiting=='solve' and value=='BIMANUAL_QP_DEFERRED':
-                                # Zero QP velocity is not device stop evidence.
+                            if awaiting=='solve' and value in ('BIMANUAL_QP_DEFERRED','BIMANUAL_RESULT_FEEDBACK_CHANGED'):
+                                # A deferred candidate is not device stop evidence.
                                 # The previously accepted motion may still run
                                 # under its original interface/expiry. Nothing
                                 # below resubmits it or authorizes a hold.
@@ -746,7 +774,7 @@ class BimanualToolNode(RuntimeNode):
                                         'execution_state':s.state,'execution_command_id':s.command_id,
                                         'stop_confirmed':False,'waiting_policy':'no_new_command_original_contract_expires',
                                         'deadline_monotonic':reference_deadline,
-                                        'count_limit':deferral['count_limit']}),goal.request.task_id)
+                                        'count_limit':deferral['count_limit'],'admission':admission}),goal.request.task_id)
                                 deferral['count']+=1
                                 deferral['last_input_seq']=work_seq
                                 if deferral['count']>=deferral['count_limit']:
@@ -765,7 +793,8 @@ class BimanualToolNode(RuntimeNode):
                                 'control_sampled_at':work_sampled_at,'integration_dt':work_dt,'sample_gap_s':work_gap,
                                 'grasp_mode':session.grasp_mode,'feedback':work_feedback,
                                 'joint_names':self.names,'reference':work_reference,
-                                'execution_reference':work_execution_reference,'target':work_target}),goal.request.task_id)
+                                'execution_reference':work_execution_reference,'target':work_target,
+                                'admission':admission}),goal.request.task_id)
                             raise RuntimeError(value)
                         if awaiting=='capture':
                             if not 0 <= self.now()-work_sampled_at <= reference.max_sample_gap:
@@ -834,6 +863,7 @@ class BimanualToolNode(RuntimeNode):
                                         ('accepted_reference' if self.cfg.get('reference_kinematics') else 'measured'),
                                     'tracking_feedback':self.cfg.get('tracking_feedback','measured'),
                                     'geometry_step_scale':geometry['scale'] if geometry else 1.,
+                                    'admission':admission,
                                     'teleop_mode':mode.mode,'recovery_scale':metrics[2],
                                     'input_stamp':work_stamp,'input_seq':work_seq,'integration_dt':work_dt,
                                     'sample_gap_s':work_gap,
