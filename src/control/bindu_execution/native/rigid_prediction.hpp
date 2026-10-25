@@ -125,17 +125,7 @@ inline PreparedSegment constrained(Model& model,const JointLimits& limits,const 
   if(!project(jac,V::Zero(6),desired,vlimits,projected)){++decision.projection_failures;decision.reason="velocity_projection";return fallback;}
   if(mode=="project")return balanced(limits,seed,goal,values(projected),start);
   const V absolute_projected=projected;
-  // Correct position through a bounded tangent velocity. Position correction
-  // alone cannot reverse a nonzero trend; coupled projection and feasibility
-  // checks still govern the final choice. Real input reversals stay signed.
-  V corrected=desired;
-  for(size_t i=0;i<goal.size();++i){
-    const double low=desired[i]>1e-8?.5*desired[i]:-vlimits[i];
-    const double high=desired[i]<-1e-8?.5*desired[i]:vlimits[i];
-    corrected[i]=std::clamp(desired[i]+(goal[i]-seed.q[i])/.2,low,high);
-  }
-  const bool continuation_feasible=project(jac,V::Zero(6),corrected,vlimits,projected);
-  if(!continuation_feasible){++decision.projection_failures;decision.reason="continuation_projection";}
+  V corrected;bool continuation_feasible=false;
   const double max_gain=mode=="adaptive"?confidence:1.;
   auto prepare=[&](bool continuation,const PreparedSegment* rigid_baseline)->std::optional<PreparedSegment>{
     if(continuation&&!continuation_feasible)return std::nullopt;
@@ -187,6 +177,17 @@ inline PreparedSegment constrained(Model& model,const JointLimits& limits,const 
     }
   }
   if(!reverses){decision.reason="accepted_absolute";return std::move(*absolute);}
+  // Prepare the alternative only when the accepted rigid prefix needs it.
+  // Position correction alone cannot reverse a nonzero trend; projection and
+  // the original feasibility checks still govern the final choice.
+  corrected=desired;
+  for(size_t i=0;i<goal.size();++i){
+    const double low=desired[i]>1e-8?.5*desired[i]:-vlimits[i];
+    const double high=desired[i]<-1e-8?.5*desired[i]:vlimits[i];
+    corrected[i]=std::clamp(desired[i]+(goal[i]-seed.q[i])/.2,low,high);
+  }
+  continuation_feasible=project(jac,V::Zero(6),corrected,vlimits,projected);
+  if(!continuation_feasible){++decision.projection_failures;decision.reason="continuation_projection";}
   auto continuation=prepare(true,&*absolute);
   if(continuation)return std::move(*continuation);
   decision.accepted=absolute_details.accepted;decision.gain=absolute_details.gain;
