@@ -5,6 +5,7 @@ Samples a connected scoop, rear-hand pivot lift and outward swing. Feasible IK
 samples are checked against CAD meshes and the tool geometry. This is a local
 task workspace comparison, not a proof of global reachability or payload.
 """
+from tools import package_share
 import argparse
 import hashlib
 import itertools
@@ -162,8 +163,8 @@ def plot_comparison(result, output):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--config', type=Path,
-                        default=ROOT/'src/integration/bindu_runtime/config/robots/snowbot/bimanual_snowbot_shovel.json')
-    parser.add_argument('--description', type=Path, default=ROOT/'src/hardware/bindu_description/urdf')
+                        default=package_share("snowbot_bringup")/'config/robots/snowbot/bimanual_snowbot_shovel.json')
+    parser.add_argument('--description', type=Path, default=package_share('snowbot_description')/'urdf')
     parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args()
     output = args.output.resolve()

@@ -21,7 +21,7 @@ class VRInputClockTests(unittest.TestCase):
         from types import SimpleNamespace as S
         from unittest.mock import Mock
         from bindu_contracts.teleoperation import VRFrame
-        from bindu_teleoperation.pico import PICO_MAPPING
+        from snowbot_teleop.control import PICO_MAPPING
         pose=(1.,0.,0.,0.,0.,1.,0.,0.,0.,0.,1.,0.,0.,0.,0.,1.)
         packets=[];published=[]
         owner=S(last_poll=None,poll_delay_max=0.,last_frame=None,input_clock_offset=None,

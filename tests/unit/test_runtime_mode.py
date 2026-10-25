@@ -1,4 +1,5 @@
 """Environment selection and provenance gates; no hardware or ROS processes."""
+from bindu_contracts.resources import package_share
 from tests.support.paths import ROOT
 import importlib.util
 from collections import deque
@@ -63,7 +64,7 @@ class RuntimeModeTests(unittest.TestCase):
         self.assertEqual(fixture.e.results['cmd'].code, 'FEEDBACK_RUNTIME_MODE_MISMATCH')
 
     def test_configuration_selects_one_mode_for_execution_and_recorder(self):
-        spec = importlib.util.spec_from_file_location('mode_launch', SHARE/'launch/snowbot_adapter.launch.py')
+        spec = importlib.util.spec_from_file_location('mode_launch', package_share('snowbot_bringup')/'launch/snowbot_adapter.launch.py')
         module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
         from launch import LaunchContext
         for mode, executable, backend in [('simulation', 'execution', 'kinematic'),

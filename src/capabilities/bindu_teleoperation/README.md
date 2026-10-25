@@ -188,7 +188,7 @@ PICO外层与工具内层共用 `bindu_runtime.stop_evidence.stop_feedback_match
 
 位置版PICO配方通过可选`base_config`接入[两轴映射](bindu_teleoperation/base.py)和[`cmd_vel`适配](../../integration/bindu_runtime/bindu_runtime/teleop_base.py)。左摇杆Y取反映射机体前后速度，右摇杆X取反映射机体yaw角速度；左X与右Y不参与速度控制，`Twist`其余四个分量始终为零。不复用旧脚本的B横移／Y升降模式，所有原按键和摇杆点击保持原用途。原始`thumbstickValue`经`VRFrame.stick`和`VRInput.stick`传递，缺失或非法方向值只阻断底盘，不伪造回中或改变手臂按键输入；字段来源可对照[TeleVuer接收实现](https://github.com/unitreerobotics/televuer/blob/main/src/televuer/televuer.py)。消息结构改变后必须重建`bindu_interfaces`及运行装配，旧安装由预检拒绝。
 
-[配置示例](../../integration/bindu_runtime/config/robots/snowbot/snowbot_base.json)沿用旧版0.1 m/s、0.5 rad/s和0.05死区，正常速度变化率分别限制为0.2 m/s²、1.0 rad/s²；异常直接请求零速。输入250 ms过期、反馈200 ms过期、tick间隔超过100 ms、PICO锁定／操作交接或输出端存在其他发布者时均禁止继续运动。来源改变、暂停或失联后须有新鲜摇杆回中和实测停稳才能恢复。PICO准备、装卸和模式交接也纳入底盘停稳条件。完整的身份、独占和停止语义见[执行契约](../../../动作执行契约.md#2-输入模式必须显式选择)。
+[配置示例](../../../../../snowbot/src/snowbot_bringup/config/robots/snowbot/snowbot_base.json)沿用旧版0.1 m/s、0.5 rad/s和0.05死区，正常速度变化率分别限制为0.2 m/s²、1.0 rad/s²；异常直接请求零速。输入250 ms过期、反馈200 ms过期、tick间隔超过100 ms、PICO锁定／操作交接或输出端存在其他发布者时均禁止继续运动。来源改变、暂停或失联后须有新鲜摇杆回中和实测停稳才能恢复。PICO准备、装卸和模式交接也纳入底盘停稳条件。完整的身份、独占和停止语义见[执行契约](../../../动作执行契约.md#2-输入模式必须显式选择)。
 
 真实写入要求原`command_enabled=true`；默认`require_driver_watchdog=true`还要求填入**已确认的底盘驱动独立断流超时**`driver_watchdog_s`（最多0.5 s），否则底盘只读且不阻断已有手臂操作。操作者明确接受暂缓下层断流停车时，可仅在现场配方显式设`require_driver_watchdog=false`；未知的超时仍为`null`并在状态中显示，不伪造保护能力。该选择保留上层输入过期／暂停／停止的零速请求，不承诺上层进程退出后的自动停车。字段只描述接入条件，不会配置底层驱动。`receiver_node`／`feedback_node`可绑定已核实的ROS端点节点；`feedback_frame`必须匹配实际`Odometry.child_frame_id`，不根据机器人模型名猜测。118实际独立`/car_control`提供`/cmd_vel`／`/odom`和`base_link`，专属配方由Snowbot维护。适配器要求唯一反馈发布实例、后续新鲜测量及100 ms连续低速窗口才确认停止；零速已发不等于停稳。身份检查范围与Humble接口限制见执行契约，不把ROS图绑定视为逐消息身份校验。模拟模式只显示同一映射的请求，不发布真实`/cmd_vel`，尚未接入底盘物理仿真；头部跟随仍未实现。
 
@@ -243,13 +243,13 @@ PICO实体布局参考[官方OpenXR定义](https://github.com/Pico-Developer/PIC
 
 ### 程序接入
 
-[PicoControl](bindu_teleoperation/pico.py)维护操作状态与代次；[PicoNode](../../integration/bindu_runtime/bindu_runtime/pico_node.py)串接模式／工具Action和执行租约。[专用配置](../../integration/bindu_runtime/config/deployments/teleop_pico_snowbot_sim.json)显式启用`pico_enabled=true`、`tool_input_source=vr`；[第8轴参数](../../integration/bindu_runtime/config/robots/snowbot/pico_snowbot_sim.json)仅作模拟代理。状态面板、人工持物声明和验证命令统一见运行流程。
+[PicoControl](../../../../../snowbot/src/snowbot_teleop/snowbot_teleop/control.py)维护操作状态与代次；[PicoNode](../../../../../snowbot/src/snowbot_teleop/snowbot_teleop/node.py)串接模式／工具Action和执行租约。[专用配置](../../../../../snowbot/src/snowbot_bringup/config/deployments/teleop_pico_snowbot_sim.json)显式启用`pico_enabled=true`、`tool_input_source=vr`；[第8轴参数](../../../../../snowbot/src/snowbot_bringup/config/robots/snowbot/pico_snowbot_sim.json)仅作模拟代理。状态面板、人工持物声明和验证命令统一见运行流程。
 
 ## 源码导航
 
 | 入口 | 内容 |
 |---|---|
-| [pico.py](bindu_teleoperation/pico.py) | PICO按键边沿、资格、装卸／虚握／停止恢复状态机 |
+| [pico.py](../../../../../snowbot/src/snowbot_teleop/snowbot_teleop/control.py) | PICO按键边沿、资格、装卸／虚握／停止恢复状态机 |
 | [session.py](bindu_teleoperation/session.py) | 单臂相对控制会话 |
 | [independent_session.py](bindu_teleoperation/independent_session.py) | 普通双臂逐侧离合、相对目标与暂停侧重捕获 |
 | [bimanual_session.py](bindu_teleoperation/bimanual_session.py) | BimanualSession（成对 VR 相对映射）、ToolPoseSession（映射后工具目标）、ToolPause 与 AcceptedReference |

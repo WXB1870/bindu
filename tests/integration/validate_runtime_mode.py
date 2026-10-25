@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Verify mode selection using local ROS only; real endpoint stays read-only."""
+from bindu_contracts.resources import package_share
 from tests.support.paths import ROOT
 import argparse
 import gzip
@@ -94,7 +95,7 @@ def main():
         ns, recipe, lease_client, submit_client=contexts['simulation']
         lease=call(node,lease_client,Lease.Request(operation='acquire',owner='probe',resources=['left_arm']))
         assert lease.ok,lease.code
-        profile=Profile.load(root/'src/integration/bindu_runtime/config/robots/snowbot/snowbot_shovel_sim.json')
+        profile=Profile.load(package_share('snowbot_bringup')/'config/robots/snowbot/snowbot_shovel_sim.json')
         names=profile.groups['left_arm'];q=dict(zip(states['simulation'][-1].joints.name,states['simulation'][-1].joints.position))
         targets=[q[n] for n in names];targets[0]+=.01
         cmd=MotionCommand(schema_version=1,command_id='legacy_'+token,task_id='mode_probe',lease_id=lease.lease_id,
@@ -140,7 +141,7 @@ def main():
             log=output/(label+'.log')
             with log.open('w') as f:
                 command=[str(executable),'--ros-args','-r','__ns:=/invalid_'+token,
-                         '-p','profile:='+str(root/'src/integration/bindu_runtime/config/robots/snowbot/snowbot_vendor_position.json')]
+                         '-p','profile:='+str(package_share('snowbot_bringup')/'config/robots/snowbot/snowbot_vendor_position.json')]
                 for parameter in parameters:command+=['-p',parameter]
                 result=subprocess.run(command,stdout=f,stderr=subprocess.STDOUT,timeout=6.)
             assert result.returncode!=0 and reason in log.read_text()

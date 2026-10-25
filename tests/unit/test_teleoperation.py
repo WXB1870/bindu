@@ -1,3 +1,4 @@
+from bindu_contracts.resources import package_share
 from tests.support.paths import ROOT
 import json
 import tempfile
@@ -122,7 +123,7 @@ class VRConnectivityTests(unittest.TestCase):
         output=StringIO()
         with patch('builtins.__import__',side_effect=input_import), \
                 patch('subprocess.Popen',side_effect=AssertionError('input entry launched process')), \
-                patch.dict('os.environ',BINDU_VR_CONFIG=str(ROOT/'src/integration/bindu_runtime/config/deployments/snowbot_vr_real.json'),ROS_DISTRO='jazzy'), \
+                patch.dict('os.environ',BINDU_VR_CONFIG=str(package_share("snowbot_bringup")/'config/deployments/snowbot_vr_real.json'),ROS_DISTRO='jazzy'), \
                 patch('bindu_teleoperation.vr.receiver.VuerReceiver',return_value=receiver) as construct, \
                 patch.object(entry.time,'monotonic',side_effect=[10.,10.001,10.002,10.02]), \
                 patch.object(entry.time,'time',return_value=10.002), \

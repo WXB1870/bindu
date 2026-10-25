@@ -38,7 +38,7 @@ PY
 
 ## 扫雪求解与反馈
 
-[雪铲配置](../../integration/bindu_runtime/config/robots/snowbot/bimanual_snowbot_shovel.json) 选择 `waist + left_arm + right_arm`，对应两轴腰部与双臂各七轴。控制链为工具目标 → `BimanualQP` 候选关节位置 → 共享执行器接纳；头部和两侧第八轴保留为上下文，不随工具目标自动控制。
+[雪铲配置](../../../../../snowbot/src/snowbot_bringup/config/robots/snowbot/bimanual_snowbot_shovel.json) 选择 `waist + left_arm + right_arm`，对应两轴腰部与双臂各七轴。控制链为工具目标 → `BimanualQP` 候选关节位置 → 共享执行器接纳；头部和两侧第八轴保留为上下文，不随工具目标自动控制。
 
 - `reference_kinematics=true` 时，在已接纳参考处计算受控关节的 FK／Jacobian；`tracking_feedback`缺省使用实测跟踪，可显式选择`reference`生成名义运动，将保护范围内的受力偏移留给下层处理，配置语义见[QP参数](../bindu_bimanual_qp/README.md#双臂qp参数与abi)。保护仍检查实际姿态，参考只在执行器接纳后推进。
 - `measured_grasp_policy` 默认 `enforce`，保留实测握持超差保护；仅在已声明未共同夹持实体工具的临时测试中选择 `unheld_test`。它只跳过实测握持几何误差判据，原生双臂耦合、实际关节限位、参考跟踪、碰撞和停止保护继续执行；接管事件记录所选策略。
@@ -68,7 +68,7 @@ Isaac 物理实验在 [shovel_control.py](../../../tools/simulation/shovel_contr
 
 ## 接入与验证
 
-双臂配置入口：[Snowbot 雪铲](../../integration/bindu_runtime/config/robots/snowbot/bimanual_snowbot_shovel.json)。IK 与 QP 各有可选依赖；使用对应能力前，按 [运行与验证](../../../运行与验证.md) 安装并构建。
+双臂配置入口：[Snowbot 雪铲](../../../../../snowbot/src/snowbot_bringup/config/robots/snowbot/bimanual_snowbot_shovel.json)。IK 与 QP 各有可选依赖；使用对应能力前，按 [运行与验证](../../../运行与验证.md) 安装并构建。
 
 - 原生边界与参数：[双臂 QP 参数与 ABI](../bindu_bimanual_qp/README.md#双臂qp参数与abi)。
 - 行为检查：[模型](../../../tests/unit/test_g1_model.py)、[IK 碰撞](../../../tests/unit/test_ik_collision.py)、[双臂 QP](../../../tests/unit/test_bimanual_qp.py)、[雪铲运动](../../../tests/unit/test_shovel_motion.py)。
@@ -84,7 +84,7 @@ Isaac 物理实验在 [shovel_control.py](../../../tools/simulation/shovel_contr
 
 ### Snowbot 双臂与两轴腰部遥操作
 
-三份 URDF 的用途、共享网格及生成方式见[模型与资产](../../hardware/bindu_description/README.md#机器人模型与资产)。控制模型的 20 个标量关节按 [`snowbot_sim.json`](../../integration/bindu_runtime/config/robots/snowbot/snowbot_sim.json) 命名。腰部是回转 `body_joint_1`、俯仰 `body_joint_2`，两臂各前 7 轴进入扫雪 QP；第 8 轴保留反馈但不由扫雪会话驱动。模型没有真实工具与雪面接触参数，当前 [`bimanual_snowbot_sim.json`](../../integration/bindu_runtime/config/robots/snowbot/bimanual_snowbot_sim.json) 的工具 frame 仅是左右力传感器中点的虚拟横杆。
+三份 URDF 的用途、共享网格及生成方式见[模型与资产](../../hardware/bindu_description/README.md#机器人模型与资产)。控制模型的 20 个标量关节按 [`snowbot_sim.json`](../../../../../snowbot/src/snowbot_bringup/config/robots/snowbot/snowbot_sim.json) 命名。腰部是回转 `body_joint_1`、俯仰 `body_joint_2`，两臂各前 7 轴进入扫雪 QP；第 8 轴保留反馈但不由扫雪会话驱动。模型没有真实工具与雪面接触参数，当前 [`bimanual_snowbot_sim.json`](../../../../../snowbot/src/snowbot_bringup/config/robots/snowbot/bimanual_snowbot_sim.json) 的工具 frame 仅是左右力传感器中点的虚拟横杆。
 
 构建需ROS 2 Jazzy、Pinocchio、Eigen3及ProxSuite CMake开发包；原生QP在`bindu_bimanual_qp`单独包中，未安装依赖时该可选包无法构建。单配置生成器未指定构建类型时默认Release，显式Debug/RelWithDebInfo保持原选择。完成构建并加载工作区后，可启动模拟节点：
 

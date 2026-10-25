@@ -1,4 +1,5 @@
 """Portable deployment checks; never start a controller or touch a device."""
+from bindu_contracts.resources import package_share
 import json
 import io
 from contextlib import redirect_stdout, redirect_stderr
@@ -14,6 +15,22 @@ from tools.deployment import process_guard, runtime_check, x86_real
 
 
 class X86DeploymentTests(unittest.TestCase):
+    def test_build_fingerprint_covers_application_changes_and_deletions(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)
+            for name in ('framework','application'):
+                folder=root/name
+                (folder/'src').mkdir(parents=True)
+                subprocess.run(['git','init','-q',str(folder)],check=True)
+                (folder/'src/value.py').write_text('original')
+            with patch.object(x86_real,'ROOT',root/'framework'):
+                first=x86_real.source_digest(root/'application')
+                source=root/'application/src/value.py'
+                source.write_text('changed')
+                self.assertNotEqual(first,x86_real.source_digest(root/'application'))
+                source.unlink()
+                self.assertNotEqual(first,x86_real.source_digest(root/'application'))
+
     def setUp(self):
         self.guard = patch.object(x86_real, 'require_stopped', return_value={})
         self.guard.start()
@@ -22,7 +39,7 @@ class X86DeploymentTests(unittest.TestCase):
     def test_real_profile_guard_runs_before_native_or_ros_checks(self):
         from bindu_contracts.profile import Profile
         from dataclasses import replace
-        profile=Profile.load(x86_real.ROOT/'src/integration/bindu_runtime/config/robots/snowbot/snowbot_real_position.json')
+        profile=Profile.load(package_share("snowbot_bringup")/'config/robots/snowbot/snowbot_real_position.json')
         for invalid in (replace(profile,name='snowbot_real_position_first_run'),
                         replace(profile,capabilities=('joint_position','velocity'))):
             with self.subTest(name=invalid.name),self.assertRaisesRegex(ValueError,'SNOWBOT_PROFILE_REQUIRED'):
@@ -152,7 +169,7 @@ class X86DeploymentTests(unittest.TestCase):
             workspace = Path(tmp)
             (workspace/'install').mkdir()
             (workspace/'install/local_setup.bash').touch()
-            (workspace/'site.json').write_text(x86_real.TEMPLATE.read_text())
+            (workspace/'site.json').write_text((package_share('snowbot_bringup')/x86_real.TEMPLATE_NAME).read_text())
             with patch.object(x86_real, 'read_profile', return_value=dict(ready=True)), \
                     patch.object(x86_real, 'require_current_build'), \
                     patch.object(x86_real, 'in_environment') as execute:
@@ -176,6 +193,8 @@ class X86DeploymentTests(unittest.TestCase):
     def test_changed_source_and_failed_build_require_rebuild(self):
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp)
+            (workspace/'deployment.json').write_text(json.dumps({
+                'application_source': str(package_share('snowbot_bringup').parents[1])}))
             with patch.object(x86_real, 'source_digest', return_value='current'):
                 for info in (dict(ready=False, source_sha256='current'),
                              dict(ready=True, source_sha256='old'),
@@ -190,7 +209,8 @@ class X86DeploymentTests(unittest.TestCase):
     def test_build_selects_one_numeric_prefix_and_requires_clean_child_exit(self):
         with tempfile.TemporaryDirectory(prefix="bindu ' $ ") as tmp:
             workspace = Path(tmp)
-            (workspace/'deployment.json').write_text(json.dumps(dict(python=[3, 12])))
+            (workspace/'deployment.json').write_text(json.dumps(dict(python=[3, 12],
+                application_source=str(package_share('snowbot_bringup').parents[1]))))
             prefix = workspace/'venv/lib/python3.12/site-packages/cmeel.prefix'
             for name in ('pinocchio', 'coal'):
                 directory = prefix/'lib/cmake'/name
@@ -216,7 +236,8 @@ class X86DeploymentTests(unittest.TestCase):
     def test_missing_numeric_config_cannot_fall_back_to_ros(self):
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp)
-            (workspace/'deployment.json').write_text(json.dumps(dict(python=[3, 10])))
+            (workspace/'deployment.json').write_text(json.dumps(dict(python=[3, 10],
+                application_source=str(package_share('snowbot_bringup').parents[1]))))
             directory = workspace/'venv/lib/python3.10/site-packages/cmeel.prefix/lib/cmake/pinocchio'
             directory.mkdir(parents=True)
             (directory/'pinocchioConfig.cmake').touch()
@@ -275,7 +296,7 @@ class RuntimeCheckTests(unittest.TestCase):
         from bindu_contracts.profile import Profile
         tool = root/'tool.json'
         tool.write_text('{}')
-        profile = Profile.load(x86_real.ROOT/'src/integration/bindu_runtime/config/robots/snowbot/snowbot_real_position.json')
+        profile = Profile.load(package_share("snowbot_bringup")/'config/robots/snowbot/snowbot_real_position.json')
         robot = NS(tool_config=tool, urdf=root/'robot.urdf', profile=profile, profile_path=root/'profile.json')
         package = NS(**{name: object() for name in (
             'ExecutionState', 'VRInput', 'TeleopModeState', 'GripperState', 'SelectTeleopMode',
@@ -608,7 +629,7 @@ class PositionSessionPreflightTests(unittest.TestCase):
         self.assertIn('SNOWBOT_SESSION_ROUTE_UNVERIFIED:/bindu/position/command', self.inspect())
 
     def test_readonly_probe_detects_mixed_command_schema_and_cleans_up(self):
-        import bindu_hardware.snowbot_session as session
+        import snowbot_hardware.session as session
         self.node.get_clock.return_value.now.return_value.nanoseconds = 10_000_000_000
         self.readers['/bindu/position/command'][0].topic_type_hash = NS(version=1, value=b'b'*32)
         def subscribe(kind, topic, callback, qos):
@@ -633,6 +654,15 @@ class PositionSessionPreflightTests(unittest.TestCase):
         self.node.destroy_node.assert_called_once();rclpy.shutdown.assert_called_once()
 
 class DeploymentProcessGuardTests(unittest.TestCase):
+    def test_legacy_and_application_modules_share_the_same_stop_guard(self):
+        for module, expected in (
+                ('bindu_runtime.snowbot_adapter', 'snowbot_adapter'),
+                ('snowbot_hardware.adapter', 'snowbot_adapter'),
+                ('bindu_runtime.pico_node', 'pico_control'),
+                ('snowbot_teleop.node', 'pico_control')):
+            with self.subTest(module=module):
+                self.assertEqual(process_guard.controller_entries(['python3','-m',module]),[expected])
+
     def process(self, root, pid, *argv):
         folder = root/str(pid)
         folder.mkdir()

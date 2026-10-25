@@ -1,4 +1,5 @@
 """Physical button identity, coalesced events and guarded operator transitions."""
+from bindu_contracts.resources import package_share
 from tests.support.paths import ROOT
 from dataclasses import replace
 import unittest
@@ -7,7 +8,7 @@ from pathlib import Path
 import numpy as np
 from bindu_contracts.teleoperation import VRFrame
 from bindu_teleoperation.vr.receiver import decode_controller, ButtonCounters
-from bindu_teleoperation.pico import PicoControl, PicoFeedback, PICO_MAPPING
+from snowbot_teleop.control import PicoControl, PicoFeedback, PICO_MAPPING
 from bindu_teleoperation.bimanual_session import BimanualSession
 
 
@@ -47,7 +48,7 @@ class PicoGraspSwitchTests(unittest.TestCase):
 class GraspContinuationTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.cfg=json.loads((ROOT/'src/integration/bindu_runtime/config/robots/snowbot/bimanual_snowbot_shovel.json').read_text())
+        cls.cfg=json.loads((package_share("snowbot_bringup")/'config/robots/snowbot/bimanual_snowbot_shovel.json').read_text())
 
     def feed(self,session,t,*,held=True,virtual=False,source='headset:coordinator',clutch=(0,0),mapping=PICO_MAPPING):
         frames=[]

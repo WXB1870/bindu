@@ -1,4 +1,5 @@
 """Position interface and delegated stop semantics; never touches hardware."""
+from bindu_contracts.resources import package_share
 from tests.support.paths import ROOT
 import copy
 import importlib.util
@@ -14,14 +15,14 @@ from bindu_contracts.contracts import Motion
 from bindu_contracts.profile import Profile
 from bindu_execution.delegated_position import DelegatedPositionExecutor
 from bindu_execution.executor import Rejected
-from bindu_hardware.snowbot import GROUPS, VendorHealth, SnowbotIO, decode_feedback, feedback_schema, feedback_sample
+from snowbot_hardware.protocol import GROUPS, VendorHealth, SnowbotIO, decode_feedback, feedback_schema, feedback_sample
 
-CONFIG = ROOT/'src/integration/bindu_runtime/config'
+CONFIG = package_share('snowbot_bringup')/'config'
 
 
 class SnowbotAdapterTests(unittest.TestCase):
     def setUp(self):
-        self.profile = Profile.load(CONFIG/'robots/snowbot/snowbot_vendor_position.json')
+        self.profile = Profile.load(package_share("snowbot_bringup")/'config/robots/snowbot/snowbot_vendor_position.json')
         self.now = 10.
         self.sent = []
         self.io = SnowbotIO(self.profile, lambda g, q: self.sent.append((set(g), dict(q))),
@@ -57,7 +58,7 @@ class SnowbotAdapterTests(unittest.TestCase):
         self.assertEqual(self.profile.limits['arm_l_joint_3'], [-2.61, .58])
         self.assertEqual(self.profile.limits['arm_r_joint_3'], [-.58, 2.61])
         self.assertEqual(self.profile.limits['head_joint_1'], [-.791, .791])
-        old = Profile.load(CONFIG/'robots/snowbot/snowbot_shovel_sim.json')
+        old = Profile.load(package_share("snowbot_bringup")/'config/robots/snowbot/snowbot_shovel_sim.json')
         self.assertEqual(old.limits['body_joint_2'], [-.79, 1.83])
         for filename in ('robots/snowbot/snowbot_shovel_sim.json', 'simulation/wheel_sim.json'):
             with self.assertRaisesRegex(ValueError, 'PROFILE_REQUIRED'):
@@ -332,7 +333,7 @@ class SnowbotAdapterTests(unittest.TestCase):
         self.assertEqual(set(self.io.stop_targets), set(GROUPS['left_arm']+GROUPS['right_arm']+GROUPS['head']))
 
     def test_passive_command_observers_are_allowed(self):
-        from bindu_runtime.snowbot_adapter import SnowbotDevices
+        from snowbot_hardware.adapter import SnowbotDevices
         transport = SnowbotDevices.__new__(SnowbotDevices)
         transport.node = Mock()
         transport.node.get_clock.return_value.now.return_value.nanoseconds = 10_000_000_000
@@ -570,7 +571,7 @@ class SnowbotAdapterTests(unittest.TestCase):
         self.assertNotIn('body_joint_1', self.io.stop_targets)
 
     def test_feedback_from_an_observer_cannot_confirm_a_physical_hold(self):
-        from bindu_runtime.snowbot_adapter import SnowbotDevices
+        from snowbot_hardware.adapter import SnowbotDevices
         transport = SnowbotDevices.__new__(SnowbotDevices)
         transport.node, transport.io = Mock(), Mock()
         transport.feedback_topic = '/test/feedback'
@@ -595,7 +596,7 @@ class SnowbotStopDiagnosticTests(unittest.TestCase):
         self.assertFalse(result['observed']['reference_valid'])
 
     def setUp(self):
-        from bindu_hardware.snowbot_session import CONTROL_NAMES, SessionHealth, stop_diagnostic
+        from snowbot_hardware.session import CONTROL_NAMES, SessionHealth, stop_diagnostic
         self.diagnose=stop_diagnostic
         self.names=CONTROL_NAMES
         self.now,self.steady=10.,1.
@@ -692,7 +693,7 @@ class SnowbotStopDiagnosticTests(unittest.TestCase):
     def test_adapter_emits_changed_reasons_immediately_and_repeated_checks_at_most_twice_per_second(self):
         class Base:pass
         spec=importlib.util.spec_from_file_location('bindu_runtime._offline_stop_adapter',
-            ROOT/'src/integration/bindu_runtime/bindu_runtime/snowbot_adapter.py')
+            package_share('snowbot_hardware')/'snowbot_hardware/adapter.py')
         module=importlib.util.module_from_spec(spec)
         with patch.dict(sys.modules,{'rcl_interfaces':S(),'rcl_interfaces.msg':S(ParameterDescriptor=object),
                 'bindu_runtime.execution_node':S(ExecutionNode=Base,run_execution=lambda _:None)}):
@@ -754,7 +755,7 @@ class SnowbotRosBindingTests(unittest.TestCase):
         class Base:
             def tick(self): calls.append('engine')
         spec = importlib.util.spec_from_file_location('bindu_runtime._offline_tick_adapter',
-            ROOT/'src/integration/bindu_runtime/bindu_runtime/snowbot_adapter.py')
+            package_share('snowbot_hardware')/'snowbot_hardware/adapter.py')
         module = importlib.util.module_from_spec(spec)
         with patch.dict(sys.modules, {'rcl_interfaces': S(), 'rcl_interfaces.msg': S(ParameterDescriptor=object),
                 'bindu_runtime.execution_node': S(ExecutionNode=Base, run_execution=lambda _:None)}):
@@ -774,10 +775,10 @@ class SnowbotRosBindingTests(unittest.TestCase):
         self.assertEqual(calls, ['engine', 'gripper'])
 
     def test_session_capture_changes_generation_and_pause_does_not_renew_motion(self):
-        from bindu_runtime.snowbot_position_session import PositionSessionDevices, PositionSessionIO
-        from bindu_hardware.snowbot_session import SourceEnvelope
-        from bindu_hardware.snowbot_session import CONTROL_GROUPS
-        profile=Profile.load(CONFIG/'robots/snowbot/snowbot_vendor_position.json')
+        from snowbot_hardware.position_session import PositionSessionDevices, PositionSessionIO
+        from snowbot_hardware.session import SourceEnvelope
+        from snowbot_hardware.session import CONTROL_GROUPS
+        profile=Profile.load(package_share("snowbot_bringup")/'config/robots/snowbot/snowbot_vendor_position.json')
         devices=PositionSessionDevices.__new__(PositionSessionDevices)
         devices.node=S(now=lambda:10.)
         devices.health=S(reference_mode=0)
@@ -801,8 +802,8 @@ class SnowbotRosBindingTests(unittest.TestCase):
 
     """Use installed message classes with mocked publishers; never create a node."""
     def test_native_gripper_send_preserves_prefix_and_guards_only_selected_hand(self):
-        from bindu_runtime.snowbot_gripper import SnowbotGrippers
-        from bindu_runtime.snowbot_adapter import SnowbotDevices
+        from snowbot_hardware.gripper_node import SnowbotGrippers
+        from snowbot_hardware.adapter import SnowbotDevices
         binding = SnowbotGrippers.__new__(SnowbotGrippers)
         binding.health = Mock()
         binding.session_protocol = False
@@ -812,7 +813,7 @@ class SnowbotRosBindingTests(unittest.TestCase):
         devices.session, devices.command_sequence = 123, 0
         devices.array_type = lambda data:S(data=data)
         binding.devices = devices
-        binding.core = S(cfg=json.loads((CONFIG/'robots/snowbot/snowbot_grippers_real.json').read_text()))
+        binding.core = S(cfg=json.loads((package_share("snowbot_bringup")/'config/robots/snowbot/snowbot_grippers_real.json').read_text()))
         binding.publishers = {side:Mock() for side in ('left', 'right')}
         binding.send('right', .02, False, 999)
         self.assertEqual(binding.publishers['right'].publish.call_args.args[0].data,
@@ -823,17 +824,17 @@ class SnowbotRosBindingTests(unittest.TestCase):
                          [.01, 0., 0., 100., 30., 10., 2., 0., 123., 1.])
 
     def measured_devices(self):
-        from bindu_runtime.snowbot_adapter import SnowbotDevices
-        from bindu_runtime.snowbot_gripper import SnowbotGrippers
-        from bindu_hardware.snowbot_gripper import GripperController
-        profile = Profile.load(CONFIG/'robots/snowbot/snowbot_real_position.json')
+        from snowbot_hardware.adapter import SnowbotDevices
+        from snowbot_hardware.gripper_node import SnowbotGrippers
+        from snowbot_hardware.gripper import GripperController
+        profile = Profile.load(package_share("snowbot_bringup")/'config/robots/snowbot/snowbot_real_position.json')
         devices = SnowbotDevices.__new__(SnowbotDevices)
         devices.node=Mock();devices.node.now.return_value=10.
         devices.feedback_topic='/dualArmCtl_fdback';devices.health_receivers={'servo':'/servo_node'}
         devices.node.get_publishers_info_by_topic.return_value=[S(node_namespace='/',node_name='servo_node')]
         devices.io=SnowbotIO(profile, Mock(), lambda:10.)
         devices.grippers=SnowbotGrippers.__new__(SnowbotGrippers)
-        cfg=json.loads((CONFIG/'robots/snowbot/snowbot_grippers_real.json').read_text())
+        cfg=json.loads((package_share("snowbot_bringup")/'config/robots/snowbot/snowbot_grippers_real.json').read_text())
         devices.grippers.core=GripperController(profile,cfg,Mock(),Mock(),lambda:10.,lambda:True,
                                                require_driver_ack=False)
         native=S(header=S(stamp=S(sec=10,nanosec=0)),

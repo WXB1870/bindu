@@ -15,7 +15,7 @@ from bindu_contracts.teleoperation import VRFrame, ToolPoseFrame, reference_trac
 from bindu_teleoperation.bimanual_session import BimanualSession, ToolPoseSession, AcceptedReference, ToolPause
 from bindu_teleoperation.independent_session import IndependentArmsSession
 from bindu_kinematics.bimanual_worker import BimanualWorker
-from bindu_hardware.snowbot_gripper import validate_config, JOINTS
+from snowbot_hardware.gripper import validate_config, JOINTS
 from bindu_interfaces.action import TeleopSession as TeleopAction
 from bindu_interfaces.msg import VRInput, ExecutionState, RecorderHealth, MotionCommand, TeleopModeState, ToolPoseInput
 from bindu_interfaces.srv import Lease, SubmitMotion, ControlExecution
@@ -740,7 +740,7 @@ class BimanualToolNode(RuntimeNode):
                             # No servo trajectory exists before the first accepted
                             # target; use the authenticated hold/goal guard once.
                             if self.trajectory_reference and not trajectory_bootstrap:
-                                from .snowbot_position_session import sampled_nominal_reference
+                                from snowbot_hardware.position_session import sampled_nominal_reference
                                 executed,_=sampled_nominal_reference(s,self.names,lease.epoch,self.now(),
                                     min(.1,self.cfg['feedback_max_age']))
                             reference_lead,budgets=reference_tracking_budget(work_reference,
@@ -917,7 +917,7 @@ class BimanualToolNode(RuntimeNode):
                             'will_reject':gap>reference.max_sample_gap}),goal.request.task_id)
                     execution_sample=None
                     if operation=='solve' and self.trajectory_reference and not trajectory_bootstrap:
-                        from .snowbot_position_session import sampled_nominal_reference
+                        from snowbot_hardware.position_session import sampled_nominal_reference
                         if trajectory_reference_deadline is None:
                             trajectory_reference_deadline=time.monotonic()+reference.max_sample_gap
                         sample=sampled_nominal_reference(s,self.names,lease.epoch,sampled_at,

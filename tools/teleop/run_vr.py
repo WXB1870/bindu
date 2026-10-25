@@ -18,13 +18,13 @@ import threading
 import time
 import uuid
 
-from tools import ROOT
+from tools import ROOT, package_share
 
 
 def commands(args):
     deployment=dict(args.deployment)
     if getattr(args,'input_timing',False):deployment['input_timing_enabled']='true'
-    control = ['ros2', 'launch', 'bindu_runtime', args.launch,
+    control = ['ros2', 'launch', getattr(args, 'launch_package', 'bindu_runtime'), args.launch,
                *[f'{key}:={value}' for key,value in deployment.items() if value!=''],
                f'run_id:={args.run_id}']
     display = [sys.executable, '-m', 'tools.teleop.snowbot_live', '--dashboard',
@@ -59,7 +59,7 @@ def check(args):
     elif args.host not in ('127.0.0.1','localhost','::1'):
         raise ValueError('局域网头显入口需要配置 TLS 证书和私钥')
     from bindu_runtime.robot_setup import RobotSetup
-    from bindu_hardware.snowbot_gripper import validate_config
+    from snowbot_hardware.gripper import validate_config
     import json
     robot=RobotSetup.load(args.deployment['robot_config'])
     tool=json.loads(robot.tool_config.read_text())
@@ -196,6 +196,9 @@ def run(args):
                 diagnostic_format='JSONL: received_at, received_monotonic_ns, data; ROS fields retained',
                 diagnostic_chunk_bytes=128*1024*1024, process_log_repeat_interval_s=5.,
                 process_log_health='process-log-health.json')
+            # Keep CLI overrides next to file provenance; the selected site may
+            # differ from the values actually passed to the control processes.
+            manifest['effective_arguments'] = dict(args.deployment)
             (args.output/'session.json').write_text(json.dumps(manifest,ensure_ascii=False,indent=2))
             if args.diagnostics:
                 from tools.teleop.snowbot_diagnostics import DiagnosticWriter
@@ -263,7 +266,7 @@ def copy_output(child, path, writer=None):
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description='从部署配置启动 VR 遥操作与电脑界面。')
     parser.add_argument('--config', type=Path,
-                        default=os.environ.get('BINDU_VR_CONFIG') or ROOT/'src/integration/bindu_runtime/config/deployments/snowbot_vr_sim.json',
+                        default=os.environ.get('BINDU_VR_CONFIG'),
                         help='部署配方；默认使用 BINDU_VR_CONFIG 或仓库仿真配方')
     parser.add_argument('--diagnostics', action=argparse.BooleanOptionalAction, default=True,
                         help='默认异步记录采样输入、反馈、事件与进程输出；--no-diagnostics 关闭')
@@ -305,7 +308,10 @@ def parse_args(argv=None):
     args.run_id=args.run_id or 'vr_'+uuid.uuid4().hex[:12]
     from ament_index_python.packages import get_package_share_directory
     from bindu_runtime.teleop_deployment import load_deployment
+    if args.config is None:
+        args.config = package_share('snowbot_bringup')/'config/deployments/snowbot_vr_sim.json'
     args.launch,args.deployment=load_deployment(args.config,get_package_share_directory('bindu_runtime'))
+    args.launch_package=json.loads(Path(args.config).read_text()).get('robot_package','bindu_runtime')
     d=args.deployment
     if args.enable_commands:
         if (d.get('runtime_mode') != 'real' or d.get('device_backend') != 'snowbot_vendor' or
@@ -318,7 +324,7 @@ def parse_args(argv=None):
         if d.get('runtime_mode')!='simulation':parser.error('--physics 仅允许仿真配置')
         d['device_backend']='external_simulation'
     if d.get('device_backend')=='external_simulation' and not d.get('physics_config'):
-        d['physics_config']=str(Path(get_package_share_directory('bindu_runtime'))/'config/robots/snowbot/snowbot_shovel_physics.json')
+        d['physics_config']=str(package_share('snowbot_bringup')/'config/robots/snowbot/snowbot_shovel_physics.json')
     if (args.launch!='robot_teleop.launch.py' or d.get('position_contract')!='true' or
             d.get('pico_enabled')!='true' or d.get('vr_enabled')!='true'):
         parser.error('此入口要求启用 position_contract、PICO 和 VR 的部署配置')

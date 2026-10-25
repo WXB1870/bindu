@@ -3,6 +3,7 @@ import importlib
 import hashlib
 import json
 import math
+import os
 import time
 import uuid
 from pathlib import Path
@@ -104,20 +105,30 @@ def check_installed_configs(paths, share):
     """Site overrides are independent; package configs must match this checkout."""
     source_share = ROOT/'src/integration/bindu_runtime'
     share = Path(share).resolve()
+    owners = [(source_share, share)]
+    application = os.environ.get('BINDU_APPLICATION_SOURCE')
+    if application:
+        from ament_index_python.packages import get_package_share_directory
+        for name in ('snowbot_bringup', 'snowbot_description'):
+            source = Path(application).resolve()/'src'/name
+            if not (source/'package.xml').is_file():
+                raise ValueError('APPLICATION_SOURCE_MISSING:'+str(source))
+            owners.append((source, Path(get_package_share_directory(name)).resolve()))
     for value in paths:
         if not value:
             continue
         installed = Path(value).resolve()
-        if installed.is_relative_to(share):
-            source = source_share/installed.relative_to(share)
-            if not source.is_file() or source.read_bytes() != installed.read_bytes():
-                raise ValueError('安装配置与源码不同，请重建：'+str(source))
+        for source_root, installed_root in owners:
+            if installed.is_relative_to(installed_root):
+                source = source_root/installed.relative_to(installed_root)
+                if not source.is_file() or source.read_bytes() != installed.read_bytes():
+                    raise ValueError('安装配置与源码不同，请重建：'+str(source))
 
 
 def check_runtime(args, robot):
     """Load native libraries/typesupport and construct QP; no targets or device IO."""
     if args['runtime_mode'] == 'real':
-        from bindu_hardware.snowbot import SnowbotIO
+        from snowbot_hardware.protocol import SnowbotIO
         # Match the adapter's profile guard before launching any control node.
         # Construction is passive; no device or ROS publisher is created.
         SnowbotIO(robot.profile, lambda *_: None, lambda: 0., command_enabled=False)
@@ -176,7 +187,7 @@ def check_runtime(args, robot):
 
 def inspect_vendor_messages(command_type, feedback_type):
     """ROS type support alone does not establish the actual field contract."""
-    from bindu_hardware.snowbot import feedback_schema
+    from snowbot_hardware.protocol import feedback_schema
     report = feedback_schema(feedback_type.get_fields_and_field_types())
     command = command_type.get_fields_and_field_types()
     for name in ('l_arm_position', 'r_arm_position'):
@@ -320,7 +331,7 @@ def inspect_position_routes(args, node):
 
 def assess_robot_interface(args, node, messages, now, health):
     """Combine endpoint identity, actual measured fields and advancing PDO health."""
-    from bindu_hardware.snowbot import GROUPS, decode_feedback
+    from snowbot_hardware.protocol import GROUPS, decode_feedback
     errors = inspect_vendor_endpoints(args, node)
     missing = list(GROUPS)
     feedback_usable = False
@@ -366,7 +377,7 @@ def check_robot_interface(args, timeout=2.):
     from rclpy.qos import qos_profile_sensor_data
     from snowbot_ctl_msgs.msg import RetInformation
     from std_msgs.msg import String
-    from bindu_hardware.snowbot import VendorHealth
+    from snowbot_hardware.protocol import VendorHealth
     rclpy.init(args=[])
     node = rclpy.create_node('bindu_interface_check_'+uuid.uuid4().hex[:8])
     now = lambda: node.get_clock().now().nanoseconds*1e-9
@@ -398,8 +409,8 @@ def check_position_session(args, timeout):
     from rclpy.qos import qos_profile_sensor_data
     from snowbot_ctl_msgs.msg import (PositionObservation, PositionSessionState,
         PositionSessionCommand, PositionSessionUpper, PositionSessionServo)
-    from bindu_hardware.snowbot_session import SessionHealth, CONTROL_GROUPS, decode_observation
-    from bindu_hardware.snowbot import GROUPS
+    from snowbot_hardware.session import SessionHealth, CONTROL_GROUPS, decode_observation
+    from snowbot_hardware.protocol import GROUPS
     rclpy.init(args=[])
     node = rclpy.create_node('bindu_position_check_'+uuid.uuid4().hex[:8])
     health = SessionHealth(lambda: node.get_clock().now().nanoseconds*1e-9,

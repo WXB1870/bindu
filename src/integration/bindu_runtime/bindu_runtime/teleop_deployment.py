@@ -1,8 +1,10 @@
 """Validate a small deployment recipe. No hardware enable or startup motion."""
 import json
 import math
+import hashlib
 from pathlib import Path
 from bindu_contracts.runtime_mode import resolve_mode
+from bindu_contracts.resources import resource_file
 
 
 COMMON = {'namespace', 'profile', 'bimanual_config', 'side', 'tool_input_source',
@@ -43,9 +45,12 @@ def load_deployment(path, share):
     path, share = Path(path).resolve(), Path(share).resolve()
     data = json.loads(path.read_text())
     version = data.get('schema_version')
-    if (set(data) != {'schema_version', 'robot_launch', 'arguments'} or
+    if (not {'schema_version', 'robot_launch', 'arguments'} <= set(data) or
+            set(data)-{'schema_version', 'robot_package', 'robot_launch', 'arguments'} or
             type(version) is not int or version not in (1, 2)):
         raise ValueError('TELEOP_DEPLOYMENT_SCHEMA')
+    if data.get('robot_package', 'bindu_runtime') not in ('bindu_runtime', 'snowbot_bringup'):
+        raise ValueError('TELEOP_DEPLOYMENT_PACKAGE')
     launch = data['robot_launch']
     # Add robot assemblies when they expose the same bounded teleop contract.
     execution_only = version == 2 and launch == 'snowbot_adapter.launch.py'
@@ -122,13 +127,55 @@ def load_deployment(path, share):
         if key in PATHS and value:
             if not isinstance(value, str):
                 raise ValueError('TELEOP_DEPLOYMENT_PATH:'+key)
-            # @runtime/ resolves against the installed package, otherwise config-relative.
-            resolved = share/value[9:] if value.startswith('@runtime/') else path.parent/value
-            value = str(resolved.resolve())
+            # Installed application resources are explicit; old @runtime stays readable.
+            if value.startswith('package://'):
+                value = str(resource_file(value))
+            else:
+                if value.startswith('@runtime/config/robots/snowbot/'):
+                    # Legacy site recipes retain their spelling, with one maintained source.
+                    value = str(resource_file('package://snowbot_bringup/'+value[9:]))
+                    resolved = Path(value)
+                else:
+                    resolved = share/value[9:] if value.startswith('@runtime/') else path.parent/value
+                value = str(resolved.resolve())
             if key != 'output' and not Path(value).is_file():
                 raise ValueError('TELEOP_DEPLOYMENT_MISSING:'+key)
         result[key] = str(value).lower() if type(value) is bool else str(value)
     return launch, result
+
+
+def configuration_snapshot(path, share):
+    """Resolve the application once and record effective inputs without ROS IO.
+
+    TLS material is never opened here. Execution and device guards still
+    validate the values independently at their respective trust boundaries.
+    """
+    from .robot_setup import RobotSetup
+    launch, arguments = load_deployment(path, share)
+    files = {'deployment': Path(path).resolve()}
+    for key in ('robot_config', 'profile', 'pico_config', 'gripper_config', 'base_config', 'physics_config'):
+        if arguments.get(key):
+            files[key] = Path(arguments[key])
+    if arguments.get('robot_config'):
+        robot = RobotSetup.load(arguments['robot_config'])
+        files.update(profile=robot.profile_path, tool=robot.tool_config,
+                     urdf=robot.urdf, display_urdf=robot.display_urdf)
+        files.update({'single_arm_'+side: value for side, value in robot.single_arm.items()})
+    sources = {}
+    for key, source in files.items():
+        raw = source.read_bytes()
+        entry = {'path': str(source), 'sha256': hashlib.sha256(raw).hexdigest()}
+        if source.suffix == '.json':
+            entry['values'] = json.loads(raw)
+        sources[key] = entry
+    fingerprint = hashlib.sha256(json.dumps(
+        {'launch': launch, 'arguments': arguments,
+         'files': {key: value['sha256'] for key, value in sources.items()}},
+        sort_keys=True).encode()).hexdigest()
+    return {'schema': 1, 'launch': launch,
+            'package': json.loads(Path(path).read_text()).get('robot_package', 'bindu_runtime'),
+            'arguments': arguments,
+            'sources': sources, 'sha256': fingerprint}
 
 
 def apply_execution_tracking(config, mode='position', *, real, position_contract,

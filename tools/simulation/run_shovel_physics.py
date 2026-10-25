@@ -7,6 +7,7 @@ No ROS/hardware transport is created. This is an empty-shovel load experiment,
 using CAD jaw contacts by default. Jaw effort, friction and low-level drive
 parameters are simulation assumptions, not measured hardware parameters.
 """
+from tools import package_share
 import argparse
 import hashlib
 import json
@@ -69,7 +70,7 @@ def build_scene(motion, cfg, output):
     from isaacsim.asset.importer.urdf import URDFImporter, URDFImporterConfig
     source = Path(motion['display_urdf'])
     tree = ET.parse(source)
-    prefix = 'package://bindu_description/'
+    prefix = 'package://snowbot_description/'
     for mesh in tree.findall('.//mesh'):
         uri = mesh.get('filename')
         if not uri.startswith(prefix):
@@ -723,7 +724,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('motion', type=Path)
     parser.add_argument('--output', type=Path, required=True)
-    parser.add_argument('--config', type=Path, default=ROOT/'src/integration/bindu_runtime/config/robots/snowbot/snowbot_shovel_physics.json')
+    parser.add_argument('--config', type=Path, default=package_share("snowbot_bringup")/'config/robots/snowbot/snowbot_shovel_physics.json')
     parser.add_argument('--case', default='baseline')
     parser.add_argument('--duration', type=float, help='Optional shorter simulated motion interval for diagnostics')
     parser.add_argument('--gui', action='store_true')

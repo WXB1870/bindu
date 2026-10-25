@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 from bindu_contracts.teleoperation import VRFrame
 from bindu_teleoperation.vr.receiver import decode_controller, ButtonCounters
-from bindu_teleoperation.pico import PicoControl, PicoFeedback, PICO_MAPPING
+from snowbot_teleop.control import PicoControl, PicoFeedback, PICO_MAPPING
 from bindu_teleoperation.bimanual_session import BimanualSession
 
 
@@ -87,7 +87,7 @@ class PicoHUDTests(unittest.TestCase):
         self.assertEqual((stopped['state'],stopped['title'],stopped['action']),('stopped','已确认停稳','B 恢复待命'))
 
     def test_b_stop_guidance_does_not_offer_reengagement_as_mode_switch(self):
-        from bindu_teleoperation.pico import loading_guide
+        from snowbot_teleop.control import loading_guide
         from bindu_teleoperation.vr.hud import hud_spec
         for phase in ('standby','tool_standby'):
             for mode,target in (('independent_arms','扫雪耦合'),('bimanual_tool','普通双臂')):

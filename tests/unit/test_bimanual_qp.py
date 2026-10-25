@@ -1,4 +1,5 @@
 """Native integration gate; skips when the optional QP package is not installed."""
+from bindu_contracts.resources import package_share
 from tests.support.paths import ROOT
 import json
 import tempfile
@@ -140,11 +141,11 @@ class InitialCollisionRecoveryTests(unittest.TestCase):
 
     def test_recorded_collision_has_a_bounded_exit_and_strict_remaining_path(self):
         from bindu_kinematics.tool_geometry import make_collision_checker
-        base=ROOT/'src/integration/bindu_runtime/config/robots/snowbot'
+        base=package_share('snowbot_bringup')/'config/robots/snowbot'
         config=json.loads((base/'bimanual_snowbot_real.json').read_text())
         pico=json.loads((base/'pico_snowbot_position_sim.json').read_text())
         feedback=json.loads((ROOT/'tests/config/teleoperation/snowbot_prepare_collision.json').read_text())['feedback']
-        description=Path(get_package_prefix('bindu_description'))/'share/bindu_description/urdf'
+        description=package_share('snowbot_description')/'urdf'
         recipe=dict(config['demo']);recipe['left_grip_in_tool_m']=(np.linalg.inv(np.array(config['left_to_tool']).reshape(4,4)) @ np.r_[recipe['grip_offset_m'],1.])[:3].tolist()
         check=make_collision_checker(description/recipe['display_urdf'],recipe,conservative_convex=True,
                                      tool_present=False,validation_only=True)
@@ -411,8 +412,8 @@ class CandidateGeometryBacktracking(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.config=json.loads((ROOT/'src/integration/bindu_runtime/config/robots/snowbot/bimanual_snowbot_real.json').read_text())
-        cls.config['urdf']=str(ROOT/'src/hardware/bindu_description/urdf/snowbot_control.urdf')
+        cls.config=json.loads((package_share("snowbot_bringup")/'config/robots/snowbot/bimanual_snowbot_real.json').read_text())
+        cls.config['urdf']=str(package_share("snowbot_description")/'urdf/snowbot_control.urdf')
         cls.config['demo']['max_grasp_penetration_m']=.0005
         # These historical collision fixtures exercise the optional contact
         # checker even when the deployed recipe exempts shaft/gripper contact.
@@ -420,7 +421,7 @@ class CandidateGeometryBacktracking(unittest.TestCase):
         # Freeze the origin-task semantics of these historical fault fixtures.
         cls.config['tool_tracking_point_in_tool_m']=[0.,0.,0.]
         cls.config.pop('coupled_locked_joints',None)
-        cls.profile=Profile.load(ROOT/'src/integration/bindu_runtime/config/robots/snowbot/snowbot_real_position.json')
+        cls.profile=Profile.load(package_share("snowbot_bringup")/'config/robots/snowbot/snowbot_real_position.json')
         recorded=json.loads((ROOT/'tests/config/teleoperation/snowbot_candidate_steps.json').read_text())
         cls.config.update(recorded['recorded_config'])
         # Preserve the original geometry fixtures independently of live thresholds.
@@ -569,7 +570,7 @@ class CandidateGeometryBacktracking(unittest.TestCase):
             finally:qp.close()
 
     def test_real_recipe_retains_reviewed_grasp_and_solver_limits(self):
-        cfg=json.loads((ROOT/'src/integration/bindu_runtime/config/robots/snowbot/bimanual_snowbot_real.json').read_text())
+        cfg=json.loads((package_share("snowbot_bringup")/'config/robots/snowbot/bimanual_snowbot_real.json').read_text())
         # Real recipe; the operator selected 0.05 rad on 2026-10-25.
         self.assertEqual(cfg['grasp_position_tolerance_m'],.06)
         self.assertEqual(cfg['grasp_rotation_tolerance_rad'],.05)
@@ -1340,9 +1341,9 @@ class NativeBimanual(unittest.TestCase):
                 solver.close()
 
     def test_snowbot_cad_waist_and_seven_axis_arm_layout(self):
-        config=json.loads((ROOT/'src/integration/bindu_runtime/config/robots/snowbot/bimanual_snowbot_sim.json').read_text())
-        config['urdf']=str(ROOT/'src/hardware/bindu_description/urdf/snowbot_control.urdf')
-        profile=Profile.load(ROOT/'src/integration/bindu_runtime/config/robots/snowbot/snowbot_sim.json')
+        config=json.loads((package_share("snowbot_bringup")/'config/robots/snowbot/bimanual_snowbot_sim.json').read_text())
+        config['urdf']=str(package_share("snowbot_description")/'urdf/snowbot_control.urdf')
+        profile=Profile.load(package_share("snowbot_bringup")/'config/robots/snowbot/snowbot_sim.json')
         solver=BimanualQP(config,profile)
         try:
             self.assertEqual(solver.names[:2],('body_joint_1','body_joint_2'))
@@ -1368,9 +1369,9 @@ class NativeBimanual(unittest.TestCase):
             solver.close()
 
     def test_shovel_grasp_checks_orientation_and_invalidates_failed_capture(self):
-        config=json.loads((ROOT/'src/integration/bindu_runtime/config/robots/snowbot/bimanual_snowbot_shovel.json').read_text())
-        config['urdf']=str(ROOT/'src/hardware/bindu_description/urdf/snowbot_control.urdf')
-        profile=Profile.load(ROOT/'src/integration/bindu_runtime/config/robots/snowbot/snowbot_sim.json')
+        config=json.loads((package_share("snowbot_bringup")/'config/robots/snowbot/bimanual_snowbot_shovel.json').read_text())
+        config['urdf']=str(package_share("snowbot_description")/'urdf/snowbot_control.urdf')
+        profile=Profile.load(package_share("snowbot_bringup")/'config/robots/snowbot/snowbot_sim.json')
         solver=BimanualQP(config,profile)
         self.addCleanup(solver.close)
         ready=dict(config['demo']['initial_positions_rad'])
@@ -1391,9 +1392,9 @@ class NativeBimanual(unittest.TestCase):
         self.assertLess(metrics[1],1e-6)
 
     def test_shovel_grasp_rejects_inconsistent_second_attachment(self):
-        config=json.loads((ROOT/'src/integration/bindu_runtime/config/robots/snowbot/bimanual_snowbot_shovel.json').read_text())
-        config['urdf']=str(ROOT/'src/hardware/bindu_description/urdf/snowbot_control.urdf')
-        profile=Profile.load(ROOT/'src/integration/bindu_runtime/config/robots/snowbot/snowbot_sim.json')
+        config=json.loads((package_share("snowbot_bringup")/'config/robots/snowbot/bimanual_snowbot_shovel.json').read_text())
+        config['urdf']=str(package_share("snowbot_description")/'urdf/snowbot_control.urdf')
+        profile=Profile.load(package_share("snowbot_bringup")/'config/robots/snowbot/snowbot_sim.json')
         attachment=np.array(config['right_to_tool']).reshape(4,4)
         attachment[0,3]+=.02
         config['right_to_tool']=attachment.ravel().tolist()
@@ -1470,9 +1471,9 @@ class AxialShovelTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'REQUIRES_RIGID'):solver.capture(q,'right_axial')
 
     def setUp(self):
-        self.cfg=json.loads((ROOT/'src/integration/bindu_runtime/config/robots/snowbot/bimanual_snowbot_shovel.json').read_text())
-        self.cfg['urdf']=str(ROOT/'src/hardware/bindu_description/urdf/snowbot_control.urdf')
-        self.profile=Profile.load(ROOT/'src/integration/bindu_runtime/config/robots/snowbot/snowbot_sim.json')
+        self.cfg=json.loads((package_share("snowbot_bringup")/'config/robots/snowbot/bimanual_snowbot_shovel.json').read_text())
+        self.cfg['urdf']=str(package_share("snowbot_description")/'urdf/snowbot_control.urdf')
+        self.profile=Profile.load(package_share("snowbot_bringup")/'config/robots/snowbot/snowbot_sim.json')
         self.qp=BimanualQP(self.cfg,self.profile)
         self.addCleanup(self.qp.close)
         self.ready=self.cfg['demo']['initial_positions_rad']

@@ -1,4 +1,5 @@
 """Production solve/contact guard checks; no ROS or hardware."""
+from bindu_contracts.resources import package_share
 import ast
 import ctypes as c
 import math
@@ -28,7 +29,7 @@ class ShaftContactBandTests(unittest.TestCase):
 
     def test_recorded_recenterings_clip_only_the_outside_part(self):
         import json
-        config=Path(__file__).resolve().parents[2]/'src/integration/bindu_runtime/config/robots/snowbot/bimanual_snowbot_real.json'
+        config=package_share('snowbot_bringup')/'config/robots/snowbot/bimanual_snowbot_real.json'
         tolerance=json.loads(config.read_text())['demo']['shaft_contact_endpoint_tolerance_m']
         for center in (-.3431461408896104, -.3431818229817779, -.34047735756758685,
                        -.3404849855910973, -.3404773575675868, -.3404779169447534):

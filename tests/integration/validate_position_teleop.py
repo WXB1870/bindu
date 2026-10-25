@@ -3,6 +3,7 @@
 
 Requires an isolated localhost ROS domain. Never starts vendor drivers or SOEM.
 """
+from bindu_contracts.resources import package_share
 from tests.support.paths import ROOT
 import argparse
 import json
@@ -23,10 +24,10 @@ from bindu_interfaces.srv import Lease, SubmitMotion, PicoContext
 from bindu_runtime.common import stamp, seconds
 from bindu_contracts.teleoperation import VRFrame
 from bindu_teleoperation.vr.receiver import ButtonCounters
-from bindu_hardware.snowbot import GROUPS
+from snowbot_hardware.protocol import GROUPS
 from tests.support.snowbot import until, call, terminate
 
-CFG=ROOT/'src/integration/bindu_runtime/config/robots/snowbot'
+CFG=package_share('snowbot_bringup')/'config/robots/snowbot'
 
 
 def websocket_input(port, source, stop, errors):

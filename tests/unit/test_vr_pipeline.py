@@ -4,6 +4,7 @@ Vuer 0.0.60 is used to decode/dispatch recorded-timing synthetic controller
 events. Only clock, websocket transport, and ROS message/publisher boundaries
 are supplied. These tests do not identify the cause of the historical gap.
 """
+from bindu_contracts.resources import package_share
 import ast
 import asyncio
 import json
@@ -71,7 +72,7 @@ class TimingSummaries(unittest.TestCase):
                     if value not in ('true','false'):raise ValueError(value)
                     return value=='true'
                 return self.type(value)
-        config=runtime/'config/robots/snowbot'
+        config=package_share('snowbot_bringup')/'config/robots/snowbot'
         robot=S(robot_id='snowbot',single_arm={},
                 tool_config=config/'bimanual_snowbot_sim.json',base_frame='base_link',
                 active_joints=(),context_joints=(),profile_path=Path('profile'),
@@ -79,12 +80,12 @@ class TimingSummaries(unittest.TestCase):
         # Use the production selection's tool path; no invented tool settings.
         selection=json.loads((config/'robot_snowbot.json').read_text())
         robot.tool_config=config/selection['teleop']['tool']
-        assembly=load_definition(runtime/'bindu_runtime/teleop_assembly.py','assemble',
+        assembly=load_definition(package_share('snowbot_bringup')/'snowbot_bringup/assembly.py','assemble',
             dict(Path=Path,json=json,TARGET_STREAM_LIMIT_DEFAULTS=TARGET_STREAM_LIMIT_DEFAULTS,
                  target_stream_limits=target_stream_limits,LaunchConfiguration=Configuration,ParameterValue=Parameter,
                  IfCondition=lambda v:v,LogInfo=lambda **kw:kw,Node=lambda **kw:kw,
                  RobotSetup=S(load=lambda *args,**kw:robot),resolve_mode=lambda mode:mode))
-        launch=load_definition(runtime/'launch/robot_teleop.launch.py','generate_launch_description',
+        launch=load_definition(package_share('snowbot_bringup')/'launch/robot_teleop.launch.py','generate_launch_description',
             dict(Path=Path,TARGET_STREAM_LIMIT_DEFAULTS=TARGET_STREAM_LIMIT_DEFAULTS,uuid=S(uuid4=lambda:S(hex='offline')),
                  get_package_share_directory=lambda _:str(runtime),LaunchDescription=lambda x:x,
                  DeclareLaunchArgument=lambda name,default_value:(name,default_value),
@@ -130,8 +131,8 @@ class TimingSummaries(unittest.TestCase):
 
     def test_coordinator_gap_labels_ros_clock_separately_from_monotonic(self):
         from bindu_contracts.teleoperation import VRFrame
-        from bindu_teleoperation.pico import PicoControl,PicoFeedback,PICO_MAPPING
-        path=ROOT/'src/integration/bindu_runtime/bindu_runtime/pico_node.py'
+        from snowbot_teleop.control import PicoControl,PicoFeedback,PICO_MAPPING
+        path=package_share('snowbot_teleop')/'snowbot_teleop/node.py'
         node=next(n for n in ast.parse(path.read_text()).body if isinstance(n,ast.ClassDef) and n.name=='PicoNode')
         method=next(n for n in node.body if getattr(n,'name','')=='on_frame')
         clock=S(ros=100.,mono=10.)

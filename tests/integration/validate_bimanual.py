@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Synthetic two-arm ROS gate: manual mode, QP, shared execution, cancel."""
+from bindu_contracts.resources import package_share
 from tests.support.paths import ROOT
 from tests.support.bimanual_trace import check_tool_trace
 import argparse
@@ -127,10 +128,10 @@ def main():
     right=['right_joint_'+str(k) for k in range(1,7)]
     physics_model=None
     if args.snowbot:
-        profile=root/'src/integration/bindu_runtime/config/robots/snowbot/snowbot_sim.json'
-        config=root/'src/integration/bindu_runtime/config/robots/snowbot/bimanual_snowbot_sim.json'
+        profile=package_share('snowbot_bringup')/'config/robots/snowbot/snowbot_sim.json'
+        config=package_share('snowbot_bringup')/'config/robots/snowbot/bimanual_snowbot_sim.json'
         if args.axial_grasp:
-            config=root/'src/integration/bindu_runtime/config/robots/snowbot/bimanual_snowbot_shovel.json'
+            config=package_share('snowbot_bringup')/'config/robots/snowbot/bimanual_snowbot_shovel.json'
             profile=config.parent/json.loads(config.read_text())['demo']['profile']
         if args.expect_geometry_rejection:
             invalid=json.loads(config.read_text())
@@ -205,15 +206,15 @@ def main():
                              '-p','input_source:='+('tool_pose' if args.tool_pose_input else 'vr')] if args.snowbot else [])
         start('teleop_tool',['-p','tool_config:='+str(config),
                             '-p','input_source:='+('tool_pose' if args.tool_pose_input else 'vr'),
-                            '-p','model_root:='+str((root/'src/hardware/bindu_description/urdf')
+                            '-p','model_root:='+str((package_share('snowbot_description')/'urdf')
                                                     if physics_model or args.snowbot else fixture.parent)])
         if args.snowbot:
-            start('teleop',['-p','teleop_config:='+str(root/'src/integration/bindu_runtime/config/robots/snowbot/teleop_snowbot_left.json'),
-                            '-p','model_root:='+str(root/'src/hardware/bindu_description/urdf'),
+            start('teleop',['-p','teleop_config:='+str(package_share('snowbot_bringup')/'config/robots/snowbot/teleop_snowbot_left.json'),
+                            '-p','model_root:='+str(package_share('snowbot_description')/'urdf'),
                             '-p','require_mode_selection:=true'])
         if args.tool_display:
             start('teleop_display',['-p','tool_config:='+str(config),
-                '-p','model_root:='+str(root/'src/hardware/bindu_description/urdf')])
+                '-p','model_root:='+str(package_share('snowbot_description')/'urdf')])
             def on_display(msg):
                 data=json.loads(msg.data)
                 state['display']=data
@@ -264,7 +265,7 @@ def main():
             sys.path.insert(0,str(root))
             from tools.analysis.plan_shovel_motion import target_at,grasp_mode_at
             tool_cfg=json.loads(config.read_text());recipe=tool_cfg['demo']
-            tool_cfg['urdf']=str(root/'src/hardware/bindu_description/urdf'/tool_cfg['urdf'])
+            tool_cfg['urdf']=str(package_share('snowbot_description')/'urdf'/tool_cfg['urdf'])
             solver=BimanualQP(tool_cfg,Profile.load(profile))
             try:home=solver.capture(recipe['initial_positions_rad'])
             finally:solver.close()
@@ -385,7 +386,7 @@ def main():
             # Freeze motion-period timing before the CPU-heavy offline CAD audit.
             motion_source_timing=dict(source_timing)
             tracking=check_tool_trace(state['trace'],state['tool_inputs'],tool_cfg,
-                                      root/'src/hardware/bindu_description/urdf',output,
+                                      package_share('snowbot_description')/'urdf',output,
                                       captures=[dict(t=json.loads(e[2])['input_stamp'],mode=json.loads(e[2])['grasp_mode'])
                                                 for e in state['events'] if e[1]=='BIMANUAL_CAPTURED'])
             result={'status':'passed','tracking':tracking,'input':'ToolPoseInput','scope':'production ROS, QP, executor, ideal simulated joints',

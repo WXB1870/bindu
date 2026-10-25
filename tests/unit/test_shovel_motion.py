@@ -1,4 +1,5 @@
 """Ground and tool/body clearance regressions against the Snowbot CAD model."""
+from bindu_contracts.resources import package_share
 from tests.support.paths import ROOT
 import copy
 import json
@@ -19,9 +20,9 @@ from bindu_kinematics.tool_geometry import tracking_acceptance, coupling_metrics
 class ShovelGeometryTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.config_path = ROOT/'src/integration/bindu_runtime/config/robots/snowbot/bimanual_snowbot_shovel.json'
+        cls.config_path = package_share("snowbot_bringup")/'config/robots/snowbot/bimanual_snowbot_shovel.json'
         cls.config = json.loads(cls.config_path.read_text())
-        cls.urdf = ROOT/'src/hardware/bindu_description/urdf/snowbot_display.urdf'
+        cls.urdf = package_share("snowbot_description")/'urdf/snowbot_display.urdf'
         cls.recipe = copy.deepcopy(cls.config['demo'])
         positions = cls.recipe['initial_positions_rad']
         model = pin.buildModelFromUrdf(str(cls.urdf))
@@ -86,7 +87,7 @@ class ShovelGeometryTests(unittest.TestCase):
 
     def test_measured_band_intersects_physical_rod_without_widening_contact(self):
         from bindu_kinematics.tool_geometry import make_collision_checker
-        cfg=json.loads((ROOT/'src/integration/bindu_runtime/config/robots/snowbot/bimanual_snowbot_real.json').read_text())
+        cfg=json.loads((package_share("snowbot_bringup")/'config/robots/snowbot/bimanual_snowbot_real.json').read_text())
         recipe=cfg['demo'];recipe['left_grip_in_tool_m']=self.recipe['left_grip_in_tool_m']
         checker=make_collision_checker(self.urdf,recipe,conservative_convex=True)
         right=[n for n,b in recipe['shaft_contacts'].items() if b['grip']=='right']
@@ -167,7 +168,7 @@ class ShovelGeometryTests(unittest.TestCase):
         import tempfile,xml.etree.ElementTree as ET
         from bindu_teleoperation.vr.model import prepare_model
         from bindu_kinematics.tool_geometry import make_collision_checker
-        path=ROOT/'src/integration/bindu_runtime/config/robots/snowbot/bimanual_snowbot_real.json'
+        path=package_share("snowbot_bringup")/'config/robots/snowbot/bimanual_snowbot_real.json'
         cfg=json.loads(path.read_text());recipe=cfg['demo']
         grips=[(np.linalg.inv(np.array(cfg[side+'_to_tool']).reshape(4,4)) @
                 np.r_[recipe.get(side+'_grip_offset_m',recipe['grip_offset_m']),1.])[:3]
@@ -288,7 +289,7 @@ class ShovelGeometryTests(unittest.TestCase):
         self.assertLess(result['min_tool_ground_clearance_m'],.05)
 
     def test_real_deployment_relative_grip_acceptance_is_one_cm(self):
-        config=json.loads((ROOT/'src/integration/bindu_runtime/config/robots/snowbot/bimanual_snowbot_real.json').read_text())
+        config=json.loads((package_share("snowbot_bringup")/'config/robots/snowbot/bimanual_snowbot_real.json').read_text())
         self.assertEqual(config['demo']['acceptance']['max_grip_error_m'],.01)
         reference=dict(t=0.,flanges={config['left_frame']:np.linalg.inv(np.array(config['left_to_tool']).reshape(4,4)),
                                     config['right_frame']:np.linalg.inv(np.array(config['right_to_tool']).reshape(4,4))})
@@ -451,8 +452,8 @@ class ShovelGeometryTests(unittest.TestCase):
         from bindu_contracts.teleoperation import ToolPoseFrame
         from bindu_kinematics.bimanual import BimanualQP
         cfg=copy.deepcopy(self.config)
-        cfg['urdf']=str(ROOT/'src/hardware/bindu_description/urdf'/cfg['urdf'])
-        profile=Profile.load(ROOT/'src/integration/bindu_runtime/config/robots/snowbot'/cfg['demo']['profile'])
+        cfg['urdf']=str(package_share('snowbot_description')/'urdf'/cfg['urdf'])
+        profile=Profile.load(package_share('snowbot_bringup')/'config/robots/snowbot'/cfg['demo']['profile'])
         runs=[]
         for future_direction in (-1.,1.):
             solver=BimanualQP(cfg,profile)
@@ -489,7 +490,7 @@ class OnlineGeometryTests(unittest.TestCase):
         from bindu_contracts.teleoperation import ToolPoseFrame
         from bindu_kinematics.bimanual import BimanualQP
         cfg=copy.deepcopy(self.config)
-        cfg['urdf']=str(ROOT/'src/hardware/bindu_description/urdf'/cfg['urdf'])
+        cfg['urdf']=str(package_share('snowbot_description')/'urdf'/cfg['urdf'])
         profile=Profile.load(self.config_path.parent/cfg['demo']['profile'])
         solver=BimanualQP(cfg,profile);self.addCleanup(solver.close)
         initial=cfg['demo']['initial_positions_rad'];home=solver.capture(initial)

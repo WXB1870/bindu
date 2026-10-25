@@ -1,4 +1,5 @@
 """Optional impedance selection and nominal tracking, without ROS or devices."""
+from bindu_contracts.resources import package_share
 import json
 from pathlib import Path
 import tempfile
@@ -12,11 +13,11 @@ SHARE = ROOT/'src/integration/bindu_runtime'
 
 class ImpedanceSelectionTests(unittest.TestCase):
     def setUp(self):
-        self.config = json.loads((SHARE/'config/robots/snowbot/bimanual_snowbot_real.json').read_text())
+        self.config = json.loads((package_share("snowbot_bringup")/'config/robots/snowbot/bimanual_snowbot_real.json').read_text())
         self.config.pop('tracking_feedback',None)  # Legacy callers without an explicit selection.
 
     def test_legacy_position_tracking_is_unchanged_without_explicit_selection(self):
-        _, args = load_deployment(SHARE/'config/deployments/snowbot_vr_real.json', SHARE)
+        _, args = load_deployment(package_share("snowbot_bringup")/'config/deployments/snowbot_vr_real.json', SHARE)
         self.assertEqual(args['execution_mode'], 'position')
         self.assertEqual(args['command_enabled'], 'false')
         self.assertIs(apply_execution_tracking(self.config, real=True, position_contract=True), self.config)
@@ -55,19 +56,19 @@ class ImpedanceSelectionTests(unittest.TestCase):
                     position_contract=True)['tracking_feedback'],'reference')
 
     def test_real_recipe_selects_measured_waist_with_continuous_arm_reference(self):
-        config=json.loads((SHARE/'config/robots/snowbot/bimanual_snowbot_real.json').read_text())
+        config=json.loads((package_share("snowbot_bringup")/'config/robots/snowbot/bimanual_snowbot_real.json').read_text())
         self.assertEqual(apply_execution_tracking(config,real=True,position_contract=True,
             trajectory_reference=True)['tracking_feedback'],'measured_shared')
 
     def test_real_sixteen_axis_nominal_config_runs_native_qp(self):
         from bindu_contracts.profile import Profile
         from bindu_kinematics.bimanual import BimanualQP
-        from bindu_hardware.snowbot import GROUPS
+        from snowbot_hardware.protocol import GROUPS
         cfg = apply_execution_tracking(self.config, 'impedance', real=True, position_contract=True)
-        cfg['urdf'] = str(ROOT/'src/hardware/bindu_description/urdf/snowbot_control.urdf')
-        profile = Profile.load(SHARE/'config/robots/snowbot/snowbot_vendor_position.json')
+        cfg['urdf'] = str(package_share("snowbot_description")/'urdf/snowbot_control.urdf')
+        profile = Profile.load(package_share("snowbot_bringup")/'config/robots/snowbot/snowbot_vendor_position.json')
         solver = BimanualQP(cfg, profile);self.addCleanup(solver.close)
-        q = json.loads((SHARE/'config/robots/snowbot/bimanual_snowbot_shovel.json').read_text())['demo']['initial_positions_rad']
+        q = json.loads((package_share("snowbot_bringup")/'config/robots/snowbot/bimanual_snowbot_shovel.json').read_text())['demo']['initial_positions_rad']
         target = solver.capture(q).copy();target[0,3] += .001
         output, _ = solver.solve(q, target, reference=[q[n] for n in solver.names], dt=.01, target_stamp=10.)
         self.assertEqual(solver.tracking_feedback, 'reference')
@@ -75,7 +76,7 @@ class ImpedanceSelectionTests(unittest.TestCase):
         self.assertEqual(len(output), 16)
 
     def test_recipe_rejects_impedance_with_legacy_or_simulation(self):
-        recipe = json.loads((SHARE/'config/deployments/snowbot_vr_real.json').read_text())
+        recipe = json.loads((package_share("snowbot_bringup")/'config/deployments/snowbot_vr_real.json').read_text())
         recipe['arguments']['execution_mode'] = 'impedance'
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp)/'recipe.json'
@@ -94,7 +95,7 @@ class ImpedanceSelectionTests(unittest.TestCase):
 class ImpedanceHealthTests(unittest.TestCase):
     def setUp(self):
         from types import SimpleNamespace as S
-        from bindu_hardware.snowbot_session import SessionHealth, CONTROL_GROUPS
+        from snowbot_hardware.session import SessionHealth, CONTROL_GROUPS
         from tests.unit.test_snowbot_position_session import observation
         self.groups = CONTROL_GROUPS
         self.health = SessionHealth(lambda: 10.001, lambda: 1.001, execution_mode='impedance')

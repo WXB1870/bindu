@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Snowbot deployment configuration, offline checks and read-only ROS observation."""
+from tools import package_share
 import argparse
 import json
 import hashlib
@@ -15,7 +16,7 @@ import uuid
 
 from tools import ROOT
 SHARE = ROOT/'src/integration/bindu_runtime'
-RECIPE = SHARE/'config/deployments/snowbot_real_teleop.json'
+RECIPE = package_share("snowbot_bringup")/'config/deployments/snowbot_real_teleop.json'
 
 
 def namespace(value):
@@ -93,7 +94,7 @@ def preflight(path):
     from tools.deployment.runtime_check import check_runtime
     report = check_runtime(args, robot)
     if args.get('gripper_config'):
-        from bindu_hardware.snowbot_gripper import validate_config
+        from snowbot_hardware.gripper import validate_config
         grippers = validate_config(json.loads(Path(args['gripper_config']).read_text()), robot.profile)
         if not grippers['calibrated']:
             print('夹爪配置未现场标定：状态可读，夹爪写入将拒绝。')

@@ -1,6 +1,6 @@
 """Bindu adapter metadata encoding; vendor implementation tests live in Snowbot."""
 import unittest
-from bindu_hardware.snowbot import guard_array
+from snowbot_hardware.protocol import guard_array
 
 class VendorGuardMetadataTests(unittest.TestCase):
     def test_guard_array_preserves_native_prefix_and_full_session(self):

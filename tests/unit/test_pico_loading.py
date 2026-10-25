@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 from bindu_contracts.teleoperation import VRFrame
 from bindu_teleoperation.vr.receiver import decode_controller, ButtonCounters
-from bindu_teleoperation.pico import PicoControl, PicoFeedback, PICO_MAPPING
+from snowbot_teleop.control import PicoControl, PicoFeedback, PICO_MAPPING
 from bindu_teleoperation.bimanual_session import BimanualSession
 
 
@@ -33,7 +33,7 @@ class DirectGripperTests(unittest.TestCase):
                     self.assertEqual(r.step()[-1].operation,'follow')
 
     def test_measured_limit_guide_survives_unlock_and_canceled_return(self):
-        from bindu_teleoperation.pico import loading_guide
+        from snowbot_teleop.control import loading_guide
         for phase in ('standby','tool_standby','preparing'):
             guide=loading_guide(dict(phase=phase,reason='PREPARE_RELEASED',
                 measured_limit_joints=['arm_l_joint_3'],teleop_mode='independent_arms'),())

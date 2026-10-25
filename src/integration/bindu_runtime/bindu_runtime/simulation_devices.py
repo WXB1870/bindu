@@ -1,7 +1,7 @@
 """Nonblocking ROS device adapters for an external physics process."""
 import math
 from bindu_contracts.devices import JointReading, BaseReading
-from bindu_hardware.snowbot import SnowbotIO
+from snowbot_hardware.protocol import SnowbotIO
 from bindu_interfaces.msg import SimulationCommand, SimulationFeedback
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 from .common import seconds, stamp

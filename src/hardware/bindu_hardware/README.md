@@ -42,9 +42,9 @@ ros2 launch bindu_runtime snowbot_adapter.launch.py \
 
 ## Snowbot 位置接入
 
-[snowbot.py](bindu_hardware/snowbot.py) 接收现场双臂及夹爪的16轴实测反馈，也兼容扩展头腰反馈；缺失轴不补零、不引用目标值或保留旧测量冒充新帧。`execution/state.missing_feedback_groups`明确列出缺失组，`joints`与反馈源时间仅含实际收到的数据。20轴profile继续保留，完整本体状态与腰臂协调不因16轴接收成功而视为已验收。该位置适配器不接底盘；可选PICO独立速度端口见[底盘适配](../../capabilities/bindu_teleoperation/README.md#底盘摇杆适配)，真实反馈及驱动超时尚待确认。
+[snowbot.py](../../../../../snowbot/src/snowbot_hardware/snowbot_hardware/protocol.py) 接收现场双臂及夹爪的16轴实测反馈，也兼容扩展头腰反馈；缺失轴不补零、不引用目标值或保留旧测量冒充新帧。`execution/state.missing_feedback_groups`明确列出缺失组，`joints`与反馈源时间仅含实际收到的数据。20轴profile继续保留，完整本体状态与腰臂协调不因16轴接收成功而视为已验收。该位置适配器不接底盘；可选PICO独立速度端口见[底盘适配](../../capabilities/bindu_teleoperation/README.md#底盘摇杆适配)，真实反馈及驱动超时尚待确认。
 
-独立[snowbot_gripper.py](bindu_hardware/snowbot_gripper.py)提供夹爪位置闭环、装卸授权、到位与保持确认，默认标定门槛禁止夹爪写入。通过健康、路由和控制权检查后才允许写位置；现有底层缺口与当前适配边界集中见[底层驱动问题记录](../../../../../snowbot/底层驱动问题记录.md)。
+独立[snowbot_gripper.py](../../../../../snowbot/src/snowbot_hardware/snowbot_hardware/gripper.py)提供夹爪位置闭环、装卸授权、到位与保持确认，默认标定门槛禁止夹爪写入。通过健康、路由和控制权检查后才允许写位置；现有底层缺口与当前适配边界集中见[底层驱动问题记录](../../../../../snowbot/底层驱动问题记录.md)。
 
 该位置入口默认只读，已供[真机最小遥操作](../../integration/bindu_runtime/README.md#snowbot-真机最小遥操作)复用；独立夹爪开合见[真实夹爪位置闭环](#snowbot真实夹爪位置闭环)，实体夹持及虚握确认仍待接入。底层已有柔顺；六维力传感器的坐标、去皮和接口仍需接入与标定。Isaac 空铲实验的载荷通路由仓库级工具单独实现，不能把本包外部仿真驱动视为现成的 Snowbot 六维传感器接口。接入状态和运行步骤见[Snowbot 位置控制适配层](#snowbot-位置控制适配层)。
 
@@ -58,14 +58,14 @@ ros2 launch bindu_runtime snowbot_adapter.launch.py \
 | [robot_io/routing.py](bindu_hardware/robot_io/routing.py) / [feedback.py](bindu_hardware/robot_io/feedback.py) | 命令分发／反馈汇总 |
 | [robot_io/odometry.py](bindu_hardware/robot_io/odometry.py) | 轮式底盘里程计 |
 | [drivers/](bindu_hardware/drivers) | 模拟关节、手、底盘及外部物理仿真驱动 |
-| [snowbot.py](bindu_hardware/snowbot.py) / [position_mapping.py](bindu_hardware/position_mapping.py) | 底层位置接口与配置映射 |
+| [snowbot.py](../../../../../snowbot/src/snowbot_hardware/snowbot_hardware/protocol.py) / [position_mapping.py](bindu_hardware/position_mapping.py) | 底层位置接口与配置映射 |
 | [soem_feedback.py](bindu_hardware/soem_feedback.py) | 二代 SOEM 反馈转换 |
 
 ## 接入与验证
 
-设备选择在 [device_assembly.py](../../integration/bindu_runtime/bindu_runtime/device_assembly.py) 完成。Snowbot ROS 适配入口为 [snowbot_adapter.py](../../integration/bindu_runtime/bindu_runtime/snowbot_adapter.py)，二代反馈入口为 [soem_joint_feedback.py](../../integration/bindu_runtime/bindu_runtime/soem_joint_feedback.py)。
+设备选择在 [device_assembly.py](../../integration/bindu_runtime/bindu_runtime/device_assembly.py) 完成。Snowbot ROS 适配入口为 [snowbot_adapter.py](../../../../../snowbot/src/snowbot_hardware/snowbot_hardware/adapter.py)，二代反馈入口为 [soem_joint_feedback.py](../../integration/bindu_runtime/bindu_runtime/soem_joint_feedback.py)。
 
-- 配置示例：[Snowbot 底层位置](../../integration/bindu_runtime/config/robots/snowbot/snowbot_vendor_position.json)、[二代位置映射](../../integration/bindu_runtime/config/robots/wheel_gen2/position_mapping_wheel_gen2.json)。
+- 配置示例：[Snowbot 底层位置](../../../../../snowbot/src/snowbot_bringup/config/robots/snowbot/snowbot_vendor_position.json)、[二代位置映射](../../integration/bindu_runtime/config/robots/wheel_gen2/position_mapping_wheel_gen2.json)。
 - 行为检查：[物理反馈](../../../tests/unit/test_physics.py)、[里程计](../../../tests/unit/test_odometry.py)、[Snowbot 适配](../../../tests/unit/test_snowbot_adapter.py)。
 - 接入步骤和限制：[Snowbot 位置控制适配层](#snowbot-位置控制适配层)。
 
@@ -152,7 +152,7 @@ ros2 launch bindu_runtime g1_sim.launch.py recording_mode:=normal namespace:=/bi
 
 ### Snowbot真实夹爪位置闭环
 
-夹爪复用现有Snowbot执行节点，默认配方引用[`snowbot_grippers_real.json`](../../integration/bindu_runtime/config/robots/snowbot/snowbot_grippers_real.json)，不新增电机控制进程。该接口确认的是位置到位和保持；`grasp_state=unknown`明确表示没有实体夹持／夹紧力／虚握证明。统一PICO位置入口不再以实体装夹状态阻止切模式或接管，杆件碰撞模型随耦合模式选择，详见[工具操作契约](../../../动作执行契约.md#61-snowbot-工具操作与握持切换)。独立Trigger请求在申请租约前被拒绝时，也会保留对应侧`code`并记录`GRIPPER_REQUEST_REJECTED`，不再静默显示`NO_COMMAND`；拒绝不自动重试，须新输入。
+夹爪复用现有Snowbot执行节点，默认配方引用[`snowbot_grippers_real.json`](../../../../../snowbot/src/snowbot_bringup/config/robots/snowbot/snowbot_grippers_real.json)，不新增电机控制进程。该接口确认的是位置到位和保持；`grasp_state=unknown`明确表示没有实体夹持／夹紧力／虚握证明。统一PICO位置入口不再以实体装夹状态阻止切模式或接管，杆件碰撞模型随耦合模式选择，详见[工具操作契约](../../../动作执行契约.md#61-snowbot-工具操作与握持切换)。独立Trigger请求在申请租约前被拒绝时，也会保留对应侧`code`并记录`GRIPPER_REQUEST_REJECTED`，不再静默显示`NO_COMMAND`；拒绝不自动重试，须新输入。
 
 | 接口（默认前缀`/bindu_snowbot`） | 用途 |
 |---|---|

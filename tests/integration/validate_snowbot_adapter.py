@@ -4,6 +4,7 @@
 Never starts the vendor controller, SOEM, or any robot device. Call with
 ROS_LOCALHOST_ONLY=1 and a dedicated ROS_DOMAIN_ID after loading both installs.
 """
+from bindu_contracts.resources import package_share
 from tests.support.paths import ROOT
 from tests.support.snowbot import until, call, terminate
 import argparse
@@ -21,7 +22,7 @@ from snowbot_ctl_msgs.msg import JointPositionCommand, RetInformation, CtlInform
 from bindu_interfaces.msg import MotionCommand, ExecutionState
 from bindu_interfaces.srv import Lease, SubmitMotion, ControlExecution
 from bindu_runtime.common import stamp
-from bindu_hardware.snowbot import GROUPS
+from snowbot_hardware.protocol import GROUPS
 from bindu_contracts.profile import Profile
 from ament_index_python.packages import get_package_prefix
 
@@ -41,7 +42,7 @@ def main():
     if os.environ.get('ROS_LOCALHOST_ONLY') != '1' or not os.environ.get('ROS_DOMAIN_ID'):
         raise RuntimeError('An isolated localhost ROS domain is required')
     root = ROOT
-    profile_path = root/'src/integration/bindu_runtime/config/robots/snowbot/snowbot_vendor_position.json'
+    profile_path = package_share('snowbot_bringup')/'config/robots/snowbot/snowbot_vendor_position.json'
     profile = Profile.load(profile_path)
     output = Path(args.output).resolve(); output.mkdir(parents=True, exist_ok=False)
     token = uuid.uuid4().hex[:8]

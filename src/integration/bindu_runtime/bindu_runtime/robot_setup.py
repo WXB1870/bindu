@@ -11,6 +11,7 @@ from pathlib import Path
 import xml.etree.ElementTree as ET
 
 from bindu_contracts.profile import Profile
+from bindu_contracts.resources import resource_file
 from bindu_teleoperation.config import load_config
 
 
@@ -33,24 +34,10 @@ def matching_kinematics(expected, actual):
 
 
 def resolve_file(value, owner, packages=None):
-    if not isinstance(value, str) or not value:
-        raise ValueError('ROBOT_CONFIG_PATH')
-    if value.startswith('package://'):
-        package, sep, relative = value[10:].partition('/')
-        if not package or not sep or '..' in Path(relative).parts:
-            raise ValueError('ROBOT_CONFIG_PACKAGE_PATH')
-        if packages is None:
-            from ament_index_python.packages import get_package_share_directory
-            base = Path(get_package_share_directory(package))
-        else:
-            base = Path(packages[package])
-        path = base / relative
-    else:
-        path = Path(owner).parent / value
-    path = path.resolve()
-    if not path.is_file():
-        raise ValueError('ROBOT_CONFIG_MISSING:' + str(path))
-    return path
+    try:
+        return resource_file(value, owner, packages)
+    except ValueError as exc:
+        raise ValueError(str(exc).replace('RESOURCE_', 'ROBOT_CONFIG_')) from exc
 
 
 def model_layout(path):

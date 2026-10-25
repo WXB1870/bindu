@@ -1,4 +1,5 @@
 """Same position semantics on PhysX: measured state, post-step ACK and one-shot hold."""
+from bindu_contracts.resources import package_share
 from tests.support.paths import ROOT
 from dataclasses import replace
 import json
@@ -60,7 +61,7 @@ class PositionPhysicsTests(unittest.TestCase):
     def setUp(self):
         # Shared-progress semantics use an explicit uniform fixture; field
         # waist/arm tuning is verified separately by the target-wire tests.
-        self.profile=replace(Profile.load(ROOT/'src/integration/bindu_runtime/config/robots/snowbot/snowbot_real_position.json'),
+        self.profile=replace(Profile.load(package_share("snowbot_bringup")/'config/robots/snowbot/snowbot_real_position.json'),
                              max_speed=1.5,joint_dynamics={},digest='uniform_physics_fixture')
         self.q=dict.fromkeys(self.profile.limits,0.)
         self.core=PhysicsPositionState(self.profile,'boot',self.q)
@@ -238,7 +239,7 @@ class PositionPhysicsTests(unittest.TestCase):
             with self.assertRaises(ValueError):self.core.accept(self.command(q=value),10.01,self.q)
 
     def test_live_config_uses_contact_and_no_artificial_delay(self):
-        c=json.loads((ROOT/'src/integration/bindu_runtime/config/robots/snowbot/snowbot_shovel_physics.json').read_text())
+        c=json.loads((package_share("snowbot_bringup")/'config/robots/snowbot/snowbot_shovel_physics.json').read_text())
         self.assertEqual(c['grasp_model'],'contact')
         self.assertLessEqual(c['live']['physics_dt_s'],.005)
         self.assertFalse(any('delay' in key for key in c['live']))
@@ -247,7 +248,7 @@ class PositionPhysicsTests(unittest.TestCase):
         import importlib.util,copy
         spec=importlib.util.spec_from_file_location('snowbot_isaac',ROOT/'tools/simulation/snowbot_isaac.py')
         module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
-        c=json.loads((ROOT/'src/integration/bindu_runtime/config/robots/snowbot/snowbot_shovel_physics.json').read_text())
+        c=json.loads((package_share("snowbot_bringup")/'config/robots/snowbot/snowbot_shovel_physics.json').read_text())
         module.validate_live_config(c)
         for key,value in [('physics_dt_s',float('nan')),('max_wall_lag_s',1.),('command_timeout_s',.1),
                           ('stop_settle_s',0.),('stop_settle_s',float('nan')),('headless','true')]:
@@ -260,7 +261,7 @@ class PhysicsPositionStopTests(unittest.TestCase):
         from bindu_runtime.simulation_devices import PhysicsPositionIO
         from bindu_execution.delegated_position import DelegatedPositionExecutor
         self.now=10.;self.sequence=0;self.sent=[]
-        self.profile=Profile.load(ROOT/'src/integration/bindu_runtime/config/robots/snowbot/snowbot_real_position.json')
+        self.profile=Profile.load(package_share("snowbot_bringup")/'config/robots/snowbot/snowbot_real_position.json')
         self.q=dict.fromkeys(self.profile.limits,0.);self.v=dict.fromkeys(self.q,0.)
         self.wire=S(health={},simulator_id='boot',failed=False,send=self.send)
         self.io=PhysicsPositionIO(self.profile,lambda g,q:None,lambda:self.now,
@@ -419,7 +420,7 @@ class PhysicsGripperAcknowledgmentTests(unittest.TestCase):
         self.assertIs(transport.latest,msg)
 
     def test_contact_velocity_is_distinct_from_opening_change_and_stop(self):
-        from bindu_runtime.pico_position import PositionOperations
+        from snowbot_teleop.position import PositionOperations
         ops=PositionOperations.__new__(PositionOperations)
         ops.config=dict(calibrated=True,grippers={'left':{'closed':0.},'right':{'closed':0.,'virtual':.02}},
                         position_tolerance=.003,velocity_tolerance=.01)
@@ -433,7 +434,7 @@ class PhysicsGripperAcknowledgmentTests(unittest.TestCase):
         self.assertEqual(ops.modes(require_stationary=False),('unknown','unknown'))
 
     def test_ack_is_not_synthesized_until_matching_physics_step(self):
-        from bindu_runtime.snowbot_position_sim import SimulatedGrippers
+        from snowbot_hardware.position_sim import SimulatedGrippers
         health=dict(ready=True,stamp=10.,applied_sequences={'right_tool_axis':8},hold_positions={'arm_r_joint_8':.019})
         node=S(now=lambda:10.05,engine=S(feedback=S(stamp=10.)),physics_transport=S(health=health))
         gripper=SimulatedGrippers.__new__(SimulatedGrippers)

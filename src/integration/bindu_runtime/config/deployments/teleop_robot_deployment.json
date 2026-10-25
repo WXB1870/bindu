@@ -3,7 +3,7 @@
   "robot_launch": "robot_teleop.launch.py",
   "arguments": {
     "runtime_mode": "simulation",
-    "robot_config": "@runtime/config/robots/snowbot/robot_snowbot.json",
+    "robot_config": "package://snowbot_bringup/config/robots/snowbot/robot_snowbot.json",
     "namespace": "bindu_teleop",
     "device_backend": "kinematic",
     "side": "left",

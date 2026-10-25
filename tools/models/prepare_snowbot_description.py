@@ -4,13 +4,14 @@
 The original archive supplies geometry and Bindu extension frames. The checked
 user-supplied joint model supplies the twenty shared movable joints. snowbot.urdf repairs the
 duplicated F/T joint names and rewrites mesh URIs to meshes/snowbot/ in the
-bindu_description package. snowbot_display.urdf additionally fixes the four
+snowbot_description package. snowbot_display.urdf additionally fixes the four
 wheel joints. snowbot_control.urdf removes visual/collision geometry from the
 display model, retaining its 20 movable axes for IK and bimanual QP.
 The distal eighth arm axes remain in the model and measured context but are
 left to a future tool adapter; their grasp role is not specified by the URDF.
 Regenerate all variants together; do not maintain them by hand.
 """
+from tools import package_share
 import argparse
 import hashlib
 import copy
@@ -21,7 +22,7 @@ from zipfile import ZipFile
 
 
 SOURCE_SHA256 = '6d0786fe497d9021866b74e18cc64937fa3e6e31a7f8969efd208f013c788858'
-JOINT_SOURCE = ROOT / 'src/hardware/bindu_description/sources/snowbot.urdf'
+JOINT_SOURCE = package_share("snowbot_description")/'sources/snowbot.urdf'
 JOINT_SOURCE_SHA256 = '3024f5e3b45b188db7f3c0d1e13eaabb86ef726bd75b3c61d9984ced84c00798'
 SOURCE_PREFIX = 'snowbot_20260728_首次全身/snowbot/'
 ACTIVE = {'body_joint_1', 'body_joint_2'} | {
@@ -98,7 +99,7 @@ def import_archive(archive_path, output):
             if not uri.startswith(prefix) or Path(uri[len(prefix):]).name != uri[len(prefix):]:
                 raise ValueError('SNOWBOT_MESH_URI')
             meshes.add(uri[len(prefix):])
-            mesh.set('filename', 'package://bindu_description/meshes/snowbot/' + uri[len(prefix):])
+            mesh.set('filename', 'package://snowbot_description/meshes/snowbot/' + uri[len(prefix):])
         (output / 'urdf').mkdir(parents=True, exist_ok=True)
         mesh_dir = output / 'meshes/snowbot'
         mesh_dir.mkdir(parents=True, exist_ok=True)
@@ -133,14 +134,14 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('archive', nargs='?', type=Path,
                         help='Optional original CAD ZIP; omit to reuse checked-in geometry/meshes')
-    parser.add_argument('--output', type=Path, default=ROOT / 'src/hardware/bindu_description',
+    parser.add_argument('--output', type=Path, default=package_share("snowbot_description"),
                         help='Output description directory; without archive, only the three URDFs are regenerated')
     args = parser.parse_args()
     if args.archive is not None:
         root = import_archive(args.archive, args.output)
     else:
         # Reuse the maintained geometry base, not a second copy of its meshes.
-        root = ET.parse(ROOT / 'src/hardware/bindu_description/urdf/snowbot.urdf').getroot()
+        root = ET.parse(package_share("snowbot_description")/'urdf/snowbot.urdf').getroot()
     apply_joint_source(root)
     write_variants(root, args.output)
     print(f'Regenerated three URDF variants with joint source {JOINT_SOURCE_SHA256}')

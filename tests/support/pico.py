@@ -3,7 +3,7 @@ import numpy as np
 
 from bindu_contracts.teleoperation import VRFrame
 from bindu_teleoperation.vr.receiver import ButtonCounters
-from bindu_teleoperation.pico import PicoControl, PicoFeedback, PICO_MAPPING
+from snowbot_teleop.control import PicoControl, PicoFeedback, PICO_MAPPING
 
 
 class Rig:

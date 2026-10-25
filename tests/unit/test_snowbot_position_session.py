@@ -1,4 +1,5 @@
 """Position-session source identity, independent PDO freshness and resource scope."""
+from bindu_contracts.resources import package_share
 from types import SimpleNamespace as S
 import ast
 from dataclasses import replace
@@ -7,8 +8,8 @@ import json
 import unittest
 from unittest.mock import Mock, patch
 
-from bindu_hardware.snowbot import GROUPS
-from bindu_hardware.snowbot_session import ARMS, CONTROL_GROUPS, CONTROL_NAMES, CONTROL_MASK, SLOTS, SessionHealth, SourceEnvelope, decode_observation, new_session_id
+from snowbot_hardware.protocol import GROUPS
+from snowbot_hardware.session import ARMS, CONTROL_GROUPS, CONTROL_NAMES, CONTROL_MASK, SLOTS, SessionHealth, SourceEnvelope, decode_observation, new_session_id
 
 
 def observation(now=10., **changes):
@@ -262,9 +263,9 @@ class PauseHandoffTests(unittest.TestCase):
         from tests.support.paths import ROOT
         from bindu_contracts.profile import Profile
         from bindu_execution.delegated_position import DelegatedPositionExecutor
-        from bindu_runtime.snowbot_position_session import PositionSessionDevices, PositionSessionIO
+        from snowbot_hardware.position_session import PositionSessionDevices, PositionSessionIO
         self.now, self.steady, self.sample = 10., 1., 0
-        self.profile = Profile.load(ROOT/'src/integration/bindu_runtime/config/robots/snowbot/snowbot_vendor_position.json')
+        self.profile = Profile.load(package_share("snowbot_bringup")/'config/robots/snowbot/snowbot_vendor_position.json')
         self.profile = replace(self.profile, stop_timeout=.05)
         self.q = dict.fromkeys(self.profile.limits, 0.)
         self.q['arm_l_joint_2'], self.q['arm_r_joint_2'] = .2, -.2
@@ -470,11 +471,11 @@ class RealResourceTests(unittest.TestCase):
             from bindu_kinematics.bimanual import BimanualQP
         except ImportError as exc:
             self.skipTest('Optional native QP environment required: '+str(exc))
-        base = ROOT/'src/integration/bindu_runtime/config/robots/snowbot'
+        base = package_share('snowbot_bringup')/'config/robots/snowbot'
         cfg = json.loads((base/'bimanual_snowbot_real.json').read_text())
         self.assertEqual(tuple(cfg['resource_groups']), ('waist','left_arm','right_arm'))
         self.assertEqual(cfg['shared_motion_weight'], .1)
-        cfg['urdf'] = str(ROOT/'src/hardware/bindu_description/urdf/snowbot_control.urdf')
+        cfg['urdf'] = str(package_share("snowbot_description")/'urdf/snowbot_control.urdf')
         profile = Profile.load(base/'snowbot_vendor_position.json')
         solver = BimanualQP(cfg, profile); self.addCleanup(solver.close)
         self.assertEqual(solver.names, (*GROUPS['waist'], *GROUPS['left_arm'], *GROUPS['right_arm']))
@@ -885,7 +886,7 @@ class TargetWireTests(unittest.TestCase):
         self.assertEqual(self.d.publishers['arms'].publish.call_count, 2)
 
     def production_readiness(self):
-        from bindu_runtime.snowbot_position_session import PositionSessionDevices
+        from snowbot_hardware.position_session import PositionSessionDevices
         self.d.receivers = dict(head='/servo_node', middle='/dual_arm_control_node', arms='/robot_upperMonitor')
         self.d.node.count_publishers = lambda topic: int(topic == '/bindu/position/command')
         self.d.check_ready = PositionSessionDevices.check_ready.__get__(self.d)
@@ -1044,7 +1045,7 @@ class TargetWireTests(unittest.TestCase):
             state.wire_version = 5
 
     def test_runtime_declares_no_lead_or_ack_gate_and_readonly_recipe_has_no_publisher(self):
-        from bindu_runtime.snowbot_position_session import PositionSessionDevices
+        from snowbot_hardware.position_session import PositionSessionDevices
         modules = {'rcl_interfaces': S(), 'rcl_interfaces.msg': S(ParameterDescriptor=lambda **kw: S(**kw)),
             'snowbot_ctl_msgs': S(), 'snowbot_ctl_msgs.msg': S(PositionObservation=object,
                 PositionSessionCommand=object, PositionSessionState=object),
@@ -1110,7 +1111,7 @@ class TargetWireTests(unittest.TestCase):
         from bindu_runtime.teleop_deployment import load_deployment
         from tests.support.paths import ROOT
         runtime=ROOT/'src/integration/bindu_runtime'
-        _,args=load_deployment(runtime/'config/deployments/snowbot_vr_real.json',runtime)
+        _,args=load_deployment(package_share("snowbot_bringup")/'config/deployments/snowbot_vr_real.json',runtime)
         robot_path=Path(args['robot_config'])
         robot=json.loads(robot_path.read_text())
         self.d.io.profile=Profile.load(robot_path.parent/robot['profile'])
@@ -1486,7 +1487,7 @@ class TargetWireTests(unittest.TestCase):
 
 
     def test_upstream_goal_waits_for_actual_reference_then_expires_without_fallback(self):
-        from bindu_runtime.snowbot_position_session import sampled_nominal_reference
+        from snowbot_hardware.position_session import sampled_nominal_reference
         io,rig = self.d.io,self.rig
         goal = {n: rig.q[n]+.01 for n in CONTROL_NAMES}
         io.targets = dict(goal); io.reference = dict(goal)
@@ -1517,7 +1518,7 @@ class DelayedFeedbackPauseTests(unittest.TestCase):
     """Exercise stop-only admission with production checks and memory endpoints."""
 
     def setUp(self):
-        from bindu_runtime.snowbot_position_session import PositionSessionDevices
+        from snowbot_hardware.position_session import PositionSessionDevices
         self.fixture = TargetWireTests()
         self.fixture.setUp()
         self.d = self.fixture.d

@@ -1,4 +1,5 @@
 """The live viewport must reject stale, mixed-mode or malformed feedback."""
+from bindu_contracts.resources import package_share
 from tests.support.paths import ROOT
 import copy
 import importlib.util
@@ -388,7 +389,7 @@ class SimulationEntryTests(unittest.TestCase):
         entry.os.environ.pop('BINDU_VR_CONFIG', None)
 
     def test_local_default_recipe_and_explicit_override(self):
-        fallback=ROOT/'src/integration/bindu_runtime/config/deployments/snowbot_vr_sim.json'
+        fallback=package_share("snowbot_bringup")/'config/deployments/snowbot_vr_sim.json'
         with tempfile.TemporaryDirectory() as directory:
             base=Path(directory)
             recipe=json.loads(fallback.read_text())
@@ -420,11 +421,11 @@ class SimulationEntryTests(unittest.TestCase):
     def test_real_recipe_cannot_enable_isaac(self):
         root=ROOT
         with self.assertRaises(SystemExit):
-            entry.parse_args(['--physics','--config',str(root/'src/integration/bindu_runtime/config/deployments/snowbot_vr_real.json')])
+            entry.parse_args(['--physics','--config',str(package_share('snowbot_bringup')/'config/deployments/snowbot_vr_real.json')])
 
     def test_device_selection_propagates_to_control_and_display(self):
         root=ROOT
-        args=entry.parse_args(['--config',str(root/'src/integration/bindu_runtime/config/deployments/snowbot_vr_real.json')])
+        args=entry.parse_args(['--config',str(package_share('snowbot_bringup')/'config/deployments/snowbot_vr_real.json')])
         control,display=entry.commands(args)
         self.assertIn('runtime_mode:=real',control)
         self.assertIn('device_backend:=snowbot_vendor',control)
@@ -435,7 +436,7 @@ class SimulationEntryTests(unittest.TestCase):
         self.assertEqual(display[display.index('--device-backend')+1],'snowbot_vendor')
 
     def test_explicit_real_write_enable_keeps_preflight_and_recipe(self):
-        recipe=ROOT/'src/integration/bindu_runtime/config/deployments/snowbot_vr_real.json'
+        recipe=package_share("snowbot_bringup")/'config/deployments/snowbot_vr_real.json'
         before=recipe.read_bytes()
         args=entry.parse_args(['--config',str(recipe),'--enable-commands'])
         self.assertEqual(args.deployment['command_enabled'],'true')
@@ -447,7 +448,7 @@ class SimulationEntryTests(unittest.TestCase):
         self.assertEqual(recipe.read_bytes(),before)
 
     def test_write_enable_rejects_simulation_physics_and_load_declaration(self):
-        recipe=ROOT/'src/integration/bindu_runtime/config/deployments/snowbot_vr_real.json'
+        recipe=package_share("snowbot_bringup")/'config/deployments/snowbot_vr_real.json'
         for argv in (['--enable-commands'],
                      ['--config',str(recipe),'--enable-commands','--physics'],
                      ['--config',str(recipe),'--enable-commands','--declare-load','empty']):

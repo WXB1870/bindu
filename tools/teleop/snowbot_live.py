@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Read-only Snowbot display for an explicitly selected deployment."""
+from tools import package_share
 import argparse
 import hashlib
 import json
@@ -391,7 +392,7 @@ def main():
                         help='Retain every observed raw/projected VR message and timing report; requires --trace-file')
     parser.add_argument('--run-id', required=True)
     parser.add_argument('--namespace', default='bindu_vr_sim')
-    parser.add_argument('--robot-config', default=str(ROOT/'src/integration/bindu_runtime/config/robots/snowbot/robot_snowbot.json'))
+    parser.add_argument('--robot-config', default=str(package_share("snowbot_bringup")/'config/robots/snowbot/robot_snowbot.json'))
     parser.add_argument('--runtime-mode', choices=('simulation','real'), default='simulation')
     parser.add_argument('--device-backend', choices=('kinematic','snowbot_vendor','external_simulation'), default='kinematic')
     parser.add_argument('--output', type=Path)

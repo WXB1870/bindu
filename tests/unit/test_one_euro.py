@@ -1,3 +1,4 @@
+from bindu_contracts.resources import package_share
 from tests.support.paths import ROOT
 import copy
 import json
@@ -149,7 +150,7 @@ class FilterLifecycleTests(unittest.TestCase):
 class DualArmFilterTests(unittest.TestCase):
     def setUp(self):
         self.seq=0
-        self.cfg=json.loads((ROOT/'src/integration/bindu_runtime/config/robots/snowbot/bimanual_snowbot_real.json').read_text())
+        self.cfg=json.loads((package_share("snowbot_bringup")/'config/robots/snowbot/bimanual_snowbot_real.json').read_text())
         self.cfg['engage_seconds']=.05
         self.cfg['pico_grasp_resume_seconds']=.04
 

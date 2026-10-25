@@ -1,3 +1,4 @@
+from bindu_contracts.resources import package_share
 from tests.support.paths import ROOT
 import json
 import tempfile
@@ -8,9 +9,65 @@ from bindu_runtime.teleop_deployment import load_deployment
 SHARE=ROOT/'src/integration/bindu_runtime'
 
 
+class ApplicationResourceTests(unittest.TestCase):
+    def test_adapter_launch_selects_an_executable_from_its_owning_package(self):
+        import ast
+        from types import SimpleNamespace
+        from bindu_contracts.runtime_mode import resolve_mode
+        source=package_share('snowbot_bringup')/'launch/snowbot_adapter.launch.py'
+        definition=next(n for n in ast.parse(source.read_text()).body if isinstance(n,ast.FunctionDef) and n.name=='assemble')
+        class Configuration:
+            def __init__(self,name,default=''):self.name,self.default=name,default
+            def perform(self,context):return context.get(self.name,self.default)
+        namespace=dict(Path=Path,LaunchConfiguration=Configuration,resolve_mode=resolve_mode,
+                       get_package_share_directory=lambda name:str(package_share(name)),Node=lambda **values:values)
+        exec(compile(ast.Module(body=[definition],type_ignores=[]),str(source),'exec'),namespace)
+        for mode,package,executable in (('real','snowbot_hardware','snowbot_adapter'),
+                                        ('simulation','bindu_runtime','execution')):
+            actions=namespace['assemble'](dict(runtime_mode=mode,command_enabled='false'))
+            self.assertEqual((actions[0]['package'],actions[0]['executable']),(package,executable))
+
+    def test_selected_source_is_explicit_and_rejects_ambiguous_packages(self):
+        import os
+        from unittest.mock import patch
+        from bindu_contracts.resources import package_share, resource_file
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)
+            for folder in ('first','second'):
+                package=root/folder/'fixture'
+                package.mkdir(parents=True)
+                (package/'package.xml').write_text('<package><name>fixture</name></package>')
+                (package/'data.json').write_text('{}')
+            with patch.dict(os.environ, BINDU_PACKAGE_PATH=str(root/'first')):
+                self.assertEqual(resource_file('package://fixture/data.json'),(root/'first/fixture/data.json').resolve())
+                (root/'shared.json').write_text('{}')
+                (root/'first/fixture/export.json').symlink_to(root/'shared.json')
+                self.assertEqual(resource_file('package://fixture/export.json'),(root/'shared.json').resolve())
+                for reference in ('package://fixture/../data.json','package://fixture//data.json'):
+                    with self.assertRaisesRegex(ValueError,'PACKAGE_PATH'):resource_file(reference)
+            with patch.dict(os.environ, BINDU_PACKAGE_PATH=os.pathsep.join(str(root/p) for p in ('first','second'))):
+                with self.assertRaisesRegex(ValueError,'AMBIGUOUS'):package_share('fixture')
+
+    def test_snapshot_records_effective_files_and_does_not_open_tls_material(self):
+        from bindu_runtime.teleop_deployment import configuration_snapshot
+        recipe=json.loads((package_share('snowbot_bringup')/'config/deployments/snowbot_vr_real.json').read_text())
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);(root/'cert.pem').write_text('certificate fixture')
+            (root/'secret.key').write_text('private fixture')
+            recipe['arguments'].update(cert_file='cert.pem',key_file='secret.key')
+            path=root/'site.json';path.write_text(json.dumps(recipe))
+            snapshot=configuration_snapshot(path,SHARE)
+            self.assertEqual(snapshot['arguments']['command_enabled'],'false')
+            self.assertEqual(snapshot['sources']['profile']['values']['name'],'snowbot_real_position')
+            self.assertNotIn('private fixture',json.dumps(snapshot))
+            self.assertEqual(snapshot['sha256'],configuration_snapshot(path,SHARE)['sha256'])
+            recipe['arguments']['namespace']='different_site';path.write_text(json.dumps(recipe))
+            self.assertNotEqual(snapshot['sha256'],configuration_snapshot(path,SHARE)['sha256'])
+
+
 class DeploymentTests(unittest.TestCase):
     def test_target_dynamic_limits_accept_numeric_recipe_and_reject_invalid_or_wrong_mode(self):
-        recipe=json.loads((SHARE/'config/deployments/snowbot_vr_real.json').read_text())
+        recipe=json.loads((package_share("snowbot_bringup")/'config/deployments/snowbot_vr_real.json').read_text())
         recipe['arguments'].update(trajectory_max_velocity=.4, trajectory_max_acceleration=.8)
         with tempfile.TemporaryDirectory() as tmp:
             path=Path(tmp)/'deploy.json'
@@ -31,7 +88,7 @@ class DeploymentTests(unittest.TestCase):
                     load_deployment(path,SHARE)
 
     def test_target_recipe_rejects_retired_curve_options_and_impedance_combination(self):
-        recipe=json.loads((SHARE/'config/deployments/snowbot_vr_real.json').read_text())
+        recipe=json.loads((package_share("snowbot_bringup")/'config/deployments/snowbot_vr_real.json').read_text())
         with tempfile.TemporaryDirectory() as tmp:
             path=Path(tmp)/'deploy.json';path.write_text(json.dumps(recipe))
             _,args=load_deployment(path,SHARE)
@@ -46,20 +103,20 @@ class DeploymentTests(unittest.TestCase):
         from launch import LaunchContext
         from bindu_runtime.teleop_assembly import assemble
         for mode in ('sim','real'):
-            _,args=load_deployment(SHARE/f'config/deployments/snowbot_vr_{mode}.json',SHARE)
+            _,args=load_deployment(package_share("snowbot_bringup")/f'config/deployments/snowbot_vr_{mode}.json',SHARE)
             context=LaunchContext();context.launch_configurations.update(args)
             self.assertTrue(assemble(context))
             other='real' if mode=='sim' else 'sim'
-            context.launch_configurations['gripper_config']=str(SHARE/f'config/robots/snowbot/snowbot_grippers_{other}.json')
+            context.launch_configurations['gripper_config']=str(package_share("snowbot_bringup")/f'config/robots/snowbot/snowbot_grippers_{other}.json')
             with self.assertRaisesRegex(ValueError,'GRIPPER_CONFIG_MODE_MISMATCH'):assemble(context)
 
     def test_position_recipes_share_robot_and_reject_demo_shortcut(self):
-        _,sim=load_deployment(SHARE/'config/deployments/snowbot_vr_sim.json',SHARE)
-        _,real=load_deployment(SHARE/'config/deployments/snowbot_vr_real.json',SHARE)
+        _,sim=load_deployment(package_share("snowbot_bringup")/'config/deployments/snowbot_vr_sim.json',SHARE)
+        _,real=load_deployment(package_share("snowbot_bringup")/'config/deployments/snowbot_vr_real.json',SHARE)
         self.assertEqual(sim['robot_config'],real['robot_config'])
         self.assertEqual(real['pico_enabled'],'true')
         self.assertEqual(real['command_enabled'],'false')
-        recipe=json.loads((SHARE/'config/deployments/snowbot_vr_sim.json').read_text())
+        recipe=json.loads((package_share("snowbot_bringup")/'config/deployments/snowbot_vr_sim.json').read_text())
         for key,value in (('position_contract','true'),('pico_simulation_demo',True)):
             bad=json.loads(json.dumps(recipe));bad['arguments'][key]=value
             with tempfile.TemporaryDirectory() as tmp:
@@ -88,7 +145,7 @@ class DeploymentTests(unittest.TestCase):
         self.assertTrue(Path(args['bimanual_config']).is_file())
 
     def test_pico_recipe_is_explicit_simulation_and_not_default(self):
-        launch,args=load_deployment(SHARE/'config/deployments/teleop_pico_snowbot_sim.json',SHARE)
+        launch,args=load_deployment(package_share("snowbot_bringup")/'config/deployments/teleop_pico_snowbot_sim.json',SHARE)
         self.assertEqual(launch,'robot_teleop.launch.py')
         self.assertEqual(args['runtime_mode'],'simulation')
         self.assertEqual(args['pico_enabled'],'true')
@@ -97,7 +154,7 @@ class DeploymentTests(unittest.TestCase):
         self.assertNotIn('pico_enabled',default)
 
     def test_pico_rejects_wrong_source_and_external_actuator_backend(self):
-        recipe=json.loads((SHARE/'config/deployments/teleop_pico_snowbot_sim.json').read_text())
+        recipe=json.loads((package_share("snowbot_bringup")/'config/deployments/teleop_pico_snowbot_sim.json').read_text())
         for key,value in [('tool_input_source','tool_pose'),('device_backend','external_simulation')]:
             changed=json.loads(json.dumps(recipe));changed['arguments'][key]=value
             with tempfile.TemporaryDirectory() as tmp:
@@ -105,7 +162,7 @@ class DeploymentTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError,'PICO_REQUIRES'):load_deployment(path,SHARE)
 
     def test_demo_is_explicit_and_rejects_external_or_missing_pico(self):
-        recipe=json.loads((SHARE/'config/deployments/teleop_pico_snowbot_sim.json').read_text())
+        recipe=json.loads((package_share("snowbot_bringup")/'config/deployments/teleop_pico_snowbot_sim.json').read_text())
         recipe['arguments']['pico_simulation_demo']=True
         with tempfile.TemporaryDirectory() as tmp:
             path=Path(tmp)/'demo.json';path.write_text(json.dumps(recipe))

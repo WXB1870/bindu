@@ -1,4 +1,5 @@
 """Physical button identity, coalesced events and guarded operator transitions."""
+from bindu_contracts.resources import package_share
 from dataclasses import replace
 import unittest
 import json
@@ -6,7 +7,7 @@ from pathlib import Path
 import numpy as np
 from bindu_contracts.teleoperation import VRFrame
 from bindu_teleoperation.vr.receiver import decode_controller, ButtonCounters
-from bindu_teleoperation.pico import PicoControl, PicoFeedback, PICO_MAPPING, temporary_capture_refusal
+from snowbot_teleop.control import PicoControl, PicoFeedback, PICO_MAPPING, temporary_capture_refusal
 from bindu_teleoperation.bimanual_session import BimanualSession
 
 
@@ -22,7 +23,7 @@ class ScenarioRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 ('vr_input_node.py','VRInputNode','spin'),
                 ('bimanual_tool_node.py','BimanualToolNode','spin'),
                 ('execution_node.py','ExecutionNode','run_execution')):
-            path=root/filename
+            path=(package_share("snowbot_teleop")/"snowbot_teleop/node.py" if filename=="pico_node.py" else root/filename)
             main=next(n for n in ast.parse(path.read_text()).body if getattr(n,'name','')=='main')
             for configured in (None,'SYNCHRONOUS'):
                 with self.subTest(entry=filename,override=configured),patch.dict(os.environ,
@@ -217,7 +218,7 @@ class ScenarioRuntimeTests(unittest.IsolatedAsyncioTestCase):
         # Execute production methods with ROS/service/process boundaries inert.
         import ast
         from types import SimpleNamespace as S
-        path=Path(__file__).resolve().parents[2]/'src/integration/bindu_runtime/bindu_runtime/pico_node.py'
+        path=package_share('snowbot_teleop')/'snowbot_teleop/node.py'
         node=next(n for n in ast.parse(path.read_text()).body if isinstance(n,ast.ClassDef) and n.name=='PicoNode')
         methods=[n for n in node.body if getattr(n,'name','') in names]
         module=ast.Module(body=[ast.ClassDef(name='Actual',bases=[],keywords=[],body=methods,decorator_list=[])],type_ignores=[])
@@ -277,7 +278,7 @@ class ScenarioRuntimeTests(unittest.IsolatedAsyncioTestCase):
     def test_unheld_policy_is_explicit_and_defaults_to_physical_grasp_checks(self):
         import ast
         from types import SimpleNamespace as S
-        path=Path(__file__).resolve().parents[2]/'src/integration/bindu_runtime/bindu_runtime/pico_node.py'
+        path=package_share('snowbot_teleop')/'snowbot_teleop/node.py'
         node=next(n for n in ast.parse(path.read_text()).body if isinstance(n,ast.ClassDef) and n.name=='PicoNode')
         init=next(n for n in node.body if getattr(n,'name','')=='__init__')
         begin=next(i for i,n in enumerate(init.body) if isinstance(n,ast.Assign) and isinstance(n.targets[0],ast.Name) and n.targets[0].id=='policy')
@@ -674,11 +675,11 @@ class PrepareReturnPathTests(unittest.IsolatedAsyncioTestCase):
     async def arrival(self,operation='prepare',error=.0284,velocity=0.,fresh=True,stop_error=None):
         from types import SimpleNamespace as S
         from unittest.mock import Mock,AsyncMock,patch
-        from bindu_runtime import pico_node as module
+        from snowbot_teleop import node as module
         from bindu_contracts.profile import Profile
-        from bindu_teleoperation.pico import PicoIntent
+        from snowbot_teleop.control import PicoIntent
         from tests.support.paths import ROOT
-        profile=Profile.load(ROOT/'src/integration/bindu_runtime/config/robots/snowbot/snowbot_real_position.json')
+        profile=Profile.load(package_share("snowbot_bringup")/'config/robots/snowbot/snowbot_real_position.json')
         clock=[0.];joint='arm_l_joint_1';target=.2
         lease=S(ok=True,lease_id='test',epoch=1,profile_hash=profile.digest)
         state=S(instance_id='executor',profile_hash=profile.digest,
@@ -730,8 +731,8 @@ class PrepareReturnPathTests(unittest.IsolatedAsyncioTestCase):
         return node
 
     async def test_return_does_not_preserve_captured_grasp_in_either_mode_or_any_load_state(self):
-        from bindu_runtime.pico_node import PicoNode
-        from bindu_teleoperation.pico import PicoIntent
+        from snowbot_teleop.node import PicoNode
+        from snowbot_teleop.control import PicoIntent
         for load in ('empty','held','unknown'):
             for mode in ('independent_arms','bimanual_tool'):
                 for unheld in (False,True):
@@ -745,8 +746,8 @@ class PrepareReturnPathTests(unittest.IsolatedAsyncioTestCase):
                         self.assertFalse(event['tool_present'])
 
     async def test_return_still_propagates_robot_collision_limits_and_changed_feedback(self):
-        from bindu_runtime.pico_node import PicoNode
-        from bindu_teleoperation.pico import PicoIntent
+        from snowbot_teleop.node import PicoNode
+        from snowbot_teleop.control import PicoIntent
         for error in ('SELF_COLLISION: arm / body t=0.5','PREPARE_JOINT_LIMIT'):
             with self.subTest(error=error),self.assertRaisesRegex(RuntimeError,error):
                 await PicoNode.validate_prepare(self.node(error=error),PicoIntent(1,'prepare'))
@@ -754,8 +755,8 @@ class PrepareReturnPathTests(unittest.IsolatedAsyncioTestCase):
             await PicoNode.validate_prepare(self.node(changed=True),PicoIntent(1,'prepare'))
 
     async def test_configured_prepare_start_tolerance_accepts_small_change_but_rejects_excess(self):
-        from bindu_runtime.pico_node import PicoNode
-        from bindu_teleoperation.pico import PicoIntent
+        from snowbot_teleop.node import PicoNode
+        from snowbot_teleop.control import PicoIntent
         for gripper in (False,True):
             for delta in (.00019174768,.001,.001001):
                 with self.subTest(delta=delta,gripper=gripper):
@@ -773,8 +774,8 @@ class PrepareReturnPathTests(unittest.IsolatedAsyncioTestCase):
                                          ('joint',delta,.001))
 
     async def test_prepare_start_relaxation_keeps_default_and_stationary_guards(self):
-        from bindu_runtime.pico_node import PicoNode
-        from bindu_teleoperation.pico import PicoIntent
+        from snowbot_teleop.node import PicoNode
+        from snowbot_teleop.control import PicoIntent
         from types import SimpleNamespace as S
         for configured,gripper,velocity in ((False,False,0.),(False,True,0.),(True,False,.00501),(True,True,.00501)):
             with self.subTest(configured=configured,gripper=gripper,velocity=velocity):
@@ -787,8 +788,8 @@ class PrepareReturnPathTests(unittest.IsolatedAsyncioTestCase):
                     await PicoNode.validate_prepare(node,PicoIntent(1,'prepare'),{'joint':.2} if gripper else None)
 
     async def test_prepare_start_tolerance_rejects_invalid_configuration(self):
-        from bindu_runtime.pico_node import PicoNode
-        from bindu_teleoperation.pico import PicoIntent
+        from snowbot_teleop.node import PicoNode
+        from snowbot_teleop.control import PicoIntent
         for tolerance in (0.,-.001,float('nan'),float('inf'),.002001):
             with self.subTest(tolerance=tolerance):
                 node=self.node();node.cfg['prepare_start_tolerance_rad']=tolerance
@@ -797,8 +798,8 @@ class PrepareReturnPathTests(unittest.IsolatedAsyncioTestCase):
                 node.validator.submit.assert_not_called()
 
     async def test_boundary_reference_is_explicit_and_does_not_replace_measured_validation_start(self):
-        from bindu_runtime.pico_node import PicoNode
-        from bindu_teleoperation.pico import PicoIntent
+        from snowbot_teleop.node import PicoNode
+        from snowbot_teleop.control import PicoIntent
         from types import SimpleNamespace as S
         node=self.node('empty');measured={'joint':-1.00007}
         state=S(joints=S(name=['joint'],velocity=[0.]))
@@ -808,11 +809,11 @@ class PrepareReturnPathTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(measured,{'joint':-1.00007})
 
     def test_boundary_reference_preserves_strict_curve_limits_and_rejects_large_overrun(self):
-        from bindu_runtime.pico_node import prepare_reference
+        from snowbot_teleop.node import prepare_reference
         from bindu_execution.interpolation import Curve,State
         from bindu_contracts.profile import Profile
         from tests.support.paths import ROOT
-        profile=Profile.load(ROOT/'src/integration/bindu_runtime/config/robots/snowbot/snowbot_real_position.json')
+        profile=Profile.load(package_share("snowbot_bringup")/'config/robots/snowbot/snowbot_real_position.json')
         for name in ('arm_r_joint_3','arm_l_joint_3'):
             lo,hi=profile.limits[name]
             for actual,target in ((lo-.00007,lo+.1),(hi+.00007,hi-.1)):
@@ -830,7 +831,7 @@ class OperationCancellationTests(unittest.IsolatedAsyncioTestCase):
     async def test_gripper_handoff_refreshes_stopped_feedback_before_held_a_completion(self):
         from types import SimpleNamespace as S
         from unittest.mock import Mock,AsyncMock
-        from bindu_runtime.pico_node import PicoNode
+        from snowbot_teleop.node import PicoNode
         r=Rig(guided=True,direct=True);r.triggers=[1.,0.];r.step()
         r.triggers=[0.,0.];r.step();r.stopped=False;r.buttons[1]=1;r.step()
         intent=r.core.pending
@@ -846,7 +847,7 @@ class OperationCancellationTests(unittest.IsolatedAsyncioTestCase):
     async def run_superseded(self, cleanup_error=None):
         from types import SimpleNamespace as S
         from unittest.mock import Mock,AsyncMock
-        from bindu_runtime.pico_node import PicoNode,Superseded
+        from snowbot_teleop.node import PicoNode,Superseded
         r=Rig(guided=True,direct=True);r.triggers=[1.,0.];old=r.step()[-1]
         r.triggers=[0.,0.];replacement=r.step()[-1]
         node=S(control=r.core,cancel_tool=AsyncMock(side_effect=[None,cleanup_error]),

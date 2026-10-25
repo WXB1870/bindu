@@ -1,3 +1,4 @@
+from bindu_contracts.resources import package_share
 """Actual bimanual stop methods, isolated from ROS and numerical dependencies."""
 import ast
 import asyncio
@@ -352,7 +353,7 @@ class StopRevisionFence(ExecutionFixture):
             self.e.submit(replace(current,command_id='revoked'),10.02)
 
 
-PICO_SOURCE=SOURCE.with_name('pico_node.py')
+PICO_SOURCE=package_share('snowbot_teleop')/'snowbot_teleop/node.py'
 
 
 class PicoStopEvidence(unittest.IsolatedAsyncioTestCase,ExecutionFixture):
@@ -396,7 +397,7 @@ class PicoStopEvidence(unittest.IsolatedAsyncioTestCase,ExecutionFixture):
                   if isinstance(n,ast.FunctionDef) and n.name=='joints_at_rest')
         namespace=dict(time=S(monotonic=lambda:self.clock),json=__import__('json'),
             math=__import__('math'),seconds=lambda stamp:stamp,
-            PicoFeedback=__import__('bindu_teleoperation.pico',fromlist=['PicoFeedback']).PicoFeedback,
+            PicoFeedback=__import__('snowbot_teleop.control',fromlist=['PicoFeedback']).PicoFeedback,
             TeleopSession=S(Goal=lambda **kw:S(**kw)),Superseded=RuntimeError,
             stop_feedback_matches=stop_feedback_matches,
             Lease=S(Request=lambda **kw:S(**kw)),ControlExecution=S(Request=lambda **kw:S(**kw)))

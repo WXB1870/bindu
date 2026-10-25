@@ -1,4 +1,5 @@
 """The supplied CAD export and its control reduction must stay aligned."""
+from bindu_contracts.resources import package_share
 from tests.support.paths import ROOT
 import unittest
 import hashlib
@@ -8,8 +9,8 @@ from pathlib import Path
 from xml.etree import ElementTree as ET
 from bindu_contracts.profile import Profile
 
-DESCRIPTION=ROOT/'src/hardware/bindu_description'
-CONFIG=ROOT/'src/integration/bindu_runtime/config'
+DESCRIPTION=package_share("snowbot_description")
+CONFIG=package_share('snowbot_bringup')/'config'
 
 
 class SnowbotDescription(unittest.TestCase):
@@ -23,13 +24,13 @@ class SnowbotDescription(unittest.TestCase):
         names=[j.get('name') for j in full.findall('joint')]
         self.assertEqual(len(names),len(set(names)))
         for mesh in full.findall('.//mesh'):
-            prefix='package://bindu_description/meshes/snowbot/'
+            prefix='package://snowbot_description/meshes/snowbot/'
             self.assertTrue(mesh.get('filename').startswith(prefix))
             self.assertTrue((DESCRIPTION/'meshes/snowbot'/mesh.get('filename')[len(prefix):]).is_file())
         self.assertFalse(reduced.findall('.//mesh'))
         self.assertEqual(len(display.findall('.//mesh')),len(full.findall('.//mesh')))
         moving={j.get('name') for j in reduced.findall('joint') if j.get('type')!='fixed'}
-        profile=Profile.load(CONFIG/'robots/snowbot/snowbot_sim.json')
+        profile=Profile.load(package_share("snowbot_bringup")/'config/robots/snowbot/snowbot_sim.json')
         self.assertEqual(moving,{n for names in profile.groups.values() for n in names})
         self.assertEqual(profile.groups['waist'],['body_joint_1','body_joint_2'])
         self.assertEqual(len(profile.groups['left_arm']),7)
@@ -117,7 +118,7 @@ class ModelRoundingTests(unittest.TestCase):
     def setUp(self):
         from bindu_runtime.robot_setup import RobotSetup
         self.setup=RobotSetup
-        self.selection=RobotSetup.load(CONFIG/'robots/snowbot/robot_snowbot_real.json',
+        self.selection=RobotSetup.load(package_share("snowbot_bringup")/'config/robots/snowbot/robot_snowbot_real.json',
             {'bindu_description':DESCRIPTION,'bindu_runtime':CONFIG.parent})
 
     def load_modified_display(self, tag, attribute, value):
@@ -128,7 +129,7 @@ class ModelRoundingTests(unittest.TestCase):
             display.find(f"joint[@name='arm_r_joint_1']/{tag}").set(attribute,value)
             display.write(folder/'snowbot_display.urdf')
             (folder/'tool.json').write_bytes(self.selection.tool_config.read_bytes())
-            selection=json.loads((CONFIG/'robots/snowbot/robot_snowbot_real.json').read_text())
+            selection=json.loads((package_share("snowbot_bringup")/'config/robots/snowbot/robot_snowbot_real.json').read_text())
             selection['model'].update(urdf='snowbot_control.urdf',display_urdf='snowbot_display.urdf')
             selection['profile']=str(self.selection.profile_path)
             selection['teleop']['tool']='tool.json'

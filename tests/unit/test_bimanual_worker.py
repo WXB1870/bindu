@@ -1,4 +1,5 @@
 """Pure-memory receipt deadlines; no ROS, solver process, or device endpoints."""
+from bindu_contracts.resources import package_share
 import queue
 import ast
 from pathlib import Path
@@ -250,7 +251,7 @@ class PrepareLimitReferenceTests(unittest.TestCase):
     def test_both_real_recipes_add_one_degree_to_the_existing_all_axis_reserve(self):
         import json,math
         from pathlib import Path
-        root=Path(__file__).resolve().parents[2]/'src/integration/bindu_runtime/config/robots/snowbot'
+        root=package_share('snowbot_bringup')/'config/robots/snowbot'
         for name in ('bimanual_snowbot_real.json','bimanual_snowbot_shovel.json'):
             cfg=json.loads((root/name).read_text())
             self.assertAlmostEqual(cfg['posture_reference_margin_rad'],.01+math.radians(1.))

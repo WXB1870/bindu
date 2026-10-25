@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Protected gripper ROS loop with synthetic feedback only; never starts a driver."""
+from bindu_contracts.resources import package_share
 from tests.support.paths import ROOT
 import argparse
 import json
@@ -15,7 +16,7 @@ from snowbot_ctl_msgs.msg import RetInformation, JointPositionCommand
 from bindu_interfaces.msg import GripperState, VRInput
 from bindu_interfaces.srv import Lease, GripperControl
 from bindu_runtime.common import stamp
-from bindu_hardware.snowbot import GROUPS
+from snowbot_hardware.protocol import GROUPS
 from tests.support.snowbot import until, call, terminate
 
 
@@ -77,12 +78,12 @@ def scenario(output, name, enabled, calibrated, *, freeze=False, shutdown=False)
                     pose=[1.,0.,0.,float(i),0.,1.,0.,0.,0.,0.,1.,0.,0.,0.,0.,1.],
                     button_edges=[0,0,0,0,0,0,*control['edges'][i]]))
     node.create_timer(.01,publish)
-    config=json.loads((ROOT/'src/integration/bindu_runtime/config/robots/snowbot/snowbot_grippers_real.json').read_text())
+    config=json.loads((package_share("snowbot_bringup")/'config/robots/snowbot/snowbot_grippers_real.json').read_text())
     config['calibrated']=calibrated
     path=output/(name+'.json');path.write_text(json.dumps(config))
     log=(output/(name+'.log')).open('w')
     cmd=['ros2','run','bindu_runtime','snowbot_adapter','--ros-args','-r','__ns:='+ns,
-        '-p','runtime_mode:=real','-p','profile:='+str(ROOT/'src/integration/bindu_runtime/config/robots/snowbot/snowbot_real_position.json'),
+        '-p','runtime_mode:=real','-p','profile:='+str(package_share("snowbot_bringup")/'config/robots/snowbot/snowbot_real_position.json'),
         '-p','vendor_namespace:='+vendor,'-p','command_enabled:='+str(enabled).lower(),'-p','gripper_config:='+str(path)]
     for key in ('arm_receiver_node','servo_receiver_node','mid_receiver_node'):cmd+=['-p',key+':='+identity]
     process=subprocess.Popen(cmd,stdout=log,stderr=subprocess.STDOUT,start_new_session=True)
@@ -154,7 +155,7 @@ def scenario(output, name, enabled, calibrated, *, freeze=False, shutdown=False)
         assert all(p['data'][0]==held_q for p in packets[before:] if p['side']=='right')
         assert q['arm_r_joint_8']==held_q
         checks.append('explicitly leased Trigger control works; invalid input holds without synthetic close')
-        recipe=json.loads((ROOT/'src/integration/bindu_runtime/config/deployments/snowbot_real_teleop.json').read_text())
+        recipe=json.loads((package_share("snowbot_bringup")/'config/deployments/snowbot_real_teleop.json').read_text())
         recipe['arguments'].update(namespace=ns,vendor_namespace=vendor,command_enabled=True,gripper_config=str(path.resolve()))
         site=output/(name+'-site.json');site.write_text(json.dumps(recipe))
         with (output/(name+'-cli.log')).open('w') as cli_log:

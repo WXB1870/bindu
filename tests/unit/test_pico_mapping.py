@@ -1,4 +1,5 @@
 """Physical button identity, coalesced events and guarded operator transitions."""
+from bindu_contracts.resources import package_share
 from tests.support.paths import ROOT
 from dataclasses import replace
 import unittest
@@ -7,7 +8,7 @@ from pathlib import Path
 import numpy as np
 from bindu_contracts.teleoperation import VRFrame
 from bindu_teleoperation.vr.receiver import decode_controller, ButtonCounters
-from bindu_teleoperation.pico import PicoControl, PicoFeedback, PICO_MAPPING
+from snowbot_teleop.control import PicoControl, PicoFeedback, PICO_MAPPING
 from bindu_teleoperation.bimanual_session import BimanualSession
 
 
@@ -158,7 +159,7 @@ class MappingTests(unittest.TestCase):
         self.assertEqual(rig.core.reason,'PICO_Y_STOP')
 
     def test_right_trigger_never_requests_pico_virtual_grasp(self):
-        cfg=json.loads((ROOT/'src/integration/bindu_runtime/config/robots/snowbot/bimanual_snowbot_shovel.json').read_text())
+        cfg=json.loads((package_share("snowbot_bringup")/'config/robots/snowbot/bimanual_snowbot_shovel.json').read_text())
         session=BimanualSession(cfg,1,0.)
         rig=Rig('held');a,b=rig.core.frames
         session.ingest(a,b,rig.now)
@@ -175,7 +176,7 @@ class ShortRodFixtureTests(unittest.TestCase):
     def test_midpoint_rebase_removes_shovel_lever_without_changing_grasp(self):
         from bindu_teleoperation.simulation_fixture import short_rod_config
         import copy
-        path=ROOT/'src/integration/bindu_runtime/config/robots/snowbot/bimanual_snowbot_shovel.json'
+        path=package_share("snowbot_bringup")/'config/robots/snowbot/bimanual_snowbot_shovel.json'
         original=json.loads(path.read_text());before=copy.deepcopy(original)
         rod=short_rod_config(original)
         self.assertEqual(original,before)
@@ -206,8 +207,8 @@ class ShortRodFixtureTests(unittest.TestCase):
         from bindu_teleoperation.vr.model import prepare_model
         import tempfile,xml.etree.ElementTree as ET
         root=ROOT
-        cfg=root/'src/integration/bindu_runtime/config/robots/snowbot/bimanual_snowbot_shovel.json'
-        urdf=root/'src/hardware/bindu_description/urdf/snowbot_display.urdf'
+        cfg=package_share('snowbot_bringup')/'config/robots/snowbot/bimanual_snowbot_shovel.json'
+        urdf=package_share('snowbot_description')/'urdf/snowbot_display.urdf'
         rod=short_rod_config(json.loads(cfg.read_text()))
         with tempfile.TemporaryDirectory() as directory:
             prepare_model(urdf,directory,cfg,short_rod=True)

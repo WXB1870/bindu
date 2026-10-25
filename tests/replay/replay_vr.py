@@ -6,6 +6,7 @@ starts from its recorded measured joints. Received time preserves transport
 gaps; client time removes only transport jitter, without smoothing hand poses.
 Workflow/lease/stop acknowledgement need the separate ROS integration gate.
 """
+from bindu_contracts.resources import package_share
 from tests.support.paths import ROOT
 import argparse
 from collections import Counter
@@ -295,7 +296,7 @@ def main():
     dataset_hash=hashlib.sha256(json.dumps(dict(segments=segments,
         clocks=sorted((source,seq,at) for (source,seq),at in clocks.items()) if args.clock=='client' else []),
         sort_keys=True).encode()).hexdigest()
-    robot=RobotSetup.load(ROOT/'src/integration/bindu_runtime/config/robots/snowbot/robot_snowbot_real.json')
+    robot=RobotSetup.load(package_share("snowbot_bringup")/'config/robots/snowbot/robot_snowbot_real.json')
     cfg=json.loads((args.config or robot.tool_config).read_text());cfg['urdf']=str(robot.urdf)
     if args.profile:
         from bindu_contracts.profile import Profile

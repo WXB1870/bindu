@@ -1,4 +1,5 @@
 """Offline VR/base boundary checks; no ROS graph or device communication."""
+from bindu_contracts.resources import package_share
 from dataclasses import replace
 import importlib.util
 import json
@@ -17,7 +18,7 @@ from bindu_runtime.teleop_deployment import load_deployment
 
 
 SHARE = ROOT/'src/integration/bindu_runtime'
-CONFIG = SHARE/'config/robots/snowbot/snowbot_base.json'
+CONFIG = package_share("snowbot_bringup")/'config/robots/snowbot/snowbot_base.json'
 
 
 class BaseTests(unittest.TestCase):
@@ -261,12 +262,12 @@ class DecodeTests(unittest.TestCase):
 class DeploymentTests(unittest.TestCase):
     def test_existing_recipes_resolve_the_optional_base_config(self):
         for mode in ('real', 'sim'):
-            _, args = load_deployment(SHARE/f'config/deployments/snowbot_vr_{mode}.json', SHARE)
+            _, args = load_deployment(package_share("snowbot_bringup")/f'config/deployments/snowbot_vr_{mode}.json', SHARE)
             self.assertEqual(Path(args['base_config']), CONFIG)
             validate_base_config(json.loads(Path(args['base_config']).read_text()))
 
     def test_base_recipe_requires_actual_vr_and_pico_position_assembly(self):
-        recipe = json.loads((SHARE/'config/deployments/snowbot_vr_real.json').read_text())
+        recipe = json.loads((package_share("snowbot_bringup")/'config/deployments/snowbot_vr_real.json').read_text())
         for key in ('vr_enabled', 'pico_enabled', 'position_contract'):
             bad = json.loads(json.dumps(recipe))
             bad['arguments'][key] = False
@@ -364,8 +365,8 @@ class AdapterTests(unittest.TestCase):
 
     def test_pico_stop_condition_ignores_only_explicitly_disabled_base_feedback(self):
         import ast
-        from bindu_teleoperation.pico import PicoFeedback
-        path = SHARE/'bindu_runtime/pico_node.py'
+        from snowbot_teleop.control import PicoFeedback
+        path = package_share('snowbot_teleop')/'snowbot_teleop/node.py'
         cls = next(n for n in ast.parse(path.read_text()).body if isinstance(n, ast.ClassDef) and n.name == 'PicoNode')
         method = next(n for n in cls.body if getattr(n, 'name', '') == 'feedback')
         namespace = dict(PicoFeedback=PicoFeedback, seconds=lambda stamp: stamp,
@@ -529,7 +530,7 @@ class AdapterTests(unittest.TestCase):
         self.assertAlmostEqual(bridge.tick_work['graph_s'], .4)
 
     def test_decoder_pico_and_adapter_chain_with_independent_input_and_timer_rates(self):
-        from bindu_teleoperation.pico import PicoControl, PicoFeedback
+        from snowbot_teleop.control import PicoControl, PicoFeedback
         from bindu_teleoperation.vr.receiver import ButtonCounters
         node, bridge, _, _ = self.writable()
         clock = [10.]

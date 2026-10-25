@@ -11,6 +11,8 @@ CONTROLLERS = frozenset((
 MODULES = {
     'bindu_runtime.snowbot_adapter': 'snowbot_adapter',
     'bindu_runtime.pico_node': 'pico_control',
+    'snowbot_hardware.adapter': 'snowbot_adapter',
+    'snowbot_teleop.node': 'pico_control',
     'bindu_runtime.bimanual_tool_node': 'teleop_tool',
     'bindu_runtime.execution_node': 'execution',
     'bindu_runtime.teleop_node': 'teleop',

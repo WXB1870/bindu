@@ -1,4 +1,5 @@
 """Prepare/build the existing Snowbot real VR chain in one isolated x86 workspace."""
+from tools import package_share
 import argparse
 import hashlib
 import json
@@ -13,7 +14,7 @@ from tools import ROOT
 from tools.deployment.process_guard import require_stopped
 
 REQUIREMENTS = ROOT/'tools/requirements/requirements-x86-real.txt'
-TEMPLATE = ROOT/'src/integration/bindu_runtime/config/deployments/snowbot_vr_real.json'
+TEMPLATE_NAME = 'config/deployments/snowbot_vr_real.json'
 SYSTEM_PATH = '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
 OVERLAYS = ('PYTHONPATH', 'PYTHONHOME', 'AMENT_PREFIX_PATH', 'COLCON_PREFIX_PATH',
             'CMAKE_PREFIX_PATH', 'LD_LIBRARY_PATH', 'LD_PRELOAD', 'LIBRARY_PATH',
@@ -21,7 +22,7 @@ OVERLAYS = ('PYTHONPATH', 'PYTHONHOME', 'AMENT_PREFIX_PATH', 'COLCON_PREFIX_PATH
             'VIRTUAL_ENV', 'CONDA_PREFIX',
             'CONDA_DEFAULT_ENV', 'BINDU_TELEOP_DEPS', 'BINDU_VIEWER_DEPS',
             'BINDU_VR_ENV', 'BINDU_VR_CONFIG', 'ROS_DISTRO', 'ROS_VERSION',
-            'ROS_PYTHON_VERSION', 'ROS_PACKAGE_PATH')
+            'ROS_PYTHON_VERSION', 'ROS_PACKAGE_PATH', 'BINDU_PACKAGE_PATH', 'BINDU_APPLICATION_SOURCE')
 
 
 def target_distro(os_info, machine, version):
@@ -83,6 +84,8 @@ def environment_script(workspace, profile):
         'export BINDU_VIEWER_DEPS='+q(str(site)),
         'export BINDU_VR_ENV='+q(str(workspace/'env.sh')),
         'export BINDU_VR_CONFIG='+q(str(workspace/'site.json')),
+        *(['export BINDU_APPLICATION_SOURCE='+q(profile['application_source'])]
+          if profile.get('application_source') else []),
         '',
     ])
 
@@ -107,21 +110,29 @@ def read_profile(workspace):
     return profile
 
 
-def source_digest():
-    paths = subprocess.check_output(
-        ['git', 'ls-files', '--cached', '--others', '--exclude-standard', '-z',
-         '--', 'src', 'tools/requirements'], cwd=ROOT).split(b'\0')
+def source_digest(application_source=None):
     digest = hashlib.sha256()
-    for raw in sorted(path for path in paths if path and not path.endswith(b'.md')):
-        digest.update(raw+b'\0')
-        digest.update((ROOT/os.fsdecode(raw)).read_bytes())
+    roots = [('bindu', ROOT, ('src', 'tools/requirements'))]
+    if application_source:
+        roots.append(('snowbot', Path(application_source), ('src',)))
+    for name, root, folders in roots:
+        paths = subprocess.check_output(
+            ['git', 'ls-files', '--cached', '--others', '--exclude-standard', '-z', '--', *folders],
+            cwd=root).split(b'\0')
+        for raw in sorted(set(path for path in paths if path and not path.endswith(b'.md'))):
+            path = root/os.fsdecode(raw)
+            if not path.is_file():
+                continue  # A tracked deletion is represented by absence from this snapshot.
+            digest.update(name.encode()+b'/'+raw+b'\0')
+            digest.update(path.read_bytes())
     return digest.hexdigest()
 
 
 def require_current_build(workspace):
     build_info = json.loads((workspace/'build.json').read_text())
+    profile = json.loads((workspace/'deployment.json').read_text())
     if (not build_info.get('ready') or not build_info.get('native_process_exit_success') or
-            build_info.get('source_sha256') != source_digest()):
+            build_info.get('source_sha256') != source_digest(profile.get('application_source'))):
         raise ValueError('构建未完成或源码/依赖清单已变更，请重新 build')
 
 
@@ -135,11 +146,21 @@ def prepare(options):
     vendor = options.vendor_setup.expanduser().resolve()
     if not vendor.is_file() or vendor.name != 'local_setup.bash':
         raise ValueError('--vendor-setup 需要已适配底层消息安装目录的 local_setup.bash')
+    selected = getattr(options, 'application_source', None)
+    application = (Path(selected).expanduser().resolve() if selected else
+                   package_share('snowbot_bringup').parents[1])
+    expected = {'snowbot_bringup', 'snowbot_description', 'snowbot_hardware', 'snowbot_teleop'}
+    import xml.etree.ElementTree as ET
+    found = {ET.parse(p).findtext('name') for p in (application/'src').glob('*/package.xml')}
+    if not expected <= found:
+        raise ValueError('--application-source 需要包含四个 Snowbot 应用包的工作区根目录')
+    template = application/'src/snowbot_bringup'/TEMPLATE_NAME
     profile = dict(schema=1, root=str(ROOT), workspace=str(workspace), ros=distro,
-                   python=version, vendor_setup=str(vendor), ready=False)
+                   python=version, vendor_setup=str(vendor), application_source=str(application), ready=False)
     if workspace.exists() and any(workspace.iterdir()):
         old = read_profile(workspace)
-        if old['vendor_setup'] != str(vendor):
+        if (old['vendor_setup'] != str(vendor) or
+                old.get('application_source', str(application)) != str(application)):
             raise ValueError('已有部署目录使用另一底层环境，请新建目录')
     else:
         workspace.mkdir(parents=True, exist_ok=True)
@@ -158,7 +179,7 @@ def prepare(options):
     site = workspace/'site.json'
     if not site.exists():
         with site.open('x') as stream:
-            stream.write(TEMPLATE.read_text())
+            stream.write(template.read_text())
     profile['ready'] = True
     (workspace/'deployment.json').write_text(json.dumps(profile, indent=2)+'\n')
     print(f'已准备 {workspace}；现场配方 {site} 默认只读。下一步执行 build。')
@@ -179,11 +200,23 @@ def numeric_cmake_arguments(workspace):
 
 def build(workspace):
     require_stopped()
-    before = source_digest()
-    info = dict(ready=False, source_sha256=before)
+    profile = json.loads((workspace/'deployment.json').read_text())
+    application = profile.get('application_source')
+    if not application:
+        raise ValueError('部署缺少 Snowbot 应用源码身份，请重新 prepare 并指定 --application-source')
+    before = source_digest(application)
+    identities = {}
+    for name, root in (('bindu', ROOT), ('snowbot', Path(application))):
+        identities[name] = {
+            'root': str(root),
+            'commit': subprocess.check_output(['git','rev-parse','HEAD'], cwd=root, text=True).strip(),
+            'dirty': bool(subprocess.check_output(['git','status','--porcelain','--','src','tools/requirements'],
+                                                  cwd=root, text=True))}
+    info = dict(ready=False, source_sha256=before, source_revisions=identities)
     (workspace/'build.json').write_text(json.dumps(info, indent=2)+'\n')
     command = ['python3', '/usr/bin/colcon', '--log-base', workspace/'log', 'build',
-        '--base-paths', ROOT/'src', '--packages-up-to', 'bindu_runtime', 'bindu_bimanual_qp',
+        '--base-paths', ROOT/'src', Path(application)/'src',
+        '--packages-up-to', 'snowbot_bringup', 'bindu_bimanual_qp',
         '--build-base', workspace/'build', '--install-base', workspace/'install',
         '--executor', 'sequential', '--cmake-clean-cache', '--cmake-args', '-DCMAKE_BUILD_TYPE=Release',
         '-DPython3_EXECUTABLE='+str(workspace/'venv/bin/python3'),
@@ -218,16 +251,21 @@ data={'python':sys.executable,'architecture':platform.machine(),'ros':os.environ
       'commit':subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(),
       'dirty':bool(subprocess.check_output(['git','status','--porcelain'],text=True)),
       'prefixes':{name:get_package_prefix(name) for name in
-                  ('bindu_runtime','bindu_interfaces','bindu_bimanual_qp','snowbot_ctl_msgs')},
+                  ('bindu_runtime','bindu_interfaces','bindu_bimanual_qp','snowbot_ctl_msgs',
+                   'snowbot_bringup','snowbot_description','snowbot_hardware','snowbot_teleop')},
       'modules':modules,
       'numeric_libraries':sorted(set(line.split()[-1] for line in Path('/proc/self/maps').read_text().splitlines()
           if any(name in line for name in ('libpinocchio','libcoal','liboctomap','liboctomath'))))}
 out=Path(sys.argv[1])
+from bindu_runtime.teleop_deployment import configuration_snapshot
+from ament_index_python.packages import get_package_share_directory
+snapshot=configuration_snapshot(out/'site.json',get_package_share_directory('bindu_runtime'))
+(out/'resolved-config.json').write_text(json.dumps(snapshot,indent=2)+'\\n')
 (out/'environment.json').write_text(json.dumps(data,indent=2)+'\\n')
 (out/'requirements-resolved.txt').write_text(subprocess.check_output(
     [sys.executable,'-m','pip','freeze','--local'],text=True))
 ''', workspace])
-    if source_digest() != before:
+    if source_digest(application) != before:
         raise ValueError('构建期间源码发生变化，请重新 build')
     info['native_process_exit_success'] = True
     info['ready'] = True
@@ -239,6 +277,7 @@ def main(argv=None):
     parser.add_argument('command', choices=('prepare', 'build', 'check', 'check-robot', 'start'))
     parser.add_argument('--workspace', type=Path, default=ROOT/'artifacts/x86-real')
     parser.add_argument('--vendor-setup', type=Path)
+    parser.add_argument('--application-source', type=Path, help='Snowbot 应用工作区根目录；prepare 时固定并校验')
     parser.add_argument('--ros-distro', choices=('humble', 'jazzy'))
     options, extra = parser.parse_known_args(argv)
     options.workspace = options.workspace.expanduser().resolve()
@@ -248,8 +287,8 @@ def main(argv=None):
                 raise ValueError('prepare 需要 --vendor-setup，且不接受启动参数')
             prepare(options)
         else:
-            if options.vendor_setup or options.ros_distro:
-                raise ValueError('--vendor-setup/--ros-distro 仅用于 prepare')
+            if options.vendor_setup or options.ros_distro or options.application_source:
+                raise ValueError('--vendor-setup/--ros-distro/--application-source 仅用于 prepare')
             if not read_profile(options.workspace).get('ready'):
                 raise ValueError('prepare 尚未成功完成')
             if options.command == 'build':

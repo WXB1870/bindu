@@ -1,4 +1,5 @@
 """Robot selection and position protocol tests. Never opens a hardware endpoint."""
+from bindu_contracts.resources import package_share
 from tests.support.paths import ROOT
 import copy
 import json
@@ -48,7 +49,7 @@ def fixture(folder, arms=7, waist=2, positive_limit=False):
                'capabilities': ['joint_position']}
     (folder/'profile.json').write_text(json.dumps(profile))
     for side, group in [('left', 'port'), ('right', 'starboard')]:
-        config = json.loads((CONFIG/f'robots/snowbot/teleop_snowbot_{side}.json').read_text())
+        config = json.loads((package_share("snowbot_bringup")/f'config/robots/snowbot/teleop_snowbot_{side}.json').read_text())
         config['resource_group'] = group
         config['kinematics'].update(urdf='robot.urdf', joint_names=groups[group],
                                    ee_link=groups[group][-1]+'_link',
@@ -72,7 +73,7 @@ class RobotConfigurationTests(unittest.TestCase):
     def test_real_bimanual_deployment_uses_only_required_modules_without_recorder(self):
         from launch import LaunchContext
         from bindu_runtime.teleop_assembly import assemble
-        launch,args=load_deployment(CONFIG/'deployments/snowbot_real_teleop.json',RUNTIME)
+        launch,args=load_deployment(package_share("snowbot_bringup")/'config/deployments/snowbot_real_teleop.json',RUNTIME)
         robot=RobotSetup.load(args['robot_config'],PACKAGES)
         self.assertEqual(robot.profile.name,'snowbot_real_position')
         self.assertEqual(robot.single_arm,{})
@@ -126,9 +127,9 @@ class RobotConfigurationTests(unittest.TestCase):
     def test_real_assembly_rejects_simulation_geometry_and_pico_actuator_proxy(self):
         from launch import LaunchContext
         from bindu_runtime.teleop_assembly import assemble
-        _,args=load_deployment(CONFIG/'deployments/snowbot_real_teleop.json',RUNTIME)
+        _,args=load_deployment(package_share("snowbot_bringup")/'config/deployments/snowbot_real_teleop.json',RUNTIME)
         for changes,code in (({'pico_enabled':'true'},'PICO_REQUIRES_SNOWBOT_KINEMATIC_VR'),
-                             ({'robot_config':str(CONFIG/'robots/snowbot/robot_snowbot.json')},'CONFIG_RUNTIME_MODE_MISMATCH')):
+                             ({'robot_config':str(package_share("snowbot_bringup")/'config/robots/snowbot/robot_snowbot.json')},'CONFIG_RUNTIME_MODE_MISMATCH')):
             context=LaunchContext();context.launch_configurations.update({**args,**changes})
             with self.subTest(changes=changes),self.assertRaisesRegex(ValueError,code):
                 assemble(context)
@@ -140,7 +141,7 @@ class RobotConfigurationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'RECORDER_DISABLED_REQUIRES_OFF'):assemble(context)
 
     def test_existing_models_and_second_real_robot_are_distinct(self):
-        snow = RobotSetup.load(CONFIG/'robots/snowbot/robot_snowbot.json', PACKAGES)
+        snow = RobotSetup.load(package_share("snowbot_bringup")/'config/robots/snowbot/robot_snowbot.json', PACKAGES)
         g1 = RobotSetup.load(CONFIG/'robots/g1/robot_g1_fixture.json', PACKAGES)
         self.assertEqual((len(snow.active_joints), len(snow.context_joints)), (16, 4))
         self.assertEqual((len(g1.active_joints), len(g1.context_joints)), (16, 4))
@@ -244,7 +245,7 @@ class RobotConfigurationTests(unittest.TestCase):
     def test_logging_off_keeps_required_health_publisher(self):
         from launch import LaunchContext
         from bindu_runtime.teleop_assembly import assemble
-        robot = RobotSetup.load(CONFIG/'robots/snowbot/robot_snowbot.json', PACKAGES)
+        robot = RobotSetup.load(package_share("snowbot_bringup")/'config/robots/snowbot/robot_snowbot.json', PACKAGES)
         context = LaunchContext()
         context.launch_configurations.update(robot_config=str(robot.path), side='left',
             device_backend='kinematic', tool_input_source='tool_pose', recording_mode='off',
@@ -260,7 +261,7 @@ class RobotConfigurationTests(unittest.TestCase):
     def test_new_deployment_has_no_startup_pose(self):
         launch, args = load_deployment(CONFIG/'deployments/teleop_robot_deployment.json', RUNTIME)
         self.assertEqual(launch, 'robot_teleop.launch.py')
-        self.assertEqual(Path(args['robot_config']), CONFIG/'robots/snowbot/robot_snowbot.json')
+        self.assertEqual(Path(args['robot_config']), package_share("snowbot_bringup")/'config/robots/snowbot/robot_snowbot.json')
         self.assertNotIn('initialize_tool_pose', args)
 
 

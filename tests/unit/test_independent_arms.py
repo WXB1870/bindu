@@ -1,4 +1,5 @@
 """Independent clutches and native dual-target movement from measured zero."""
+from bindu_contracts.resources import package_share
 from tests.support.paths import ROOT
 import json
 import unittest
@@ -83,9 +84,9 @@ class IndependentSessionTests(unittest.TestCase):
 
 class IndependentNativeTests(unittest.TestCase):
     def setUp(self):
-        base=ROOT/'src/integration/bindu_runtime/config/robots/snowbot'
+        base=package_share('snowbot_bringup')/'config/robots/snowbot'
         self.cfg=json.loads((base/'bimanual_snowbot_real.json').read_text())
-        self.cfg['urdf']=str(Path(get_package_share_directory('bindu_description'))/'urdf'/self.cfg['urdf'])
+        self.cfg['urdf']=str(package_share('snowbot_description')/'urdf'/self.cfg['urdf'])
         self.solver=BimanualQP(self.cfg,Profile.load(base/'snowbot_real_position.json'))
         self.addCleanup(self.solver.close)
         recipe=dict(self.cfg['demo'])
@@ -139,7 +140,7 @@ class IndependentNativeTests(unittest.TestCase):
     def test_recorded_collision_candidates_shrink_without_ending_control(self):
         data=json.loads((ROOT/'tests/config/teleoperation/snowbot_candidate_steps.json').read_text())
         cfg=dict(self.cfg,**data['recorded_config'])
-        profile=replace(Profile.load(ROOT/'src/integration/bindu_runtime/config/robots/snowbot/snowbot_real_position.json'),
+        profile=replace(Profile.load(package_share("snowbot_bringup")/'config/robots/snowbot/snowbot_real_position.json'),
                         max_speed=data['recorded_joint_speed'],joint_dynamics={})
         solver=BimanualQP(cfg,profile);self.addCleanup(solver.close)
         solver.empty_collision_check=self.solver.empty_collision_check
@@ -199,7 +200,7 @@ class IndependentNativeTests(unittest.TestCase):
                 np.testing.assert_allclose(out[nshared+(1-side)*nleft:nshared+(2-side)*nleft],0.,atol=1e-12)
 
     def test_nominal_tracking_holds_reference_despite_measured_arm_lag(self):
-        profile=Profile.load(ROOT/'src/integration/bindu_runtime/config/robots/snowbot/snowbot_real_position.json')
+        profile=Profile.load(package_share("snowbot_bringup")/'config/robots/snowbot/snowbot_real_position.json')
         solver=BimanualQP(dict(self.cfg,tracking_feedback='reference',posture_gain=0.),profile)
         self.addCleanup(solver.close)
         solver.empty_collision_check=self.solver.empty_collision_check
@@ -234,7 +235,7 @@ class IndependentNativeTests(unittest.TestCase):
     def test_target_stream_fixed_input_does_not_integrate_measured_offset(self):
         from bindu_runtime.teleop_deployment import apply_execution_tracking
         cfg=apply_execution_tracking(self.cfg,real=True,position_contract=True,trajectory_reference=True)
-        profile=Profile.load(ROOT/'src/integration/bindu_runtime/config/robots/snowbot/snowbot_real_position.json')
+        profile=Profile.load(package_share("snowbot_bringup")/'config/robots/snowbot/snowbot_real_position.json')
         solver=BimanualQP(cfg,profile);self.addCleanup(solver.close)
         solver.empty_collision_check=self.solver.empty_collision_check
         for side in range(2):
@@ -274,7 +275,7 @@ class IndependentNativeTests(unittest.TestCase):
     def test_recapture_preserves_held_reference_with_stationary_measured_offset(self):
         from bindu_runtime.teleop_deployment import apply_execution_tracking
         cfg=apply_execution_tracking(self.cfg,real=True,position_contract=True,trajectory_reference=True)
-        profile=Profile.load(ROOT/'src/integration/bindu_runtime/config/robots/snowbot/snowbot_real_position.json')
+        profile=Profile.load(package_share("snowbot_bringup")/'config/robots/snowbot/snowbot_real_position.json')
         solver=BimanualQP(cfg,profile);self.addCleanup(solver.close)
         solver.empty_collision_check=self.solver.empty_collision_check
         held=np.array([self.feedback[n] for n in solver.names])

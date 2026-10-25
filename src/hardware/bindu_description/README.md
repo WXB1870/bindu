@@ -1,5 +1,7 @@
 # bindu_description：本体模型与资产
 
+Snowbot 的模型、CAD 与来源声明已迁入独立 `snowbot_description` 包，维护入口见[Snowbot](../../../../../snowbot/README.md)。本包继续维护 G1／Huawei 资产；下方带日期的 Snowbot 验证记录保留，文件链接已指向新位置。
+
 [项目模块导航](../../../README.md#模块快速导航) · [编译与运行](#编译与运行) · [职责与边界](#职责与边界) · [源码导航](#源码导航) · [接入与验证](#接入与验证) · [关联模块](#关联模块)
 
 通过 ament_cmake 安装 URDF、网格和配套资产，供显示、运动学与仿真使用。本包不包含设备驱动。
@@ -15,7 +17,7 @@ colcon build --base-paths src --packages-up-to bindu_description --executor sequ
   -DPython3_EXECUTABLE="$(command -v python3)" -DPYTHON_EXECUTABLE="$(command -v python3)"
 source install/local_setup.bash
 ls "$(ros2 pkg prefix --share bindu_description)/urdf"
-python3 -c "from xml.etree import ElementTree as ET; print(ET.parse('src/hardware/bindu_description/urdf/snowbot_control.urdf').getroot().tag)"
+python3 -c "from xml.etree import ElementTree as ET; print(ET.parse('src/hardware/bindu_description/urdf/g1_provisional.urdf').getroot().tag)"
 ```
 
 构建会安装现有模型及网格，不需要重新下载原始资产。本包没有独立节点；模型由运动学、`robot_state_publisher` 或浏览器显示加载。完整模型显示和反馈链使用 [运行装配](../../integration/bindu_runtime/README.md#编译与运行)；上述检查只验证模型文件，不启动设备。
@@ -32,11 +34,11 @@ python3 -c "from xml.etree import ElementTree as ET; print(ET.parse('src/hardwar
 | 入口 | 内容 |
 |---|---|
 | [urdf/](urdf) | 全部机器人描述 |
-| [snowbot_control.urdf](urdf/snowbot_control.urdf) / [snowbot_display.urdf](urdf/snowbot_display.urdf) | Snowbot 控制与显示入口 |
+| [snowbot_control.urdf](../../../../../snowbot/src/snowbot_description/urdf/snowbot_control.urdf) / [snowbot_display.urdf](../../../../../snowbot/src/snowbot_description/urdf/snowbot_display.urdf) | Snowbot 控制与显示入口 |
 | [g1_provisional.urdf](urdf/g1_provisional.urdf) / [g1_display.urdf](urdf/g1_display.urdf) | 临时 G1 模型 |
 | [huawei_v34_kinematic.urdf](urdf/huawei_v34_kinematic.urdf) / [huawei_v34_display.urdf](urdf/huawei_v34_display.urdf) | 历史 v3.4 模型 |
 | [g1.assets.json](g1.assets.json) / [huawei_v34.assets.json](huawei_v34.assets.json) | 资产清单与来源信息 |
-| [LICENSE](LICENSE)、[SNOWBOT_ASSETS_NOTICE](SNOWBOT_ASSETS_NOTICE)、[HUAWEI_ASSETS_NOTICE](HUAWEI_ASSETS_NOTICE) | 模型与外部资产使用说明 |
+| [LICENSE](LICENSE)、[SNOWBOT_ASSETS_NOTICE](../../../../../snowbot/src/snowbot_description/SNOWBOT_ASSETS_NOTICE)、[HUAWEI_ASSETS_NOTICE](HUAWEI_ASSETS_NOTICE) | 模型与外部资产使用说明 |
 
 ## 接入与验证
 
@@ -60,9 +62,9 @@ python3 -c "from xml.etree import ElementTree as ET; print(ET.parse('src/hardwar
 
 | 模型 | 用途与派生关系 | 网格位置 |
 |---|---|---|
-| [`snowbot.urdf`](urdf/snowbot.urdf) | 原CAD几何与扩展帧，叠加用户提供的20轴关节参数；修复两个力传感器固定关节重名，重写网格 URI；保留四轮转动及视觉、碰撞几何，共 24 个活动关节 | `bindu_description/meshes/snowbot/` |
-| [`snowbot_display.urdf`](urdf/snowbot_display.urdf) | 从完整模型固定四轮，保留几何与其余 20 轴；供静止底盘显示及 `robot_state_publisher` 使用 | 与完整模型共用同一目录 |
-| [`snowbot_control.urdf`](urdf/snowbot_control.urdf) | 从 display 模型移除视觉、碰撞几何，保留相同的 20 轴运动学结构；供 IK／双臂 QP 使用 | 无网格引用 |
+| [`snowbot.urdf`](../../../../../snowbot/src/snowbot_description/urdf/snowbot.urdf) | 原CAD几何与扩展帧，叠加用户提供的20轴关节参数；修复两个力传感器固定关节重名，重写网格 URI；保留四轮转动及视觉、碰撞几何，共 24 个活动关节 | `bindu_description/meshes/snowbot/` |
+| [`snowbot_display.urdf`](../../../../../snowbot/src/snowbot_description/urdf/snowbot_display.urdf) | 从完整模型固定四轮，保留几何与其余 20 轴；供静止底盘显示及 `robot_state_publisher` 使用 | 与完整模型共用同一目录 |
+| [`snowbot_control.urdf`](../../../../../snowbot/src/snowbot_description/urdf/snowbot_control.urdf) | 从 display 模型移除视觉、碰撞几何，保留相同的 20 轴运动学结构；供 IK／双臂 QP 使用 | 无网格引用 |
 | [`g1_provisional.urdf`](urdf/g1_provisional.urdf) | 上游 G1 的临时 20 轴运动学派生模型；省略轮子和手爪子树、视觉及碰撞几何，供运动学模拟／IK 使用 | 无网格引用 |
 | [`g1_display.urdf`](urdf/g1_display.urdf) | 保留相同20轴控制结构，恢复固定上游版本的显示／碰撞几何；不启用新的IK碰撞策略 | `bindu_description/meshes/g1/` |
 | [`huawei_v34_kinematic.urdf`](urdf/huawei_v34_kinematic.urdf) | 历史v3.4的90连杆／19轴运动学基线，供旧单臂FK／IK及回归测试；保留原参数，省略几何 | 无网格引用 |
@@ -71,7 +73,7 @@ python3 -c "from xml.etree import ElementTree as ET; print(ET.parse('src/hardwar
 
 Snowbot 的三份 URDF 是同一机器人针对不同用途的生成结果。31 个 STL 仅保存一份，完整模型与显示模型通过 `package://bindu_description/meshes/snowbot/…` 引用；`bindu_description` 的安装规则一起安装 `urdf/` 与 `meshes/`。文件存在不等于几何可用于碰撞：源资产中的 `head_link_1.STL` 为空网格，相关检查边界见[雪铲几何验证](#单杆雪铲的握姿与工作空间2026-10-08)。
 
-**用户提供模型更新（2026-10-23）。** [`sources/snowbot.urdf`](sources/snowbot.urdf)逐字保存用户本次提供的文件，SHA256为`3024f5e3b45b188db7f3c0d1e13eaabb86ef726bd75b3c61d9984ced84c00798`。三份运行模型的共有20个活动关节以它为当前参数源；连接、安装变换和轴向与旧模型一致，头部及双臂J6/J7/J8限位已同步，仿真profile收窄到新模型内，真机已有的更窄任务范围不自动放大。R6上限1.274 rad，R7上限仍1.449 rad；R7目标1.42 rad在此模型范围内，更新模型不能据此认定昨天约1.27457 rad停点的根因已解决。
+**用户提供模型更新（2026-10-23）。** [`sources/snowbot.urdf`](../../../../../snowbot/src/snowbot_description/sources/snowbot.urdf)逐字保存用户本次提供的文件，SHA256为`3024f5e3b45b188db7f3c0d1e13eaabb86ef726bd75b3c61d9984ced84c00798`。三份运行模型的共有20个活动关节以它为当前参数源；连接、安装变换和轴向与旧模型一致，头部及双臂J6/J7/J8限位已同步，仿真profile收窄到新模型内，真机已有的更窄任务范围不自动放大。R6上限1.274 rad，R7上限仍1.449 rad；R7目标1.42 rad在此模型范围内，更新模型不能据此认定昨天约1.27457 rad停点的根因已解决。
 
 输入文件是简化的world／躯干模型，未包含当前底盘、F/T与TCP扩展，并引用未随本次提供的雷达网格；相机惯量／固定姿态也与原CAD不同。因此本次采用共有活动关节参数，原底盘、固定传感器／相机帧及配套网格作为一组保留，没有用缺少配套资产的子树替换当前显示和碰撞模型。三份运行模型均由同一脚本再生成；这不证明真实轴绑定、零偏或电机实际软限位已校验。
 
@@ -96,13 +98,13 @@ Snowbot 的三份 URDF 是同一机器人针对不同用途的生成结果。31 
 | `arm_l_joint_8` | [−1.484, 0.524] | [−1.57, 0.94] |
 | `arm_r_joint_8` | [−0.524, 1.484] | [−0.94, 1.57] |
 
-当时的[真机位置profile](../../integration/bindu_runtime/config/robots/snowbot/snowbot_real_position.json)的20轴位置范围均未超过118：除头J2取两模型交集±0.79 rad，其余19轴与118一致。该次仅记录差异和约束依据，未修改生成URDF或运行配置。
+当时的[真机位置profile](../../../../../snowbot/src/snowbot_bringup/config/robots/snowbot/snowbot_real_position.json)的20轴位置范围均未超过118：除头J2取两模型交集±0.79 rad，其余19轴与118一致。该次仅记录差异和约束依据，未修改生成URDF或运行配置。
 
 **静态复核结论（2026-10-21）**：以118安装模型快照为基准（SHA256前缀`9b406b17`，与当日部署清单一致，未重新读取在线文件），三份Bindu模型共有20轴的关节类型、父子关系、`origin`和`axis`全部一致；20轴profile位置限位均未越界，QP实际采用profile与URDF区间的交集。可将“共有轴运动学结构与位置限位静态核对”记为通过。
 
 **仍需单列确认**：Bindu新增的`car_base_link → body_base_link`平移为`[0.296, 0, 0.326] m`，两侧`arm_*_link_7 → arm_*_ft_sensor`为沿局部X轴平移`0.076 m`；这些变换及真实工具/TCP不由118原URDF共同轴的一致性证明。实物零点、物理轴绑定与工具安装标定仍未据此验收。
 
-Snowbot 来源及压缩包 SHA256 在 [`SNOWBOT_ASSETS_NOTICE`](SNOWBOT_ASSETS_NOTICE) 中维护；[`prepare_snowbot_description.py`](../../../tools/models/prepare_snowbot_description.py) 校验原ZIP及当前关节参数源指纹，并一次生成三份URDF；提供ZIP时同时导入共享网格。原 ZIP 由用户提供，不随仓库分发。重新生成命令：
+Snowbot 来源及压缩包 SHA256 在 [`SNOWBOT_ASSETS_NOTICE`](../../../../../snowbot/src/snowbot_description/SNOWBOT_ASSETS_NOTICE) 中维护；[`prepare_snowbot_description.py`](../../../tools/models/prepare_snowbot_description.py) 校验原ZIP及当前关节参数源指纹，并一次生成三份URDF；提供ZIP时同时导入共享网格。原 ZIP 由用户提供，不随仓库分发。重新生成命令：
 
 ```bash
 python3 -m tools.models.prepare_snowbot_description /path/to/snowbot_20260728_首次全身.zip

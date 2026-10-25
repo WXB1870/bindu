@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Real-mode teleop wire checks with synthetic controller feedback, no robot IO."""
+from bindu_contracts.resources import package_share
 from tests.support.paths import ROOT
 import argparse
 import json
@@ -18,14 +19,14 @@ from bindu_interfaces.msg import ExecutionState, VRInput, TeleopModeState, Runti
 from bindu_interfaces.action import SelectTeleopMode, TeleopSession
 from bindu_interfaces.srv import Lease
 from bindu_runtime.common import stamp
-from bindu_hardware.snowbot import GROUPS
+from snowbot_hardware.protocol import GROUPS
 from tests.support.snowbot import until, call, terminate
 
 
 def scenario(root, out, enabled):
     identity=uuid.uuid4().hex[:8];ns='/real_teleop_'+identity;vendor='/controller_fixture_'+identity
     node=rclpy.create_node('real_teleop_verifier_'+identity)
-    q=json.loads((root/'src/integration/bindu_runtime/config/robots/snowbot/bimanual_snowbot_shovel.json').read_text())['demo']['initial_positions_rad'].copy()
+    q=json.loads((package_share('snowbot_bringup')/'config/robots/snowbot/bimanual_snowbot_shovel.json').read_text())['demo']['initial_positions_rad'].copy()
     source=node.create_publisher(RetInformation,vendor+'/dualArmCtl_fdback',1)
     servo=node.create_publisher(String,vendor+'/bindu/servo_health',1)
     upper=node.create_publisher(String,vendor+'/bindu/control_source',1)
@@ -70,7 +71,7 @@ def scenario(root, out, enabled):
                 vr.publish(VRInput(stamp=stamp(now),runtime_mode='real',source_id=identity,seq=seq,
                     side=side,pose=pose,grip=clutch,mapping='pico_snowbot_v1',valid=True,stop=stop))
     node.create_timer(.01,publish)
-    recipe=json.loads((root/'src/integration/bindu_runtime/config/deployments/snowbot_real_teleop.json').read_text())
+    recipe=json.loads((package_share('snowbot_bringup')/'config/deployments/snowbot_real_teleop.json').read_text())
     with socket.socket() as sock:
         sock.bind(('127.0.0.1',0));port=sock.getsockname()[1]
     recipe['arguments'].update(namespace=ns,vendor_namespace=vendor,command_enabled=enabled,vr_enabled=not enabled,port=port,

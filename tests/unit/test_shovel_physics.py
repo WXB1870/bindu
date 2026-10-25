@@ -1,4 +1,5 @@
 """Analytical checks for mass, wrench balance and the released shaft axis."""
+from bindu_contracts.resources import package_share
 from tests.support.paths import ROOT
 import copy
 import json
@@ -93,7 +94,7 @@ class ShovelPhysicsTests(unittest.TestCase):
         rod = fcl.Cylinder(.018, .4)
         for short, y in (('l', .0085), ('r', -.0085)):
             for link in (7, 8):
-                mesh = fcl.MeshLoader().load(str(ROOT/f'src/hardware/bindu_description/meshes/snowbot/arm_{short}_link_{link}.STL'),np.ones(3))
+                mesh = fcl.MeshLoader().load(str(package_share('snowbot_description')/f'meshes/snowbot/arm_{short}_link_{link}.STL'),np.ones(3))
                 jaw = fcl.Transform3s(np.eye(3),np.array([.122 if link==8 else 0.,0.,0.]))
                 for center, expected in (([.151,0,0], True), ([.195,y,0], False)):
                     result = fcl.CollisionResult()
@@ -110,8 +111,8 @@ class ShovelPhysicsTests(unittest.TestCase):
             estimator.update(.2,[1.,2.],[0.,0.])
 
     def setUp(self):
-        config = json.loads((ROOT/'src/integration/bindu_runtime/config/robots/snowbot/bimanual_snowbot_shovel.json').read_text())
-        self.cfg = json.loads((ROOT/'src/integration/bindu_runtime/config/robots/snowbot/snowbot_shovel_physics.json').read_text())
+        config = json.loads((package_share("snowbot_bringup")/'config/robots/snowbot/bimanual_snowbot_shovel.json').read_text())
+        self.cfg = json.loads((package_share("snowbot_bringup")/'config/robots/snowbot/snowbot_shovel_physics.json').read_text())
         self.recipe = copy.deepcopy(config['demo'])
         self.recipe['left_grip_in_tool_m'] = self.recipe['pivot_in_tool_m']
         self.cfg['shaft_axis_in_tool'] = np.array([0., 0., 1.])
@@ -132,7 +133,7 @@ class ShovelPhysicsTests(unittest.TestCase):
         np.testing.assert_allclose(i2, 2*inertia)
 
     def test_deployed_short_tool_has_only_its_shaft_mass_and_contact_shape(self):
-        cfg=json.loads((ROOT/'src/integration/bindu_runtime/config/robots/snowbot/bimanual_snowbot_real.json').read_text())
+        cfg=json.loads((package_share("snowbot_bringup")/'config/robots/snowbot/bimanual_snowbot_real.json').read_text())
         recipe=cfg['demo'];mount=np.array(cfg['left_to_tool']).reshape(4,4)
         recipe['left_grip_in_tool_m']=(np.linalg.inv(mount) @ np.r_[recipe['grip_offset_m'],1.])[:3].tolist()
         recipe['pan_size_m']=[100.,100.,100.]
@@ -228,7 +229,7 @@ class ShovelPhysicsTests(unittest.TestCase):
         np.testing.assert_allclose(friction,[-2.,0.,0.])
 
     def test_flange_wrench_recovers_static_tool_deflection_in_rotated_frame(self):
-        config = json.loads((ROOT/'src/integration/bindu_runtime/config/robots/snowbot/bimanual_snowbot_shovel.json').read_text())
+        config = json.loads((package_share("snowbot_bringup")/'config/robots/snowbot/bimanual_snowbot_shovel.json').read_text())
         parameters = dict(self.cfg, max_age_s=.2)
         observer = GripLoadObserver(parameters,config)
         hand=np.eye(4);hand[:3,:3]=Rotation.from_euler('xyz',[.3,-.2,.8]).as_matrix();hand[:3,3]=[.1,.2,.3]

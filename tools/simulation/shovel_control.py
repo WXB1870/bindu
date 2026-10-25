@@ -5,6 +5,7 @@ ROS Pinocchio/native QP libraries; no ROS nodes or hardware drivers are started.
 Only measured joints/velocities, local F/T wrenches and operator packets reach it.
 Tool ground truth stays in the simulator for independent scoring.
 """
+from tools import package_share
 import hashlib
 import json
 import os
@@ -169,7 +170,7 @@ class PhysicsController:
         self.config_path = Path(config_path)
         self.cfg = json.loads(self.config_path.read_text())
         self.profile = Profile.load(self.config_path.parent/self.cfg['demo']['profile'])
-        self.cfg['urdf'] = str(ROOT/'src/hardware/bindu_description/urdf'/self.cfg['urdf'])
+        self.cfg['urdf'] = str(package_share('snowbot_description')/'urdf'/self.cfg['urdf'])
         self.observer = None
         if feedback is not None:
             if feedback.get('simulation_only') is not True: raise ValueError('SIMULATION_FEEDBACK_REQUIRED')

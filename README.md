@@ -4,6 +4,10 @@ Bindu 是基于 ROS 2 的模块化机器人控制系统，面向遥操作与移�
 
 Bindu维护硬件无关的机器人能力、共享执行契约和运行装配，允许按应用需求修改相关代码。本轮双臂遥操是Snowbot的定制场景；专属操作流程、场景参数和现场资料由文稿中的[snowbot工作区](../../snowbot/README.md)维护，可复用能力与接口在Bindu完善。
 
+## Snowbot 应用入口
+
+Snowbot 型号实现、模型与运行配方集中在独立的 [Snowbot 工作区](../../snowbot/README.md)：`snowbot_bringup` 管装配与配置，`snowbot_description` 管模型，`snowbot_hardware` 管厂商协议，`snowbot_teleop` 管扫雪操作流程。Bindu 保留公共契约、求解、执行和通用节点；原 Snowbot Python 模块仅保留兼容转发。运行 Snowbot 需要配套取得两个仓库，旧单仓库安装须按[部署说明](src/integration/bindu_runtime/README.md#x86-真机部署已有适配底层)重建，不能把本机目录移动视为部署完成。
+
 ## 项目结构
 
 ```text
