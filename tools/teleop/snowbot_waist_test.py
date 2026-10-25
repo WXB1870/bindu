@@ -8,6 +8,7 @@ targets and the other waist axis stay at the captured measurement, not Cartesian
 Use without a tool: moving the waist moves both arms in the world frame.
 """
 import argparse
+from collections import Counter
 from dataclasses import dataclass
 import json
 import math
@@ -330,9 +331,81 @@ def vars_limits(args):
     return dict(requested_speed=args.speed, requested_acceleration=args.acceleration, requested_jerk=args.jerk)
 
 
-def analyze(path):
+def summarize_csp(rows, slot):
+    """Raw attempt evidence, including failed receives; never infer physical cause."""
+    index = slot-16
+    missing = malformed = unsupported = repeats = command_invalid = feedback_invalid = 0
+    seen = set(); modes = Counter(); pairs = Counter(); errors = []; encoding = []
+    sent = []; measured = []; mismatch = not_csp = 0
+    arrays = {'csp_controlword': (0, 65535), 'csp_mode_command': (-128, 127),
+              'csp_mode_display': (-128, 127), 'csp_target_position_raw': (-2**31, 2**31-1),
+              'csp_target_velocity_raw': (-2**31, 2**31-1), 'csp_target_torque_raw': (-32768, 32767),
+              'csp_actual_position_raw': (-2**31, 2**31-1), 'csp_actual_velocity_raw': (-2**31, 2**31-1)}
+    valid_frames = 0
+    for data in rows:
+        if 'csp_diagnostics_version' not in data:
+            missing += 1
+            continue
+        if type(data['csp_diagnostics_version']) is not int or data['csp_diagnostics_version'] != 1:
+            unsupported += 1
+            continue
+        if (any(not isinstance(data.get(k), (list, tuple)) or len(data[k]) != 4 or
+                any(type(v) is not int or not lo <= v <= hi for v in data[k])
+                for k, (lo, hi) in arrays.items()) or
+                any(type(data.get(k)) is not int or not 0 <= data[k] <= 0xfffff
+                    for k in ('csp_command_mask', 'csp_feedback_mask')) or
+                any(type(data.get(k)) is not int or data[k] <= 0
+                    for k in ('boot_id', 'receive_attempt', 'csp_send_attempt_ns'))):
+            malformed += 1
+            continue
+        identity = data['boot_id'], data['receive_attempt']
+        if identity in seen:
+            repeats += 1
+            continue
+        seen.add(identity); valid_frames += 1
+        command_valid = (bool(data['csp_command_mask'] & (1 << slot)) and
+                         type(data.get('attempt_age')) in (int, float) and 0 <= data['attempt_age'] <= .02)
+        feedback_valid = (bool(data['csp_feedback_mask'] & data.get('valid_mask', 0) & (1 << slot)) and
+                          data.get('expected_wkc', 0) > 0 and data.get('wkc') == data['expected_wkc'] and
+                          type(data.get('pdo_age')) in (int, float) and 0 <= data['pdo_age'] <= .02)
+        if command_valid:
+            sent.append(data['csp_target_position_raw'][index])
+            not_csp += data['csp_mode_command'][index] != 8
+            output = data.get('output_position', [])
+            if (data.get('output_valid') and isinstance(output, (list, tuple)) and len(output) == 16 and
+                    type(output[slot-4]) in (int, float) and math.isfinite(output[slot-4])):
+                encoding.append(data['csp_target_position_raw'][index]-output[slot-4]*65536/(2*math.pi))
+        else:
+            command_invalid += 1
+        if feedback_valid:
+            measured.append(data['csp_actual_position_raw'][index])
+            modes[str(data['csp_mode_display'][index])] += 1
+        else:
+            feedback_invalid += 1
+        if command_valid and feedback_valid:
+            pair = data['csp_mode_command'][index], data['csp_mode_display'][index]
+            pairs[f'{pair[0]}/{pair[1]}'] += 1
+            mismatch += pair[0] != pair[1]
+            errors.append(data['csp_target_position_raw'][index]-data['csp_actual_position_raw'][index])
+    return dict(available=valid_frames > 0, slot=slot, array_index=index, unique_attempts=valid_frames,
+        missing_extension_frames=missing, unsupported_version_frames=unsupported, malformed_frames=malformed,
+        repeated_attempts_ignored=repeats, invalid_command_attempts=command_invalid,
+        invalid_feedback_attempts=feedback_invalid, actual_mode_counts=dict(modes),
+        command_actual_mode_counts=dict(pairs), mode_mismatch_attempts=mismatch, command_not_csp_attempts=not_csp,
+        sent_position_raw_range=[min(sent), max(sent)] if sent else None,
+        actual_position_raw_range=[min(measured), max(measured)] if measured else None,
+        following_error_raw_peak=max(map(abs, errors), default=None),
+        following_error_raw_rms=math.sqrt(sum(x*x for x in errors)/len(errors)) if errors else None,
+        sent_vs_output_peak_counts=max(map(abs, encoding), default=None),
+        output_conversion_counts_per_code_rad=65536/(2*math.pi),
+        command_is_drive_acknowledgement=False, physical_units_verified=False, cause_identified=False)
+
+
+def analyze(path, session=None):
     """Compare same-PDO reference/output/measurement; estimate speed from position."""
     samples = []; result = None; repeats = 0; axis = 'body_joint_1'
+    pdo_rows = []; sessions = set(); observed_sessions = set(); invalid = Counter(); other_sessions = 0
+    selection = 'explicit' if session is not None else 'unavailable'
     with Path(path).open() as source:
         # PDO callbacks can write before plan metadata; select the axis first.
         for line in source:
@@ -341,7 +414,20 @@ def analyze(path):
                 axis = row['data'].get('axis', 'body_joint_1')
                 if axis not in NAMES[:2]:
                     raise ValueError('TEST_AXIS_INVALID')
-                break
+            if row['kind'] == 'event' and row['data'].get('state') == 'TARGET_SENT':
+                code = row['data'].get('code', '')
+                if code.startswith('SNOWBOT_TARGET:'):
+                    sessions.add(json.loads(code.split(':', 1)[1])['session'])
+            if row['kind'] == 'pdo':
+                observed = row['data'].get('session')
+                if type(observed) is int and observed > 0:
+                    observed_sessions.add(observed)
+        if session is None:
+            candidates = sessions or observed_sessions
+            if len(candidates) > 1:
+                raise ValueError('CAPTURE_SESSION_AMBIGUOUS: select --session')
+            session = next(iter(candidates), None)
+            selection = 'target_sent' if sessions else 'observed_only_unmapped' if candidates else 'unavailable'
         source.seek(0)
         for line in source:
             row = json.loads(line)
@@ -350,6 +436,18 @@ def analyze(path):
             if row['kind'] != 'pdo':
                 continue
             data = row['data']
+            if session is not None and data.get('session') != session:
+                other_sessions += 1
+                continue
+            pdo_rows.append(data)
+            reasons = []
+            if not data.get('reference_valid'): reasons.append('reference_invalid')
+            if not data.get('output_valid'): reasons.append('output_invalid')
+            if data.get('expected_wkc', 0) <= 0 or data.get('wkc') != data['expected_wkc']: reasons.append('bad_wkc')
+            if type(data.get('pdo_age')) not in (int, float) or not 0 <= data['pdo_age'] <= .02: reasons.append('pdo_stale')
+            if data.get('valid_mask', 0) & MASK != MASK: reasons.append('incomplete_feedback')
+            if any(data['status'][slot] & 8 for slot in SLOTS): reasons.append('drive_fault')
+            invalid.update(reasons)
             if not (data.get('reference_valid') and data.get('output_valid') and
                     data.get('expected_wkc', 0) > 0 and data.get('wkc') == data['expected_wkc'] and
                     type(data.get('pdo_age')) in (int, float) and 0 <= data['pdo_age'] <= .02 and
@@ -360,6 +458,7 @@ def analyze(path):
             values = (data['stamp']-data['pdo_age'], data['position'][slot], data['speed'][slot],
                       data['reference_position'][ref_slot], data['reference_speed'][ref_slot], data['output_position'][ref_slot])
             if not all(type(v) in (int, float) and math.isfinite(v) for v in values):
+                invalid['nonfinite_reference_or_measurement'] += 1
                 continue
             if samples and data['boot_id'] == samples[-1][0] and data['pdo_sample'] == samples[-1][1]:
                 repeats += 1
@@ -368,8 +467,13 @@ def analyze(path):
                             values[0] <= samples[-1][2]):
                 raise ValueError('CAPTURE_BOOT_OR_SAMPLE_ORDER_CHANGED')
             samples.append((data['boot_id'], data['pdo_sample'], *values))
+    csp = summarize_csp(pdo_rows, 18 if axis == 'body_joint_1' else 19)
+    diagnostics = dict(session=session, session_selection=selection, pdo_frames=len(pdo_rows), other_session_frames_ignored=other_sessions,
+                       invalid_frame_reasons=dict(invalid), csp_diagnostics=csp)
     if not samples:
-        raise ValueError('NO_VALID_SERVO_REFERENCE_SAMPLES')
+        return dict(axis=axis, samples=0, reference_analysis_available=False,
+                    reason='NO_VALID_SERVO_REFERENCE_SAMPLES', run_result=result,
+                    physical_units_verified=False, hardware_acceptance=False, **diagnostics)
     speeds = []; ratios = []; previous = 0
     for index, sample in enumerate(samples):
         while previous+1 < index and sample[2]-samples[previous+1][2] >= .05:
@@ -381,7 +485,7 @@ def analyze(path):
             if abs(estimated) >= .005:
                 reported = (sample[4]+samples[previous][4])/2
                 ratios.append(reported/estimated)
-    return dict(axis=axis, physical_units_verified=False,
+    return dict(axis=axis, physical_units_verified=False, reference_analysis_available=True, **diagnostics,
         samples=len(samples), repeated_samples_ignored=repeats, run_result=result,
         reference_speed_peak_rad_s=max(abs(s[6]) for s in samples),
         reported_speed_peak_rad_s=max(abs(s[4]) for s in samples),
@@ -403,14 +507,17 @@ def main():
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument('--execute', action='store_true', help='operator only: acquire 16-axis lease and send targets')
     mode.add_argument('--analyze', type=Path, help='offline analysis of an existing capture')
+    parser.add_argument('--session', type=int, help='select one servo session for offline analysis')
     parser.add_argument('--robot-config', type=Path)
     parser.add_argument('--namespace', default='bindu_snowbot')
     parser.add_argument('--vendor-namespace', default='/')
     parser.add_argument('--output', type=Path)
     args = parser.parse_args()
     if args.analyze:
-        print(json.dumps(analyze(args.analyze), indent=2))
+        print(json.dumps(analyze(args.analyze, args.session), indent=2, allow_nan=False))
         return
+    if args.session is not None:
+        parser.error('--session requires --analyze')
     plan = make_plan(args.degrees, args.speed, args.acceleration, args.jerk)
     print(json.dumps(dict(preview=not args.execute, axis=args.axis, physical_units_verified=False, degrees=args.degrees,
         duration_s=plan.duration, move_seconds=plan.move_seconds,

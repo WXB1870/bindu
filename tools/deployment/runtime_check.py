@@ -1,5 +1,6 @@
 """Software checks and read-only robot interface checks; never send a target."""
 import importlib
+import hashlib
 import json
 import math
 import time
@@ -7,6 +8,96 @@ import uuid
 from pathlib import Path
 
 from tools import ROOT
+
+
+CSP_DIAGNOSTIC_FIELDS = {
+    'csp_diagnostics_version': ('uint8', 'octet'), 'csp_send_attempt_ns': ('int64',),
+    'csp_command_mask': ('uint32',), 'csp_feedback_mask': ('uint32',),
+    'csp_controlword': ('uint16[4]',), 'csp_mode_command': ('int8[4]',),
+    'csp_mode_display': ('int8[4]',), 'csp_target_position_raw': ('int32[4]',),
+    'csp_target_velocity_raw': ('int32[4]',), 'csp_target_torque_raw': ('int16[4]',),
+    'csp_actual_position_raw': ('int32[4]',), 'csp_actual_velocity_raw': ('int32[4]',),
+}
+
+
+def inspect_csp_schema(fields):
+    """Inspect the loaded generated type, including signedness and array lengths."""
+    errors = [name+':expected='+types[0]+',actual='+str(fields.get(name))
+              for name, types in CSP_DIAGNOSTIC_FIELDS.items() if fields.get(name) not in types]
+    return dict(compatible=not errors, diagnostics_version=1, errors=errors)
+
+
+def verify_vendor_install(workspace, fields, prefixes, generated_module, expected=None):
+    """Local files/types only. No node, discovery, bus access or build is started."""
+    workspace = Path(workspace).resolve()
+    schema = inspect_csp_schema(fields)
+    if not schema['compatible']:
+        raise ValueError('CSP_DIAGNOSTICS_SCHEMA_REBUILD_REQUIRED:'+','.join(schema['errors']))
+    packages = ('snowbot_ctl_msgs', 'snowbot_servo_control', 'snowbot_dual_arm_control', 'robot_control')
+    selected = {}
+    for name in packages:
+        prefix = Path(prefixes[name]).resolve()
+        if not prefix.is_relative_to(workspace/'install'):
+            raise ValueError('VENDOR_OVERLAY_MISMATCH:'+name+':'+str(prefix))
+        selected[name] = prefix
+    generated_module = Path(generated_module).resolve()
+    # rosidl --symlink-install can load the generated Python file from build/.
+    if not (generated_module.is_relative_to(selected['snowbot_ctl_msgs']) or
+            generated_module.is_relative_to(workspace/'build/snowbot_ctl_msgs')):
+        raise ValueError('VENDOR_GENERATED_MODULE_MISMATCH:'+str(generated_module))
+
+    def sha(path):
+        digest = hashlib.sha256()
+        with path.open('rb') as stream:
+            for block in iter(lambda: stream.read(1024*1024), b''):
+                digest.update(block)
+        return digest.hexdigest()
+
+    sources = ('ctl_msgs/msg/PositionObservation.msg',
+               'servo_control/include/servo_control/position_observation.h',
+               'servo_control/src/servo_control/ethercat_driver.cpp',
+               'servo_control/src/ros_controller/rosLoop.cpp')
+    source_hashes = {rel: sha(workspace/'src'/rel) for rel in sources}
+    source_fields = {}
+    for line in (workspace/'src'/sources[0]).read_text().splitlines():
+        parts = line.split('#', 1)[0].split()
+        if len(parts) == 2:
+            source_fields[parts[1]] = parts[0]
+    if not inspect_csp_schema(source_fields)['compatible']:
+        raise ValueError('VENDOR_SOURCE_CSP_SCHEMA_MISMATCH:'+sources[0])
+    installed = {
+        sources[0]: selected['snowbot_ctl_msgs']/'share/snowbot_ctl_msgs/msg/PositionObservation.msg',
+        sources[1]: selected['snowbot_servo_control']/'include/servo_control/position_observation.h',
+    }
+    installed_hashes = {rel: sha(path) for rel, path in installed.items()}
+    for rel, digest in installed_hashes.items():
+        if digest != source_hashes[rel]:
+            raise ValueError('VENDOR_SOURCE_INSTALL_MISMATCH:'+rel)
+    binary = selected['snowbot_servo_control']/'lib/snowbot_servo_control/servo_node'
+    markers = (b'csp_send_attempt_ns=', b'mode_command=', b'mode_display=',
+               b'target_position_raw=', b'actual_position_raw=')
+    binary_content = binary.read_bytes()
+    if any(marker not in binary_content for marker in markers):
+        raise ValueError('VENDOR_SERVO_CSP_DIAGNOSTICS_MISSING:'+str(binary))
+    binary_hash = hashlib.sha256(binary_content).hexdigest()
+    if expected is not None:
+        # Reuse the existing deployment-receipt shape, never execute its paths.
+        files = expected.get('files', {})
+        for rel, actual in source_hashes.items():
+            frozen = files.get('src/'+rel, files.get(rel))
+            if isinstance(frozen, dict): frozen = frozen.get('after')
+            if not isinstance(frozen, str) or frozen != actual:
+                raise ValueError('VENDOR_EXPECTED_SOURCE_SHA256_MISMATCH:'+rel)
+        if expected.get('binary_sha256') != binary_hash:
+            raise ValueError('VENDOR_EXPECTED_BINARY_SHA256_MISMATCH')
+    return dict(installation_checks_passed=True, schema=schema,
+        package_prefixes={k: str(v) for k, v in selected.items()},
+        generated_module=str(generated_module), generated_module_sha256=sha(generated_module),
+        source_sha256=source_hashes, installed_sha256=installed_hashes,
+        binary=str(binary), binary_sha256=binary_hash, binary_diagnostic_markers_present=True,
+        exact_servo_version_verified=expected is not None,
+        consumer_binary_versions_verified=False, robot_interface='not_checked', hardware_accessed=False,
+        verification_scope='local loaded schema, prefixes, source/install pairs and servo diagnostic capability')
 
 
 def check_installed_configs(paths, share):
@@ -360,3 +451,35 @@ def check_position_session(args, timeout):
     finally:
         node.destroy_node()
         rclpy.shutdown()
+
+
+def main(argv=None):
+    """Explicit local CSP installation audit, usable without starting the stack."""
+    import argparse
+    import sys
+    parser = argparse.ArgumentParser(description='Read-only CSP schema, overlay and installed-file audit; no ROS nodes.')
+    parser.add_argument('--vendor-workspace', type=Path, required=True)
+    parser.add_argument('--expected', type=Path,
+                        help='optional deployment receipt with four source files and binary_sha256')
+    args = parser.parse_args(argv)
+    try:
+        from ament_index_python.packages import get_package_prefix
+        from rclpy.type_support import check_for_type_support
+        from snowbot_ctl_msgs.msg import PositionObservation
+        check_for_type_support(PositionObservation)
+        generated = importlib.import_module(PositionObservation.__module__)
+        prefixes = {name: get_package_prefix(name) for name in
+                    ('snowbot_ctl_msgs', 'snowbot_servo_control', 'snowbot_dual_arm_control', 'robot_control')}
+        expected = json.loads(args.expected.read_text()) if args.expected else None
+        report = verify_vendor_install(args.vendor_workspace, PositionObservation.get_fields_and_field_types(),
+                                       prefixes, generated.__file__, expected)
+        print(json.dumps(report, indent=2, ensure_ascii=False, allow_nan=False))
+        return 0
+    except (OSError, ImportError, ValueError, KeyError, AttributeError, TypeError) as exc:
+        print(json.dumps(dict(installation_checks_passed=False, error=str(exc), hardware_accessed=False),
+                         ensure_ascii=False), file=sys.stderr)
+        return 2
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

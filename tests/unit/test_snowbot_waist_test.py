@@ -186,6 +186,85 @@ class WaistTests(unittest.TestCase):
         self.assertEqual(result['requested_jerk'], 10.)
         self.assertEqual(json_value([float('nan'), float('-inf')]), [None, None])
 
+    def diagnostic_row(self, attempt=1, **changes):
+        data = dict(boot_id=1, session=77, receive_attempt=attempt, pdo_sample=attempt,
+                    stamp=10.+attempt*.01, pdo_age=0., attempt_age=0., reference_valid=True,
+                    output_valid=True, wkc=67, expected_wkc=67, valid_mask=MASK,
+                    status=[0x27]*20, position=[0.]*20, speed=[0.]*20,
+                    reference_position=[0.]*16, reference_speed=[0.]*16, output_position=[0.]*16,
+                    csp_diagnostics_version=1, csp_send_attempt_ns=1000+attempt,
+                    csp_command_mask=0xf0000, csp_feedback_mask=0xf0000,
+                    csp_controlword=[0x1f]*4, csp_mode_command=[8]*4, csp_mode_display=[8]*4,
+                    csp_target_position_raw=[0, 0, 100, 200], csp_target_velocity_raw=[0]*4,
+                    csp_target_torque_raw=[0]*4, csp_actual_position_raw=[0, 0, 90, 170],
+                    csp_actual_velocity_raw=[0]*4)
+        return dict(kind='pdo', data=dict(data, **changes))
+
+    def analyze_rows(self, rows, **options):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp)/'capture.jsonl'
+            path.write_text(''.join(json.dumps(r)+'\n' for r in rows))
+            return analyze(path, **options)
+
+    def test_csp_analysis_keeps_bad_receives_and_rejects_stale_or_malformed_evidence(self):
+        rows = [self.diagnostic_row(), self.diagnostic_row(),
+                self.diagnostic_row(2, pdo_sample=1, wkc=66, reference_valid=False,
+                                    output_valid=False, csp_feedback_mask=0),
+                self.diagnostic_row(3, csp_mode_display=[8, 8, 9, 8]),
+                self.diagnostic_row(4, pdo_age=.03, attempt_age=.03),
+                self.diagnostic_row(5, csp_actual_position_raw=[123]),
+                self.diagnostic_row(6, csp_diagnostics_version=99)]
+        result = self.analyze_rows(rows)
+        raw = result['csp_diagnostics']
+        self.assertEqual(raw['unique_attempts'], 4)
+        self.assertEqual(raw['repeated_attempts_ignored'], 1)
+        self.assertEqual(raw['invalid_feedback_attempts'], 2)
+        self.assertEqual(raw['invalid_command_attempts'], 1)
+        self.assertEqual((raw['malformed_frames'], raw['unsupported_version_frames']), (1, 1))
+        self.assertEqual(raw['command_actual_mode_counts'], {'8/8': 1, '8/9': 1})
+        self.assertEqual(raw['mode_mismatch_attempts'], 1)
+        self.assertEqual(raw['following_error_raw_peak'], 10)
+        self.assertEqual(result['invalid_frame_reasons']['bad_wkc'], 1)
+        self.assertEqual(result['invalid_frame_reasons']['pdo_stale'], 1)
+        self.assertFalse(raw['command_is_drive_acknowledgement'])
+        self.assertFalse(raw['cause_identified'])
+
+    def test_csp_pitch_selection_session_filter_and_empty_reference_are_explicit(self):
+        event = dict(kind='event', data=dict(state='TARGET_SENT', code='SNOWBOT_TARGET:{"session":77}'))
+        rows = [self.diagnostic_row(session=66), event,
+                dict(kind='plan', data=dict(axis='body_joint_2')),
+                self.diagnostic_row(2, reference_valid=False, output_valid=False)]
+        result = self.analyze_rows(rows)
+        self.assertEqual(result['other_session_frames_ignored'], 1)
+        self.assertEqual(result['samples'], 0)
+        self.assertFalse(result['reference_analysis_available'])
+        self.assertEqual(result['csp_diagnostics']['following_error_raw_peak'], 30)
+        self.assertEqual(result['csp_diagnostics']['array_index'], 3)
+        self.assertFalse(result['hardware_acceptance'])
+        json.dumps(result, allow_nan=False)
+        rows.append(dict(kind='event', data=dict(state='TARGET_SENT', code='SNOWBOT_TARGET:{"session":88}')))
+        with self.assertRaisesRegex(ValueError, 'CAPTURE_SESSION_AMBIGUOUS'):
+            self.analyze_rows(rows)
+        self.assertEqual(self.analyze_rows(rows, session=77)['session'], 77)
+
+    def test_old_capture_does_not_fabricate_raw_csp_evidence(self):
+        row = self.diagnostic_row()
+        row['data'] = {k: v for k, v in row['data'].items() if not k.startswith('csp_')}
+        result = self.analyze_rows([row])['csp_diagnostics']
+        self.assertFalse(result['available'])
+        self.assertEqual(result['missing_extension_frames'], 1)
+        self.assertIsNone(result['following_error_raw_peak'])
+        self.assertEqual(result['actual_mode_counts'], {})
+
+    def test_old_capture_without_source_mapping_never_silently_mixes_sessions(self):
+        rows = [self.diagnostic_row(session=66), self.diagnostic_row(2, session=77)]
+        with self.assertRaisesRegex(ValueError, 'CAPTURE_SESSION_AMBIGUOUS'):
+            self.analyze_rows(rows)
+        result = self.analyze_rows(rows, session=77)
+        self.assertEqual(result['samples'], 1)
+        self.assertEqual(result['session_selection'], 'explicit')
+        self.assertEqual(self.analyze_rows(rows[:1])['session_selection'], 'observed_only_unmapped')
+
     def test_pitch_analysis_selects_pitch_even_when_pdo_precedes_plan(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory)/'pitch.jsonl'
