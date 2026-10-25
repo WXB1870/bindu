@@ -71,6 +71,12 @@ class BimanualStopHandoff(unittest.IsolatedAsyncioTestCase):
         return future
 
     def release(self, request):
+        if request.operation == 'renew':
+            self.calls.append(('renew',request.lease_id,request.epoch))
+            future=self.pending()
+            future.set_result(S(ok=True,code='OK',lease_id=request.lease_id,
+                                epoch=request.epoch,profile_hash='profile'))
+            return future
         self.calls.append(('release', request.lease_id, request.epoch))
         future = asyncio.get_running_loop().create_future()
         future.set_result(S(ok=True))
@@ -86,6 +92,62 @@ class BimanualStopHandoff(unittest.IsolatedAsyncioTestCase):
 
     def pending(self):
         return asyncio.get_running_loop().create_future()
+
+    async def test_hold_renews_real_lease_until_delayed_rest_then_revokes(self):
+        peer=PicoStopEvidence();peer.setUp();self.addCleanup(peer.doCleanups)
+        clock=S(monotonic=lambda:peer.clock)
+        tool=actual_methods(clock)();peer.node=tool
+        tool.profile=S(stop_timeout=4.,digest=peer.p.digest)
+        tool.simulation=True;tool.cfg={'feedback_max_age':.2}
+        tool.names=tuple(peer.p.limits);tool.execution_instance_id='original'
+        tool.now=lambda:peer.clock;tool.event=Mock()
+        tool.control_client=S(call_async=lambda request:peer.rpc('control',request))
+        tool.lease_client=S(call_async=lambda request:peer.rpc('lease',request))
+        calls=[]
+        peer.rpc_hook=lambda method,request:calls.append((method,request.operation,peer.clock))
+        # The actual executor owns the two-second lease. Only measured-stop
+        # availability is delayed beyond it; the client cannot invent rest.
+        def observation():
+            peer.overrides.update(state='STOPPING' if peer.clock<12.4 else 'CANCELED',
+                joints=S(name=list(tool.names),velocity=[.02 if peer.clock<12.4 else 0.]*len(tool.names)))
+        async def pause():
+            observation();await peer.pause();observation();peer.update()
+        tool.pause=pause;observation();peer.update()
+        lease=S(lease_id=peer.e.lease_id,epoch=peer.e.epoch)
+        self.assertTrue(await tool.stop(lease))
+        self.assertGreaterEqual(peer.clock,12.4)
+        self.assertEqual(peer.e.epoch,lease.epoch)
+        self.assertEqual(peer.e.lease_id,lease.lease_id)
+        self.assertGreaterEqual(sum(op=='renew' for _,op,_ in calls),2)
+        self.assertTrue(await tool.stop(lease,release=True))
+        self.assertEqual(peer.e.epoch,lease.epoch+1)
+        self.assertFalse(peer.e.lease_id)
+        self.assertEqual(calls[-1][1],'release')
+
+    async def test_hold_renewal_cannot_extend_original_stop_deadline(self):
+        self.node.state=self.state(7,'STOPPING')
+        async def fresh_moving():
+            await self.pause()
+            self.node.state=self.state(7,'STOPPING')
+        self.node.pause=fresh_moving
+        self.assertFalse(await self.node.stop(self.lease))
+        self.assertLess(self.clock.value,.83)
+        self.assertTrue(any(call[0]=='renew' for call in self.calls))
+
+    async def test_hold_rejects_renewal_with_changed_identity_or_permission(self):
+        for change,value in (('ok',False),('lease_id','other'),('epoch',4),('profile_hash','other')):
+            with self.subTest(change=change):
+                self.clock.value=0.;self.node.state=self.state(7,'STOPPING')
+                async def fresh():
+                    await self.pause();self.node.state=self.state(7,'STOPPING')
+                self.node.pause=fresh
+                def reply(request):
+                    data=dict(ok=True,code='OK',lease_id='lease',epoch=3,profile_hash='profile')
+                    data[change]=value;future=self.pending();future.set_result(S(**data));return future
+                self.node.lease_client=S(call_async=reply)
+                self.assertFalse(await self.node.stop(self.lease))
+                diagnostic=__import__('json').loads(self.node.event.call_args.args[1])
+                self.assertIn('BIMANUAL_STOP_RENEW_REJECTED',diagnostic['reason'])
 
     async def test_hold_precedes_late_acceptance_and_revision_cannot_roll_back(self):
         pending = self.pending()
