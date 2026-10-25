@@ -870,7 +870,7 @@ class TargetWireTests(unittest.TestCase):
         first = self.d.publishers['arms'].publish.call_args.args[0]
         deadline = first.meta.expires_at_ns
         self.d.receive_receipt(self.receipt(first))
-        for _ in range(27):
+        for _ in range(15):
             self.update_target_feedback()
             self.d.brake_before_source_expiry(self.rig.engine)
         self.assertEqual(self.d.publishers['arms'].publish.call_count, 1)
@@ -891,13 +891,13 @@ class TargetWireTests(unittest.TestCase):
         self.d.check_ready = PositionSessionDevices.check_ready.__get__(self.d)
         self.rig.io.check_ready = self.d.check_ready
 
-    def test_longer_source_ttl_brakes_at_240ms_without_renewal(self):
+    def test_longer_source_ttl_brakes_at_180ms_with_dispatch_reserve(self):
         self.production_readiness()
         motion = self.source_motion()
         self.rig.engine.submit(motion, self.rig.now); self.rig.engine.tick(self.rig.now)
         first = self.d.publishers['arms'].publish.call_args.args[0]
         self.d.receive_receipt(self.receipt(first))
-        for _ in range(47):  # 235 ms; the former 140 ms boundary now passes.
+        for _ in range(35):  # 175 ms; retain 120 ms for the full PAUSE path.
             self.update_target_feedback(); self.rig.engine.tick(self.rig.now)
             self.d.brake_before_source_expiry(self.rig.engine)
             self.assertIsNone(self.rig.engine.stopping)
@@ -905,8 +905,11 @@ class TargetWireTests(unittest.TestCase):
         self.update_target_feedback()
         self.d.brake_before_source_expiry(self.rig.engine)
         pause = self.d.publishers['arms'].publish.call_args.args[0]
-        self.assertEqual(round((self.rig.now-motion.stamp)*1e9), 240_000_000)
+        self.assertEqual(round((self.rig.now-motion.stamp)*1e9), 180_000_000)
         self.assertEqual(pause.meta.operation, 2)
+        # Reproduce the observed 56 ms dispatch plus 10 ms preparation.
+        effective=pause.meta.source_stamp_ns+56_000_000+10_000_000
+        self.assertLess(effective,first.meta.expires_at_ns)
         self.assertFalse(self.rig.engine.lease_id)
         self.assertEqual(first.meta.expires_at_ns, round(motion.stamp*1e9)+300_000_000)
         for _ in range(10): self.d.brake_before_source_expiry(self.rig.engine)

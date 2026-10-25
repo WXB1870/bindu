@@ -74,6 +74,18 @@ class ExecutedReferenceTrackingTests(unittest.TestCase):
         self.assertAlmostEqual(out[0],-.02)
         self.assertEqual(metrics[2],0.)
 
+    def test_generation_reserves_feedback_movement_before_admission(self):
+        # The recorded candidate grew from 0.12 to 0.12731 while geometry ran.
+        from bindu_contracts.teleoperation import reference_tracking_budget
+        qp=self.solver(.08,0.,(.04,),.12);qp.speed={'r':3.}
+        out,_=qp.solve_independent({'r':0.},np.array([np.eye(4),np.eye(4)]),
+                                  active_mask=2,reference=(.08,),dt=.02)
+        latest=-.00731039047241105
+        error,budget=reference_tracking_budget((.08,),(latest,),.15,executed=(.04,))
+        self.assertLessEqual(abs(out[0]-latest),budget[0])
+        self.assertLessEqual(error,.15)
+        self.assertGreater(out[0],.08)
+
     def test_actual_executed_error_and_legacy_goal_error_still_trip_hard_guard(self):
         for reference,measured,executed in ((0.,0.,(.151,)),(.151,0.,None)):
             with self.subTest(executed=executed),self.assertRaisesRegex(ValueError,'REFERENCE_TRACKING_ERROR'):
@@ -91,7 +103,7 @@ class ExecutedReferenceTrackingTests(unittest.TestCase):
         qp._q=lambda feedback:np.array([feedback[n] for n in qp.names])
         out,_=qp.solve_independent({'r':.156,'s':0.},np.array([np.eye(4),np.eye(4)]),
                                   active_mask=2,reference=(-.02,.01),dt=.02)
-        self.assertAlmostEqual(out[1],.12)
+        self.assertAlmostEqual(out[1],.09)
         self.assertLess(abs(out[0]-.156),.176)
 
 class InitialCollisionRecoveryTests(unittest.TestCase):

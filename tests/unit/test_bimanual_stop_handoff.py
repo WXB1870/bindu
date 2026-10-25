@@ -38,7 +38,7 @@ class BimanualStopHandoff(unittest.IsolatedAsyncioTestCase):
         self.clock = S(value=0.)
         self.clock.monotonic = lambda:self.clock.value
         self.node = actual_methods(self.clock)()
-        self.node.profile = S(stop_timeout=.3, digest='profile')
+        self.node.profile = S(stop_timeout=.3, digest='profile',feedback_tolerances={})
         self.node.simulation = True
         self.node.cfg = {'feedback_max_age':.2}
         self.node.names = ('a',)
@@ -97,7 +97,7 @@ class BimanualStopHandoff(unittest.IsolatedAsyncioTestCase):
         peer=PicoStopEvidence();peer.setUp();self.addCleanup(peer.doCleanups)
         clock=S(monotonic=lambda:peer.clock)
         tool=actual_methods(clock)();peer.node=tool
-        tool.profile=S(stop_timeout=4.,digest=peer.p.digest)
+        tool.profile=S(stop_timeout=4.,digest=peer.p.digest,feedback_tolerances={})
         tool.simulation=True;tool.cfg={'feedback_max_age':.2}
         tool.names=tuple(peer.p.limits);tool.execution_instance_id='original'
         tool.now=lambda:peer.clock;tool.event=Mock()
@@ -578,6 +578,43 @@ class PicoStopEvidence(unittest.IsolatedAsyncioTestCase,ExecutionFixture):
         self.assertTrue(self.node.stop_request['failed'])
         while self.clock<started+7.1:await self.pause()
         self.assertFalse(self.node.feedback().healthy)
+
+    async def test_pico_hold_keeps_lease_until_delayed_feedback_rest(self):
+        calls=[]
+        self.rpc_hook=lambda method,request:calls.append((method,request.operation))
+        original_pause=self.node.pause
+        async def delayed_rest():
+            await original_pause()
+            joints=self.node.state.joints
+            speed=.02 if self.clock<12.5 else .007
+            self.node.state.joints=S(name=joints.name,position=joints.position,
+                                     velocity=[speed]*len(joints.name))
+        self.node.pause=delayed_rest
+        await delayed_rest()
+        await self.node.release_lease()
+        self.assertGreater(self.clock,12.5)
+        self.assertGreaterEqual(calls.count(('lease','renew')),3)
+        self.assertIsNone(self.node.lease)
+        self.assertIsNone(self.node.stop_request)
+        self.assertTrue(self.node.handoff_complete)
+        self.assertFalse(self.e.lease_id)
+        self.assertNotIn('LEASE_EXPIRED',[event.code for event in self.e.events])
+
+    async def test_pico_hold_renewal_keeps_original_stop_deadline(self):
+        original_pause=self.node.pause
+        async def never_rest():
+            await original_pause()
+            joints=self.node.state.joints
+            self.node.state.joints=S(name=joints.name,position=joints.position,
+                                     velocity=[.02]*len(joints.name))
+        self.node.pause=never_rest
+        await never_rest()
+        started=self.clock
+        with self.assertRaisesRegex(RuntimeError,'PICO_STOP_UNCONFIRMED:DEADLINE_EXPIRED'):
+            await self.node.release_lease()
+        self.assertLessEqual(self.clock-started,6.05)
+        self.assertIsNotNone(self.node.lease)
+        self.assertTrue(self.node.stop_request['failed'])
 
     async def test_normal_hold_release_and_explicit_new_lease_need_no_restart(self):
         await self.node.release_lease()

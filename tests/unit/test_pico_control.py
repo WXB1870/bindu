@@ -36,7 +36,7 @@ class ScenarioRuntimeTests(unittest.IsolatedAsyncioTestCase):
     def test_stale_feedback_keeps_original_deadline_and_stop_failure_priority(self):
         from types import SimpleNamespace as S
         node=self.production('reading');node.lease=node.tool_request=None;node.now=lambda:1.
-        node.tool_cfg={'feedback_max_age':.2};node.profile=S(digest='p',limits={'joint':(-1,1)})
+        node.tool_cfg={'feedback_max_age':.2};node.profile=S(digest='p',feedback_tolerances={},limits={'joint':(-1,1)})
         node.backend='snowbot_vendor';node.simulation=False
         node.state=S(instance_id='executor',stop_failures=[],code='OK',profile_hash='p',
             device_backend='snowbot_vendor',simulated=False,feedback_stamp=S(sec=0,nanosec=900000000),
@@ -117,7 +117,7 @@ class ScenarioRuntimeTests(unittest.IsolatedAsyncioTestCase):
         node=self.production('recover')
         node.recover.__func__.__globals__['stop_feedback_matches']=stop_feedback_matches
         node.current=Mock();node.lease=node.tool_request=node.tool_goal=None
-        node.profile=S(digest='profile');node.simulation=False;node.now=lambda:10.
+        node.profile=S(digest='profile',feedback_tolerances={});node.simulation=False;node.now=lambda:10.
         node.tool_cfg={'feedback_max_age':.2};node.names=('joint',)
         state=S(instance_id='executor',lease_epoch=2,lease_active=False,profile_hash='profile',
                 simulated=False,state='CANCELED',stop_failures=[],code='CANCELED',
@@ -144,7 +144,7 @@ class ScenarioRuntimeTests(unittest.IsolatedAsyncioTestCase):
         node=self.production('recover','stopped','begin_stop_wait')
         node.recover.__func__.__globals__['stop_feedback_matches']=stop_feedback_matches
         node.current=Mock();node.lease=node.tool_request=node.tool_goal=None
-        node.profile=S(digest='profile');node.simulation=False;node.now=lambda:10.
+        node.profile=S(digest='profile',feedback_tolerances={});node.simulation=False;node.now=lambda:10.
         node.tool_cfg={'feedback_max_age':.2};node.names=('joint',)
         state=S(instance_id='executor',lease_epoch=10,lease_active=False,profile_hash='profile',
                 simulated=False,state='FAILED',stop_failures=[],code='DEVICE_FEEDBACK_ERROR',
@@ -528,7 +528,7 @@ class LimitRecoveryRuntimeTests(unittest.IsolatedAsyncioTestCase):
         from unittest.mock import Mock,AsyncMock
         node=ScenarioRuntimeTests.production('prepare_hold_reference')
         node.current=Mock();node.stop_request=None;node.now=lambda:10.
-        node.names=('joint',);node.profile=S(digest='profile',limits={'joint':(-1.,1.)})
+        node.names=('joint',);node.profile=S(digest='profile',feedback_tolerances={},limits={'joint':(-1.,1.)})
         node.tool_cfg={'feedback_max_age':.1}
         state=S(instance_id='executor',lease_active=False,lease_epoch=2,revision=3,
                 state='CANCELED',stop_failures=[],joints=S(name=['joint'],velocity=[0.]))

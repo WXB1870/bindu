@@ -476,7 +476,7 @@ class PositionSessionDevices:
         if sent and sent[0]['operation'] != 2:
             # Keep the ordinary execution path to one tick. The extra dispatch
             # is needed only when the preceding packet is about to be fenced.
-            if round(self.node.now()*1e9) < sent[0]['expires_at_ns']-60_000_000:
+            if round(self.node.now()*1e9) < sent[0]['expires_at_ns']-120_000_000:
                 return
             # A service can accept a replacement between executor ticks. Dispatch
             # it through the normal feedback/lease/limit checks before fencing
@@ -489,9 +489,10 @@ class PositionSessionDevices:
                 sent = self.sent.get(self.envelopes.sequence)
                 if not sent or sent[0]['operation'] == 2:
                     return
-            # 60 ms covers two executor ticks plus the 10 ms local preparation.
+            # 120 ms covers two executor ticks, the observed 56 ms transport/dispatch,
+            # 10 ms preparation and one tick of scheduling reserve.
             # A stalled controller still falls under the native watchdog.
-            if round(self.node.now()*1e9) >= sent[0]['expires_at_ns']-60_000_000:
+            if round(self.node.now()*1e9) >= sent[0]['expires_at_ns']-120_000_000:
                 engine.halt(self.node.now(), 'COMMAND_TIMEOUT', revoke=True)
 
     def send(self, groups, target):

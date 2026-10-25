@@ -8,12 +8,14 @@ from typing import Tuple, Protocol
 import math
 
 
-def reference_tracking_budget(reference, measured, limit, *, executed=None):
+def reference_tracking_budget(reference, measured, limit, *, executed=None, reserve_fraction=.8):
     """Separate a target update from its executor-owned moving reference.
 
     Only an authenticated, fresh executor sample may be supplied as executed.
     An existing target gap outside the normal reserve may then converge, but
-    no joint may grow that gap. Integration still starts at the accepted goal.
+    no joint may grow that gap. Generation uses a smaller reserve than admission
+    to leave room for measured feedback to advance while solving. Integration
+    still starts at the accepted goal.
     """
     if not math.isfinite(limit) or limit<=0:
         raise ValueError('BIMANUAL_REFERENCE_LIMIT_CONFIG')
@@ -24,7 +26,7 @@ def reference_tracking_budget(reference, measured, limit, *, executed=None):
         raise ValueError('BIMANUAL_REFERENCE_LAYOUT')
     tracking=reference if executed is None else executed
     error=max(abs(q-m) for q,m in zip(tracking,measured))
-    budgets=tuple(max(.8*limit,abs(q-m)) if executed is not None else .8*limit
+    budgets=tuple(max(reserve_fraction*limit,abs(q-m)) if executed is not None else reserve_fraction*limit
                   for q,m in zip(reference,measured))
     return error,budgets
 
