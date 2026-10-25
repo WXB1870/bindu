@@ -1151,7 +1151,9 @@ class PicoNode(RuntimeNode):
             canceling_capture=(self.control.pending and self.control.pending.operation=='follow' and
                 temporary_capture_refusal(ended.code,ended.accepted_commands))
             if not canceling_capture:
-                self.control.lock('PICO_TOOL_SESSION_ENDED:'+ended.code,self.now())
+                prefix=('PICO_ARMS_SESSION_ENDED:' if self.control.teleop_mode=='independent_arms'
+                        else 'PICO_TOOL_SESSION_ENDED:')
+                self.control.lock(prefix+ended.code,self.now())
         for intent in self.control.drain():
             if intent.operation=='record':
                 if not self.recording_enabled:

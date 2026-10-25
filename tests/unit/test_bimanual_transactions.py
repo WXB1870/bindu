@@ -16,7 +16,7 @@ from unittest.mock import Mock
 import numpy as np
 from bindu_contracts.contracts import Motion
 from bindu_contracts.profile import Profile
-from bindu_contracts.teleoperation import VRFrame
+from bindu_contracts.teleoperation import VRFrame, reference_tracking_budget
 from bindu_execution.executor import Executor, Rejected
 from bindu_contracts.runtime_mode import command_mode
 from bindu_hardware.drivers.simulated_joints import SimJointDriver
@@ -93,6 +93,8 @@ class Rig:
         names = {'execute','goal','check','startup_input_ready','wait','begin_stop','stop','stop_pending','execution_revision','cleanup_event'}
         methods = [n for n in node.body if getattr(n,'name','') in names]
         namespace = dict(time=S(monotonic=lambda:self.steady),json=json,math=__import__('math'),
+            __name__='bindu_runtime.bimanual_tool_node',__package__='bindu_runtime',
+            reference_tracking_budget=reference_tracking_budget,
             stop_feedback_matches=stop_feedback_matches,
             WORKER_POLL_PERIOD=next(ast.literal_eval(n.value) for n in tree.body
                 if isinstance(n,ast.Assign) and any(isinstance(t,ast.Name) and
@@ -650,6 +652,36 @@ class BimanualTransactions(unittest.IsolatedAsyncioTestCase):
         self.assertLess(deferred[0]['admission']['reference_lead_rad'],.15)
         self.assertTrue(result.success,result.code)
         self.assertTrue(rig.commands)
+
+    async def test_executed_reference_distinguishes_recorded_braking_gap_from_tracking_failure(self):
+        rig=Rig();rig.node.trajectory_reference=True
+        async def held_reference(lease,revision):return (0.,0.,0.)
+        rig.node.held_reference=held_reference
+        original_update=rig.update
+        samples=[]
+        original_solve=rig.solve
+        def update():
+            original_update()
+            s=rig.node.state
+            at=rig.clock-.001
+            s.reference=S(name=list(rig.node.names),position=[0.,0.,.154],
+                header=S(stamp=S(sec=int(at),nanosec=round((at-int(at))*1e9))))
+            if rig.references and rig.references[0].captures:
+                s.joints.position[s.joints.name.index('r')]=.155
+            if len(rig.commands)>=2:rig.goal.is_cancel_requested=True
+        def solve(operation,token,feedback,target,**kwargs):
+            if operation=='solve':samples.append(kwargs.get('execution_reference'))
+            return original_solve(operation,token,feedback,target,**kwargs)
+        rig.update=update;rig.node.worker.submit=solve
+        result=await rig.run()
+        self.assertTrue(rig.commands,result.code)
+        self.assertIsNone(samples[0])  # First solve uses the confirmed hold bootstrap.
+        self.assertEqual(samples[1],(0.,0.,.154))
+        self.assertAlmostEqual(rig.commands[0].positions[-1],.001)
+        diagnostic=json.loads(next(e[1] for e in rig.events if e[0]=='BIMANUAL_QP_RESULT'))
+        self.assertEqual(diagnostic['admission']['reference_basis'],'executed')
+        self.assertGreater(diagnostic['admission']['target_lead_rad'],.15)
+        self.assertLess(diagnostic['admission']['reference_lead_rad'],.15)
 
     async def test_current_reference_beyond_hard_guard_is_not_deferred(self):
         rig=self.recorded_result_rig(latest=.151)

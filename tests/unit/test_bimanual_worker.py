@@ -10,6 +10,26 @@ from bindu_kinematics.bimanual_worker import BimanualWorker
 
 
 class WorkerReceiptTests(unittest.TestCase):
+    def test_executed_sample_belongs_only_to_its_solve_and_is_cleared_on_failure(self):
+        from bindu_kinematics.bimanual_worker import _run
+        requests,results=queue.Queue(),queue.Queue();observed=[]
+        requests.put(('solve',1,{},None,[],.01,'rigid',None,(.13,)))
+        requests.put(('solve',2,{},None,[],.01,'rigid',None))
+        requests.put(('capture',3,{},None,None,None,'rigid',None,(.99,)))
+        requests.put(None)
+        solver=SimpleNamespace(last_geometry_step=None,last_constraint=None,last_timing=None,close=Mock())
+        def solve(*args,**kwargs):
+            observed.append(solver.execution_reference)
+            raise ValueError('EXPECTED_REJECTION')
+        solver.solve=solve
+        solver.capture=lambda *args,**kw:observed.append(solver.execution_reference)
+        with patch('bindu_kinematics.bimanual.BimanualQP',return_value=solver), \
+                patch('bindu_kinematics.bimanual_worker.gc.collect'), \
+                patch('bindu_kinematics.bimanual_worker.gc.freeze'):
+            _run({},None,requests,results)
+        self.assertEqual(observed,[(.13,),None,None])
+        self.assertIsNone(solver.execution_reference)
+
     def test_gripper_body_path_keeps_all_joints_without_capturing_a_tool(self):
         import sys
         import numpy as np

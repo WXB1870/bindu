@@ -11,7 +11,7 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
 from rclpy.task import Future
 from std_srvs.srv import Trigger, SetBool
 from rcl_interfaces.msg import ParameterDescriptor
-from bindu_contracts.teleoperation import VRFrame, ToolPoseFrame
+from bindu_contracts.teleoperation import VRFrame, ToolPoseFrame, reference_tracking_budget
 from bindu_teleoperation.bimanual_session import BimanualSession, ToolPoseSession, AcceptedReference, ToolPause
 from bindu_teleoperation.independent_session import IndependentArmsSession
 from bindu_kinematics.bimanual_worker import BimanualWorker
@@ -736,15 +736,24 @@ class BimanualToolNode(RuntimeNode):
                             if not math.isfinite(limit) or limit<=0:
                                 raise RuntimeError('BIMANUAL_REFERENCE_LIMIT_CONFIG')
                             leads=[abs(q-measured[n]) for n,q in zip(self.names,positions)]
-                            reference_lead=max(abs(q-measured[n]) for n,q in zip(self.names,work_reference))
+                            executed=None
+                            if self.trajectory_reference:
+                                from .snowbot_position_session import sampled_nominal_reference
+                                executed,_=sampled_nominal_reference(s,self.names,lease.epoch,self.now(),
+                                    min(.1,self.cfg['feedback_max_age']))
+                            reference_lead,budgets=reference_tracking_budget(work_reference,
+                                tuple(measured[n] for n in self.names),limit,executed=executed)
                             admission=dict(feedback_stamp=seconds(s.feedback_stamp),
                                 feedback={n:measured[n] for n in self.names},
                                 candidate_lead_rad=max(leads),reference_lead_rad=reference_lead,
+                                reference_basis='executed' if executed is not None else 'accepted_target',
+                                target_lead_rad=max(abs(q-measured[n]) for n,q in zip(self.names,work_reference)),
+                                candidate_budget_rad=list(budgets),
                                 worst_candidate_joint=self.names[max(range(len(leads)),key=leads.__getitem__)],
                                 reserve_rad=.8*limit,hard_limit_rad=limit)
                             if reference_lead>limit:
                                 kind,value='error','BIMANUAL_REFERENCE_TRACKING_ERROR'
-                            elif max(leads)>.8*limit+1e-9:
+                            elif any(lead>budget+1e-9 for lead,budget in zip(leads,budgets)):
                                 kind,value='error','BIMANUAL_RESULT_FEEDBACK_CHANGED'
                         if kind=='error':
                             if awaiting=='solve' and value in ('BIMANUAL_QP_DEFERRED','BIMANUAL_RESULT_FEEDBACK_CHANGED'):
@@ -941,7 +950,9 @@ class BimanualToolNode(RuntimeNode):
                         sampled_monotonic=time.monotonic()
                     if self.worker.submit(operation,worker_token,measured,session.target,
                                           reference=baseline,dt=dt,grasp_mode=session.grasp_mode,
-                                          target_stamp=session.stamp):
+                                          target_stamp=session.stamp,
+                                          execution_reference=(execution_sample['positions']
+                                              if execution_sample is not None else None)):
                         awaiting=operation
                         work_seq,work_stamp=session.seq,session.stamp
                         work_sampled_at,work_dt=sampled_at,dt

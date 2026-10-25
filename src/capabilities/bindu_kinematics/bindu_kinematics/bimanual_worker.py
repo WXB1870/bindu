@@ -88,7 +88,8 @@ def _run(config, profile, requests, results, preload_path_checks=False):
         while True:
             item=requests.get()
             if item is None: return
-            operation,token,feedback,target,reference,dt,grasp_mode,target_stamp=item
+            operation,token,feedback,target,reference,dt,grasp_mode,target_stamp,*executed=item
+            solver.execution_reference=executed[0] if executed and operation=='solve' else None
             try:
                 solver.last_constraint=solver.last_timing=None
                 independent=isinstance(grasp_mode,str) and grasp_mode.startswith('independent:')
@@ -175,6 +176,8 @@ def _run(config, profile, requests, results, preload_path_checks=False):
                     constraint=getattr(solver,'last_constraint',None),
                     timing=getattr(solver,'last_timing',None) if operation=='solve' else None)))
                 results.put(('error',token,str(exc)))
+            finally:
+                solver.execution_reference=None
     except Exception as exc:
         results.put(('fatal',0,type(exc).__name__+': '+str(exc)))
     finally:
@@ -199,9 +202,10 @@ class BimanualWorker:
         self.started=time.monotonic()
         self.process.start()
 
-    def submit(self,operation,token,feedback,target=None,*,reference=None,dt=None,grasp_mode='rigid',target_stamp=None):
+    def submit(self,operation,token,feedback,target=None,*,reference=None,dt=None,grasp_mode='rigid',target_stamp=None,
+               execution_reference=None):
         if self.failure or not self.ready or self.busy: return False
-        self.requests.put_nowait((operation,token,feedback,target,reference,dt,grasp_mode,target_stamp))
+        self.requests.put_nowait((operation,token,feedback,target,reference,dt,grasp_mode,target_stamp,execution_reference))
         self.diagnostic=None
         self.busy=True
         self.submitted=time.monotonic()
