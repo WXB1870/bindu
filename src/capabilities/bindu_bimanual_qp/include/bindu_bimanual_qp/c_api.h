@@ -63,6 +63,11 @@ int bq_shared_targets(void *handle, const double *targets, int n);
  * group. Default zero, no pose target or hard lock. Set after each capture;
  * invalid configuration clears capture. The bq_config layout is unchanged. */
 int bq_shared_motion_weight(void *handle, double weight);
+/* Additive ABI v1: comma-separated active joint names, NULL/empty clears.
+ * Coupled solves intersect their velocity bounds with [0,0]; independent-arm
+ * solves are unchanged. Set after each coupled capture; invalid input clears
+ * capture. Model/profile limits, measured feedback and grasp checks stay active. */
+int bq_coupled_locked_joints(void *handle, const char *names);
 /* Additive ABI v1: finite outward-velocity cost inside a model/profile limit
  * band. margin uses joint units, weight is nonnegative; zero disables it.
  * Call after every capture. Existing hard constraints remain unchanged. */

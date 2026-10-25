@@ -135,6 +135,7 @@ public:
   void setSharedTargets(const Eigen::VectorXd &targets);
   void clearSharedTargets();
   void setSharedMotionWeight(double weight);
+  void setCoupledLockedJoints(const std::vector<std::string> &names);
   void setLimitAvoidance(double margin, double weight);
   void setPosturePolicy(const Eigen::VectorXd &reference,
                         const Eigen::VectorXd &lower, const Eigen::VectorXd &upper);
@@ -164,6 +165,7 @@ private:
   bool initialized_{false};
   bool fresh_start_{true};
   bool independent_{false};
+  std::vector<bool> coupled_locked_;
   double avoidance_margin_{0.}, avoidance_weight_{0.};
   Eigen::Vector3d tracking_point_{Eigen::Vector3d::Zero()};
 };

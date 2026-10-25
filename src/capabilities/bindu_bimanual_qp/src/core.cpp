@@ -262,6 +262,7 @@ QpController::QpController(RobotModel &robot, RigidToolKinematics &kin, Config c
   shared_targets_ = nominal_.head(shared_count_);
   posture_lower_ = robot_.lowerLimits();
   posture_upper_ = robot_.upperLimits();
+  coupled_locked_.assign(robot.variables(), false);
   reset();
 }
 
@@ -280,6 +281,20 @@ void QpController::setSharedMotionWeight(double weight) {
   if (!std::isfinite(weight) || weight < 0.)
     throw std::invalid_argument("invalid shared motion weight");
   config_.shared_motion_weight = weight;
+}
+
+void QpController::setCoupledLockedJoints(const std::vector<std::string> &names) {
+  const auto &active = robot_.activeJointNames();
+  std::vector<bool> locked(active.size(), false);
+  for (const auto &name : names) {
+    const auto found = std::find(active.begin(), active.end(), name);
+    if (found == active.end()) throw std::invalid_argument("unknown locked joint: " + name);
+    const auto index = static_cast<size_t>(found-active.begin());
+    if (locked[index]) throw std::invalid_argument("duplicate locked joint: " + name);
+    locked[index] = true;
+  }
+  coupled_locked_ = std::move(locked);
+  reset();
 }
 
 void QpController::setPosturePolicy(const Eigen::VectorXd &reference,
@@ -508,6 +523,11 @@ SolveResult QpController::solve(const pinocchio::SE3 &desired_tool, double dt,
       // accepted hold reference; it is never pulled by the other arm's task.
       if (lower[i]>0. || upper[i]<0.) { out.reason="inactive joint cannot hold"; return out; }
       lower[i]=upper[i]=0.;
+    }
+    if (!independent_ && coupled_locked_[i]) {
+      // Intersect with all safety bounds; never replace a required recovery.
+      lower[i] = std::max(lower[i], 0.);
+      upper[i] = std::min(upper[i], 0.);
     }
     if (lower[i] > upper[i]) { out.reason = "joint bounds infeasible"; return out; }
   }
