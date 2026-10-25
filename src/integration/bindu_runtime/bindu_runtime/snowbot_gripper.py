@@ -58,8 +58,10 @@ class SnowbotGrippers:
             self.devices.health.require(CONTROL_GROUPS, acquiring=True)
             obs = self.devices.health.observation
             for side, slot in (('left', 7), ('right', 15)):
-                if not obs.valid_mask & MASKS[side] or obs.status[slot] & 8:
-                    raise RuntimeError('GRIPPER_DRIVER_FEEDBACK_OR_FAULT:'+side)
+                if not obs.valid_mask & MASKS[side]:
+                    raise RuntimeError(f'GRIPPER_DRIVER_FEEDBACK_INVALID:{side}:slot={slot}')
+                if obs.status[slot] & 8:
+                    raise RuntimeError(f'GRIPPER_DRIVER_FAULT:{side}:slot={slot}:status=0x{obs.status[slot]:04x}')
         else:
             self.devices.check_health(set(self.core.groups))
         for side in SIDES:

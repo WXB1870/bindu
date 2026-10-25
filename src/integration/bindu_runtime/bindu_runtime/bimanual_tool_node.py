@@ -1,4 +1,5 @@
 """Dual-hand tool teleop through an explicitly selected position executor."""
+import os
 import json
 import math
 import time
@@ -975,6 +976,8 @@ class BimanualToolNode(RuntimeNode):
 
 
 def main():
+    # Configure this process before ROS initialization; preserve site overrides.
+    os.environ.setdefault('RMW_FASTRTPS_PUBLICATION_MODE','ASYNCHRONOUS')
     # All service waits yield and numerical work lives in a separate process.
     # Serialize callbacks like ExecutionNode: multiple executor threads can
     # starve fresh state/input callbacks behind the high-frequency polling timer.

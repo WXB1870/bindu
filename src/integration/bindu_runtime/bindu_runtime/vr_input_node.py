@@ -1,4 +1,5 @@
 """Explicitly launched Vuer input process; no hardware output."""
+import os
 import time
 import json
 import multiprocessing as mp
@@ -177,4 +178,6 @@ class VRInputNode(RuntimeNode):
 
 
 def main():
+    # Configure this process before ROS initialization; preserve site overrides.
+    os.environ.setdefault('RMW_FASTRTPS_PUBLICATION_MODE','ASYNCHRONOUS')
     spin(VRInputNode, threaded=False)

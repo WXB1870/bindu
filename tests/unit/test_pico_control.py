@@ -14,19 +14,24 @@ from tests.support.pico import Rig
 
 
 class ScenarioRuntimeTests(unittest.IsolatedAsyncioTestCase):
-    def test_pico_sets_async_transport_before_ros_init_and_honors_site_override(self):
+    def test_control_chain_sets_async_transport_before_ros_init_and_honors_site_override(self):
         import ast,os
         from unittest.mock import Mock,patch
-        path=Path(__file__).resolve().parents[2]/'src/integration/bindu_runtime/bindu_runtime/pico_node.py'
-        main=next(n for n in ast.parse(path.read_text()).body if getattr(n,'name','')=='main')
-        for configured in (None,'SYNCHRONOUS'):
-            with patch.dict(os.environ,{} if configured is None else
-                    {'RMW_FASTRTPS_PUBLICATION_MODE':configured},clear=True):
-                seen=[];spin=Mock(side_effect=lambda *a,**kw:seen.append(os.environ['RMW_FASTRTPS_PUBLICATION_MODE']))
-                ns=dict(os=os,spin=spin,PicoNode=object)
-                exec(compile(ast.Module(body=[main],type_ignores=[]),str(path),'exec'),ns);ns['main']()
-                self.assertEqual(seen,[configured or 'ASYNCHRONOUS'])
-                spin.assert_called_once_with(object,threaded=False)
+        root=Path(__file__).resolve().parents[2]/'src/integration/bindu_runtime/bindu_runtime'
+        for filename,node,runner in (('pico_node.py','PicoNode','spin'),
+                ('vr_input_node.py','VRInputNode','spin'),
+                ('bimanual_tool_node.py','BimanualToolNode','spin'),
+                ('execution_node.py','ExecutionNode','run_execution')):
+            path=root/filename
+            main=next(n for n in ast.parse(path.read_text()).body if getattr(n,'name','')=='main')
+            for configured in (None,'SYNCHRONOUS'):
+                with self.subTest(entry=filename,override=configured),patch.dict(os.environ,
+                        {} if configured is None else {'RMW_FASTRTPS_PUBLICATION_MODE':configured},clear=True):
+                    seen=[];start=Mock(side_effect=lambda *a,**kw:seen.append(os.environ.get('RMW_FASTRTPS_PUBLICATION_MODE')))
+                    ns=dict(os=os,**{runner:start,node:object})
+                    exec(compile(ast.Module(body=[main],type_ignores=[]),str(path),'exec'),ns);ns['main']()
+                    self.assertEqual(seen,[configured or 'ASYNCHRONOUS'])
+                    start.assert_called_once_with(object,**({'threaded':False} if runner=='spin' else {}))
 
     def test_stale_feedback_keeps_original_deadline_and_stop_failure_priority(self):
         from types import SimpleNamespace as S
@@ -861,7 +866,6 @@ class DualModeTests(unittest.TestCase):
         self.assertEqual(r.core.teleop_mode,'independent_arms')
         r.grips=[0.,0.];r.step();self.assertIsNone(r.core.pending)
         r.click(1,1);self.assertEqual(r.core.pending.operation,'select_mode')
-
 
     def test_b_and_release_keep_mode_request_visible_without_queueing_switch(self):
         for coupled in (False,True):

@@ -499,6 +499,28 @@ class GripperTests(unittest.TestCase):
 
 
 class NativeGripperTests(unittest.TestCase):
+    def test_session_health_reports_exact_fault_without_querying_command_graph(self):
+        source=ROOT/'src/integration/bindu_runtime/bindu_runtime/snowbot_gripper.py'
+        cls=next(n for n in ast.parse(source.read_text()).body if isinstance(n,ast.ClassDef))
+        method=next(n for n in cls.body if getattr(n,'name','')=='health')
+        ns=dict(MASKS={'left':1<<7,'right':1<<15},SIDES=SIDES)
+        exec(compile(ast.Module(body=[method],type_ignores=[]),str(source),'exec'),ns)
+        for side,slot in (('left',7),('right',15)):
+            for missing in (False,True):
+                with self.subTest(side=side,missing=missing):
+                    obs=S(valid_mask=0xfffff,status=[0x27]*20)
+                    if missing:obs.valid_mask &= ~(1<<slot)
+                    else:obs.status[slot]=0x218
+                    devices=S(io=S(require_feedback=Mock()),health=S(require=Mock(),observation=obs))
+                    node=S(count_publishers=Mock(side_effect=AssertionError('fault must reject before graph query')))
+                    runtime=S(session_protocol=True,devices=devices,node=node)
+                    expected=(f'GRIPPER_DRIVER_FEEDBACK_INVALID:{side}:slot={slot}' if missing else
+                              f'GRIPPER_DRIVER_FAULT:{side}:slot={slot}:status=0x0218')
+                    with self.assertRaisesRegex(RuntimeError,expected):ns['health'](runtime)
+                    devices.io.require_feedback.assert_called_once_with()
+                    devices.health.require.assert_called_once()
+                    node.count_publishers.assert_not_called()
+
     def rig(self):
         rig = Rig(require_driver_ack=False)
         rig.health = dict(sample=1, operation_enabled_mask=0xfffff)

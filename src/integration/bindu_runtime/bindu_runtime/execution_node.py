@@ -1,3 +1,4 @@
+import os
 import signal
 import time
 import rclpy
@@ -224,6 +225,8 @@ class ExecutionNode(RuntimeNode):
 
 
 def main():
+    # Configure this process before ROS initialization; preserve site overrides.
+    os.environ.setdefault('RMW_FASTRTPS_PUBLICATION_MODE','ASYNCHRONOUS')
     run_execution(ExecutionNode)
 
 

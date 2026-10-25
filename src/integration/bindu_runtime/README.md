@@ -274,6 +274,8 @@ ros2 topic echo /bindu/servo_health
 
 ### 配套配置与流程
 
+VR输入、PICO协调、双臂求解和执行进程入口在ROS初始化前默认设置`RMW_FASTRTPS_PUBLICATION_MODE=ASYNCHRONOUS`，保留现场显式覆盖，避免Fast DDS默认同步发送占住输入／控制回调。输入采样时间、QoS及原时效／停止契约保持；该传输设置不证明现场网络或调度停顿已经消失。
+
 真机配方增加`snowbot_grippers_real.json`，默认`calibrated=false`禁止夹爪写入；位置闭环及授权Trigger操作见[真实夹爪接口](../../hardware/bindu_hardware/README.md#snowbot真实夹爪位置闭环)。夹爪服务由同一execution节点提供，原四节点范围不变。底层需配套`bindu_gripper_control`保护入口，实体持物／虚握不由位置到位推断。
 
 | 配置 | 作用 |
