@@ -448,6 +448,8 @@ class PicoNode(RuntimeNode):
                 if clear:
                     self.confirmed_stop=dict(request)
                     self.stop_request=None
+                    if not request['lease_active']:
+                        self.handoff_complete=True
                 return
             await self.pause()
         self.stop_unconfirmed(request,'DEADLINE_EXPIRED')
@@ -970,6 +972,7 @@ class PicoNode(RuntimeNode):
         if not self.control.rest(self.now()):
             self.stop_request=pending
             raise RuntimeError('PICO_RECOVERY_FEEDBACK_NOT_READY')
+        self.handoff_complete=True
 
     async def perform(self,intent):
         ok=False;reason='';read_only=False;rejected=False;canceled=False;stopped_failure=False

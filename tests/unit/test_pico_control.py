@@ -125,9 +125,11 @@ class ScenarioRuntimeTests(unittest.IsolatedAsyncioTestCase):
         node.reading=Mock(return_value=(state,{'joint':0.}))
         barrier=dict(instance_id='executor',epoch=2,lease_active=False,requested=9.8,failed=True)
         node.stop_request=barrier;node.position_ops=S(recover=AsyncMock())
+        node.handoff_complete=False
         node.control=S(update_feedback=Mock(),rest=lambda _:True);node.feedback=Mock()
         await node.recover(S(token=1))
         self.assertIsNone(node.stop_request);node.position_ops.recover.assert_awaited_once()
+        self.assertTrue(node.handoff_complete)
         for change in ({'lease_epoch':3},{'lease_active':True},{'stop_failures':['vendor_hold']}):
             state.lease_epoch=2;state.lease_active=False;state.stop_failures=[]
             for key,value in change.items():setattr(state,key,value)

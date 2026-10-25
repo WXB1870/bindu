@@ -584,12 +584,21 @@ class PicoStopEvidence(unittest.IsolatedAsyncioTestCase,ExecutionFixture):
         self.assertIsNone(self.node.lease)
         self.assertIsNone(self.node.stop_request)
         self.assertFalse(self.e.lease_id)
+        self.assertTrue(self.node.handoff_complete)
         reply=self.services.lease(S(operation='acquire',owner='reentry',resources=['arm','hand']),S())
         self.assertTrue(reply.ok)
         self.node.lease=(reply,'original') if hasattr(self.node,'begin_stop_wait') else reply
         await self.node.release_lease()
         self.assertFalse(self.e.lease_id)
         self.assertTrue(self.node.feedback().stopped)
+
+    async def test_intermediate_owned_stop_cannot_open_projection_handoff(self):
+        request=self.node.begin_stop_wait('original',self.lease.epoch,True)
+        await self.pause()
+        await self.node.stopped(request,clear=False)
+        self.assertFalse(self.node.handoff_complete)
+        self.assertIs(self.node.stop_request,request)
+        self.assertTrue(self.e.lease_id)
 
     async def test_restart_or_wrong_epoch_cannot_confirm_old_lease_stop(self):
         cases=(dict(instance_id='replacement',lease_active=False,lease_epoch=0,state='IDLE'),
