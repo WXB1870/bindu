@@ -309,9 +309,12 @@ void QpController::setPosturePolicy(const Eigen::VectorXd &reference,
       (reference.array()<lower.array()).any() || (reference.array()>upper.array()).any())
     throw std::invalid_argument("invalid posture policy");
   const auto q = robot_.activePositions();
-  if ((q.array()<lower.array()-position_roundoff).any() ||
-      (q.array()>upper.array()+position_roundoff).any())
-    throw std::invalid_argument("capture outside posture envelope");
+  for (int i=0;i<n;++i) {
+    const double lt=lower[i]<=robot_.lowerLimits()[i]+position_roundoff?measured_limit_tolerance_:0.;
+    const double ut=upper[i]>=robot_.upperLimits()[i]-position_roundoff?measured_limit_tolerance_:0.;
+    if (q[i]<lower[i]-lt-position_roundoff || q[i]>upper[i]+ut+position_roundoff)
+      throw std::invalid_argument("capture outside posture envelope");
+  }
   nominal_=reference; posture_lower_=lower; posture_upper_=upper;
   have_posture_policy_=true;
 }
@@ -336,6 +339,12 @@ void QpController::reset() {
   qp_->settings.max_iter = 100;
   initialized_ = false;
   fresh_start_ = true;
+}
+
+void QpController::setMeasuredLimitTolerance(double tolerance) {
+  if (!std::isfinite(tolerance) || tolerance<0. || tolerance>3.141592653589793)
+    throw std::invalid_argument("invalid measured limit tolerance");
+  measured_limit_tolerance_=tolerance;
 }
 
 void QpController::setLimitAvoidance(double margin, double weight) {
@@ -471,7 +480,8 @@ SolveResult QpController::solve(const pinocchio::SE3 &desired_tool, double dt,
   for (int i = 0; i < n; ++i) {
     const double vmax = robot_.velocityLimits()[i];
     const double lo = robot_.lowerLimits()[i], hi = robot_.upperLimits()[i];
-    if (physical_q[i] < lo-position_roundoff || physical_q[i] > hi+position_roundoff ||
+    if (physical_q[i] < lo-measured_limit_tolerance_-position_roundoff ||
+        physical_q[i] > hi+measured_limit_tolerance_+position_roundoff ||
         reference[i] < lo-position_roundoff || reference[i] > hi+position_roundoff) {
       out.reason = "joint position outside hard limits"; return out;
     }
@@ -492,14 +502,19 @@ SolveResult QpController::solve(const pinocchio::SE3 &desired_tool, double dt,
       // Additional posture envelope is a hard task bound. Physical limit_margin
       // remains relative to the model/profile bounds, not this comfort envelope.
       const double pl = posture_lower_[i], pu = posture_upper_[i];
-      if (physical_q[i]<pl-position_roundoff || physical_q[i]>pu+position_roundoff ||
+      const bool physical_lower=pl<=lo+position_roundoff,physical_upper=pu>=hi-position_roundoff;
+      const double lt=physical_lower?measured_limit_tolerance_:0.;
+      const double ut=physical_upper?measured_limit_tolerance_:0.;
+      if (physical_q[i]<pl-lt-position_roundoff || physical_q[i]>pu+ut+position_roundoff ||
           reference[i]<pl-position_roundoff || reference[i]>pu+position_roundoff) {
         out.reason = "joint position outside posture envelope"; return out;
       }
+      const double measured_lower=config_.damper_gain*(pl-physical_q[i]);
+      const double measured_upper=config_.damper_gain*(pu-physical_q[i]);
       lower[i] = std::max({lower[i], (pl-ref)/dt,
-                           config_.damper_gain*(pl-physical_q[i]), config_.damper_gain*(pl-ref)});
+          lt>0.?std::min(0.,measured_lower):measured_lower, config_.damper_gain*(pl-ref)});
       upper[i] = std::min({upper[i], (pu-ref)/dt,
-                           config_.damper_gain*(pu-physical_q[i]), config_.damper_gain*(pu-ref)});
+          ut>0.?std::max(0.,measured_upper):measured_upper, config_.damper_gain*(pu-ref)});
       // Reserve measured servo error inside the unchanged physical envelope.
       // A recapture can lie in the reserve: allow inward recovery and prohibit
       // further outward velocity, without a position jump at mode transitions.

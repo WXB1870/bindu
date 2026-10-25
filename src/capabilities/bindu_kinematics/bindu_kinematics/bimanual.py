@@ -94,6 +94,9 @@ class BimanualQP:
             raise ValueError('BIMANUAL_COUPLED_LOCKED_JOINTS_CONFIG: unknown active joint')
         self.max_interval = float(config.get('max_integration_interval', .1))
         self.max_reference_error = float(config.get('max_reference_error', .15))
+        self.measured_limit_tolerance=float(config.get('measured_joint_limit_tolerance_rad',0.))
+        if not math.isfinite(self.measured_limit_tolerance) or not 0<=self.measured_limit_tolerance<=math.pi:
+            raise ValueError('BIMANUAL_MEASURED_LIMIT_TOLERANCE_CONFIG')
         if not all(math.isfinite(float(v)) and float(v) > 0 for v in
                    (config['sample_period'], config['max_relative_error'],
                     config['max_linear_speed'], config['max_angular_speed'],
@@ -165,6 +168,13 @@ class BimanualQP:
             encoded(','.join(left)), encoded(','.join(right)))
         if not self.handle:
             raise ValueError('BIMANUAL_MODEL_INVALID')
+        if self.measured_limit_tolerance:
+            try:fn=lib.bq_measured_limit_tolerance
+            except AttributeError as exc:
+                raise ValueError('BIMANUAL_MEASURED_LIMIT_TOLERANCE_ABI_MISSING: rebuild bindu_bimanual_qp') from exc
+            fn.argtypes,fn.restype=[c.c_void_p,c.c_double],c.c_int
+            if not fn(self.handle,self.measured_limit_tolerance):
+                raise ValueError('BIMANUAL_MEASURED_LIMIT_TOLERANCE:'+self._error())
         self.nq = lib.bq_nq(self.handle)
         self.model_names = tuple(lib.bq_model_name(self.handle,k).decode()
                                  for k in range(lib.bq_nmodel(self.handle)))
@@ -615,6 +625,9 @@ class BimanualQP:
         if self.posture_policy is not None:
             if posture_reference is None:
                 posture_reference = np.array([feedback[n] for n in self.names],dtype=np.float64)
+                if self.measured_limit_tolerance:
+                    # This is a soft nominal preference, never substituted for feedback.
+                    posture_reference=np.clip(posture_reference,self.posture_lower,self.posture_upper)
             if not self.lib.bq_posture_policy(self.handle,self._ptr(posture_reference),
                     self._ptr(self.posture_lower),self._ptr(self.posture_upper),len(self.names)):
                 raise ValueError('BIMANUAL_POSTURE_POLICY:'+self._error())
@@ -644,16 +657,21 @@ class BimanualQP:
     def _check_measured_limits(self, measured):
         # Hard profile/model bounds take precedence over task posture bounds.
         # posture_lower/upper also contain unchanged hard bounds on other axes.
+        tolerance=getattr(self,'measured_limit_tolerance',0.)
         for name, value in zip(self.names, measured):
             lo, hi = self.limits[name]
-            if not lo-1e-9 <= value <= hi+1e-9:
+            if not lo-tolerance-1e-9 <= value <= hi+tolerance+1e-9:
                 self._reject_constraint('BIMANUAL_MEASURED_POSITION_LIMIT:'+name,
                     stage='measured_joint_limits',joint=name,measured_rad=float(value),
-                    lower_rad=float(lo),upper_rad=float(hi),
+                    lower_rad=float(lo),upper_rad=float(hi),measurement_tolerance_rad=tolerance,
                     violation_rad=float(max(lo-value,value-hi)))
         if self.posture_policy is not None:
-            violated=np.flatnonzero((measured<self.posture_lower-1e-9) |
-                                    (measured>self.posture_upper+1e-9))
+            lower=np.array([self.limits[n][0] for n in self.names])
+            upper=np.array([self.limits[n][1] for n in self.names])
+            measured_lower=self.posture_lower-np.where(self.posture_lower<=lower+1e-9,tolerance,0.)
+            measured_upper=self.posture_upper+np.where(self.posture_upper>=upper-1e-9,tolerance,0.)
+            violated=np.flatnonzero((measured<measured_lower-1e-9) |
+                                    (measured>measured_upper+1e-9))
             if len(violated):
                 j=int(violated[0]);value=measured[j]
                 lo,hi=self.posture_lower[j],self.posture_upper[j]
