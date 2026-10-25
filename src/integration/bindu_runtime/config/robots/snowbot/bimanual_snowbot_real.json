@@ -1,6 +1,7 @@
 {
   "simulation_only": false,
   "collision_scope": "configured_tool_geometry",
+  "measured_joint_limit_tolerance_rad": 0.03490658503988659,
   "urdf": "snowbot_control.urdf",
   "resource_groups": [
     "waist",
@@ -120,22 +121,22 @@
       "arm_l_link_7": {
         "grip": "left",
         "center_m": 0.0,
-        "half_length_m": 0.11
+        "half_length_m": 0.15
       },
       "arm_l_link_8": {
         "grip": "left",
         "center_m": 0.0,
-        "half_length_m": 0.11
+        "half_length_m": 0.15
       },
       "arm_r_link_7": {
         "grip": "right",
         "center_m": -0.34,
-        "half_length_m": 0.11
+        "half_length_m": 0.15
       },
       "arm_r_link_8": {
         "grip": "right",
         "center_m": -0.34,
-        "half_length_m": 0.11
+        "half_length_m": 0.15
       }
     },
     "right_grip_offset_m": [

@@ -64,6 +64,7 @@ struct Handle {
   std::unique_ptr<RigidToolKinematics> kin;
   std::unique_ptr<QpController> qp;
   int shared_count{0};
+  double measured_limit_tolerance{0.};
   std::string error;
 };
 template<class Operation> int checked(void *ptr, Operation operation) {
@@ -83,7 +84,8 @@ void update(Handle &h, const double *q, int n) {
   const auto active = h.robot->activePositions();
   for (int i = 0; i < active.size(); ++i) {
     const double lo = h.robot->lowerLimits()[i], hi = h.robot->upperLimits()[i];
-    if (active[i] < lo-position_roundoff || active[i] > hi+position_roundoff) {
+    if (active[i] < lo-h.measured_limit_tolerance-position_roundoff ||
+        active[i] > hi+h.measured_limit_tolerance+position_roundoff) {
       std::ostringstream message;
       message.precision(17);
       message << "joint position outside hard limits: " << h.robot->activeJointNames()[i]
@@ -174,6 +176,7 @@ int bq_capture(void *ptr, const double *q, int n, const double *tool, const bq_c
       h.kin->capture(pose(tool));
       h.qp = std::make_unique<QpController>(*h.robot,*h.kin,native,
                                            h.robot->activePositions(),h.shared_count);
+      h.qp->setMeasuredLimitTolerance(h.measured_limit_tolerance);
     } catch (...) { h.kin->reset(); throw; }
   });
 }
@@ -193,6 +196,7 @@ int bq_capture_axial(void *ptr, const double *q, int n, const double *tool,
         throw std::invalid_argument("support grip mismatch");
       h.qp = std::make_unique<QpController>(*h.robot,*h.kin,native,
                                            h.robot->activePositions(),h.shared_count);
+      h.qp->setMeasuredLimitTolerance(h.measured_limit_tolerance);
     } catch (...) { h.kin->reset(); throw; }
   });
 }
@@ -221,6 +225,14 @@ int bq_coupled_locked_joints(void *ptr, const char *names) {
       if (!h.qp) throw std::invalid_argument("solver not captured");
       h.qp->setCoupledLockedJoints(split(names));
     } catch (...) { h.qp.reset(); h.kin->reset(); throw; }
+  });
+}
+int bq_measured_limit_tolerance(void *ptr, double tolerance) {
+  return checked(ptr,[&](Handle &h) {
+    if (!std::isfinite(tolerance) || tolerance<0. || tolerance>3.141592653589793)
+      throw std::invalid_argument("invalid measured limit tolerance");
+    if (h.qp) h.qp->setMeasuredLimitTolerance(tolerance);
+    h.measured_limit_tolerance=tolerance;
   });
 }
 int bq_limit_avoidance(void *ptr, double margin, double weight) {

@@ -72,6 +72,9 @@ int bq_coupled_locked_joints(void *handle, const char *names);
  * band. margin uses joint units, weight is nonnegative; zero disables it.
  * Call after every capture. Existing hard constraints remain unchanged. */
 int bq_limit_avoidance(void *handle, double margin, double weight);
+/* Additive ABI v1: measured/FK position allowance in radians, default zero.
+ * Accepted references and output positions retain the original model bounds. */
+int bq_measured_limit_tolerance(void *handle, double tolerance);
 /* Optional additive ABI v1 policy. All arrays follow active-name order and
  * model joint units. Bounds only tighten model/profile limits. Reference is a
  * soft posture preference, independent of tool/grasp capture. Failure clears

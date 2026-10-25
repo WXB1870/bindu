@@ -137,6 +137,7 @@ public:
   void setSharedMotionWeight(double weight);
   void setCoupledLockedJoints(const std::vector<std::string> &names);
   void setLimitAvoidance(double margin, double weight);
+  void setMeasuredLimitTolerance(double tolerance);
   void setPosturePolicy(const Eigen::VectorXd &reference,
                         const Eigen::VectorXd &lower, const Eigen::VectorXd &upper);
   void setPostureReferenceMargin(double margin);
@@ -167,6 +168,7 @@ private:
   bool independent_{false};
   std::vector<bool> coupled_locked_;
   double avoidance_margin_{0.}, avoidance_weight_{0.};
+  double measured_limit_tolerance_{0.};
   Eigen::Vector3d tracking_point_{Eigen::Vector3d::Zero()};
 };
 
