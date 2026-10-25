@@ -12,7 +12,8 @@ import subprocess
 import signal
 import shutil
 from types import SimpleNamespace as S
-from unittest.mock import patch
+from unittest.mock import patch, Mock, MagicMock
+from collections import defaultdict
 
 spec = importlib.util.spec_from_file_location('snowbot_live', ROOT/'tools/teleop/snowbot_live.py')
 helper = importlib.util.module_from_spec(spec)
@@ -26,6 +27,36 @@ entryspec.loader.exec_module(entry)
 
 
 class BrowserControlFailureTests(unittest.TestCase):
+    def test_model_waits_for_applied_feedback_and_marks_held_frames(self):
+        node=shutil.which('node')
+        self.assertIsNotNone(node, 'Node is required for this browser logic check')
+        html=(ROOT/'tools/web/snowbot.html').read_text()
+        js=html[html.index('function modelViewState('):html.index('function render(data,online)')]
+        code="const finite=Number.isFinite;\n"+js+"""
+const assert=require('node:assert/strict');
+const state={valid:true,server_time:10,model:{updated_at:10,applied_frames:0,pose_source:'model_preview'}};
+assert.equal(modelViewState(state,true,true,10),'waiting');
+state.model.pose_source='measured';
+assert.equal(modelViewState(state,true,true,10),'waiting');
+state.model.applied_frames=1;
+assert.equal(modelViewState(state,true,true,10),'live');
+state.model.pose_source='last_measured';
+assert.equal(modelViewState(state,true,true,10),'held');
+state.model.pose_source='measured';state.valid=false;
+assert.equal(modelViewState(state,true,true,10),'held');
+state.valid=true;state.model.updated_at=7;
+assert.equal(modelViewState(state,true,true,10),'held');
+state.model.updated_at=11;
+assert.equal(modelViewState(state,true,true,10),'held');
+state.model.updated_at=10;
+assert.equal(modelViewState(state,false,true,10),'held');
+assert.equal(modelViewState(state,true,false,10),'disconnected');
+assert.equal(modelViewState(state,true,true,0),'loading');
+assert.equal(modelViewState({valid:true,server_time:10},true,true,10),'waiting');
+"""
+        result=subprocess.run([node,'-e',code],capture_output=True,text=True)
+        self.assertEqual(result.returncode,0,result.stderr)
+
     def test_startup_failure_feedback_loss_and_web_disconnect_have_separate_status(self):
         node=shutil.which('node')
         self.assertIsNotNone(node, 'Node is required for this browser logic check')
@@ -54,6 +85,66 @@ assert.equal(operatorState(failed,true,true,true,true).reason,'COMMAND_TIMEOUT')
 """
         result=subprocess.run([node,'-e',code],capture_output=True,text=True)
         self.assertEqual(result.returncode,0,result.stderr)
+
+
+class ModelVisibilityTests(unittest.TestCase):
+    def test_waiting_first_feedback_loss_and_recovery_keep_measured_pose_semantics(self):
+        import hashlib
+        import threading
+        import numpy as np
+        stop=threading.Event();clock={'now':10.};frames=[];published=[]
+        nodes=defaultdict(Mock);viewer=MagicMock();viewer.__getitem__.side_effect=nodes.__getitem__
+        model=S(names=['universe','joint'],nq=1,joints=[None,S(idx_q=0)],getJointId=lambda n:1,
+                getFrameId=lambda n:0)
+        vis=Mock();vis.data=S(oMf=[S(homogeneous=np.eye(4))])
+        vis.display.side_effect=lambda q:frames.append(q.copy())
+        pin=S(buildModelsFromUrdf=lambda *a,**kw:(model,None,None),neutral=lambda m:np.zeros(1),
+              updateFramePlacements=Mock())
+        geom=Mock();meshcat=S(Visualizer=lambda **kw:viewer,geometry=geom)
+        config=dict(left_to_tool=np.eye(4).ravel().tolist(),left_frame='left',right_frame='right',
+            demo=dict(ground={'z_in_base_m':0.},shaft_axis_in_tool=[0,0,1],grip_offset_m=[0,0,0],
+                      shaft_from_left_grip_m=[-.1,.1],shaft_radius_m=.01,geometry_kind='rod'))
+        def server(*args):
+            args[4].put(('local','http://local/'))
+            args[8].publish=lambda state:published.append(state)
+        fake_thread=lambda target,**kw:S(start=target,is_alive=lambda:not stop.is_set(),join=Mock())
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'model.urdf';path.write_text('<robot name="test"/>')
+            meta=dict(schema=1,run_id='run',profile_hash='profile',runtime_mode='simulation',
+                device_backend='kinematic',valid=True,written_at=10.,feedback_stamp=10.,q={'joint':.2},
+                display_urdf=str(path),display_sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
+                joint_names=['joint'],pico={'run_id':'run','stamp':10.},instance_id='executor')
+            calls=[]
+            def read():
+                index=len(calls);calls.append(index)
+                if index==0:return dict(meta)  # Metadata before scene construction.
+                if index in (1,2):
+                    nodes['snowbot'].set_property.assert_called_with('visible',False)
+                    for side in ('left','right'):
+                        nodes[side+'_tip'].set_property.assert_called_with('visible',False)
+                else:nodes['snowbot'].set_property.assert_called_with('visible',True)
+                if index==1:return dict(meta,valid=False,q={})
+                if index==2:return dict(meta)
+                if index==3:return dict(meta,feedback_stamp=9.)
+                clock['now']=10.1;stop.set()
+                return dict(meta,written_at=10.1,feedback_stamp=10.1,q={'joint':.3})
+            args=S(run_id='run',runtime_mode='simulation',device_backend='kinematic',startup_timeout=1.,
+                   output=directory,trace_file=None,port=0,duration=0.)
+            modules={'pinocchio':pin,'pinocchio.visualize':S(MeshcatVisualizer=lambda *a:vis),
+                     'meshcat':meshcat,'meshcat.geometry':geom,'zmq':S(RCVTIMEO=1,SNDTIMEO=2)}
+            with patch.dict(sys.modules,modules),patch.object(web,'meshcat_urdf',return_value=path), \
+                    patch('tools.teleop.snowbot_live.display_tool_config',return_value=config), \
+                    patch.object(web,'_server',side_effect=server), \
+                    patch.object(web.threading,'Thread',side_effect=fake_thread), \
+                    patch.object(web.time,'time',side_effect=lambda:clock['now']), \
+                    patch.object(web.time,'monotonic',side_effect=lambda:clock['now']), \
+                    patch.object(web.time,'sleep'):
+                web.serve(args,read_state=read,stop=stop)
+        self.assertEqual([float(q[0]) for q in frames],[0.,.2,.3])
+        self.assertEqual([s['pose_source'] for s in published],
+                         ['waiting_for_feedback','measured','last_measured','measured'])
+        self.assertEqual([s['applied_frames'] for s in published],[0,1,1,2])
+        self.assertTrue(all(s['robot_commands_published']==0 for s in published))
 
 
 class LiveFeedbackTests(unittest.TestCase):

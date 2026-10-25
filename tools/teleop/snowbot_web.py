@@ -376,9 +376,10 @@ def serve(args, read_state=None, stop=None):
         viewer.window.zmq_socket.setsockopt(zmq.SNDTIMEO, 2000)
         vis = MeshcatVisualizer(model, collision, visual)
         vis.initViewer(viewer=viewer, open=False)
+        viewer['snowbot'].set_property('visible',False)
+        viewer['shovel'].set_property('visible',False)
         vis.loadViewerModel(rootNodeName='snowbot')
-        # Meshes need an initial FK update even before the first device sample.
-        # This only assembles a static model preview; it never fills feedback.
+        # Assemble meshes while hidden; neutral is never a measured pose.
         vis.display(pin.neutral(model))
         viewer['/Background'].set_property('top_color',[19,28,41])
         viewer['/Background'].set_property('bottom_color',[31,41,54])
@@ -400,8 +401,9 @@ def serve(args, read_state=None, stop=None):
             viewer['shovel/tray'].set_object(geom.Box(recipe['pan_size_m']),geom.MeshLambertMaterial(color=0x4386ba))
             tf=np.eye(4);tf[:3,3]=recipe['pan_center_m'];viewer['shovel/tray'].set_transform(tf)
         for side,color in (('left',0x70aaff),('right',0x5bd6bb)):
+            viewer[side+'_tip'].set_property('visible',False)
             viewer[side+'_tip'].set_object(geom.Sphere(.018),geom.MeshLambertMaterial(color=color))
-        start=time.monotonic();count=0;last_stamp=None;tool_enabled=True;last_save=0.
+        start=time.monotonic();count=0;last_stamp=None;tool_enabled=True;last_save=0.;last_source=None
         print('SNOWBOT_WEB_READY '+web_url,flush=True)
         while not stop.is_set() and (not args.duration or time.monotonic()-start < args.duration):
             if not server.is_alive():
@@ -414,7 +416,7 @@ def serve(args, read_state=None, stop=None):
             except queue.Empty:
                 pass
             status='WAITING';tool_source='unavailable';tool_visible=False
-            pose_source='last_measured' if count else 'model_preview'
+            pose_source='last_measured' if count else 'waiting_for_feedback'
             try:
                 value=read_state()
                 q=validate_state(value,time.time(),args.run_id,data['profile_hash'],names,
@@ -432,6 +434,10 @@ def serve(args, read_state=None, stop=None):
                     for side in ('left','right'):
                         pose=vis.data.oMf[model.getFrameId(config[side+'_frame'])].homogeneous
                         viewer[side+'_tip'].set_transform(pose)
+                    if not count:
+                        viewer['snowbot'].set_property('visible',True)
+                        for side in ('left','right'):
+                            viewer[side+'_tip'].set_property('visible',True)
                     last_stamp=value['feedback_stamp'];count+=1
                 pose_source='measured'
                 pico=value.get('pico',{})
@@ -444,12 +450,13 @@ def serve(args, read_state=None, stop=None):
                 status=pico.get('phase','waiting')+' | '+pico.get('reason','')
             except (OSError,ValueError,KeyError) as exc:
                 status=str(exc);viewer['shovel'].set_property('visible',False)
-            if time.monotonic()-last_save>=1.:
+            if pose_source!=last_source or time.monotonic()-last_save>=1.:
                 model_status.publish(dict(updated_at=time.time(),
                     url=web_url,applied_frames=count,status=status,robot_commands_published=0,
                     pose_source=pose_source,
                     tool_source=tool_source,tool_visible=tool_visible))
                 last_save=time.monotonic()
+                last_source=pose_source
             time.sleep(.033)
     finally:
         if viewer:

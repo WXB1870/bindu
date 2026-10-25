@@ -675,6 +675,14 @@ function renderControlMode(p,fresh){
     text('mode-input-'+side,mode.inputs?.[i]||'');text('mode-output-'+side,mode.outputs?.[i]||'');
   }
 }
+function modelViewState(data,online,connected,meshes){
+  if(!connected)return 'disconnected';
+  const m=data.model,applied=Number.isInteger(m?.applied_frames)&&m.applied_frames>0;
+  if(!applied||m.pose_source==='model_preview'||m.pose_source==='waiting_for_feedback')return 'waiting';
+  if(!meshes)return 'loading';
+  return online&&data.valid===true&&m.pose_source==='measured'&&finite(m.updated_at)&&
+    finite(data.server_time)&&data.server_time-m.updated_at>=0&&data.server_time-m.updated_at<=2?'live':'held';
+}
 function render(data,online){
   renderErrorCharts(data,online);
   const p=data.pico||{},fresh=online&&data.valid===true,pcFresh=fresh&&data.pico_fresh===true;
@@ -683,13 +691,14 @@ function render(data,online){
   const tracked=vrFresh&&p.input_fresh===true&&p.raw_input_valid===true;
   const state=operatorState(p,online,fresh,pcFresh,tracked,data);
   badge('system-health',!online?'状态服务断连':!fresh?'反馈不可用':!pcFresh?'PICO 状态过期':p.phase==='locked'?'反馈正常 · 控制锁定':tracked?(p.input_pair_pending?'反馈在线 · 输入配对中':'反馈在线'):'等待手柄',!online||!fresh||!pcFresh?'bad':p.phase==='locked'?'warn':tracked?'good':'warn');
-  const modelLive=viewer&&meshConnected&&fresh&&modelMeshes>0&&data.model&&finite(data.model.updated_at)&&Math.max(0,data.server_time-data.model.updated_at)<=2;
-  const modelPreview=data.model?.pose_source==='model_preview';
-  badge('model-health',modelLive?'模型实时更新':meshConnected&&!modelMeshes?'场景加载中':meshConnected&&modelPreview?'静态模型预览':meshConnected?'模型保持末帧':'模型未连接',modelLive?'good':'warn');
+  const modelState=modelViewState(data,online,!!viewer&&meshConnected,modelMeshes);
+  const modelLive=modelState==='live',modelWaiting=modelState==='waiting';
+  const modelLabels={live:'模型实时更新',waiting:'等待实测姿态',loading:'场景加载中',held:'模型保持末帧',disconnected:'模型未连接'};
+  badge('model-health',modelLabels[modelState],modelLive?'good':'warn');
   const toolSource=$('tool-source');toolSource.hidden=!(modelLive&&data.model.tool_visible);
   toolSource.textContent=data.model?.tool_source==='measured'?'工具反馈':'工具预览，随左握点';
   const overlay=$('stale');overlay.hidden=!!modelLive;
-  if(viewer)overlay.textContent=!online?'状态服务断连，模型可能保留最后一帧。':modelPreview?'静态模型预览，尚未收到有效关节反馈；不代表机器人当前姿态。':!fresh?'关节反馈已过期，当前显示为最后一帧。':!meshConnected?'模型服务连接中，正在重试…':!modelMeshes?'正在载入机器人模型…':'模型尚未确认更新，当前显示可能保留末帧。';
+  if(viewer)overlay.textContent=!online?'状态服务断连，模型可能保留最后一帧。':modelWaiting?'等待有效关节反馈，尚未显示机器人姿态。':!fresh?'关节反馈已过期，当前显示为最后一帧。':!meshConnected?'模型服务连接中，正在重试…':!modelMeshes?'正在载入机器人模型…':'模型尚未确认更新，当前显示可能保留末帧。';
   text('phase',state.status);$('phase').className='phase '+state.tone;$('control-panel').dataset.tone=state.tone;
   text('reason',state.reason);text('next-step',state.next);text('action-key',state.key);$('action-key').hidden=!state.key;
   text('reason-code',pcFresh?(p.fault_active&&p.first_fault?.code||p.reason||'—'):data.code||'STATE_UNAVAILABLE');
