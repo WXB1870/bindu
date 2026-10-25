@@ -135,6 +135,7 @@ public:
   void setSharedTargets(const Eigen::VectorXd &targets);
   void clearSharedTargets();
   void setSharedMotionWeight(double weight);
+  void setLimitAvoidance(double margin, double weight);
   void setPosturePolicy(const Eigen::VectorXd &reference,
                         const Eigen::VectorXd &lower, const Eigen::VectorXd &upper);
   void setPostureReferenceMargin(double margin);
@@ -161,6 +162,7 @@ private:
   bool initialized_{false};
   bool fresh_start_{true};
   bool independent_{false};
+  double avoidance_margin_{0.}, avoidance_weight_{0.};
   Eigen::Vector3d tracking_point_{Eigen::Vector3d::Zero()};
 };
 

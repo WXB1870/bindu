@@ -309,8 +309,10 @@ void QpController::setPostureReferenceMargin(double margin) {
 }
 
 void QpController::reset() {
+  const int n = robot_.variables();
+  const bool avoidance = avoidance_weight_ > 0.;
   qp_ = std::make_unique<proxsuite::proxqp::dense::QP<double>>(
-      robot_.variables(), independent_ ? 0 : kin_.constraintRows(), 0, true);
+      avoidance ? 2*n : n, independent_ ? 0 : kin_.constraintRows(), avoidance ? 2*n : 0, true);
   qp_->settings.verbose = false;
   qp_->settings.compute_timings = true;
   qp_->settings.eps_abs = 1e-7;
@@ -319,6 +321,16 @@ void QpController::reset() {
   qp_->settings.max_iter = 100;
   initialized_ = false;
   fresh_start_ = true;
+}
+
+void QpController::setLimitAvoidance(double margin, double weight) {
+  if (!std::isfinite(margin) || margin < 0. || !std::isfinite(weight) || weight < 0. ||
+      (weight > 0. && margin == 0.) ||
+      (2.*margin >= (robot_.upperLimits()-robot_.lowerLimits()).array()).any())
+    throw std::invalid_argument("invalid limit avoidance margin or weight");
+  avoidance_margin_ = margin;
+  avoidance_weight_ = weight;
+  reset();
 }
 
 void QpController::setTrackingPoint(const Eigen::Vector3d &point) {
@@ -460,6 +472,33 @@ SolveResult QpController::solve(const pinocchio::SE3 &desired_tool, double dt,
       !lower.allFinite() || !upper.allFinite()) {
     out.reason = "nonfinite QP input"; return out;
   }
+  // Finite one-sided cost, not a new position bound or a retreat target:
+  // s >= 0, s >= activation_upper*v, s >= -activation_lower*v.
+  // Minimizing weight*s^2 penalizes only motion toward the nearby limit.
+  // Both kinematic and accepted-reference distances participate. Zero velocity
+  // remains feasible; inward motion has zero cost unless the opposite side
+  // is also near a boundary. Weight zero retains the original QP exactly.
+  Eigen::MatrixXd inequalities;
+  Eigen::VectorXd inequality_lower, inequality_upper;
+  if (avoidance_weight_ > 0.) {
+    h.conservativeResize(2*n,2*n);
+    h.topRightCorner(n,n).setZero(); h.bottomLeftCorner(n,n).setZero();
+    h.bottomRightCorner(n,n) = avoidance_weight_*Eigen::MatrixXd::Identity(n,n);
+    g.conservativeResize(2*n); g.tail(n).setZero();
+    a.conservativeResize(a.rows(),2*n); a.rightCols(n).setZero();
+    lower.conservativeResize(2*n); lower.tail(n).setZero();
+    upper.conservativeResize(2*n); upper.tail(n) = robot_.velocityLimits();
+    inequalities = Eigen::MatrixXd::Zero(2*n,2*n);
+    inequality_lower = Eigen::VectorXd::Constant(2*n,-1.e20);
+    inequality_upper = Eigen::VectorXd::Zero(2*n);
+    for (int i=0; i<n; ++i) {
+      const double dl = std::min(q[i],reference[i])-robot_.lowerLimits()[i];
+      const double du = robot_.upperLimits()[i]-std::max(q[i],reference[i]);
+      inequalities(i,i) = -std::clamp(1.-dl/avoidance_margin_,0.,1.);
+      inequalities(n+i,i) = std::clamp(1.-du/avoidance_margin_,0.,1.);
+      inequalities(i,n+i) = inequalities(n+i,n+i) = -1.;
+    }
+  }
   // A physical position servo can briefly violate the rigid grasp. The
   // requested recovery velocity may then be outside the joint velocity box.
   // Preserve the selected grasp equality, but lower its recovery rate until feasible.
@@ -470,12 +509,16 @@ SolveResult QpController::solve(const pinocchio::SE3 &desired_tool, double dt,
           ? proxsuite::proxqp::InitialGuessStatus::NO_INITIAL_GUESS
           : proxsuite::proxqp::InitialGuessStatus::WARM_START_WITH_PREVIOUS_RESULT;
       if (!initialized_) {
-        qp_->init(h, g, a, b, proxsuite::nullopt, proxsuite::nullopt,
-                 proxsuite::nullopt, lower, upper);
+        if (avoidance_weight_ > 0.)
+          qp_->init(h,g,a,b,inequalities,inequality_lower,inequality_upper,lower,upper);
+        else
+          qp_->init(h,g,a,b,proxsuite::nullopt,proxsuite::nullopt,proxsuite::nullopt,lower,upper);
         initialized_ = true;
       } else {
-        qp_->update(h, g, a, b, proxsuite::nullopt, proxsuite::nullopt,
-                   proxsuite::nullopt, lower, upper, true);
+        if (avoidance_weight_ > 0.)
+          qp_->update(h,g,a,b,inequalities,inequality_lower,inequality_upper,lower,upper,true);
+        else
+          qp_->update(h,g,a,b,proxsuite::nullopt,proxsuite::nullopt,proxsuite::nullopt,lower,upper,true);
       }
       qp_->solve();
     } catch (const std::exception &ex) {
@@ -498,13 +541,15 @@ SolveResult QpController::solve(const pinocchio::SE3 &desired_tool, double dt,
     // equality. Never independently clip the final position after validation.
     const Eigen::VectorXd candidate = qp_->results.x.cwiseMax(lower).cwiseMin(upper);
     if ((a.rows() && (a * candidate - b).lpNorm<Eigen::Infinity>() > config_.equality_tolerance) ||
+        (avoidance_weight_ > 0. &&
+         (inequalities*candidate-inequality_upper).maxCoeff() > config_.equality_tolerance) ||
         (candidate.array() < lower.array() - config_.equality_tolerance).any() ||
         (candidate.array() > upper.array() + config_.equality_tolerance).any()) {
       reset();
       continue;
     }
     fresh_start_ = false;
-    out.velocity = candidate;
+    out.velocity = candidate.head(n);
     out.relative_gain_scale = scale;
     out.ok = true;
     out.reason = "ok";

@@ -195,6 +195,20 @@ class AbiLoadingTests(unittest.TestCase):
                 self.assertRaisesRegex(ValueError,'SHARED_MOTION_ABI_MISSING'):
             BimanualQP(dict(cfg,shared_motion_weight=.1,library='old.so'),profile)
 
+    def test_limit_avoidance_rejects_bad_values_and_missing_capability(self):
+        for name in ('limit_avoidance_margin','limit_avoidance_weight'):
+            for value in (-1.,float('nan'),float('inf'),True,'0.1'):
+                with self.subTest(name=name,value=value),self.assertRaisesRegex(ValueError,'LIMIT_AVOIDANCE_CONFIG'):
+                    BimanualQP({name:value},None)
+        with self.assertRaisesRegex(ValueError,'LIMIT_AVOIDANCE_CONFIG'):
+            BimanualQP({'limit_avoidance_weight':1.},None)
+        cfg=json.loads((ROOT/'src/integration/bindu_runtime/config/robots/g1/bimanual_g1_sim.json').read_text())
+        profile=Profile.load(ROOT/'src/integration/bindu_runtime/config/robots/g1/g1_provisional_sim.json')
+        old=S(bq_abi_version=Mock(return_value=1))
+        with patch('bindu_kinematics.bimanual.c.CDLL',return_value=old), \
+                self.assertRaisesRegex(ValueError,'LIMIT_AVOIDANCE_ABI_MISSING'):
+            BimanualQP(dict(cfg,limit_avoidance_margin=.15,limit_avoidance_weight=1.,library='old.so'),profile)
+
     def test_path_contexts_preload_once_but_recheck_each_measured_path(self):
         from bindu_kinematics.bimanual_worker import _run
         cfg={'urdf':'/tmp/model.urdf','demo':{'display_urdf':'display.urdf','grip_offset_m':[0.,0.,0.]}}
@@ -974,6 +988,72 @@ class NativeBimanual(unittest.TestCase):
         self.assertEqual(native(solver.handle,-1.),0)
         with self.assertRaisesRegex(ValueError,'not captured|not initialized'):
             propose(solver,self.feedback,target)
+
+    def test_limit_avoidance_survives_both_capture_modes_and_rejects_invalid_native_policy(self):
+        solver=BimanualQP(dict(self.config,limit_avoidance_margin=.15,limit_avoidance_weight=1.),self.profile)
+        self.addCleanup(solver.close)
+        native=solver.lib.bq_limit_avoidance
+        with patch.object(solver,'check_independent_path'), \
+                patch.object(solver.lib,'bq_limit_avoidance',wraps=native) as configure:
+            for capture in (solver.capture,solver.capture_independent,solver.capture):
+                target=capture(self.feedback)
+                if capture.__name__=='capture':
+                    out,_=propose(solver,self.feedback,target)
+                    np.testing.assert_allclose(out,[self.feedback[n] for n in solver.names],atol=1e-7)
+                    target=target.copy();target[2,3]+=.005
+                    propose(solver,self.feedback,target)  # Existing grasp/path checks remain active.
+            self.assertEqual(configure.call_count,3)
+            self.assertEqual(configure.call_args.args[1:],(.15,1.))
+        self.assertEqual(native(solver.handle,100.,1.),0)
+        with self.assertRaisesRegex(ValueError,'not captured|not initialized'):
+            propose(solver,self.feedback,np.eye(4))
+
+    def test_limit_avoidance_is_directional_finite_and_preserves_hard_limits(self):
+        # Exercise the actual C ABI on both sides, with accepted-reference-only
+        # proximity as well as kinematic proximity. No device/ROS calls.
+        solver=BimanualQP(dict(self.config,posture_gain=0.),self.profile)
+        self.addCleanup(solver.close)
+        solver.independent_abi()
+        import ctypes as c
+        configure=solver.lib.bq_limit_avoidance
+        configure.argtypes,configure.restype=[c.c_void_p,c.c_double,c.c_double],c.c_int
+        index=len(solver.shared_names);name=solver.names[index]
+        lo,hi=solver.limits[name]
+        def sample(sign,distance,direction,weight,reference_only=False):
+            feedback=dict(self.feedback);feedback[name]=(hi-distance if sign>0 else lo+distance)
+            reference=np.array([feedback[n] for n in solver.names],dtype=np.float64)
+            if reference_only:feedback[name]-=sign*.2
+            q=solver._q(feedback)
+            poses=[np.empty((4,4)),np.empty((4,4))]
+            target_q=q.copy();target_q[solver.model_names.index(name)]+=direction*min(.02,distance)
+            self.assertTrue(solver.lib.bq_flange_poses(solver.handle,solver._ptr(target_q),solver.nq,
+                solver._ptr(poses[0]),solver._ptr(poses[1])),solver._error())
+            self.assertTrue(solver.lib.bq_capture_independent(solver.handle,solver._ptr(q),solver.nq,
+                c.byref(solver.native_config)))
+            self.assertTrue(configure(solver.handle,.15,weight))
+            out=np.empty(len(solver.names));metrics=np.empty(3)
+            self.assertTrue(solver.lib.bq_solve_independent(solver.handle,solver._ptr(q),solver.nq,
+                solver._ptr(reference),len(reference),solver._ptr(poses[0]),solver._ptr(poses[1]),1,
+                .01,solver._ptr(out),solver._ptr(metrics)),solver._error())
+            for n,value in zip(solver.names,out):
+                self.assertGreaterEqual(value,solver.limits[n][0]-1e-9)
+                self.assertLessEqual(value,solver.limits[n][1]+1e-9)
+            np.testing.assert_allclose(out[index+len(self.profile.groups['left_arm']):],
+                                       reference[index+len(self.profile.groups['left_arm']):],atol=1e-9)
+            return (out-reference)/.01
+        for sign in (-1.,1.):
+            for reference_only in (False,True):
+                with self.subTest(sign=sign,reference_only=reference_only):
+                    baseline=sample(sign,.05,sign,0.,reference_only)
+                    softened=sample(sign,.05,sign,1.,reference_only)
+                    self.assertGreater(sign*baseline[index],1e-5)
+                    self.assertGreater(sign*softened[index],0.)
+                    self.assertLess(sign*softened[index],.9*sign*baseline[index])
+                    inward=sample(sign,.05,-sign,0.,reference_only)
+                    np.testing.assert_allclose(sample(sign,.05,-sign,1.,reference_only),inward,atol=2e-5)
+            np.testing.assert_allclose(sample(sign,.05,0.,1.),0.,atol=1e-7)
+            np.testing.assert_allclose(sample(sign,.3,sign,1.),sample(sign,.3,sign,0.),atol=2e-5)
+            self.assertLessEqual(sign*sample(sign,0.,sign,1.)[index],1e-8)
 
     def test_shared_targets_are_reachable_from_json_and_can_be_cleared(self):
         name = self.qp.shared_names[0]

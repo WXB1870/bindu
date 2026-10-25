@@ -63,6 +63,10 @@ int bq_shared_targets(void *handle, const double *targets, int n);
  * group. Default zero, no pose target or hard lock. Set after each capture;
  * invalid configuration clears capture. The bq_config layout is unchanged. */
 int bq_shared_motion_weight(void *handle, double weight);
+/* Additive ABI v1: finite outward-velocity cost inside a model/profile limit
+ * band. margin uses joint units, weight is nonnegative; zero disables it.
+ * Call after every capture. Existing hard constraints remain unchanged. */
+int bq_limit_avoidance(void *handle, double margin, double weight);
 /* Optional additive ABI v1 policy. All arrays follow active-name order and
  * model joint units. Bounds only tighten model/profile limits. Reference is a
  * soft posture preference, independent of tool/grasp capture. Failure clears

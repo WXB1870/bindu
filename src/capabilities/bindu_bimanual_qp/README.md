@@ -85,7 +85,7 @@ Python 调用入口为 [bindu_kinematics/bimanual.py](../bindu_kinematics/bindu_
 
 ### 双臂QP参数与ABI
 
-以下QP字段位于`bimanual_*.json`顶层，缺省值由原生`Config`提供，Python不另维护默认值：
+以下QP字段位于`bimanual_*.json`顶层，缺省值由原生`Config`或对应增量接口提供，Python负责配置校验与透传：
 
 | 参数 | 默认值 | 含义 |
 | --- | ---: | --- |
@@ -94,12 +94,15 @@ Python 调用入口为 [bindu_kinematics/bimanual.py](../bindu_kinematics/bindu_
 | `shared_target_gain` / `shared_target_weight` | 3 / 0 | 独立共享关节姿态目标增益／权重 |
 | `regularization` | 0.0001 | 速度正则项 |
 | `shared_motion_weight` | 0 | 共享组额外的速度平方代价；越大越少使用共享关节，不设置固定腰角 |
+| `limit_avoidance_margin` / `limit_avoidance_weight` | 0 / 0 | 关节边界软代价的作用宽度／权重；宽度采用关节自身单位，权重0关闭 |
 | `max_linear_speed` / `max_angular_speed` | 0.15 / 0.5 | 工具目标线／角速度上限，m/s、rad/s |
 | `max_relative_error` | 0.15 | 6D相对位姿误差范数门槛，平移与转角的混合范数 |
 | `limit_margin` / `damper_gain` | 0.05 / 2 | 软限位余量／速度阻尼增益，余量采用关节自身单位 |
 | `equality_tolerance` | 0.0005 | 速度闭合等式复核容差 |
 
 所有字段必须有限；权重、姿态增益与margin可为零，其余必须为正；两侧margin之和必须小于对应有效关节范围。已有配置对速度和闭合误差设有更严格值，以上不是硬件标定值。可选`shared_targets`为共享组全部关节名到目标位置的映射，须配合正的`shared_target_weight`；未配置时腰部仍参与工具跟踪。Python `set_shared_targets(None)`清除该独立姿态目标。
+
+可选边界软代价通过增量ABI v1函数`bq_limit_avoidance`在每次工具／普通双臂捕获后设置，不改变`bq_config`布局；启用而库缺少接口时明确要求重建。它是有限的单侧速度惩罚，并非发散的对数障碍：每轴引入一个非负辅助量`s`，约束`s≥a_upper*v`、`s≥−a_lower*v`，目标增加`weight*s²/2`；`a=clamp(1−distance/margin,0,1)`，距离分别取当前求解状态和已接纳参考到同侧模型／profile硬界的较小值。朝边界的速度代价随接近程度平方增加；反向退出和带外不增加该代价，不设置主动回退目标。正权重要求正宽度且两侧作用带不重叠，宽度及权重均默认0，现有配方未启用。硬位置／速度边界、姿态包络、握持等式、路径复核及停止保护保留；它不保证保持指定余量，也不代替碰撞约束。`reference`跟踪模式仍使用原有实测保护，此代价跟随传入原生库的运动学生成状态，不新增设备反馈通路。
 
 包含腰部资源的Snowbot仿真及真实腰臂配方将`shared_motion_weight`设为0.1，两轴腰部的速度正则二次项因此从0.0011增至0.1011；双臂不变。它是运动分配偏好，腰部仍可参与工具跟踪，普通双臂模式将腰部速度固定为0。真实`bimanual_snowbot_real.json`选腰部2轴及双臂14轴，腰部参与联合工具求解和同一执行会话；共享姿态边界保留，缺失腰部测量则拒绝求解。配置不改变关节速度上限或握持约束。该字段通过新增的`bq_shared_motion_weight`函数在每次捕获后设置，C结构布局仍为ABI v1；旧库缺此能力时明确要求重建。
 

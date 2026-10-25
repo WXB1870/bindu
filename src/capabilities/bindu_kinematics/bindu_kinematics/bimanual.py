@@ -71,6 +71,12 @@ class BimanualQP:
                 not math.isfinite(motion_weight) or motion_weight < 0):
             raise ValueError('BIMANUAL_SHARED_MOTION_WEIGHT')
         self.shared_motion_weight = float(motion_weight)
+        self.limit_avoidance = tuple(config.get(name, 0.) for name in
+                                     ('limit_avoidance_margin', 'limit_avoidance_weight'))
+        if (any(isinstance(v, bool) or not isinstance(v, (int, float)) or
+                not math.isfinite(v) or v < 0 for v in self.limit_avoidance) or
+                (self.limit_avoidance[1] > 0 and self.limit_avoidance[0] == 0)):
+            raise ValueError('BIMANUAL_LIMIT_AVOIDANCE_CONFIG')
         self.groups = tuple(config['resource_groups'])
         if (len(self.groups) not in (2,3) or len(set(self.groups)) != len(self.groups) or
                 any(group not in profile.groups for group in self.groups)):
@@ -89,6 +95,11 @@ class BimanualQP:
         self.lib = lib = c.CDLL(str(path))
         # Check before resolving or calling any ABI-dependent function.
         check_abi(lib)
+        if self.limit_avoidance[1] > 0:
+            try:fn=lib.bq_limit_avoidance
+            except AttributeError as exc:
+                raise ValueError('BIMANUAL_LIMIT_AVOIDANCE_ABI_MISSING: rebuild bindu_bimanual_qp') from exc
+            fn.argtypes,fn.restype=[c.c_void_p,c.c_double,c.c_double],c.c_int
         if self.shared_motion_weight > 0:
             try:fn=lib.bq_shared_motion_weight
             except AttributeError as exc:
@@ -367,6 +378,7 @@ class BimanualQP:
         if not ok:
             raise ValueError('BIMANUAL_CAPTURE:'+self._error())
         self._apply_shared_motion_weight()
+        self._apply_limit_avoidance()
         if np.any(self.tracking_point):
             try:fn=self.lib.bq_tracking_point
             except AttributeError as exc:
@@ -592,6 +604,10 @@ class BimanualQP:
         if self.shared_motion_weight > 0 and not self.lib.bq_shared_motion_weight(self.handle,self.shared_motion_weight):
             raise ValueError('BIMANUAL_SHARED_MOTION_WEIGHT:'+self._error())
 
+    def _apply_limit_avoidance(self):
+        if self.limit_avoidance[1] > 0 and not self.lib.bq_limit_avoidance(self.handle,*self.limit_avoidance):
+            raise ValueError('BIMANUAL_LIMIT_AVOIDANCE:'+self._error())
+
     def _reject_constraint(self, code, **diagnostic):
         # Keep established error codes stable; the worker transports bounded
         # quantitative evidence separately under the same request token.
@@ -636,6 +652,7 @@ class BimanualQP:
                                              self._ptr(poses[0]),self._ptr(poses[1]))):
             raise ValueError('INDEPENDENT_ARMS_CAPTURE:'+self._error())
         self._apply_shared_motion_weight()
+        self._apply_limit_avoidance()
         posture_reference = self._apply_posture_policy(feedback)
         self.check_independent_path(feedback,measured if reference is None else reference)
         if posture_reference is not None:

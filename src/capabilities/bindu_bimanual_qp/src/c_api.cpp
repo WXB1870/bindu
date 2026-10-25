@@ -215,6 +215,14 @@ int bq_shared_motion_weight(void *ptr, double weight) {
     } catch (...) { h.qp.reset(); h.kin->reset(); throw; }
   });
 }
+int bq_limit_avoidance(void *ptr, double margin, double weight) {
+  return checked(ptr, [&](Handle &h) {
+    try {
+      if (!h.qp) throw std::invalid_argument("solver not captured");
+      h.qp->setLimitAvoidance(margin,weight);
+    } catch (...) { h.qp.reset(); h.kin->reset(); throw; }
+  });
+}
 int bq_posture_policy(void *ptr, const double *reference, const double *lower,
                       const double *upper, int n) {
   return checked(ptr, [&](Handle &h) {
