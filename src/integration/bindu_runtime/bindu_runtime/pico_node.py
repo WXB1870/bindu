@@ -248,7 +248,7 @@ class PicoNode(RuntimeNode):
                 cfg=self.cfg['grippers'][side];value=q[cfg['joint']]
                 modes.append(next((m for m in ('closed','open','virtual') if abs(value-cfg[m])<.003),'unknown'))
             stopped=((self.handoff_complete or not s.lease_active) and s.state not in ('RUNNING','STOPPING') and not s.reference.name and
-                     joints_at_rest(s.joints,self.names,.005) and (not self.position_ops or self.position_ops.stopped()))
+                     joints_at_rest(s.joints,self.names,self.profile.feedback_tolerances.get('joint_velocity',.01)) and (not self.position_ops or self.position_ops.stopped()))
             if self.base and self.base.writable and self.base.cfg['require_feedback']:
                 clock = time.monotonic()
                 if not self.base.core.healthy(self.now(), clock):
@@ -423,16 +423,25 @@ class PicoNode(RuntimeNode):
                 code=s.code if s else None)))
         raise RuntimeError('PICO_STOP_UNCONFIRMED:'+reason)
 
-    async def stopped(self,request,*,clear=True):
+    async def stopped(self,request,*,clear=True,lease=None):
         if request is not self.stop_request:
             self.stop_unconfirmed(request,'REQUEST_NOT_CURRENT')
         if request['failed']:
             raise RuntimeError('PICO_STOP_UNCONFIRMED:'+request.get('failure_reason','PREVIOUS_REQUEST_UNCONFIRMED'))
+        next_renewal=0.
         while time.monotonic()<request['deadline']:
             if request is not self.stop_request:
                 self.stop_unconfirmed(request,'REQUEST_NOT_CURRENT')
             if request['failed']:
                 raise RuntimeError('PICO_STOP_UNCONFIRMED:'+request.get('failure_reason','PREVIOUS_REQUEST_UNCONFIRMED'))
+            if lease is not None and time.monotonic()>=next_renewal:
+                reply=await self.wait(self.leases.call_async(Lease.Request(operation='renew',
+                    lease_id=lease.lease_id,epoch=lease.epoch)),
+                    min(.7,max(0.,request['deadline']-time.monotonic())))
+                if not (reply.ok and reply.lease_id==lease.lease_id and
+                        reply.epoch==lease.epoch and reply.profile_hash==self.profile.digest):
+                    self.stop_unconfirmed(request,'LEASE_RENEW_REJECTED:'+reply.code)
+                next_renewal=time.monotonic()+.3
             s=self.state
             if s and (s.stop_failures or 'EMERGENCY_STOP' in s.code or s.code=='STOP_FEEDBACK_TIMEOUT'):
                 self.stop_unconfirmed(request,'EXECUTION_STOP_FAILED')
@@ -443,7 +452,7 @@ class PicoNode(RuntimeNode):
                     lease_active=request['lease_active'],profile_hash=self.profile.digest,
                     simulated=self.simulation,requested=request['requested'],now=self.now(),
                     max_age=self.tool_cfg['feedback_max_age'],
-                    at_rest=lambda joints:joints_at_rest(joints,self.names,.005)) and
+                    at_rest=lambda joints:joints_at_rest(joints,self.names,self.profile.feedback_tolerances.get('joint_velocity',.01))) and
                     (not self.position_ops or self.position_ops.stopped())):
                 if clear:
                     self.confirmed_stop=dict(request)
@@ -531,7 +540,7 @@ class PicoNode(RuntimeNode):
                     return
             reply=await self.wait(self.stop_client.call_async(ControlExecution.Request(operation='hold',
                 lease_id=lease.lease_id,epoch=lease.epoch)),min(2.,max(0.,request['deadline']-time.monotonic())))
-            if reply.ok:await self.stopped(request,clear=False)
+            if reply.ok:await self.stopped(request,clear=False,lease=lease)
             elif reply.code!='INVALID_LEASE':self.stop_unconfirmed(request,reply.code)
             # Keep one original deadline across hold and release. INVALID_LEASE
             # only permits checking the already-revoked next epoch below.
@@ -943,10 +952,10 @@ class PicoNode(RuntimeNode):
                 lease_active=False,profile_hash=self.profile.digest,
                 simulated=self.simulation,requested=request['requested'],now=self.now(),
                 max_age=self.tool_cfg['feedback_max_age'],
-                at_rest=lambda joints:joints_at_rest(joints,self.names,.005))
+                at_rest=lambda joints:joints_at_rest(joints,self.names,self.profile.feedback_tolerances.get('joint_velocity',.01)))
         else:
             matches=(not s.lease_active and s.state in ('READY','CANCELED','SUCCEEDED') and
-                     not s.reference.name and joints_at_rest(s.joints,self.names,.005))
+                     not s.reference.name and joints_at_rest(s.joints,self.names,self.profile.feedback_tolerances.get('joint_velocity',.01)))
         # Only a completed stop can recover a transient feedback failure. A
         # fresh idle display alone cannot authorize FAILED or erase a barrier.
         if (not matches or s.state not in ('READY','CANCELED','SUCCEEDED') and
@@ -965,7 +974,7 @@ class PicoNode(RuntimeNode):
                 current.instance_id!=s.instance_id or current.lease_epoch!=s.lease_epoch or
                 current.lease_active or current.state!=s.state or current.code!=s.code or
                 current.stop_failures or current.reference.name or
-                not joints_at_rest(current.joints,self.names,.005)):
+                not joints_at_rest(current.joints,self.names,self.profile.feedback_tolerances.get('joint_velocity',.01))):
             raise RuntimeError('PICO_RECOVERY_STATE_CHANGED')
         self.stop_request=None
         self.control.update_feedback(self.feedback(),self.now())

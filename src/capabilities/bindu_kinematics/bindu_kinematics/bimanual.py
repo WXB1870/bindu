@@ -728,7 +728,7 @@ class BimanualQP:
                 raise ValueError('BIMANUAL_REFERENCE_LAYOUT')
             self._check_measured_limits(measured)
             tracking_error,budgets=reference_tracking_budget(tuple(reference),tuple(measured),
-                self.max_reference_error,executed=getattr(self,'execution_reference',None))
+                self.max_reference_error,executed=getattr(self,'execution_reference',None),reserve_fraction=.6)
             if tracking_error>self.max_reference_error:
                 raise ValueError('BIMANUAL_REFERENCE_TRACKING_ERROR')
             if self.tracking_feedback in ('reference', 'measured_task', 'measured_shared'):
@@ -823,7 +823,7 @@ class BimanualQP:
         measured = np.array([feedback[n] for n in self.names])
         self._check_measured_limits(measured)
         tracking_error,budgets=reference_tracking_budget(tuple(reference),tuple(measured),
-            self.max_reference_error,executed=getattr(self,'execution_reference',None))
+            self.max_reference_error,executed=getattr(self,'execution_reference',None),reserve_fraction=.6)
         if tracking_error > self.max_reference_error:
             raise ValueError('BIMANUAL_REFERENCE_TRACKING_ERROR')
         measured_tool = None
@@ -920,7 +920,7 @@ class BimanualQP:
         if self.reference_kinematics:
             # A position executor can lag under changing input cadence. Keep
             # the integrated target inside the measured tracking budget with
-            # 20% transport reserve; shrink the whole coupled step uniformly.
+            # room for worker/geometry latency and admission; shrink uniformly.
             # The hard measured/reference guard above remains independent.
             delta = out-reference
             lead = reference-measured
