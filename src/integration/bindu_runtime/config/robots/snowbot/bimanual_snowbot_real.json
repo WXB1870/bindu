@@ -166,7 +166,7 @@
     1.0
   ],
   "grasp_position_tolerance_m": 0.06,
-  "grasp_rotation_tolerance_rad": 0.04,
+  "grasp_rotation_tolerance_rad": 0.05,
   "tool_gain": 10.0,
   "posture_gain": 0.1,
   "shared_motion_weight": 0.1,

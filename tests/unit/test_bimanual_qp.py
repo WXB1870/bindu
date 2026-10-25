@@ -495,9 +495,9 @@ class CandidateGeometryBacktracking(unittest.TestCase):
 
     def test_real_recipe_retains_reviewed_grasp_and_solver_limits(self):
         cfg=json.loads((ROOT/'src/integration/bindu_runtime/config/robots/snowbot/bimanual_snowbot_real.json').read_text())
-        # Reviewed real recipe from 5b53f21; independent of simulation limits.
+        # Real recipe; the operator selected 0.05 rad on 2026-10-25.
         self.assertEqual(cfg['grasp_position_tolerance_m'],.06)
-        self.assertEqual(cfg['grasp_rotation_tolerance_rad'],.04)
+        self.assertEqual(cfg['grasp_rotation_tolerance_rad'],.05)
         self.assertEqual(cfg['max_relative_error'],.08)
         self.assertEqual(cfg['solve_timeout_us'],80000)
         self.assertEqual(cfg['demo']['acceptance']['min_tool_robot_clearance_m'],.02)
@@ -513,6 +513,23 @@ class CandidateGeometryBacktracking(unittest.TestCase):
                 else:
                     with self.assertRaisesRegex(ValueError,'BIMANUAL_MEASURED_GRASP_ERROR'):
                         self.step(qp,self.cases[0])
+
+        for angle,passes in ((.04177118141691058,True),(.0499,True),(.0501,False)):
+            qp=self.solver(self.cases[0]);self.addCleanup(qp.close)
+            qp.grasp_position_tolerance=cfg['grasp_position_tolerance_m']
+            qp.grasp_rotation_tolerance=cfg['grasp_rotation_tolerance_rad']
+            error=np.eye(4)
+            error[:2,:2]=[[np.cos(angle),-np.sin(angle)],[np.sin(angle),np.cos(angle)]]
+            relative=qp.grasp_reference @ error
+            def measured(handle,q,nq,out):
+                np.ctypeslib.as_array(out,shape=(16,))[:]=relative.ravel();return 1
+            with patch.object(qp.lib,'bq_relative_pose',side_effect=measured):
+                if passes:self.step(qp,self.cases[0])
+                else:
+                    with self.assertRaisesRegex(ValueError,'BIMANUAL_MEASURED_GRASP_ERROR'):
+                        self.step(qp,self.cases[0])
+                    self.assertAlmostEqual(qp.last_constraint['rotation_error_rad'],angle)
+                    self.assertEqual(qp.last_constraint['rotation_limit_rad'],.05)
 
     def test_solver_and_hand_line_mapping_use_same_point_without_moving_cad(self):
         from bindu_teleoperation.bimanual_session import BimanualSession
