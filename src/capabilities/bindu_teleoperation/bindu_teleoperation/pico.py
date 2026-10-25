@@ -305,12 +305,12 @@ class PicoControl:
                 (any(f.grip>=.3 for f in pair) or any(clutch_changed))):
             self.a_since=None;self.prepare_blocked=True;self.reason='PREPARE_RELEASED'
             return
-        if self.phase in ('following','engaging','switching') and follow_release:
-            self.phase,self.reason='tool_standby','SQUEEZE_RELEASED'
+        mode_stop=self.dual_modes and presses[5]
+        if self.phase in ('following','engaging','switching') and (follow_release or mode_stop):
+            # A simultaneous release must not erase the operator's B request.
+            # It still stops only; switching requires another released press.
+            self.phase,self.reason='tool_standby',('MODE_SWITCH_REQUIRES_STOP' if mode_stop else 'SQUEEZE_RELEASED')
             self.squeeze_released=[f.grip<.3 or changed for f,changed in zip(pair,clutch_changed)]
-            self.emit('stop');return
-        if self.dual_modes and self.phase in ('following','engaging','switching') and presses[5]:
-            self.phase,self.reason='tool_standby','MODE_SWITCH_REQUIRES_STOP'
             self.emit('stop');return
         if self.phase=='preparing' and (not states[4] or not all(f.grip<.3 for f in pair) or any(clutch_changed)):
             self.phase,self.reason='standby','PREPARE_RELEASED'
@@ -644,6 +644,11 @@ def loading_guide(view, modes):
         return dict(title='关节越界，需先向内回撤',
                     detail='松开双侧握，持续按住 A；先低速退回范围，再回准备位。松 A 取消；B 解锁不会移动关节',
                     key='A',step='limit_recovery')
+    if phase in ('standby','tool_standby') and view.get('reason')=='MODE_SWITCH_REQUIRES_STOP':
+        target='扫雪耦合' if view.get('teleop_mode')=='independent_arms' else '普通双臂'
+        return dict(title='模式尚未切换',
+                    detail='松开双侧握，等待停稳后重新按 B，切换到'+target,
+                    key='B',step='mode_stop')
     if phase=='gripper_control':
         if view.get('reason','').startswith('GRIPPER_POSITION_TIMEOUT:'):
             sides=view['reason'].split(':',1)[1].split(',')

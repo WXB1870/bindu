@@ -107,6 +107,8 @@ def hud_spec(view):
         notice('松开双侧握，再同时握住' if confirmed else '等待机器人停稳',
                 '重新接合后继续跟随' if confirmed else '保持双侧握松开；停稳后再重新接合')
         if independent and confirmed:notice('握住对应侧，继续控制该臂','重新接合以该臂当前位置建立基准；B 切模式')
+        if view.get('operator_guide'):
+            guide=view['operator_guide'];notice(guide['title'],guide['detail'])
     elif mode == 'standby':
         if view.get('operator_guide'):
             guide=view['operator_guide'];notice(guide['title'],guide['detail'])

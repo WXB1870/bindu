@@ -86,6 +86,24 @@ class PicoHUDTests(unittest.TestCase):
         stopped=hud_spec({**self.view('locked',stop_confirmed=True),'reason':'PICO_Y_STOP'})
         self.assertEqual((stopped['state'],stopped['title'],stopped['action']),('stopped','已确认停稳','B 恢复待命'))
 
+    def test_b_stop_guidance_does_not_offer_reengagement_as_mode_switch(self):
+        from bindu_teleoperation.pico import loading_guide
+        from bindu_teleoperation.vr.hud import hud_spec
+        for phase in ('standby','tool_standby'):
+            for mode,target in (('independent_arms','扫雪耦合'),('bimanual_tool','普通双臂')):
+                for confirmed in (False,True):
+                    view=self.view(phase,teleop_mode=mode,stop_confirmed=confirmed)
+                    view.update(phase=phase,reason='MODE_SWITCH_REQUIRES_STOP')
+                    view['operator_guide']=loading_guide(view,())
+                    spec=hud_spec(view)
+                    self.assertEqual(spec['title'],'模式尚未切换')
+                    self.assertIn('重新按 B',spec['detail'])
+                    self.assertIn(target,spec['detail'])
+                    self.assertNotIn('继续跟随',spec['detail'])
+                    self.assertNotIn('B 恢复',spec['action'])
+                    view['measured_limit_joints']=['arm_r_joint_3']
+                    self.assertEqual(loading_guide(view,())['step'],'limit_recovery')
+
     def test_current_limit_is_explained_without_claiming_a_fault_stop(self):
         from bindu_teleoperation.vr.hud import hud_spec
         limit=dict(scale=0.,first_rejection='SELF_COLLISION: arm / head',search_limited_by_budget=False)

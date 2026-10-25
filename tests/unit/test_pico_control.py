@@ -863,6 +863,29 @@ class DualModeTests(unittest.TestCase):
         r.click(1,1);self.assertEqual(r.core.pending.operation,'select_mode')
 
 
+    def test_b_and_release_keep_mode_request_visible_without_queueing_switch(self):
+        for coupled in (False,True):
+            with self.subTest(coupled=coupled):
+                r=Rig(guided=True,dual=True)
+                if coupled:r.click(1,1);r.complete();r.step()
+                mode=r.core.teleop_mode
+                r.grips=[1.,1.];r.step();r.complete();r.stopped=False
+                r.grips=[0.,0.]
+                intents=r.click(1,1)
+                self.assertEqual([i.operation for i in intents],['stop'])
+                self.assertEqual(r.core.reason,'MODE_SWITCH_REQUIRES_STOP')
+                guide=r.core.snapshot(r.now)['operator_guide']
+                self.assertEqual(guide['title'],'模式尚未切换')
+                self.assertIn('重新按 B',guide['detail'])
+                self.assertEqual(r.core.teleop_mode,mode)
+                self.assertEqual(r.click(1,1),[])
+                r.complete();r.stopped=True;r.step()
+                self.assertIsNone(r.core.pending)
+                r.click(1,1)
+                self.assertEqual(r.core.pending.operation,'select_mode')
+                self.assertNotEqual(r.core.pending.value,mode)
+
+
 
 class StateTests(unittest.TestCase):
     def test_b_rechecks_latched_stop_and_restores_standby_only_after_confirmation(self):
