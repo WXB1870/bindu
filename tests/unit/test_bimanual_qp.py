@@ -197,6 +197,34 @@ class AbiLoadingTests(unittest.TestCase):
                 self.assertRaisesRegex(ValueError,'SHARED_MOTION_ABI_MISSING'):
             BimanualQP(dict(cfg,shared_motion_weight=.1,library='old.so'),profile)
 
+    def test_coupled_locked_joints_validate_names_and_require_native_capability(self):
+        for value in (None, True, 'joint', [''], ['a,b'], ['joint','joint'], [1], [[]]):
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError,'COUPLED_LOCKED_JOINTS_CONFIG'):
+                BimanualQP({'coupled_locked_joints':value},None)
+        cfg=json.loads((ROOT/'src/integration/bindu_runtime/config/robots/g1/bimanual_g1_sim.json').read_text())
+        profile=Profile.load(ROOT/'src/integration/bindu_runtime/config/robots/g1/g1_provisional_sim.json')
+        with self.assertRaisesRegex(ValueError,'COUPLED_LOCKED_JOINTS_CONFIG'):
+            BimanualQP(dict(cfg,coupled_locked_joints=['unknown']),profile)
+        old=S(bq_abi_version=Mock(return_value=1))
+        with patch('bindu_kinematics.bimanual.c.CDLL',return_value=old), \
+                self.assertRaisesRegex(ValueError,'COUPLED_LOCKED_JOINTS_ABI_MISSING'):
+            BimanualQP(dict(cfg,coupled_locked_joints=[profile.groups['waist'][0]],library='old.so'),profile)
+
+    def test_coupled_lock_configuration_reaches_native_and_propagates_rejection(self):
+        solver=object.__new__(BimanualQP);solver.handle=1
+        solver.coupled_locked_joints=('yaw','pitch')
+        solver.lib=S(bq_coupled_locked_joints=Mock(return_value=1),bq_destroy=Mock())
+        solver._apply_coupled_locked_joints()
+        solver.lib.bq_coupled_locked_joints.assert_called_once_with(1,b'yaw,pitch')
+        solver.lib.bq_coupled_locked_joints.return_value=0
+        solver._error=lambda:'invalid locked joint'
+        with self.assertRaisesRegex(ValueError,'COUPLED_LOCKED_JOINTS:invalid locked joint'):
+            solver._apply_coupled_locked_joints()
+        solver.coupled_locked_joints=()
+        solver.lib.bq_coupled_locked_joints.reset_mock()
+        solver._apply_coupled_locked_joints()
+        solver.lib.bq_coupled_locked_joints.assert_not_called()
+
     def test_limit_avoidance_rejects_bad_values_and_missing_capability(self):
         for name in ('limit_avoidance_margin','limit_avoidance_weight'):
             for value in (-1.,float('nan'),float('inf'),True,'0.1'):
@@ -316,6 +344,7 @@ class CandidateGeometryBacktracking(unittest.TestCase):
         cls.config['demo']['check_grasp_contacts']=True
         # Freeze the origin-task semantics of these historical fault fixtures.
         cls.config['tool_tracking_point_in_tool_m']=[0.,0.,0.]
+        cls.config.pop('coupled_locked_joints',None)
         cls.profile=Profile.load(ROOT/'src/integration/bindu_runtime/config/robots/snowbot/snowbot_real_position.json')
         recorded=json.loads((ROOT/'tests/config/teleoperation/snowbot_candidate_steps.json').read_text())
         cls.config.update(recorded['recorded_config'])
@@ -1018,6 +1047,27 @@ class NativeBimanual(unittest.TestCase):
         self.assertEqual(native(solver.handle,-1.),0)
         with self.assertRaisesRegex(ValueError,'not captured|not initialized'):
             propose(solver,self.feedback,target)
+
+    def test_coupled_lock_survives_recapture_without_affecting_independent_arms(self):
+        # Lock a moving arm axis too, so independent mode proves the coupled
+        # policy is inactive beyond its already-held shared group.
+        names=[self.profile.groups['waist'][0],self.profile.groups['left_arm'][0]]
+        solver=BimanualQP(dict(self.config,coupled_locked_joints=names),self.profile)
+        self.addCleanup(solver.close)
+        native=solver.lib.bq_coupled_locked_joints
+        with patch.object(solver.lib,'bq_coupled_locked_joints',wraps=native) as configure:
+            for _ in range(2):
+                tool=solver.capture(self.feedback)
+                target=tool.copy();target[0,3]+=.005
+                out,_=propose(solver,self.feedback,target)
+                for name in names:
+                    self.assertEqual(out[solver.names.index(name)],self.feedback[name])
+            self.assertEqual(configure.call_count,2)
+            with patch.object(solver,'check_independent_path'):
+                solver.capture_independent(self.feedback)
+            self.assertEqual(configure.call_count,2)
+            solver.capture(self.feedback)
+            self.assertEqual(configure.call_count,3)
 
     def test_limit_avoidance_survives_both_capture_modes_and_rejects_invalid_native_policy(self):
         solver=BimanualQP(dict(self.config,limit_avoidance_margin=.15,limit_avoidance_weight=1.),self.profile)

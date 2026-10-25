@@ -66,6 +66,12 @@ class BimanualQP:
             raise ValueError('BIMANUAL_GEOMETRY_BACKTRACKING_CONFIG')
         self.grasp_reference = None
         self.handle = None
+        locked = config.get('coupled_locked_joints', [])
+        if (not isinstance(locked, list) or
+                any(not isinstance(n, str) or not n or ',' in n for n in locked) or
+                len(set(locked)) != len(locked)):
+            raise ValueError('BIMANUAL_COUPLED_LOCKED_JOINTS_CONFIG')
+        self.coupled_locked_joints = tuple(locked)
         motion_weight = config.get('shared_motion_weight', 0.)
         if (isinstance(motion_weight, bool) or not isinstance(motion_weight, (int, float)) or
                 not math.isfinite(motion_weight) or motion_weight < 0):
@@ -82,6 +88,8 @@ class BimanualQP:
                 any(group not in profile.groups for group in self.groups)):
             raise ValueError('BIMANUAL_RESOURCE_LAYOUT')
         self.names = tuple(name for group in self.groups for name in profile.groups[group])
+        if not set(self.coupled_locked_joints).issubset(self.names):
+            raise ValueError('BIMANUAL_COUPLED_LOCKED_JOINTS_CONFIG: unknown active joint')
         self.max_interval = float(config.get('max_integration_interval', .1))
         self.max_reference_error = float(config.get('max_reference_error', .15))
         if not all(math.isfinite(float(v)) and float(v) > 0 for v in
@@ -95,6 +103,11 @@ class BimanualQP:
         self.lib = lib = c.CDLL(str(path))
         # Check before resolving or calling any ABI-dependent function.
         check_abi(lib)
+        if self.coupled_locked_joints:
+            try:fn=lib.bq_coupled_locked_joints
+            except AttributeError as exc:
+                raise ValueError('BIMANUAL_COUPLED_LOCKED_JOINTS_ABI_MISSING: rebuild bindu_bimanual_qp') from exc
+            fn.argtypes,fn.restype=[c.c_void_p,c.c_char_p],c.c_int
         if self.limit_avoidance[1] > 0:
             try:fn=lib.bq_limit_avoidance
             except AttributeError as exc:
@@ -385,6 +398,7 @@ class BimanualQP:
             raise ValueError('BIMANUAL_CAPTURE:'+self._error())
         self._apply_shared_motion_weight()
         self._apply_limit_avoidance()
+        self._apply_coupled_locked_joints()
         if np.any(self.tracking_point):
             try:fn=self.lib.bq_tracking_point
             except AttributeError as exc:
@@ -605,6 +619,11 @@ class BimanualQP:
             if self.posture_reference_margin > 0 and not self.lib.bq_posture_reference_margin(self.handle,self.posture_reference_margin):
                 raise ValueError('BIMANUAL_POSTURE_REFERENCE_MARGIN:'+self._error())
         return posture_reference
+
+    def _apply_coupled_locked_joints(self):
+        if self.coupled_locked_joints and not self.lib.bq_coupled_locked_joints(
+                self.handle, ','.join(self.coupled_locked_joints).encode()):
+            raise ValueError('BIMANUAL_COUPLED_LOCKED_JOINTS:'+self._error())
 
     def _apply_shared_motion_weight(self):
         if self.shared_motion_weight > 0 and not self.lib.bq_shared_motion_weight(self.handle,self.shared_motion_weight):

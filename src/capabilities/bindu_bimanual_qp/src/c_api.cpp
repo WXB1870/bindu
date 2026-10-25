@@ -215,6 +215,14 @@ int bq_shared_motion_weight(void *ptr, double weight) {
     } catch (...) { h.qp.reset(); h.kin->reset(); throw; }
   });
 }
+int bq_coupled_locked_joints(void *ptr, const char *names) {
+  return checked(ptr, [&](Handle &h) {
+    try {
+      if (!h.qp) throw std::invalid_argument("solver not captured");
+      h.qp->setCoupledLockedJoints(split(names));
+    } catch (...) { h.qp.reset(); h.kin->reset(); throw; }
+  });
+}
 int bq_limit_avoidance(void *ptr, double margin, double weight) {
   return checked(ptr, [&](Handle &h) {
     try {

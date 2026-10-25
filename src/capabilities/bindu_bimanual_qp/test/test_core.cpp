@@ -32,6 +32,7 @@ TEST(CAbi, NullHandlesAndConfigLayoutFailWithoutCrashing) {
   EXPECT_EQ(bq_capture(nullptr, nullptr, 0, nullptr, &config), 0);
   EXPECT_EQ(bq_shared_targets(nullptr, nullptr, 0), 0);
   EXPECT_EQ(bq_shared_motion_weight(nullptr, 0.1), 0);
+  EXPECT_EQ(bq_coupled_locked_joints(nullptr, nullptr), 0);
   EXPECT_EQ(bq_tracking_point(nullptr, nullptr), 0);
   EXPECT_EQ(bq_solve(nullptr, nullptr, 0, nullptr, 0, nullptr, .01, nullptr, nullptr), 0);
   EXPECT_EQ(bq_tool_pose(nullptr, nullptr, 0, nullptr), 0);
@@ -475,6 +476,76 @@ TEST_F(CoreTest, SharedMotionCostPrefersArmsWithoutLockingWaist) {
   for (double invalid : {-1.,std::numeric_limits<double>::infinity(),
                          std::numeric_limits<double>::quiet_NaN()})
     EXPECT_THROW(needed.setSharedMotionWeight(invalid),std::invalid_argument);
+}
+
+TEST_F(CoreTest, CoupledLockHoldsNonzeroWaistAndReallocatesBothDirections) {
+  datq::RobotModel robot(TEST_URDF_PATH,"left_ee","right_ee","tool_frame",
+                         left_names_,right_names_,{"waist_joint"});
+  auto q=robot.positions();
+  q[robot.qIndex("waist_joint")]=.25;
+  for (const auto &side : {"left","right"}) {
+    q[robot.qIndex(std::string(side)+"_joint_2")]=.6;
+    q[robot.qIndex(std::string(side)+"_joint_4")]=-.8;
+  }
+  robot.update(q);
+  datq::RigidToolKinematics kin(robot); kin.capture();
+  datq::QpController controller(robot,kin,{},robot.activePositions(),1);
+  controller.setCoupledLockedJoints({"waist_joint"});
+  for (double sign : {-1.,1.}) {
+    Eigen::Matrix<double,6,1> offset=Eigen::Matrix<double,6,1>::Zero();
+    offset[0]=sign*.02; offset[4]=sign*.02;
+    const auto result=controller.solve(kin.toolPose()*pinocchio::exp6(offset),.01,
+                                       robot.activePositions());
+    ASSERT_TRUE(result.ok) << result.reason;
+    EXPECT_DOUBLE_EQ(result.velocity[0],0.);
+    EXPECT_GT(result.velocity.tail(12).norm(),1e-5);
+    EXPECT_GT((kin.toolJacobian()*result.velocity).dot(offset),0.);
+    EXPECT_LT((kin.relativeErrorJacobian()*result.velocity).norm(),5e-4);
+  }
+  controller.setCoupledLockedJoints({});
+  auto goal=kin.toolPose(); goal.translation().y()+=.02;
+  const auto unlocked=controller.solve(goal,.01,robot.activePositions());
+  ASSERT_TRUE(unlocked.ok) << unlocked.reason;
+  EXPECT_GT(std::abs(unlocked.velocity[0]),1e-5);
+  controller.setCoupledLockedJoints({"waist_joint"});
+  auto outside=q; outside[robot.qIndex("waist_joint")]=robot.upperLimits()[0]+.01;
+  robot.update(outside);
+  EXPECT_FALSE(controller.solve(goal,.01,robot.activePositions()).ok);
+}
+
+TEST_F(CoreTest, CoupledLockDoesNotApplyToIndependentArmTasks) {
+  datq::QpController controller(*robot_,*kin_,{},robot_->activePositions());
+  controller.setCoupledLockedJoints(robot_->activeJointNames());
+  controller.independentArms();
+  auto left=robot_->leftPose(),right=robot_->rightPose(); left.translation().z()+=.01;
+  const auto result=controller.solve(left,.01,robot_->activePositions(),
+      Eigen::Matrix<double,6,1>::Zero(),nullptr,&right,1);
+  ASSERT_TRUE(result.ok) << result.reason;
+  EXPECT_GT(result.velocity.head(6).norm(),1e-5);
+  EXPECT_LT(result.velocity.tail(6).norm(),1e-12);
+}
+
+TEST_F(CoreTest, CoupledLockCAbiRejectsBadNamesAndInvalidatesCapture) {
+  const auto csv=[](const std::vector<std::string> &names) {
+    std::string value;
+    for (const auto &name : names) { if (!value.empty()) value+=","; value+=name; }
+    return value;
+  };
+  auto *handle=bq_create(TEST_URDF_PATH,"left_ee","right_ee","waist_joint",
+                         csv(left_names_).c_str(),csv(right_names_).c_str());
+  ASSERT_NE(handle,nullptr);
+  const std::unique_ptr<void,decltype(&bq_destroy)> cleanup(handle,bq_destroy);
+  std::vector<double> q(bq_nq(handle),0.);
+  const double identity[16]={1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1};
+  bq_config config{}; ASSERT_EQ(bq_config_defaults(&config,sizeof(config)),1);
+  for (const char *names : {"unknown","waist_joint,waist_joint","waist_joint,"}) {
+    ASSERT_EQ(bq_capture(handle,q.data(),q.size(),identity,&config),1);
+    EXPECT_EQ(bq_coupled_locked_joints(handle,names),0);
+    EXPECT_EQ(bq_coupled_locked_joints(handle,"waist_joint"),0);
+  }
+  ASSERT_EQ(bq_capture(handle,q.data(),q.size(),identity,&config),1);
+  EXPECT_EQ(bq_coupled_locked_joints(handle,"waist_joint"),1);
+  EXPECT_EQ(bq_coupled_locked_joints(handle,nullptr),1);
 }
 
 TEST_F(CoreTest, SharedWaistTargetMovesWaistWhileHoldingToolAndGrasp) {

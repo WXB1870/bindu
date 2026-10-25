@@ -64,6 +64,7 @@ colcon test-result --test-result-base build/bindu_bimanual_qp --verbose
 | `bq_posture_policy` | 自动腰臂协调的姿态偏好与边界 |
 | `bq_posture_reference_margin` | 为参考速度约束预留姿态边界余量 |
 | `bq_shared_motion_weight` | 为腰等共享组增加运动代价，优先使用手臂 |
+| `bq_coupled_locked_joints` | 仅在耦合求解中冻结指定关节速度 |
 
 当前基础 ABI 版本为 1；这些能力以新增函数扩展，保留原结构布局和旧调用。只检查版本号不足以确认具备新功能，Python 还检查所需函数是否存在；当前雪铲配置启用了上述能力，应构建同一版本源码中的原生库与 Python 封装。
 
@@ -84,6 +85,8 @@ Python 调用入口为 [bindu_kinematics/bimanual.py](../bindu_kinematics/bindu_
 以下命令和项目路径均相对于仓库根目录。带日期内容仅代表当时的专项实验，现行控制规则以动作执行契约和统一部署为准。
 
 ### 双臂QP参数与ABI
+
+可选`coupled_locked_joints`是活动关节名列表，默认空；Snowbot real配方临时设为`["body_joint_1"]`。每次耦合捕获后经`bq_coupled_locked_joints`配置，在QP内将指定轴速度范围与`[0,0]`取交集，从已接纳保持参考积分，不回零、不逐帧重设实测目标。普通双臂、显式A回准备及腰二不受该冻结影响，腰部仍属于原资源与反馈布局。原有限位、实测、抓持、碰撞、跟随和停止保护保留；边界冲突拒绝求解，未知／重复关节或旧库缺能力明确报错，重捕获重新配置。只在原有停稳／重新接合流程中生效，不能作为运动中的冻结开关；软件目标固定不证明机械轴不漂移。新增函数保留ABI v1结构布局，启用时须配套重建原生库。腰一固定后的工作空间、双臂跟随及物理效果仍须验证。
 
 以下QP字段位于`bimanual_*.json`顶层，缺省值由原生`Config`或对应增量接口提供，Python负责配置校验与透传：
 
