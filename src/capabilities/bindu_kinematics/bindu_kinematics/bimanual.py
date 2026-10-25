@@ -5,6 +5,7 @@ import time
 from pathlib import Path
 import numpy as np
 from ament_index_python.packages import get_package_prefix
+from bindu_contracts.teleoperation import reference_tracking_budget
 
 
 ABI_VERSION = 1
@@ -38,6 +39,7 @@ class BimanualQP:
     def __init__(self, config, profile):
         self.cfg = config
         self.captured = False
+        self.execution_reference = None  # Per-request servo sample, supplied only by the runtime worker.
         self.rigid_grasp_q = self.rigid_grasp_reference = None
         # Explicit empty-hand test declaration; never relax the native relative
         # task, joint/trajectory limits, tracking budget or collision checks.
@@ -707,7 +709,9 @@ class BimanualQP:
             if reference.shape!=measured.shape or not np.isfinite(reference).all():
                 raise ValueError('BIMANUAL_REFERENCE_LAYOUT')
             self._check_measured_limits(measured)
-            if np.max(np.abs(reference-measured))>self.max_reference_error:
+            tracking_error,budgets=reference_tracking_budget(tuple(reference),tuple(measured),
+                self.max_reference_error,executed=getattr(self,'execution_reference',None))
+            if tracking_error>self.max_reference_error:
                 raise ValueError('BIMANUAL_REFERENCE_TRACKING_ERROR')
             if self.tracking_feedback in ('reference', 'measured_task', 'measured_shared'):
                 q = q.copy()
@@ -721,7 +725,7 @@ class BimanualQP:
                 ok=self.lib.bq_solve_feedback(self.handle,self._ptr(q),self.nq,self._ptr(measured_q),
                     self._ptr(reference),len(self.names),self._ptr(left),self._ptr(right),active_mask,
                     int(self.tracking_feedback=='measured_shared'),
-                    None,None,.8*self.max_reference_error,dt,self._ptr(out),self._ptr(metrics))
+                    None,None,max(budgets),dt,self._ptr(out),self._ptr(metrics))
             else:
                 ok=self.lib.bq_solve_independent(self.handle,self._ptr(q),self.nq,
                         self._ptr(reference),len(self.names),self._ptr(left),self._ptr(right),active_mask,
@@ -733,15 +737,16 @@ class BimanualQP:
             if not np.isfinite(out).all() or not np.isfinite(metrics).all():
                 raise ValueError('BIMANUAL_NONFINITE_RESULT')
             delta=out-reference;lead=reference-measured;moving=np.abs(delta)>1e-12
-            reserve=.8*self.max_reference_error
-            scale=float(np.clip(np.min((np.where(delta[moving]>0.,reserve,-reserve)-lead[moving])/
+            reserve=np.asarray(budgets)
+            scale=float(np.clip(np.min((np.where(delta[moving]>0.,reserve[moving],-reserve[moving])-lead[moving])/
                                        delta[moving],initial=1.),0.,1.))
             out=reference+scale*delta;metrics[2]=scale
             for n,old,new in zip(self.names,reference,out):
                 lo,hi=self.limits[n]
                 if not lo<=new<=hi or abs(new-old)>self.speed[n]*dt+1e-6:
                     raise ValueError('BIMANUAL_POSITION_LIMIT:'+n)
-            if np.max(np.abs(out-measured))>self.max_reference_error:
+            output_limits=reserve+1e-9 if getattr(self,'execution_reference',None) is not None else self.max_reference_error
+            if np.any(np.abs(out-measured)>output_limits):
                 raise ValueError('BIMANUAL_REFERENCE_TRACKING_ERROR')
             geometry_at=time.perf_counter()
             out,geometry_scale=self.checked_geometry_step(feedback,reference,out,independent=True,
@@ -799,7 +804,9 @@ class BimanualQP:
             raise ValueError('BIMANUAL_REFERENCE_LAYOUT')
         measured = np.array([feedback[n] for n in self.names])
         self._check_measured_limits(measured)
-        if np.max(np.abs(reference-measured)) > self.max_reference_error:
+        tracking_error,budgets=reference_tracking_budget(tuple(reference),tuple(measured),
+            self.max_reference_error,executed=getattr(self,'execution_reference',None))
+        if tracking_error > self.max_reference_error:
             raise ValueError('BIMANUAL_REFERENCE_TRACKING_ERROR')
         measured_tool = None
         if self.reference_kinematics:
@@ -879,7 +886,7 @@ class BimanualQP:
                     self._ptr(reference),len(self.names),self._ptr(target),None,3,
                     int(self.tracking_feedback=='measured_shared'),self._ptr(velocity),
                     None if tracking_tool is None else self._ptr(tracking_tool),
-                    .8*self.max_reference_error,dt,self._ptr(out),self._ptr(metrics))
+                    max(budgets),dt,self._ptr(out),self._ptr(metrics))
             else:
                 ok = self.lib.bq_solve_tracking(*args, self._ptr(velocity),
                     None if tracking_tool is None else self._ptr(tracking_tool), dt, self._ptr(out), self._ptr(metrics))
@@ -899,13 +906,15 @@ class BimanualQP:
             # The hard measured/reference guard above remains independent.
             delta = out-reference
             lead = reference-measured
-            reserve = .8*self.max_reference_error
+            reserve = np.asarray(budgets)
             moving = np.abs(delta)>1e-12
-            bounds = np.where(delta[moving]>0.,reserve,-reserve)
+            bounds = np.where(delta[moving]>0.,reserve[moving],-reserve[moving])
             scale = float(np.clip(np.min((bounds-lead[moving])/delta[moving],initial=1.),0.,1.))
             out = reference+scale*delta
             metrics[2] *= scale
-        if np.max(np.abs(out-measured)) > self.max_reference_error:
+        output_limits=(np.asarray(budgets)+1e-9 if getattr(self,'execution_reference',None) is not None
+                       else self.max_reference_error)
+        if np.any(np.abs(out-measured) > output_limits):
             raise ValueError('BIMANUAL_REFERENCE_TRACKING_ERROR')
         for name, old, new in zip(self.names, reference, out):
             lo, hi = self.limits[name]

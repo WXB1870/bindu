@@ -31,6 +31,69 @@ class TrackingFeedbackConfigTests(unittest.TestCase):
                 BimanualQP(dict(tracking_feedback=source), None)
 
 
+class ExecutedReferenceTrackingTests(unittest.TestCase):
+    """Recorded target reversals with healthy, distinct servo references."""
+    def solver(self, reference, measured, executed, candidate):
+        qp=object.__new__(BimanualQP)
+        qp.captured=True;qp.grasp_mode='independent';qp.names=('r',)
+        qp.model_names=('r',);qp.nq=1;qp.handle=1
+        qp.tracking_feedback='measured_shared';qp.max_interval=.1;qp.max_reference_error=.15
+        qp.execution_reference=executed
+        qp.limits={'r':(-2.,2.)};qp.speed={'r':1.}
+        qp.cfg={'solve_timeout_us':1e6}
+        qp._q=lambda feedback:np.array([feedback['r']])
+        qp._ptr=lambda value:value
+        qp._transform=lambda value:np.array(value)
+        qp._check_measured_limits=Mock()
+        qp.checked_geometry_step=lambda feedback,ref,out,**kw:(out,1.)
+        def native(*args):
+            self.radius=args[-4]
+            args[-2][:]=candidate;args[-1][:]=(1.,0.,1.)
+            return True
+        qp.lib=S(bq_solve_feedback=native,bq_destroy=Mock())
+        return qp
+
+    def solve(self, reference, measured, executed, candidate):
+        qp=self.solver(reference,measured,executed,candidate)
+        return qp.solve_independent({'r':measured},np.array([np.eye(4),np.eye(4)]),
+                                    active_mask=2,reference=(reference,),dt=.02)
+
+    def test_recorded_reversals_keep_goal_integration_and_accept_only_converging_steps(self):
+        for reference,measured,executed in (
+                (-.020872491666240868,.1342233121395111,.13301873872200137),
+                (.10672223377046086,-.04441353678703308,-.05020025379340311),
+                (-.43173563245980606,-.5831523537635803,-.5743889711424819)):
+            direction=np.sign(measured-reference)
+            with self.subTest(reference=reference):
+                out,_=self.solve(reference,measured,(executed,),reference+direction*.01)
+                self.assertAlmostEqual(out[0],reference+direction*.01)
+                self.assertLess(abs(out[0]-measured),abs(reference-measured))
+
+    def test_existing_transient_error_cannot_grow_and_does_not_reset_to_measured(self):
+        out,metrics=self.solve(-.02,.136,(.135,),-.03)
+        self.assertAlmostEqual(out[0],-.02)
+        self.assertEqual(metrics[2],0.)
+
+    def test_actual_executed_error_and_legacy_goal_error_still_trip_hard_guard(self):
+        for reference,measured,executed in ((0.,0.,(.151,)),(.151,0.,None)):
+            with self.subTest(executed=executed),self.assertRaisesRegex(ValueError,'REFERENCE_TRACKING_ERROR'):
+                self.solve(reference,measured,executed,reference)
+
+    def test_invalid_executed_reference_is_not_ignored(self):
+        for executed in ((),(float('nan'),),(0.,0.)):
+            with self.subTest(executed=executed),self.assertRaisesRegex(ValueError,'REFERENCE_LAYOUT'):
+                self.solve(0.,0.,executed,0.)
+
+    def test_one_axis_cannot_borrow_another_axes_transient_budget(self):
+        qp=self.solver(0.,0.,(.155,0.),(-.01,.13))
+        qp.names=qp.model_names=('r','s');qp.nq=2
+        qp.limits={'r':(-2.,2.),'s':(-2.,2.)};qp.speed={'r':1.,'s':10.}
+        qp._q=lambda feedback:np.array([feedback[n] for n in qp.names])
+        out,_=qp.solve_independent({'r':.156,'s':0.},np.array([np.eye(4),np.eye(4)]),
+                                  active_mask=2,reference=(-.02,.01),dt=.02)
+        self.assertAlmostEqual(out[1],.12)
+        self.assertLess(abs(out[0]-.156),.176)
+
 class InitialCollisionRecoveryTests(unittest.TestCase):
     def policy(self):
         from bindu_kinematics.tool_geometry import InitialSelfCollisionRecovery
