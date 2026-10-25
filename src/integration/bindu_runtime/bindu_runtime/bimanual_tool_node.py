@@ -420,6 +420,7 @@ class BimanualToolNode(RuntimeNode):
                         reply.profile_hash==self.profile.digest):
                     raise RuntimeError('BIMANUAL_STOP_REPLY_REJECTED:'+reply.code)
                 revoked_epoch=reply.epoch
+            next_renewal=time.monotonic()
             while time.monotonic()<deadline:
                 s=self.state
                 if s and ('EMERGENCY_STOP' in s.code or s.code == 'STOP_FEEDBACK_TIMEOUT'):
@@ -435,6 +436,22 @@ class BimanualToolNode(RuntimeNode):
                         requested=requested,now=self.now(),max_age=self.cfg['feedback_max_age'],
                         at_rest=lambda joints:joints_at_rest(joints,self.names,.005)):
                     return True
+                # Waiting for a hold suspends the session's normal renewal
+                # loop. Keep only that still-owned lease alive while braking;
+                # expiry/revocation is never accepted as same-lease rest.
+                if (not release and time.monotonic()>=next_renewal and s and
+                        s.instance_id==instance_id and s.lease_epoch==lease.epoch and
+                        s.lease_active and s.profile_hash==self.profile.digest and
+                        s.simulated==self.simulation and s.state!='FAILED' and
+                        not s.stop_failures and
+                        0<=self.now()-seconds(s.feedback_stamp)<self.cfg['feedback_max_age']):
+                    renewal=self.lease_client.call_async(Lease.Request(operation='renew',
+                        lease_id=lease.lease_id,epoch=lease.epoch))
+                    renewed=await self.wait(renewal,min(.7,max(0.,deadline-time.monotonic())))
+                    if not (renewed.ok and renewed.lease_id==lease.lease_id and
+                            renewed.epoch==lease.epoch and renewed.profile_hash==self.profile.digest):
+                        raise RuntimeError('BIMANUAL_STOP_RENEW_REJECTED:'+renewed.code)
+                    next_renewal=time.monotonic()+.3
                 await self.pause()
         except Exception as exc:
             reason=type(exc).__name__+':'+str(exc) if not isinstance(exc,RuntimeError) else str(exc)
