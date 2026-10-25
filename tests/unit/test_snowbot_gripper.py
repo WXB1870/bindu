@@ -139,6 +139,29 @@ class GripperTests(unittest.TestCase):
             else:r.core.input(r.frame('left',3,1.,(2,1)))
             self.assertFalse(r.core.lease_id)
 
+    def test_independent_trigger_refusal_reports_reason_and_requires_new_edge(self):
+        for error in ('GRIPPER_COMMANDS_DISABLED','GRIPPER_RECEIVER_UNAVAILABLE:left','AFTER_LEASE_REJECTION'):
+            r=Rig(require_driver_ack=False,independent_trigger_control=True)
+            for side in SIDES:r.core.input(r.frame(side,1))
+            health=r.core.health
+            if error=='GRIPPER_COMMANDS_DISABLED':r.core.enabled=False
+            elif error=='AFTER_LEASE_REJECTION':r.core.health=Mock(side_effect=[r.health,RuntimeError(error)])
+            else:r.core.health=Mock(side_effect=RuntimeError(error))
+            r.core.input(r.frame('left',2,1.,(1,0)))
+            self.assertFalse(r.sent);self.assertFalse(r.core.lease_id)
+            self.assertEqual(r.core.snapshot('left')['code'],error)
+            self.assertEqual(r.core.snapshot('right')['code'],error if error=='AFTER_LEASE_REJECTION' else 'NO_COMMAND')
+            self.assertEqual(r.core.last_request_rejection['code'],error)
+            self.assertFalse(r.core.fault)
+            r.core.enabled=True;r.core.health=health
+            for seq in (3,4):
+                r.core.input(r.frame('right',seq))
+                r.core.input(r.frame('left',seq,1.,(1,0)))
+            self.assertFalse(r.sent)
+            r.core.input(r.frame('left',5,0.,(1,1)))
+            r.core.input(r.frame('left',6,1.,(2,1)))
+            self.assertTrue(r.sent)
+
 
     def test_manual_endpoint_residuals_finish_after_hold_without_claiming_grasp(self):
         r=Rig();r.config['calibrated']=False
@@ -476,6 +499,28 @@ class GripperTests(unittest.TestCase):
 
 
 class NativeGripperTests(unittest.TestCase):
+    def test_session_health_reports_exact_fault_without_querying_command_graph(self):
+        source=ROOT/'src/integration/bindu_runtime/bindu_runtime/snowbot_gripper.py'
+        cls=next(n for n in ast.parse(source.read_text()).body if isinstance(n,ast.ClassDef))
+        method=next(n for n in cls.body if getattr(n,'name','')=='health')
+        ns=dict(MASKS={'left':1<<7,'right':1<<15},SIDES=SIDES)
+        exec(compile(ast.Module(body=[method],type_ignores=[]),str(source),'exec'),ns)
+        for side,slot in (('left',7),('right',15)):
+            for missing in (False,True):
+                with self.subTest(side=side,missing=missing):
+                    obs=S(valid_mask=0xfffff,status=[0x27]*20)
+                    if missing:obs.valid_mask &= ~(1<<slot)
+                    else:obs.status[slot]=0x218
+                    devices=S(io=S(require_feedback=Mock()),health=S(require=Mock(),observation=obs))
+                    node=S(count_publishers=Mock(side_effect=AssertionError('fault must reject before graph query')))
+                    runtime=S(session_protocol=True,devices=devices,node=node)
+                    expected=(f'GRIPPER_DRIVER_FEEDBACK_INVALID:{side}:slot={slot}' if missing else
+                              f'GRIPPER_DRIVER_FAULT:{side}:slot={slot}:status=0x0218')
+                    with self.assertRaisesRegex(RuntimeError,expected):ns['health'](runtime)
+                    devices.io.require_feedback.assert_called_once_with()
+                    devices.health.require.assert_called_once()
+                    node.count_publishers.assert_not_called()
+
     def rig(self):
         rig = Rig(require_driver_ack=False)
         rig.health = dict(sample=1, operation_enabled_mask=0xfffff)
@@ -643,6 +688,7 @@ class DirectOperationTests(unittest.TestCase):
         mode_code='PICO_TOOL_GRASP_UNCONFIRMED_UNCALIBRATED'
         async def wait(value):return value
         node=S(feedback=lambda:S(healthy=True,stopped=True,modes=('unknown','unknown')),
+            position_contract=False,
             position_ops=S(config={'calibrated':False,'allow_uncalibrated_direct':True}),
             arms_ready_client=S(service_is_ready=lambda:True,call_async=lambda _:S(success=True)),
             tool_cfg={},operator_grasp=False,unheld_test=False,current=lambda _:None,wait=wait)

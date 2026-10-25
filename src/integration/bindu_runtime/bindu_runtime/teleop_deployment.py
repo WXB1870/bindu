@@ -133,7 +133,7 @@ def load_deployment(path, share):
 
 def apply_execution_tracking(config, mode='position', *, real, position_contract,
                              trajectory_reference=False):
-    """Pair accumulated planning with nominal error; measured guards stay active."""
+    """Select nominal tracking unless measured-task tracking is explicit."""
     if mode not in ('position', 'impedance'):
         raise ValueError('SNOWBOT_EXECUTION_MODE')
     if mode == 'position' and not trajectory_reference:
@@ -141,4 +141,5 @@ def apply_execution_tracking(config, mode='position', *, real, position_contract
     if not real or not position_contract or config.get('reference_kinematics') is not True:
         raise ValueError(('TRAJECTORY' if mode=='position' else 'IMPEDANCE')+
                          '_REQUIRES_REAL_NOMINAL_KINEMATICS')
-    return {**config, 'tracking_feedback': 'reference'}
+    return {**config, 'tracking_feedback': (config['tracking_feedback'] if
+        mode == 'position' and config.get('tracking_feedback') in ('measured_task','measured_shared') else 'reference')}

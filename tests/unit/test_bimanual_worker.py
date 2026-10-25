@@ -10,6 +10,35 @@ from bindu_kinematics.bimanual_worker import BimanualWorker
 
 
 class WorkerReceiptTests(unittest.TestCase):
+    def test_gripper_body_path_keeps_all_joints_without_capturing_a_tool(self):
+        import sys
+        import numpy as np
+        from bindu_kinematics.bimanual_worker import _run
+        requests,results=queue.Queue(),queue.Queue()
+        requests.put(('gripper_body_path',1,{'arm':0.,'finger':0.},
+                      {'finger':.1},None,None,'rigid',None))
+        requests.put(('gripper_body_path',2,{'arm':0.,'finger':0.},
+                      {'finger':2.},None,None,'rigid',None))
+        requests.put(None)
+        solver=SimpleNamespace(tool=np.eye(4),model_names=('arm','finger'),names=('arm',),
+                               capture=Mock(),close=Mock())
+        check=Mock(return_value={'passed':True});factory=Mock(return_value=check)
+        config={'urdf':'/tmp/model.urdf','demo':{'grip_offset_m':[0.,0.,0.],'display_urdf':'model.urdf'}}
+        profile=SimpleNamespace(limits={'arm':(-1.,1.),'finger':(-1.,1.)})
+        with patch.dict(sys.modules,{
+                'bindu_kinematics.bimanual':SimpleNamespace(BimanualQP=Mock(return_value=solver)),
+                'bindu_kinematics.tool_geometry':SimpleNamespace(make_collision_checker=factory)}), \
+                patch('bindu_kinematics.bimanual_worker.gc.collect'), \
+                patch('bindu_kinematics.bimanual_worker.gc.freeze'):
+            _run(config,profile,requests,results)
+        solver.capture.assert_not_called()
+        self.assertFalse(factory.call_args.kwargs['tool_present'])
+        samples=check.call_args.args[0]
+        self.assertEqual(samples[-1]['q'],{'arm':0.,'finger':.1})
+        replies=list(results.queue)
+        self.assertIn(('result',1,{'passed':True}),replies)
+        self.assertIn(('error',2,'PREPARE_JOINT_LIMIT'),replies)
+
     def worker(self, *, ready=True, busy=True):
         worker = BimanualWorker.__new__(BimanualWorker)
         worker.requests, worker.results = queue.Queue(1), queue.Queue(2)

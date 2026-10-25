@@ -14,6 +14,79 @@ from bindu_teleoperation.bimanual_session import BimanualSession
 from tests.support.pico import Rig
 
 
+class HeadsetMappingTests(unittest.TestCase):
+    def frame(self, yaw=0.,pitch=0.,roll=0., **changes):
+        from scipy.spatial.transform import Rotation
+        from bindu_teleoperation.vr.mapping import OPENXR_TO_ROBOT
+        head=np.eye(4);head[:3,:3]=Rotation.from_euler('ZYX',[yaw,pitch,roll]).as_matrix()
+        raw=OPENXR_TO_ROBOT.T @ head @ OPENXR_TO_ROBOT
+        return replace(VRFrame('headset',1,10.,'left',tuple(np.eye(4).ravel())),
+            head_pose=tuple(raw.ravel()),head_source_id='headset',head_seq=1,head_stamp=9.99,
+            head_age_s=.005,**changes)
+
+    def test_forward_calibration_ignores_pitch_and_roll_and_preserves_trim(self):
+        from bindu_teleoperation.vr.mapping import engagement_yaw
+        cfg=dict(direction_reference='headset_on_engage',operator_yaw_rad=.2,input_max_age=.25)
+        for yaw in (0.,np.pi/2,-np.pi/2,2.8):
+            for pitch,roll in ((0.,0.),(.6,-.8),(-.7,.9)):
+                self.assertAlmostEqual(engagement_yaw(self.frame(yaw,pitch,roll),cfg,10.),.2-yaw)
+
+    def test_missing_stale_foreign_and_vertical_headings_are_not_fabricated(self):
+        from bindu_teleoperation.vr.mapping import engagement_yaw
+        cfg=dict(direction_reference='headset_on_engage',input_max_age=.25)
+        for change in (dict(head_pose=()),dict(head_source_id='other'),dict(head_seq=0),
+                       dict(head_stamp=9.7),dict(head_stamp=10.1),dict(head_age_s=.3),
+                       dict(head_age_s=float('nan'))):
+            with self.subTest(change=change),self.assertRaisesRegex(ValueError,'HEADSET_UNAVAILABLE'):
+                engagement_yaw(replace(self.frame(),**change),cfg,10.)
+        with self.assertRaisesRegex(ValueError,'HEADING_UNDEFINED'):
+            engagement_yaw(self.frame(pitch=np.pi/2),cfg,10.)
+
+    def test_repeated_head_sample_keeps_original_receipt_stamp_and_age(self):
+        from bindu_teleoperation.vr.receiver import HeadsetSamples
+        head=HeadsetSamples();matrix=np.eye(4);matrix[0,3]=.2
+        controllers=dict(left=np.eye(4).ravel(order='F').tolist(),right=np.eye(4).ravel(order='F').tolist())
+        sample=dict(seq=1.,frame_id='1:2:0',tracking_id='1:0',frame_time_ms=100.,controllers=controllers,
+            mode='immersive-vr',age_ms=5.,pose=matrix.ravel(order='F').tolist())
+        def ingest(sample,now):return head.ingest(dict(version=1,samples=[sample]),now,controllers)
+        first=ingest(sample,10.)
+        self.assertEqual(first['head_pose'],tuple(matrix.ravel()))
+        self.assertEqual(ingest(dict(sample,age_ms=105.),10.1),first)
+        self.assertEqual(ingest(dict(sample,age_ms=300.),10.3),{})
+        self.assertEqual(ingest(dict(sample,mode='inline'),10.3),{})
+        self.assertEqual(ingest(dict(sample,pose=[0.]*16),10.3),{})
+        self.assertEqual(ingest(dict(sample,seq=0),10.3),{})
+        self.assertEqual(ingest(dict(sample,seq=2.,frame_time_ms=99.),10.3),{})
+        self.assertEqual(ingest(dict(sample,controllers=dict(controllers,left=[0.]*16)),10.3),{})
+        conflicting=dict(sample,pose=np.diag([-1.,-1.,1.,1.]).ravel(order='F').tolist())
+        self.assertEqual(head.ingest(dict(version=1,samples=[sample,conflicting]),10.3,controllers),{})
+        ingest(dict(sample,seq=2.,frame_id='1:2:1',tracking_id='1:1'),10.4)
+        self.assertTrue(head.changed)
+
+    def test_ros_clock_conversion_preserves_head_sample_time_across_new_hand_frames(self):
+        import ast
+        from types import SimpleNamespace as S
+        path=ROOT/'src/integration/bindu_runtime/bindu_runtime/vr_input_node.py'
+        definition=next(n for n in ast.parse(path.read_text()).body if isinstance(n,ast.ClassDef) and n.name=='VRInputNode')
+        method=next(n for n in definition.body if getattr(n,'name','')=='poll_input')
+        clock=S(wall=1000.01);published=[];packets=[]
+        namespace=dict(time=S(time=lambda:clock.wall,monotonic=lambda:1.),stamp=lambda t:t,
+                       VRInput=lambda **kw:S(**kw))
+        exec(compile(ast.Module(body=[method],type_ignores=[]),str(path),'exec'),namespace)
+        owner=S(receiver=S(poll=lambda:packets.pop(0),poll_health=lambda:[]),last_frame=None,input_clock_offset=None,
+                last_poll=None,poll_delay_max=0.,
+                now=lambda:50.,runtime_mode='simulation',publisher=S(publish=published.append))
+        first=self.frame();first=replace(first,stamp=1000.,head_stamp=999.98)
+        packets.append((first,replace(first,side='right')));namespace['poll_input'](owner)
+        clock.wall+=.02
+        second=replace(first,seq=2,stamp=1000.02)
+        packets.append((second,replace(second,side='right')));namespace['poll_input'](owner)
+        self.assertAlmostEqual(published[0].head_stamp,49.97)
+        self.assertEqual(published[0].head_stamp,published[2].head_stamp)
+        self.assertEqual(published[0].head_seq,published[2].head_seq)
+        self.assertEqual(published[2].head_pose,list(first.head_pose))
+
+
 class MappingTests(unittest.TestCase):
     def event(self):
         pose=np.eye(4).ravel(order='F').tolist()

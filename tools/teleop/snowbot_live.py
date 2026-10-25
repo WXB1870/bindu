@@ -78,10 +78,11 @@ def observe(args, publish=None, stop=None):
         args.state_file.parent.mkdir(parents=True, exist_ok=True)
     if args.trace_file:
         args.trace_file.parent.mkdir(parents=True, exist_ok=True)
-    from tools.teleop.snowbot_diagnostics import DiagnosticWriter
+    from tools.teleop.snowbot_diagnostics import DiagnosticWriter, VR_INPUT_STREAMS
     real_vendor = args.runtime_mode == 'real' and args.device_backend == 'snowbot_vendor'
     # PDO prehistory is capped at 100 Hz; the monitor still checks every frame.
-    diagnostics=DiagnosticWriter(args.trace_file) if args.trace_file else None
+    diagnostics=DiagnosticWriter(args.trace_file,
+        full_streams=VR_INPUT_STREAMS if getattr(args,'record_inputs',False) else ()) if args.trace_file else None
     pdo_observer = None
     ros_logs = None
     wrench_observer = None
@@ -386,6 +387,8 @@ def main():
     parser.add_argument('--external-support', action='store_true')
     parser.add_argument('--state-file', type=Path)
     parser.add_argument('--trace-file', type=Path, help='Sampled async diagnostics: 10 Hz states/inputs, 1 Hz health, plus transitions and command events')
+    parser.add_argument('--record-inputs',action='store_true',
+                        help='Retain every observed raw/projected VR message and timing report; requires --trace-file')
     parser.add_argument('--run-id', required=True)
     parser.add_argument('--namespace', default='bindu_vr_sim')
     parser.add_argument('--robot-config', default=str(ROOT/'src/integration/bindu_runtime/config/robots/snowbot/robot_snowbot.json'))
@@ -395,6 +398,9 @@ def main():
     parser.add_argument('--duration', type=float, default=0.)
     parser.add_argument('--startup-timeout', type=float, default=30.)
     args, kit_args = parser.parse_known_args()
+    if args.record_inputs and (not args.trace_file or args.declare_load or args.web or
+                               not (args.observe or args.dashboard)):
+        parser.error('--record-inputs requires --trace-file and --observe/--dashboard')
     if not math.isfinite(args.duration) or args.duration < 0:
         parser.error('duration must be finite and nonnegative')
     if not math.isfinite(args.startup_timeout) or args.startup_timeout <= 0:

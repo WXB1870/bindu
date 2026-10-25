@@ -1,11 +1,59 @@
 /* Add local timing to the existing MessagePack envelope. No extra connection,
- * pose generation, heartbeat, or control timestamp changes. */
+ * heartbeat, or control timestamp changes. Viewer samples come from WebXR,
+ * in the exact reference space used to sample the tracked controller ray. */
 (() => {
   'use strict';
   const encoder = new TextEncoder(), sockets = new WeakMap();
   let loopMax = 0, rafMax = 0, xrMax = 0, longMax = 0, longCount = 0;
   let lastRaf = null, lastXr = null, xrVisibility = 'unavailable';
   let due = performance.now() + 50;
+  const xrSessions = new WeakMap(), xrSpaces = new WeakMap();
+  let sessionNumber = 0, spaceNumber = 0, headSequence = 0;
+  const heads = new Map();
+  if (typeof navigator !== 'undefined' && navigator.xr && window.XRFrame) {
+    const requestSession = navigator.xr.requestSession;
+    navigator.xr.requestSession = async function(mode, ...args) {
+      const session = await requestSession.call(this, mode, ...args);
+      if (mode === 'immersive-vr' || mode === 'immersive-ar') {
+        xrSessions.set(session, {id: ++sessionNumber, mode, frameTime: null, epoch: 0});
+        session.addEventListener('end', () => { heads.clear(); });
+        session.addEventListener('visibilitychange', () => {
+          if (session.visibilityState !== 'visible') heads.clear();
+        });
+      }
+      return session;
+    };
+    const getPose = XRFrame.prototype.getPose;
+    XRFrame.prototype.getPose = function(space, referenceSpace) {
+      const pose = getPose.call(this, space, referenceSpace);
+      try {
+        const session = this.session, state = xrSessions.get(session);
+        const input = state && Array.from(session.inputSources).find(input =>
+          input.targetRayMode === 'tracked-pointer' && input.targetRaySpace === space &&
+          (input.handedness === 'left' || input.handedness === 'right'));
+        if (input && pose && session.visibilityState === 'visible') {
+          let reference = xrSpaces.get(referenceSpace);
+          if (!reference) {
+            reference = {id: ++spaceNumber, epoch: 0}; xrSpaces.set(referenceSpace, reference);
+            referenceSpace.addEventListener('reset', () => { reference.epoch++; state.epoch++; heads.clear(); });
+          }
+          const frameId = `${state.id}:${reference.id}:${reference.epoch}`;
+          let head = heads.get(frameId);
+          if (!head || head.frameTime !== state.frameTime) {
+            const viewer = this.getViewerPose(referenceSpace);
+            head = viewer && !viewer.emulatedPosition && state.frameTime !== null ?
+              {seq: ++headSequence, frameId, trackingId: `${state.id}:${state.epoch}`, frameTime: state.frameTime,
+                pose: Array.from(viewer.transform.matrix), sampled: performance.now(), mode: state.mode,
+                controllers: {}} : null;
+            if (head) heads.set(frameId, head); else heads.delete(frameId);
+            if (heads.size > 4) heads.delete(heads.keys().next().value);
+          }
+          if (head) head.controllers[input.handedness] = Array.from(pose.transform.matrix);
+        }
+      } catch (_) { heads.clear(); } // Missing tracking must stay unavailable.
+      return pose;
+    };
+  }
   setInterval(() => {
     const now = performance.now();
     loopMax = Math.max(loopMax, now - due); due = now + 50;
@@ -25,6 +73,8 @@
         const now = performance.now();
         if (lastXr !== null) xrMax = Math.max(xrMax, now - lastXr);
         lastXr = now; xrVisibility = this.visibilityState;
+        const state = xrSessions.get(this);
+        if (state && state.frameTime !== time) { heads.clear(); state.frameTime = time; }
         callback(time, frame);
       });
     };
@@ -48,6 +98,10 @@
       new DataView(b.buffer).setFloat64(1, value); return [...b];
     }
     if (value === null) return [0xc0];
+    if (Array.isArray(value)) {
+      const header = value.length < 16 ? [0x90 + value.length] : [0xdc, value.length >> 8, value.length & 255];
+      return [...header, ...value.flatMap(pack)];
+    }
     const entries = Object.entries(value);
     return [0x80 + entries.length, ...entries.flatMap(([k, v]) => [...pack(k), ...pack(v)])];
   }
@@ -71,8 +125,14 @@
             buffered_bytes: this.bufferedAmount, loop_max_ms: loopMax, raf_max_ms: rafMax,
             xr_max_ms: xrMax, long_task_max_ms: longMax, long_task_count: longCount,
             page_visibility: document.visibilityState, xr_visibility: xrVisibility};
-          const extra = new Uint8Array([...pack('bindu_timing'), ...pack(timing)]);
-          const header = count + 1 < 16 ? [0x80 + count + 1] : [0xde, (count + 1) >> 8, (count + 1) & 255];
+          const fields = [['bindu_timing', timing]];
+          if (heads.size) fields.push(['bindu_head', {version: 1, samples: Array.from(heads.values(), head =>
+            ({seq: head.seq, frame_id: head.frameId, tracking_id: head.trackingId, frame_time_ms: head.frameTime,
+              pose: head.pose, age_ms: now - head.sampled, mode: head.mode, controllers: head.controllers}))}]);
+          const extra = new Uint8Array(fields.flatMap(([key, value]) => [...pack(key), ...pack(value)]));
+          const total = count + fields.length;
+          if (total > 65535) return send.call(this, data);
+          const header = total < 16 ? [0x80 + total] : [0xde, total >> 8, total & 255];
           outgoing = new Uint8Array(header.length + b.length - offset + extra.length);
           outgoing.set(header); outgoing.set(b.subarray(offset), header.length);
           outgoing.set(extra, header.length + b.length - offset);

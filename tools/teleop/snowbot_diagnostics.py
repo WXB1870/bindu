@@ -9,6 +9,8 @@ import sys
 import threading
 import time
 
+VR_INPUT_STREAMS = ('vr-raw', 'vr-projected', 'vr-health')
+
 
 def finite_json(value):
     """Keep malformed numeric input inspectable without invalid JSON numbers."""
@@ -280,27 +282,34 @@ class WrenchObserver:
 
 class DiagnosticWriter:
     def __init__(self, path, *, capacity=8192, chunk_bytes=128*1024*1024, sampling=True,
-                 health_filename='diagnostics-health.json', echo=False):
+                 health_filename='diagnostics-health.json', echo=False, full_streams=()):
         self.path=Path(path);self.path.parent.mkdir(parents=True,exist_ok=True)
         self.queue=queue.Queue(capacity);self.chunk_bytes=chunk_bytes
         self.stop=threading.Event();self.error='';self.dropped=0;self.written=0
         self.sampler=DiagnosticSampler() if sampling else None
+        self.full_streams=frozenset(full_streams)
+        self.received_by_stream={};self.dropped_by_stream={};self.written_by_stream={}
         self.repeats=RepeatedLogs(self._emit_log)
         self.health_filename, self.echo, self.console_error = health_filename, echo, ''
         self.thread=threading.Thread(target=self.run,name='diagnostic-writer',daemon=True)
         self.thread.start()
 
     def record(self, stream, value, *, ros=False):
+        self.received_by_stream[stream]=self.received_by_stream.get(stream,0)+1
         if self.error or self.stop.is_set():
-            self.dropped+=1;return
-        if self.sampler and not self.sampler.keep(stream,value,time.monotonic()):return
+            self._drop(stream);return
+        if stream not in self.full_streams and self.sampler and not self.sampler.keep(stream,value,time.monotonic()):return
         self._enqueue(stream, value, ros)
 
+    def _drop(self, stream):
+        self.dropped+=1
+        self.dropped_by_stream[stream]=self.dropped_by_stream.get(stream,0)+1
+
     def _enqueue(self, stream, value, mode):
-        if self.error or self.stop.is_set():self.dropped+=1;return
+        if self.error or self.stop.is_set():self._drop(stream);return
         item=(stream,dict(received_at=time.time(),received_monotonic_ns=time.monotonic_ns()),value,mode)
         try:self.queue.put_nowait(item)
-        except queue.Full:self.dropped+=1
+        except queue.Full:self._drop(stream)
 
     def record_log(self, stream, value, *, text=False):
         if self.error or self.stop.is_set():self.dropped+=1;return
@@ -324,6 +333,10 @@ class DiagnosticWriter:
                     written=self.written,queued=self.queue.qsize(),error=self.error,
                     sampled_out=self.sampler.sampled_out if self.sampler else 0,
                     sampling='10Hz_state_changes_1Hz_health' if self.sampler else 'all_received',
+                    input_recording=dict(full_streams=sorted(self.full_streams),
+                        closed=self.stop.is_set(),scope='observer_received_ROS_messages',
+                        received=self.received_by_stream.copy(),written=self.written_by_stream.copy(),
+                        dropped=self.dropped_by_stream.copy()),
                     coalesced=self.repeats.coalesced, repeat_keys=len(self.repeats.entries),
                     repeat_evicted=self.repeats.evicted, console_error=self.console_error)
 
@@ -359,6 +372,7 @@ class DiagnosticWriter:
                         target=base if index==0 else base.with_name(f'{base.stem}-{index:04d}{base.suffix}')
                         handles[stream]=target.open('a',buffering=65536);sizes[stream]=target.stat().st_size
                     handles[stream].write(line);sizes[stream]+=len(line.encode());self.written+=1
+                    self.written_by_stream[stream]=self.written_by_stream.get(stream,0)+1
                     if mode == 'text' and self.echo:
                         try:sys.stdout.write(line)
                         except (OSError,ValueError) as exc:self.console_error=str(exc);self.echo=False

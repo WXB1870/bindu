@@ -13,8 +13,9 @@ SHARE = ROOT/'src/integration/bindu_runtime'
 class ImpedanceSelectionTests(unittest.TestCase):
     def setUp(self):
         self.config = json.loads((SHARE/'config/robots/snowbot/bimanual_snowbot_real.json').read_text())
+        self.config.pop('tracking_feedback',None)  # Legacy callers without an explicit selection.
 
-    def test_today_recipe_and_position_tracking_are_unchanged(self):
+    def test_legacy_position_tracking_is_unchanged_without_explicit_selection(self):
         _, args = load_deployment(SHARE/'config/deployments/snowbot_vr_real.json', SHARE)
         self.assertEqual(args['execution_mode'], 'position')
         self.assertEqual(args['command_enabled'], 'false')
@@ -41,6 +42,22 @@ class ImpedanceSelectionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'TRAJECTORY_REQUIRES_REAL_NOMINAL'):
             apply_execution_tracking(dict(self.config,reference_kinematics=False),real=True,
                                      position_contract=True,trajectory_reference=True)
+
+    def test_position_preserves_explicit_measured_task_but_impedance_stays_nominal(self):
+        for source in ('measured_task','measured_shared'):
+            with self.subTest(source=source):
+                config=dict(self.config,tracking_feedback=source)
+                selected=apply_execution_tracking(config,real=True,position_contract=True,
+                                                   trajectory_reference=True)
+                self.assertEqual(selected['tracking_feedback'],source)
+                self.assertEqual(config['tracking_feedback'],source)
+                self.assertEqual(apply_execution_tracking(config,'impedance',real=True,
+                    position_contract=True)['tracking_feedback'],'reference')
+
+    def test_real_recipe_selects_measured_waist_with_continuous_arm_reference(self):
+        config=json.loads((SHARE/'config/robots/snowbot/bimanual_snowbot_real.json').read_text())
+        self.assertEqual(apply_execution_tracking(config,real=True,position_contract=True,
+            trajectory_reference=True)['tracking_feedback'],'measured_shared')
 
     def test_real_sixteen_axis_nominal_config_runs_native_qp(self):
         from bindu_contracts.profile import Profile

@@ -267,6 +267,60 @@ process.stdout.write(JSON.stringify(packets));
             self.assertEqual(timing['buffered_bytes'], 42)
             self.assertEqual(timing['send_interval_ms'], 180 if i else None)
 
+    @unittest.skipUnless(shutil.which('node'), 'Node required for browser wire test')
+    def test_actual_viewer_uses_controller_space_and_cannot_be_a_desktop_camera(self):
+        import base64,msgpack
+        from bindu_teleoperation.vr.receiver import HeadsetSamples
+        matrix=[1.,0.,0.,0.,0.,1.,0.,0.,0.,0.,1.,0.,0.,0.,0.,1.]
+        event=dict(etype='CONTROLLER_MOVE',value=dict(left=matrix,right=matrix),key='motionControllers')
+        payload=base64.b64encode(msgpack.packb(event,use_bin_type=True)).decode()
+        harness=r'''
+const fs=require('fs'),vm=require('vm');let now=1000,packets=[];
+const original=JSON.parse(process.argv[3]);
+const left={handedness:'left',targetRayMode:'tracked-pointer',targetRaySpace:{side:'left'}};
+const right={handedness:'right',targetRayMode:'tracked-pointer',targetRaySpace:{side:'right'}};
+class Space {constructor(id){this.id=id;this.events={};}addEventListener(k,fn){this.events[k]=fn;}}
+class Session {constructor(){this.visibilityState='visible';this.inputSources=[left,right];this.events={};}
+ addEventListener(k,fn){this.events[k]=fn;}requestAnimationFrame(fn){this.callback=fn;}}
+class Frame {constructor(session){this.session=session;}
+ getPose(space,reference){const m=original.value[space.side].slice();if(reference.id!=='controllers')m[12]+=1;
+   return {transform:{matrix:m}};}
+ getViewerPose(reference){const m=original.value.left.slice();if(reference.id!=='controllers')m[12]=7;
+   return {emulatedPosition:false,transform:{matrix:m}};}}
+class Socket {constructor(){this.bufferedAmount=0;}send(b){packets.push(Buffer.from(b).toString('base64'));}}
+const navigator={xr:{requestSession:async()=>new Session()}};
+const ctx={TextEncoder,Uint8Array,DataView,ArrayBuffer,WeakMap,WebSocket:Socket,navigator,
+ XRFrame:Frame,XRSession:Session,performance:{now:()=>now},Date,document:{visibilityState:'visible'},
+ setInterval:()=>{},window:{requestAnimationFrame:()=>{},XRFrame:Frame,XRSession:Session}};
+vm.createContext(ctx);vm.runInContext(fs.readFileSync(process.argv[1],'utf8'),ctx);
+const socket=new Socket(),data=Uint8Array.from(Buffer.from(process.argv[2],'base64'));
+const reference=new Space('controllers'),renderer=new Space('renderer');
+async function sample(mode){const session=await navigator.xr.requestSession(mode);
+ session.requestAnimationFrame((time,frame)=>{for(const ref of [reference,renderer]){
+   frame.getPose(left.targetRaySpace,ref);frame.getPose(right.targetRaySpace,ref);}});
+ session.callback(now,new Frame(session));return session;}
+(async()=>{socket.send(data);await sample('inline');socket.send(data);
+ const session=await sample('immersive-vr');socket.send(data);now+=100;socket.send(data);
+ reference.events.reset();now+=10;session.callback(now,new Frame(session));socket.send(data);
+ session.visibilityState='hidden';session.events.visibilitychange();socket.send(data);
+ process.stdout.write(JSON.stringify(packets));})().catch(e=>{console.error(e);process.exit(1);});
+'''
+        result=subprocess.run(['node','-e',harness,str(SCRIPT),payload,json.dumps(event)],
+            check=True,capture_output=True,text=True)
+        packets=[msgpack.unpackb(base64.b64decode(p),raw=False) for p in json.loads(result.stdout)]
+        self.assertNotIn('bindu_head',packets[0]);self.assertNotIn('bindu_head',packets[1])
+        cache=HeadsetSamples()
+        first=cache.ingest(packets[2]['bindu_head'],10.,event['value'])
+        self.assertEqual(first['head_pose'],tuple(matrix))
+        self.assertEqual(cache.ingest(packets[3]['bindu_head'],10.1,event['value']),first)
+        self.assertEqual(len(packets[2]['bindu_head']['samples']),2)
+        renewed=cache.ingest(packets[4]['bindu_head'],10.11,event['value'])
+        self.assertGreater(renewed['head_seq'],first['head_seq']);self.assertTrue(cache.changed)
+        self.assertNotIn('bindu_head',packets[5])
+        for packet in packets:
+            packet.pop('bindu_timing');packet.pop('bindu_head',None)
+            self.assertEqual(packet,event)
+
 
 if __name__ == '__main__':
     unittest.main()

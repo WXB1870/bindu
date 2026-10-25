@@ -58,8 +58,10 @@ class SnowbotGrippers:
             self.devices.health.require(CONTROL_GROUPS, acquiring=True)
             obs = self.devices.health.observation
             for side, slot in (('left', 7), ('right', 15)):
-                if not obs.valid_mask & MASKS[side] or obs.status[slot] & 8:
-                    raise RuntimeError('GRIPPER_DRIVER_FEEDBACK_OR_FAULT:'+side)
+                if not obs.valid_mask & MASKS[side]:
+                    raise RuntimeError(f'GRIPPER_DRIVER_FEEDBACK_INVALID:{side}:slot={slot}')
+                if obs.status[slot] & 8:
+                    raise RuntimeError(f'GRIPPER_DRIVER_FAULT:{side}:slot={slot}:status=0x{obs.status[slot]:04x}')
         else:
             self.devices.check_health(set(self.core.groups))
         for side in SIDES:
@@ -130,9 +132,12 @@ class SnowbotGrippers:
 
     def input(self, msg):
         if self.node.matches_mode(msg):
+            previous=self.core.last_request_rejection
             frame = VRFrame(msg.source_id, msg.seq, seconds(msg.stamp), msg.side, tuple(msg.pose), msg.grip, msg.trigger,
                 msg.init, msg.stop, msg.valid, msg.clutch_seq, msg.mapping, msg.buttons, tuple(int(value) for value in msg.button_edges), msg.virtual_grip)
             self.core.input(frame)
+            if self.core.last_request_rejection is not previous:
+                self.node.event('GRIPPER_REQUEST_REJECTED',json.dumps(self.core.last_request_rejection))
 
     def tick(self):
         self.core.tick()

@@ -1,5 +1,7 @@
 """Portable deployment checks; never start a controller or touch a device."""
 import json
+import io
+from contextlib import redirect_stdout, redirect_stderr
 import os
 from pathlib import Path
 import subprocess
@@ -270,12 +272,16 @@ class RuntimeCheckTests(unittest.TestCase):
                     runtime_check.check_installed_configs([source/filename], installed)
 
     def native_fixture(self, root):
+        from bindu_contracts.profile import Profile
         tool = root/'tool.json'
         tool.write_text('{}')
-        robot = NS(tool_config=tool, urdf=root/'robot.urdf', profile=object(), profile_path=root/'profile.json')
+        profile = Profile.load(x86_real.ROOT/'src/integration/bindu_runtime/config/robots/snowbot/snowbot_real_position.json')
+        robot = NS(tool_config=tool, urdf=root/'robot.urdf', profile=profile, profile_path=root/'profile.json')
         package = NS(**{name: object() for name in (
             'ExecutionState', 'VRInput', 'TeleopModeState', 'GripperState', 'SelectTeleopMode',
             'TeleopSession', 'GripperControl', 'JointPositionCommand', 'RetInformation')})
+        package.VRInput = NS(get_fields_and_field_types=lambda: dict.fromkeys(
+            ('stick', 'head_pose', 'head_stamp', 'head_age_s', 'head_source_id', 'head_seq'), 'fixture'))
         package.JointPositionCommand = NS(get_fields_and_field_types=lambda:
             dict(l_arm_position='double[7]', r_arm_position='double[7]'))
         package.RetInformation = NS(get_fields_and_field_types=lambda:
@@ -285,6 +291,7 @@ class RuntimeCheckTests(unittest.TestCase):
         support = Mock()
         modules = {'ament_index_python.packages': NS(get_package_share_directory=lambda _: str(root)),
                    'rclpy.type_support': NS(check_for_type_support=support),
+                   'bindu_interfaces.msg': package,
                    'bindu_kinematics.bimanual': NS(BimanualQP=solver)}
         return robot, package, solver, support, modules
 
@@ -329,6 +336,99 @@ class RuntimeCheckTests(unittest.TestCase):
                 package.PositionTrajectory = object()
                 self.assertEqual(runtime_check.check_runtime(args, robot)['software_dependencies'], 'passed')
             self.assertIn(package.PositionTrajectory, [call.args[0] for call in support.call_args_list])
+
+
+class CspInstallTests(unittest.TestCase):
+    def fixture(self, root):
+        fields = {k: v[0] for k, v in runtime_check.CSP_DIAGNOSTIC_FIELDS.items()}
+        prefixes = {k: root/'install'/k for k in
+                    ('snowbot_ctl_msgs', 'snowbot_servo_control', 'snowbot_dual_arm_control', 'robot_control')}
+        for path in prefixes.values(): path.mkdir(parents=True)
+        for rel in ('ctl_msgs/msg/PositionObservation.msg',
+                    'servo_control/include/servo_control/position_observation.h',
+                    'servo_control/src/servo_control/ethercat_driver.cpp',
+                    'servo_control/src/ros_controller/rosLoop.cpp'):
+            path = root/'src'/rel; path.parent.mkdir(parents=True, exist_ok=True); path.write_text(rel)
+        (root/'src/ctl_msgs/msg/PositionObservation.msg').write_text(
+            ''.join(kind+' '+name+'\n' for name, kind in fields.items()))
+        for source, target in (
+                ('ctl_msgs/msg/PositionObservation.msg', prefixes['snowbot_ctl_msgs']/'share/snowbot_ctl_msgs/msg/PositionObservation.msg'),
+                ('servo_control/include/servo_control/position_observation.h', prefixes['snowbot_servo_control']/'include/servo_control/position_observation.h')):
+            target.parent.mkdir(parents=True, exist_ok=True); target.write_bytes((root/'src'/source).read_bytes())
+        binary = prefixes['snowbot_servo_control']/'lib/snowbot_servo_control/servo_node'
+        binary.parent.mkdir(parents=True); binary.write_bytes(
+            b'csp_send_attempt_ns= mode_command= mode_display= target_position_raw= actual_position_raw=')
+        generated = prefixes['snowbot_ctl_msgs']/'_position_observation.py'; generated.write_text('# generated\n')
+        return fields, prefixes, generated, binary
+
+    def test_schema_requires_all_fields_exact_lengths_and_signedness(self):
+        fields = {k: v[0] for k, v in runtime_check.CSP_DIAGNOSTIC_FIELDS.items()}
+        self.assertTrue(runtime_check.inspect_csp_schema(fields)['compatible'])
+        for changes in ({'csp_mode_display': 'uint8[4]'}, {'csp_target_position_raw': 'int32[20]'},
+                        {'csp_send_attempt_ns': 'double'}):
+            self.assertFalse(runtime_check.inspect_csp_schema(dict(fields, **changes))['compatible'])
+        del fields['csp_feedback_mask']
+        self.assertFalse(runtime_check.inspect_csp_schema(fields)['compatible'])
+
+    def test_local_audit_and_optional_frozen_receipt_do_not_overclaim_version(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp); fields, prefixes, generated, binary = self.fixture(root)
+            report = runtime_check.verify_vendor_install(root, fields, prefixes, generated)
+            self.assertTrue(report['installation_checks_passed'])
+            self.assertFalse(report['exact_servo_version_verified'])
+            self.assertFalse(report['consumer_binary_versions_verified'])
+            receipt = dict(files={'src/'+k: dict(after=v) for k, v in report['source_sha256'].items()},
+                           binary_sha256=report['binary_sha256'])
+            self.assertTrue(runtime_check.verify_vendor_install(root, fields, prefixes, generated, receipt)
+                            ['exact_servo_version_verified'])
+            broken = dict(receipt, files=dict(receipt['files']))
+            broken['files']['src/ctl_msgs/msg/PositionObservation.msg'] = '0'*64
+            with self.assertRaisesRegex(ValueError, 'EXPECTED_SOURCE_SHA256_MISMATCH'):
+                runtime_check.verify_vendor_install(root, fields, prefixes, generated, broken)
+            binary.write_bytes(binary.read_bytes()+b'other version')
+            with self.assertRaisesRegex(ValueError, 'EXPECTED_BINARY_SHA256_MISMATCH'):
+                runtime_check.verify_vendor_install(root, fields, prefixes, generated, receipt)
+            # Diagnostic markers alone prove capability, never an exact build.
+            self.assertFalse(runtime_check.verify_vendor_install(root, fields, prefixes, generated)
+                             ['exact_servo_version_verified'])
+
+    def test_generated_python_symlink_can_resolve_to_this_workspaces_rosidl_build(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp); fields, prefixes, generated, _ = self.fixture(root)
+            target = root/'build/snowbot_ctl_msgs/rosidl_generator_py/_position_observation.py'
+            target.parent.mkdir(parents=True); target.write_bytes(generated.read_bytes())
+            generated.unlink(); generated.symlink_to(target)
+            report = runtime_check.verify_vendor_install(root, fields, prefixes, generated)
+            self.assertEqual(report['generated_module'], str(target.resolve()))
+
+    def test_wrong_overlay_module_old_install_and_old_binary_are_rejected(self):
+        for failure in ('overlay', 'module', 'message', 'binary'):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp); fields, prefixes, generated, binary = self.fixture(root)
+                if failure == 'overlay': prefixes['robot_control'] = root/'other-install'
+                elif failure == 'module': generated = root/'other-overlay/_position_observation.py'
+                elif failure == 'message':
+                    (prefixes['snowbot_ctl_msgs']/'share/snowbot_ctl_msgs/msg/PositionObservation.msg').write_text('old')
+                else: binary.write_bytes(b'old servo')
+                with self.assertRaises(ValueError):
+                    runtime_check.verify_vendor_install(root, fields, prefixes, generated)
+
+    def test_cli_only_loads_local_types_and_returns_failure_for_a_bad_schema(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp); fields, prefixes, generated, _ = self.fixture(root)
+            kind = NS(__module__='csp_generated_fixture', get_fields_and_field_types=lambda: fields)
+            support = Mock()
+            modules = {'ament_index_python.packages': NS(get_package_prefix=lambda name: str(prefixes[name])),
+                       'rclpy.type_support': NS(check_for_type_support=support),
+                       'snowbot_ctl_msgs.msg': NS(PositionObservation=kind),
+                       'csp_generated_fixture': NS(__file__=str(generated))}
+            with patch.dict('sys.modules', modules), redirect_stdout(io.StringIO()) as out:
+                self.assertEqual(runtime_check.main(['--vendor-workspace', str(root)]), 0)
+                self.assertFalse(json.loads(out.getvalue())['hardware_accessed'])
+            fields.pop('csp_mode_display')
+            with patch.dict('sys.modules', modules), redirect_stderr(io.StringIO()) as err:
+                self.assertEqual(runtime_check.main(['--vendor-workspace', str(root)]), 2)
+                self.assertIn('SCHEMA_REBUILD_REQUIRED', json.loads(err.getvalue())['error'])
 
 
 class VendorInterfaceTests(unittest.TestCase):

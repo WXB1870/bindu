@@ -380,9 +380,181 @@ def preview(app, context, output, record_video=False, playback_once=False):
         print('SHOVEL_VIDEO_COMPLETE '+str(video),flush=True)
 
 
+def task_feedback_worker(settings_path):
+    """System-Python QP/native reference worker; no ROS node or device IO."""
+    import numpy as np
+    settings=json.loads(Path(settings_path).read_text());root=Path(settings['root'])
+    sys.path[:0]=[str(root)]+[str(root/'src'/p) for p in (
+        'shared/bindu_contracts','capabilities/bindu_kinematics','control/bindu_execution')]
+    import bindu_kinematics,bindu_execution
+    bindu_kinematics.__path__.insert(0,str(Path(settings['candidate'])/'src/capabilities/bindu_kinematics/bindu_kinematics'))
+    bindu_execution.__path__.insert(0,settings['execution_native'])
+    from bindu_kinematics.bimanual import BimanualQP,DeferredSolve
+    from bindu_contracts.profile import Profile
+    from bindu_execution.interpolation import State,PreparedSegment
+    data=json.loads(Path(settings['input']).read_text());profile=Profile.load(settings['profile'])
+    solver=None
+    for line in sys.stdin:
+        request=json.loads(line)
+        try:
+            if request['op']=='capture':
+                if solver is not None:solver.close()
+                cfg=dict(data['tool'],urdf=settings['urdf'],library=settings['library'],
+                    tracking_feedback=request['mode'],reference_kinematics=True,
+                    demo={**data['tool']['demo'],'display_urdf':settings['display_urdf']})
+                cfg.update(settings.get('qp_overrides',{}))
+                if request.get('waist_goal_offset_rad') is not None:
+                    shared=data['profile']['groups']['waist']
+                    cfg.update(shared_target_weight=.3,shared_targets={n:request['q'][n]+
+                        (request['waist_goal_offset_rad'] if i==0 else 0.) for i,n in enumerate(shared)})
+                solver=BimanualQP(cfg,profile);solver.capture(request['q'])
+                reference=np.array([request['q'][n] for n in solver.names]);last=0.;segment=None
+                response=dict(names=solver.names,tracking_point=solver.tracking_point.tolist())
+            elif request['op']=='sample':
+                state=State.rest(reference) if segment is None else segment.sample(request['t'])
+                response=dict(q=list(state.q),v=list(state.v))
+            else:
+                now=request['t'];state=State.rest(reference) if segment is None else segment.sample(now)
+                target=np.array(request['target']).reshape(4,4)
+                measured=solver._q(request['q']);actual=np.empty((4,4));relative=np.empty((4,4))
+                solver.lib.bq_tool_pose(solver.handle,solver._ptr(measured),solver.nq,solver._ptr(actual))
+                solver.lib.bq_relative_pose(solver.handle,solver._ptr(measured),solver.nq,solver._ptr(relative))
+                deferred=False
+                try:
+                    positions,metrics=solver.solve(request['q'],target,reference=reference,
+                        dt=min(now-last,solver.max_interval),target_stamp=now)
+                    # Continue from the native reference's q/v/a, never measured q.
+                    segment=PreparedSegment.target(profile,solver.names,state,positions,now)
+                    reference=np.array(positions);last=now
+                except DeferredSolve:
+                    deferred=True;metrics=(0.,0.,0.)
+                response=dict(q=list(state.q),v=list(state.v),goal=reference.tolist(),
+                    actual=actual.ravel().tolist(),relative=relative.ravel().tolist(),
+                    scale=metrics[2],deferred=deferred)
+        except Exception as exc:
+            response=dict(error=type(exc).__name__+':'+str(exc))
+        print(json.dumps(response),flush=True)
+
+
+def compare_task_feedback(settings_path, output):
+    """Closed-loop QP -> native continuation -> fitted PhysX -> measured QP.
+
+    Unloaded fixture, reconstructed log targets. Does not exercise vendor
+    recipe-3 prediction, DDS, grasp contact forces or physical stopping.
+    """
+    import subprocess
+    import select
+    import numpy as np
+    from scipy.spatial.transform import Rotation,Slerp
+    from isaacsim.core.utils.types import ArticulationAction
+    from isaacsim.core.simulation_manager import SimulationManager
+    from pxr import UsdPhysics,UsdGeom
+    settings=json.loads(Path(settings_path).read_text());root=Path(settings['root'])
+    sys.path.insert(0,str(root))
+    from tools.simulation.run_shovel_physics import build_scene
+    data=json.loads(Path(settings['input']).read_text())
+    fitted=json.loads(Path(settings['drives']).read_text())
+    cfg=json.loads(Path(settings['physics']).read_text());cfg.update(physics_dt_s=.004,
+        joint_drive_overrides=fitted['joint_drive_overrides'])
+    matrix=json.loads(Path(settings['matrix']).read_text())
+    motion=dict(display_urdf=settings['display_urdf'],recipe=matrix['recipe'],
+        left_frame=data['tool']['left_frame'],right_frame=data['tool']['right_frame'])
+    world,body,view,contacts,source=build_scene(motion,cfg,output)
+    prim=world.stage.GetPrimAtPath('/World/Shovel')
+    UsdPhysics.RigidBodyAPI(prim).CreateKinematicEnabledAttr(True)
+    view.set_world_poses(np.array([[0.,0.,-10.]]),np.array([[1.,0.,0.,0.]]),indices=[2])
+    UsdGeom.Imageable(prim).MakeInvisible()
+    names=list(body.dof_names);lookup={n:i for i,n in enumerate(names)};dt=cfg['physics_dt_s']
+    env=os.environ.copy();env['PYTHONPATH']='/opt/ros/jazzy/lib/python3.12/site-packages:/opt/ros/jazzy/local/lib/python3.12/dist-packages'
+    env['LD_LIBRARY_PATH']='/opt/ros/jazzy/lib:/opt/ros/jazzy/lib/x86_64-linux-gnu:/usr/lib/x86_64-linux-gnu'
+    env['AMENT_PREFIX_PATH']=':'.join(str(p) for p in (root/'install').iterdir() if (p/'share/ament_index').exists())+':/opt/ros/jazzy'
+    results=[]
+    for job in settings['jobs']:
+        case=next(c for c in data['cases'] if c['epoch']==job['epoch'])
+        initial=np.array([case['initial'][n] for n in names]);rows=[];failure=None
+        body.set_joint_positions(initial);body.set_joint_velocities(np.zeros(len(names)))
+        body.apply_action(ArticulationAction(joint_positions=initial,joint_velocities=np.zeros(len(names))))
+        times=np.array([r['t'] for r in case['targets']]);poses=np.array([r['target'] for r in case['targets']]).reshape(-1,4,4)
+        rotations=Slerp(times,Rotation.from_matrix(poses[:,:3,:3]))
+        stderr=(output/(job['label']+'.stderr.log')).open('w')
+        worker=subprocess.Popen(['/usr/bin/python3','-u',str(Path(__file__).resolve()),
+            '--task-feedback-worker',str(settings_path)],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=stderr,text=True,env=env)
+        def ask(request):
+            worker.stdin.write(json.dumps(request)+'\n');worker.stdin.flush()
+            if not select.select([worker.stdout],[],[],30.)[0]:raise TimeoutError('TASK_FEEDBACK_WORKER')
+            response=json.loads(worker.stdout.readline())
+            if 'error' in response:raise RuntimeError(response['error'])
+            return response
+        native_start=SimulationManager.get_num_physics_steps();started=__import__('time').monotonic()
+        try:
+            info=ask(dict(op='capture',mode=job['mode'],q=case['initial'],
+                waist_goal_offset_rad=job.get('waist_goal_offset_rad')))
+            active=[lookup[n] for n in info['names']];qref=initial.copy();vref=np.zeros(len(names))
+            history_q=[];history_v=[];response=None
+            delays=dict(fitted.get('joint_response_delay_s',{}))
+            delays.update({n:job.get('waist_delay_s',0.) for n in names if n.startswith('body_joint_')})
+            duration=job.get('duration_s',case['duration_s']+1.)
+            for tick in range(int(duration/dt)+1):
+                t=round(tick*dt,9);q=np.asarray(body.get_joint_positions()).copy()
+                qd=np.asarray(body.get_joint_velocities()).copy()
+                if tick and tick%5==0:
+                    at=float(np.clip(t,times[0],times[-1]));target=np.eye(4)
+                    target[:3,:3]=rotations(at).as_matrix()
+                    target[:3,3]=[np.interp(at,times,poses[:,j,3]) for j in range(3)]
+                    if job.get('input_kind')=='probe':
+                        # Separate input sensitivity from the recorded low tool
+                        # path: lift 80 mm, then a small smooth horizontal cycle.
+                        home=np.array(case['capture']['tool_pose']);point=np.array(info['tracking_point'])
+                        u=float(np.clip(t,0.,1.));lift=.08*(10*u**3-15*u**4+6*u**5)
+                        phase=float(np.clip((t-1.)/4.,0.,1.));wave=np.sin(2*np.pi*phase)*np.sin(np.pi*phase)**2
+                        target[:3,:3]=Rotation.from_rotvec([0.,0.,.08*wave]).as_matrix()@home[:3,:3]
+                        control=home[:3,3]+home[:3,:3]@point+np.array([.03*wave,0.,lift])
+                        target[:3,3]=control-target[:3,:3]@point
+                    response=ask(dict(op='solve',t=t,q=dict(zip(names,q.tolist())),target=target.ravel().tolist()))
+                    qref[active]=response['q'];vref[active]=response['v']
+                    actual=np.array(response['actual']).reshape(4,4)
+                    point=np.r_[info['tracking_point'],1.]
+                    rows.append(dict(t=t,q=q[active].tolist(),goal=response['goal'],reference=qref[active].tolist(),
+                        position_error_m=float(np.linalg.norm((actual@point-target@point)[:3])),
+                        rotation_error_rad=float(Rotation.from_matrix(actual[:3,:3].T@target[:3,:3]).magnitude()),
+                        relative=response['relative'],scale=response['scale'],deferred=response['deferred']))
+                if not tick or tick%5:
+                    sample=ask(dict(op='sample',t=t));qref[active]=sample['q'];vref[active]=sample['v']
+                history_q.append(qref.copy());history_v.append(vref.copy())
+                target=qref.copy();velocity=np.zeros(len(names))
+                for j,n in enumerate(names):
+                    at=max(0.,tick-delays.get(n,0.)/dt);before=int(at);fraction=at-before
+                    after=min(before+1,tick)
+                    target[j]=(1-fraction)*history_q[before][j]+fraction*history_q[after][j]
+                    if fitted.get('velocity_feedforward',False):
+                        velocity[j]=(1-fraction)*history_v[before][j]+fraction*history_v[after][j]
+                body.apply_action(ArticulationAction(joint_positions=target,joint_velocities=velocity))
+                world.step(render=False)
+        except Exception as exc:failure=str(exc)
+        finally:
+            worker.stdin.close();worker.wait(timeout=10);stderr.close()
+        position=np.array([r['position_error_m'] for r in rows]);rotation=np.array([r['rotation_error_rad'] for r in rows])
+        result=dict(job=job,error=failure,samples=len(rows),position_rms_m=float(np.sqrt(np.mean(position**2))) if len(rows) else None,
+            rotation_rms_rad=float(np.sqrt(np.mean(rotation**2))) if len(rows) else None,
+            physics_steps=SimulationManager.get_num_physics_steps()-native_start,wall_s=__import__('time').monotonic()-started)
+        (output/(job['label']+'.json')).write_text(json.dumps(dict(result=result,rows=rows))+'\n')
+        results.append(result);print('TASK_FEEDBACK_RESULT',json.dumps(result),flush=True)
+        (output/'comparison.json').write_text(json.dumps(dict(results=results,source=source,
+            fitted_parameters_sha256=hashlib.sha256(Path(settings['drives']).read_bytes()).hexdigest(),
+            simulation_only=True,hardware_commands=False,waist_response_identified=False,
+            execution='PreparedSegment.target from continuous q/v/a; vendor recipe-3 not exercised',
+            fixture='unloaded, tool parked; targets reconstructed from log snapshots'),indent=2)+'\n')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('motion', type=Path)
+    # In comparison mode there is no motion positional: otherwise argparse
+    # consumes an unknown Kit option's value (e.g. --portable-root) as motion.
+    comparison=any(arg.split('=',1)[0]=='--task-feedback-comparison' for arg in sys.argv[1:])
+    if comparison:parser.set_defaults(motion=None)
+    else:parser.add_argument('motion',type=Path)
+    parser.add_argument('--task-feedback-comparison',type=Path,
+                        help='Closed-loop QP comparison using existing fitted PhysX response settings')
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--gui', action='store_true', help='After verification, keep an interactive 1x playback window open')
     parser.add_argument('--video', action='store_true', help='Capture every checked sample at 1x timing to MP4, then exit')
@@ -398,9 +570,13 @@ def main():
     sys.argv = [sys.argv[0]]+kit_args
     app = SimulationApp({'headless': not args.gui, 'fast_shutdown': True, 'window_width':1600, 'window_height':1000})
     try:
-        context = verify(args.motion.resolve(), output)
-        if args.gui or args.video:
-            preview(app, context, output, record_video=args.video, playback_once=args.playback_once)
+        if args.task_feedback_comparison:
+            compare_task_feedback(args.task_feedback_comparison.resolve(),output)
+        else:
+            if args.motion is None:parser.error('motion is required without --task-feedback-comparison')
+            context = verify(args.motion.resolve(), output)
+            if args.gui or args.video:
+                preview(app, context, output, record_video=args.video, playback_once=args.playback_once)
     except BaseException:
         # Kit's atexit fast shutdown replaces uncaught exceptions with exit 0.
         # Preserve the diagnostic and failure status before that handler runs.
@@ -412,4 +588,6 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    if len(sys.argv)>1 and sys.argv[1]=='--task-feedback-worker':
+        task_feedback_worker(sys.argv[2])
+    else:main()

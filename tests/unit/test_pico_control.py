@@ -14,19 +14,24 @@ from tests.support.pico import Rig
 
 
 class ScenarioRuntimeTests(unittest.IsolatedAsyncioTestCase):
-    def test_pico_sets_async_transport_before_ros_init_and_honors_site_override(self):
+    def test_control_chain_sets_async_transport_before_ros_init_and_honors_site_override(self):
         import ast,os
         from unittest.mock import Mock,patch
-        path=Path(__file__).resolve().parents[2]/'src/integration/bindu_runtime/bindu_runtime/pico_node.py'
-        main=next(n for n in ast.parse(path.read_text()).body if getattr(n,'name','')=='main')
-        for configured in (None,'SYNCHRONOUS'):
-            with patch.dict(os.environ,{} if configured is None else
-                    {'RMW_FASTRTPS_PUBLICATION_MODE':configured},clear=True):
-                seen=[];spin=Mock(side_effect=lambda *a,**kw:seen.append(os.environ['RMW_FASTRTPS_PUBLICATION_MODE']))
-                ns=dict(os=os,spin=spin,PicoNode=object)
-                exec(compile(ast.Module(body=[main],type_ignores=[]),str(path),'exec'),ns);ns['main']()
-                self.assertEqual(seen,[configured or 'ASYNCHRONOUS'])
-                spin.assert_called_once_with(object,threaded=False)
+        root=Path(__file__).resolve().parents[2]/'src/integration/bindu_runtime/bindu_runtime'
+        for filename,node,runner in (('pico_node.py','PicoNode','spin'),
+                ('vr_input_node.py','VRInputNode','spin'),
+                ('bimanual_tool_node.py','BimanualToolNode','spin'),
+                ('execution_node.py','ExecutionNode','run_execution')):
+            path=root/filename
+            main=next(n for n in ast.parse(path.read_text()).body if getattr(n,'name','')=='main')
+            for configured in (None,'SYNCHRONOUS'):
+                with self.subTest(entry=filename,override=configured),patch.dict(os.environ,
+                        {} if configured is None else {'RMW_FASTRTPS_PUBLICATION_MODE':configured},clear=True):
+                    seen=[];start=Mock(side_effect=lambda *a,**kw:seen.append(os.environ.get('RMW_FASTRTPS_PUBLICATION_MODE')))
+                    ns=dict(os=os,**{runner:start,node:object})
+                    exec(compile(ast.Module(body=[main],type_ignores=[]),str(path),'exec'),ns);ns['main']()
+                    self.assertEqual(seen,[configured or 'ASYNCHRONOUS'])
+                    start.assert_called_once_with(object,**({'threaded':False} if runner=='spin' else {}))
 
     def test_stale_feedback_keeps_original_deadline_and_stop_failure_priority(self):
         from types import SimpleNamespace as S
@@ -88,7 +93,7 @@ class ScenarioRuntimeTests(unittest.IsolatedAsyncioTestCase):
             node.tick()
             self.assertEqual(node.control.lock.called,not temporary_capture_refusal(code,0))
 
-    def test_independent_grippers_preserve_held_tool_mode_guard(self):
+    def test_independent_grippers_and_mode_switch_ignore_load_metadata(self):
         r=Rig(load='held',guided=True,dual=True,direct=True)
         r.core.independent_grippers=True;r.core.teleop_mode='bimanual_tool'
         r.core.phase='following';r.grips=[1.,1.];r.step()
@@ -98,14 +103,10 @@ class ScenarioRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(r.step(),[]);self.assertEqual(r.core.phase,'following')
         r.core.phase='standby';r.grips=[0.,0.];r.step()
         result=r.click(1,1)
-        self.assertEqual(result,[])
-        self.assertEqual(r.core.reason,'PICO_TOOL_HELD_REQUIRES_TOOL_MODE')
-        self.assertEqual(r.core.teleop_mode,'bimanual_tool')
-        # An explicit empty-load declaration is separate from trigger release.
-        r.context('empty');result=r.click(1,1)
         self.assertEqual(result[-1].operation,'select_mode')
         self.assertEqual(result[-1].value,'independent_arms')
-        r.complete();r.modes=('unknown','virtual');r.core.emit('confirm_tool')
+        r.complete();self.assertEqual((r.core.load,r.core.load_source),('empty','teleop_mode'))
+        r.modes=('unknown','virtual');r.core.emit('confirm_tool')
         r.complete();self.assertFalse(r.core.virtual)
 
 
@@ -226,7 +227,9 @@ class ScenarioRuntimeTests(unittest.IsolatedAsyncioTestCase):
         reference=next(n for n in ast.parse(path.read_text()).body if getattr(n,'name','')=='prepare_reference')
         exec(compile(ast.Module(body=[reference],type_ignores=[]),str(path),'exec'),namespace)
         exec(compile(ast.fix_missing_locations(module),str(path),'exec'),namespace)
-        return namespace['Actual']()
+        actual=namespace['Actual']()
+        actual.position_contract=False  # Legacy-only cases opt in explicitly below.
+        return actual
 
     def test_display_keeps_fresh_coordinated_pair_during_one_hand_delivery(self):
         from types import SimpleNamespace as S
@@ -375,13 +378,14 @@ class ScenarioRuntimeTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(node.control.complete.call_args.kwargs['rejected'])
             self.assertEqual(node.control.load,'unknown')
 
-    async def test_operator_grasp_declares_held_only_after_success_and_keeps_intent_fence(self):
+    async def test_mode_readiness_does_not_declare_physical_grasp_or_change_intent(self):
         from types import SimpleNamespace as S
         from unittest.mock import Mock,AsyncMock
         for success in (False,True):
             r=Rig('unknown',guided=True,dual=True);r.click(1,1)
             intent=r.core.pending;generation=r.core.generation
             node=self.production('confirm_tool','current');node.unheld_test=False;node.operator_grasp=True;node.control=r.core
+            node.position_contract=True
             node.feedback=lambda:PicoFeedback(r.now,True,('unknown','unknown'))
             node.position_ops=S(reading=lambda _:S(measured_position=.02))
             node.ready_client=S(service_is_ready=lambda:True,call_async=lambda _:S(success=success,message='BIMANUAL_GRASP_POSE'))
@@ -391,22 +395,16 @@ class ScenarioRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(r.core.load,'unknown');self.assertEqual(r.core.load_source,'unknown')
                 self.assertEqual(r.core.generation,generation);continue
             await node.confirm_tool(intent)
-            self.assertEqual((r.core.load,r.core.load_source),('held','operator_tool_confirmation'))
-            self.assertEqual(r.core.generation,generation+1);self.assertIs(r.core.pending,intent)
+            self.assertEqual((r.core.load,r.core.load_source),('unknown','unknown'))
+            self.assertEqual(r.core.generation,generation);self.assertIs(r.core.pending,intent)
             self.assertEqual(r.core.pending.token,intent.token);node.current(intent)
-            self.assertEqual(r.core.context_at,r.now)
-            declaration=next(c for c in node.event.call_args_list if c.args[0]=='PICO_LOAD_OPERATOR_CONFIRMED')
-            self.assertFalse(json.loads(declaration.args[1])['grasp_sensor_confirmed'])
-            # Reconfirming an already-held load does not consume a new generation.
+            self.assertFalse(any(c.args[0]=='PICO_LOAD_OPERATOR_CONFIRMED' for c in node.event.call_args_list))
             await node.confirm_tool(intent)
-            self.assertEqual(r.core.generation,generation+1);node.current(intent)
+            self.assertEqual(r.core.generation,generation);node.current(intent)
             self.assertTrue(r.core.complete(intent.token,True,now=r.now))
-            with self.assertRaisesRegex(ValueError,'PICO_CONTEXT_STALE_OR_INVALID'):
-                r.core.context(r.core.source,generation,'empty',False,r.now)
-            self.assertEqual(r.core.load,'held')
+            self.assertEqual(r.core.load,'held');self.assertEqual(r.core.load_source,'teleop_mode')
             r.step();r.click(1,1)
-            self.assertIsNone(r.core.pending)
-            self.assertEqual(r.core.reason,'PICO_TOOL_HELD_REQUIRES_TOOL_MODE')
+            self.assertEqual(r.core.pending.value,'independent_arms')
 
     async def test_a_return_is_empty_hand_in_every_load_and_grasp_policy(self):
         from types import SimpleNamespace as S
@@ -428,6 +426,26 @@ class ScenarioRuntimeTests(unittest.IsolatedAsyncioTestCase):
                     event=json.loads(node.event.call_args.args[1])
                     self.assertFalse(event['tool_present']);self.assertFalse(event['coupling_checked'])
                     self.assertFalse(event['load_state_checked'])
+
+    async def test_gripper_path_selects_rod_from_mode_only(self):
+        from types import SimpleNamespace as S
+        from unittest.mock import Mock
+        for mode in ('independent_arms','bimanual_tool'):
+            for load in ('empty','held','unknown'):
+                node=self.production('validate_prepare');node.position_contract=True;node.unheld_test=True
+                node.control=S(load=load,teleop_mode=mode);node.prepare_positions=None;node.names=('joint',)
+                node.tool_cfg={'resource_groups':['arm']};node.cfg={};node.current=Mock();node.event=Mock()
+                node.profile=S(groups={'arm':['joint']},limits={'joint':(-1.,1.)})
+                node.reading=lambda:(S(joints=S(name=['joint'],velocity=[0.])),{'joint':0.})
+                def submit(*args,**kwargs):node.validation_result=('result',1,{});return True
+                node.validator=S(ready=True,busy=False,startup_timeout=1.,submit=Mock(side_effect=submit))
+                target={'finger':.1}
+                await node.validate_prepare(S(token=1),target)
+                expected='gripper_path' if mode=='bimanual_tool' else 'gripper_body_path'
+                node.validator.submit.assert_called_once_with(expected,1,{'joint':0.},target)
+                evidence=json.loads(node.event.call_args.args[1])
+                self.assertEqual(evidence['tool_present'],mode=='bimanual_tool')
+                self.assertFalse(evidence['load_state_checked'])
 
     async def test_unheld_ignores_gripper_drift_while_loaded_operator_guard_remains(self):
         from types import SimpleNamespace as S
@@ -825,12 +843,22 @@ class DualModeTests(unittest.TestCase):
         self.assertEqual(r.core.teleop_mode,'independent_arms')
         self.assertEqual(r.core.phase,'standby');self.assertIsNone(r.core.pending)
 
-    def test_known_coupled_load_cannot_enter_independent_arms(self):
-        r=Rig('held',guided=True,dual=True);r.grips=[1.,0.];r.step()
-        self.assertIsNone(r.core.pending)
-        self.assertEqual(r.core.reason,'PICO_TOOL_HELD_REQUIRES_TOOL_MODE')
-        r.core.teleop_mode='bimanual_tool';r.grips=[0.,0.];r.step();r.click(1,1)
-        self.assertIsNone(r.core.pending);self.assertEqual(r.core.teleop_mode,'bimanual_tool')
+    def test_old_load_cannot_block_independent_takeover_or_mode_selection(self):
+        for load in ('held','unknown','empty'):
+            r=Rig(load,guided=True,dual=True);r.grips=[1.,0.];r.step()
+            self.assertEqual(r.core.pending.operation,'follow')
+            r.complete();r.grips=[0.,0.];r.step();r.complete();r.step()
+            r.click(1,1);r.complete()
+            self.assertTrue(r.core.snapshot()['tool_collision_enabled'])
+            self.assertFalse(r.core.snapshot()['load_state_checked'])
+            r.step();r.click(1,1);r.complete()
+            self.assertEqual((r.core.load,r.core.load_source),('empty','teleop_mode'))
+            self.assertFalse(r.core.snapshot()['tool_collision_enabled'])
+
+    def test_position_mode_stick_click_does_not_enter_loading_workflow(self):
+        r=Rig('held',guided=True,dual=True)
+        self.assertEqual(r.click(0,2),[])
+        self.assertEqual(r.core.phase,'standby')
 
     def test_mode_key_while_following_only_stops_then_requires_new_press(self):
         r=Rig(guided=True,dual=True);r.grips=[1.,0.];r.step();r.complete()
@@ -838,6 +866,28 @@ class DualModeTests(unittest.TestCase):
         self.assertEqual(r.core.teleop_mode,'independent_arms')
         r.grips=[0.,0.];r.step();self.assertIsNone(r.core.pending)
         r.click(1,1);self.assertEqual(r.core.pending.operation,'select_mode')
+
+    def test_b_and_release_keep_mode_request_visible_without_queueing_switch(self):
+        for coupled in (False,True):
+            with self.subTest(coupled=coupled):
+                r=Rig(guided=True,dual=True)
+                if coupled:r.click(1,1);r.complete();r.step()
+                mode=r.core.teleop_mode
+                r.grips=[1.,1.];r.step();r.complete();r.stopped=False
+                r.grips=[0.,0.]
+                intents=r.click(1,1)
+                self.assertEqual([i.operation for i in intents],['stop'])
+                self.assertEqual(r.core.reason,'MODE_SWITCH_REQUIRES_STOP')
+                guide=r.core.snapshot(r.now)['operator_guide']
+                self.assertEqual(guide['title'],'模式尚未切换')
+                self.assertIn('重新按 B',guide['detail'])
+                self.assertEqual(r.core.teleop_mode,mode)
+                self.assertEqual(r.click(1,1),[])
+                r.complete();r.stopped=True;r.step()
+                self.assertIsNone(r.core.pending)
+                r.click(1,1)
+                self.assertEqual(r.core.pending.operation,'select_mode')
+                self.assertNotEqual(r.core.pending.value,mode)
 
 
 

@@ -152,7 +152,7 @@ ros2 launch bindu_runtime g1_sim.launch.py recording_mode:=normal namespace:=/bi
 
 ### Snowbot真实夹爪位置闭环
 
-夹爪复用现有Snowbot执行节点，默认配方引用[`snowbot_grippers_real.json`](../../integration/bindu_runtime/config/robots/snowbot/snowbot_grippers_real.json)，不新增电机控制进程。该接口确认的是位置到位和保持；`grasp_state=unknown`明确表示没有实体夹持／夹紧力／虚握证明，不能据`position_reached=true`进入持物作业。
+夹爪复用现有Snowbot执行节点，默认配方引用[`snowbot_grippers_real.json`](../../integration/bindu_runtime/config/robots/snowbot/snowbot_grippers_real.json)，不新增电机控制进程。该接口确认的是位置到位和保持；`grasp_state=unknown`明确表示没有实体夹持／夹紧力／虚握证明。统一PICO位置入口不再以实体装夹状态阻止切模式或接管，杆件碰撞模型随耦合模式选择，详见[工具操作契约](../../../动作执行契约.md#61-snowbot-工具操作与握持切换)。独立Trigger请求在申请租约前被拒绝时，也会保留对应侧`code`并记录`GRIPPER_REQUEST_REJECTED`，不再静默显示`NO_COMMAND`；拒绝不自动重试，须新输入。
 
 | 接口（默认前缀`/bindu_snowbot`） | 用途 |
 |---|---|
@@ -311,7 +311,7 @@ ROS_DOMAIN_ID=191 ROS_LOCALHOST_ONLY=1 python3 -m tests integration position --m
 
 各驱动使用[独立接口](../../shared/bindu_contracts/bindu_contracts/devices.py)。读取接口必须有界且不阻塞；`dt` 供模拟推进，真实驱动应提供独立采样时间的最新设备反馈。关节与手可共享位置接口，但不能因此假设手部支持 CSP、触觉或相同周期。`ExecutionState` 带各反馈源时间与停止失败设备；停止后位置参考置空，停止请求不伪装成新的关节目标。当前仍串行执行，不是多设备原子事务或生产实时控制。
 
-历史资产的源码依据集中在盘点报告（本地参考：`历史代码盘点与复用评估.md`，不随 Git 分发），下表定义接入位置；**Pi 客户端及 v3.4 单臂 VR/IK 已提取，其他历史资产尚未迁移**：
+历史资产的源码依据集中在盘点报告（本地参考：`参考文档/历史代码盘点与复用评估.md`，不随 Git 分发），下表定义接入位置；**Pi 客户端及 v3.4 单臂 VR/IK 已提取，其他历史资产尚未迁移**：
 
 | 历史资产 | 对应位置 | 当前需要补齐 |
 |---|---|---|

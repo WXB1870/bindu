@@ -25,6 +25,11 @@ class VRFrame:
     button_edges: Tuple[int, ...] = (0,)*8  # press/release counters for those 3 + Trigger.
     virtual_grip: bool = False  # Coordinated PICO X request, not right Trigger.
     stick: Tuple[float, ...] = ()  # WebXR thumbstickValue (x,y); absent is unknown.
+    head_pose: Tuple[float, ...] = ()  # Same OpenXR reference space as this controller.
+    head_stamp: float = 0.  # First receiver observation of this head sample.
+    head_age_s: float = 0.  # Browser sample age at that first observation.
+    head_source_id: str = ''
+    head_seq: int = 0
 
 
 

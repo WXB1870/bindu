@@ -135,6 +135,7 @@ public:
   void setSharedTargets(const Eigen::VectorXd &targets);
   void clearSharedTargets();
   void setSharedMotionWeight(double weight);
+  void setLimitAvoidance(double margin, double weight);
   void setPosturePolicy(const Eigen::VectorXd &reference,
                         const Eigen::VectorXd &lower, const Eigen::VectorXd &upper);
   void setPostureReferenceMargin(double margin);
@@ -143,7 +144,9 @@ public:
                     const Eigen::VectorXd &reference,
                     const Eigen::Matrix<double, 6, 1> &world_velocity = Eigen::Matrix<double, 6, 1>::Zero(),
                     const pinocchio::SE3 *measured_tool = nullptr,
-                    const pinocchio::SE3 *desired_right = nullptr, int active_mask = 3);
+                    const pinocchio::SE3 *desired_right = nullptr, int active_mask = 3,
+                    const Eigen::VectorXd *measured_q = nullptr, double max_lead = 0.,
+                    bool shared_task_feedback = false);
   const Config &config() const { return config_; }
 
 private:
@@ -161,6 +164,7 @@ private:
   bool initialized_{false};
   bool fresh_start_{true};
   bool independent_{false};
+  double avoidance_margin_{0.}, avoidance_weight_{0.};
   Eigen::Vector3d tracking_point_{Eigen::Vector3d::Zero()};
 };
 

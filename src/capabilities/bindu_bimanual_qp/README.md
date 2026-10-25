@@ -85,7 +85,7 @@ Python 调用入口为 [bindu_kinematics/bimanual.py](../bindu_kinematics/bindu_
 
 ### 双臂QP参数与ABI
 
-以下QP字段位于`bimanual_*.json`顶层，缺省值由原生`Config`提供，Python不另维护默认值：
+以下QP字段位于`bimanual_*.json`顶层，缺省值由原生`Config`或对应增量接口提供，Python负责配置校验与透传：
 
 | 参数 | 默认值 | 含义 |
 | --- | ---: | --- |
@@ -94,6 +94,7 @@ Python 调用入口为 [bindu_kinematics/bimanual.py](../bindu_kinematics/bindu_
 | `shared_target_gain` / `shared_target_weight` | 3 / 0 | 独立共享关节姿态目标增益／权重 |
 | `regularization` | 0.0001 | 速度正则项 |
 | `shared_motion_weight` | 0 | 共享组额外的速度平方代价；越大越少使用共享关节，不设置固定腰角 |
+| `limit_avoidance_margin` / `limit_avoidance_weight` | 0 / 0 | 关节边界软代价的作用宽度／权重；宽度采用关节自身单位，权重0关闭 |
 | `max_linear_speed` / `max_angular_speed` | 0.15 / 0.5 | 工具目标线／角速度上限，m/s、rad/s |
 | `max_relative_error` | 0.15 | 6D相对位姿误差范数门槛，平移与转角的混合范数 |
 | `limit_margin` / `damper_gain` | 0.05 / 2 | 软限位余量／速度阻尼增益，余量采用关节自身单位 |
@@ -101,7 +102,11 @@ Python 调用入口为 [bindu_kinematics/bimanual.py](../bindu_kinematics/bindu_
 
 所有字段必须有限；权重、姿态增益与margin可为零，其余必须为正；两侧margin之和必须小于对应有效关节范围。已有配置对速度和闭合误差设有更严格值，以上不是硬件标定值。可选`shared_targets`为共享组全部关节名到目标位置的映射，须配合正的`shared_target_weight`；未配置时腰部仍参与工具跟踪。Python `set_shared_targets(None)`清除该独立姿态目标。
 
+可选软代价只惩罚作用带内朝模型／profile硬界的速度，距离同时参考求解状态和已接纳参考；向内退出不加此代价。每次捕获后通过`bq_limit_avoidance`设置，ABI v1布局不变，旧库缺接口须重建。启用需正宽度、非负权重且两侧作用带不重叠，通用默认关闭；Snowbot real配方启用`margin=0.15 rad、weight=0.05`。它不主动回退、不保证固定余量，原有硬限位、姿态包络、握持、碰撞和停止保护保持；`reference`模式沿用原实测保护。
+
 包含腰部资源的Snowbot仿真及真实腰臂配方将`shared_motion_weight`设为0.1，两轴腰部的速度正则二次项因此从0.0011增至0.1011；双臂不变。它是运动分配偏好，腰部仍可参与工具跟踪，普通双臂模式将腰部速度固定为0。真实`bimanual_snowbot_real.json`选腰部2轴及双臂14轴，腰部参与联合工具求解和同一执行会话；共享姿态边界保留，缺失腰部测量则拒绝求解。配置不改变关节速度上限或握持约束。该字段通过新增的`bq_shared_motion_weight`函数在每次捕获后设置，C结构布局仍为ABI v1；旧库缺此能力时明确要求重建。
+
+Snowbot real配方显式选择`tracking_feedback=measured_shared`：任务FK／Jacobian使用实测共享关节（腰）及已接纳双臂参考，避免提前计入未完成的腰部运动，同时不持续追偿双臂静态柔顺残差。通过增量ABI v1接口`bq_solve_feedback`在同一QP内保留命令处的闭合约束、姿态代价及积分起点；全部实测关节仍用于安全检查。每轴将既有`0.8*max_reference_error`预算纳入速度边界，先重新分配；已超过软预算时允许保持／向内恢复，不强制跳回实测。原硬跟随、几何、整组最终缩步与停止保护不变。该模式要求`reference_kinematics=true`；session_v3位置装配保留显式选择，未选择时沿用`reference`，阻抗模式仍使用名义跟踪。servo采样不替换积分起点。`measured_task`另外提供全关节实测任务运动学作离线对照，但闭环仿真出现目标累积／跟随保护，未选作真实配方。恢复纯名义方案只需将该字段设为`reference`；不得在运动中切换。仿真不证明腰部真实响应、反馈物理尺度、持杆受力或停止已验收。
 
 积分与保护字段：`max_integration_interval`缺省0.1 s且不可超过0.1 s；`max_reference_error`缺省0.15，按各关节位置单位检查参考与实测偏差，超过后要求停止并重新捕获；`sample_period`是离线采样步长，运行节点传入实际候选采样间隔。`solve_timeout_us`按墙钟约束单次候选求解，从输入校验、实测握姿准备到原生调用、限位／几何复核、结果打包和前馈样本准备；现有配置保留30 ms。返回的`solve_us`指标仍仅为QP内部累计计时，不能当作完整调用或指令往返延迟。worker往返另由`worker_timeout`约束，缺省为`solve_timeout_us/1e6 + 0.2`秒，初始化由`worker_startup_timeout`约束（缺省30秒）。这些门限不等于已验证真机延迟。
 

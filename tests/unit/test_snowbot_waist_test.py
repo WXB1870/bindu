@@ -51,17 +51,17 @@ class WaistTests(unittest.TestCase):
                 self.assertAlmostEqual(a, 0.)
 
     def test_invalid_or_unreviewed_envelope_refused(self):
-        for values in ((0.,), (float('nan'),), (21.,), (3., .26), (3., .05, .51), (3., .05, .25, 163.)):
+        for values in ((0.,), (float('nan'),), (21.,), (3., .376), (3., .05, 2.251), (3., .05, .25, 163.)):
             with self.subTest(values=values), self.assertRaises(ValueError):
                 make_plan(*values)
 
-    def test_default_twenty_degree_excursion_reaches_requested_speed(self):
+    def test_default_small_faster_excursion(self):
         plan = make_plan()
-        self.assertAlmostEqual(math.degrees(plan.amplitude), 20.)
+        self.assertAlmostEqual(math.degrees(plan.amplitude), 1.)
         peak = plan.sample(plan.dwell+plan.move_seconds/2)
-        self.assertGreater(peak[1], .249)
-        self.assertLessEqual(peak[1], .25)
-        self.assertAlmostEqual(plan.duration, 15.48)
+        self.assertGreater(peak[1], .068)
+        self.assertLessEqual(peak[1], .1)
+        self.assertAlmostEqual(plan.duration, 6.92)
 
     def test_only_yaw_target_changes_and_limits_keep_margin(self):
         plan = make_plan()
@@ -73,6 +73,40 @@ class WaistTests(unittest.TestCase):
         limits['body_joint_1'] = (-2., output['body_joint_1']+.005)
         with self.assertRaises(ValueError):
             targets(plan, plan.dwell+plan.move_seconds, initial, limits)
+
+    def test_faster_signal_and_pitch_selection_keep_other_targets(self):
+        plan = make_plan(20., .375, 1., 10.)
+        self.assertLess(plan.duration, make_plan(20., .25, .5, 10.).duration)
+        self.assertLessEqual(1.875*plan.amplitude/plan.move_seconds, .375)
+        self.assertGreater(1.875*plan.amplitude/plan.move_seconds, .37)
+        initial = {n: 0. for n in NAMES}
+        limits = {n: (-2., 2.) for n in NAMES}
+        output = targets(plan, plan.dwell+plan.move_seconds, initial, limits, 'body_joint_2')
+        self.assertAlmostEqual(output['body_joint_2'], plan.amplitude)
+        self.assertTrue(all(output[n] == initial[n] for n in NAMES if n != 'body_joint_2'))
+        limits['body_joint_2'] = (-2., output['body_joint_2']+.005)
+        with self.assertRaisesRegex(ValueError, 'TEST_POSITION_LIMIT:body_joint_2'):
+            targets(plan, plan.dwell+plan.move_seconds, initial, limits, 'body_joint_2')
+        with self.assertRaisesRegex(ValueError, 'TEST_AXIS_INVALID'):
+            targets(plan, 0., initial, limits, 'arm_l_joint_1')
+
+    def test_held_arms_near_limits_do_not_require_excursion_margin(self):
+        plan = make_plan()
+        initial = {n: 0. for n in NAMES}
+        limits = {n: (-2., 2.) for n in NAMES}
+        initial['arm_l_joint_2'] = -.00026365293888375163
+        initial['arm_r_joint_2'] = .0003834951785393059
+        limits['arm_l_joint_2'] = (-.0017453292519943296, math.pi)
+        limits['arm_r_joint_2'] = (-math.pi, .0017453292519943296)
+        for offset in (-plan.amplitude, 0., plan.amplitude):
+            t = (plan.dwell+3*plan.move_seconds+2*plan.dwell if offset < 0 else
+                 plan.dwell+plan.move_seconds if offset > 0 else 0.)
+            output = targets(plan, t, initial, limits)
+            self.assertAlmostEqual(output['body_joint_1'], offset)
+            self.assertTrue(all(output[n] == initial[n] for n in NAMES if n != 'body_joint_1'))
+        initial['arm_r_joint_2'] = limits['arm_r_joint_2'][1]+.0001
+        with self.assertRaisesRegex(ValueError, 'TEST_POSITION_LIMIT:arm_r_joint_2'):
+            targets(plan, 0., initial, limits)
 
     def test_stale_simulated_busy_or_missing_measurements_refused(self):
         checked_state(state(), 10.01, 2., 2.01, 'hash')
@@ -100,6 +134,16 @@ class WaistTests(unittest.TestCase):
                 setattr(msg, name, value)
             with self.subTest(change=change), self.assertRaises(RuntimeError):
                 checked_pdo(msg, 10.01, 2., 2.01, 1)
+
+    def test_source_discovery_waits_only_for_empty_graph_before_ownership(self):
+        self.assertFalse(waist.checked_pdo_source([], discovering=True))
+        self.assertTrue(waist.checked_pdo_source([S(node_name='servo_node')]))
+        for publishers in ([], [S(node_name='other')],
+                           [S(node_name='servo_node'), S(node_name='servo_node')]):
+            with self.assertRaisesRegex(RuntimeError, 'PDO_SOURCE_NOT_UNIQUE_SERVO'):
+                waist.checked_pdo_source(publishers)
+        with self.assertRaisesRegex(RuntimeError, 'PDO_SOURCE_NOT_UNIQUE_SERVO'):
+            waist.checked_pdo_source([S(node_name='other')], discovering=True)
 
     def test_offline_analysis_exposes_speed_scale_disagreement(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -130,24 +174,134 @@ class WaistTests(unittest.TestCase):
                                 capture_output=True, text=True, check=True)
         result = json.loads(result.stdout)
         self.assertTrue(result['preview'])
+        self.assertFalse(result['physical_units_verified'])
         self.assertFalse(result['starts_driver'])
         self.assertEqual(result['axis'], 'body_joint_1')
-        self.assertEqual(result['degrees'], 20.)
-        self.assertEqual(result['requested_speed'], .25)
+        self.assertEqual(result['degrees'], 1.)
+        self.assertEqual(result['requested_speed'], .1)
         self.assertEqual(result['requested_acceleration'], .5)
-        self.assertGreater(result['target_peak_speed'], .249)
+        self.assertLessEqual(result['target_peak_speed'], .1)
+        self.assertLessEqual(result['target_peak_acceleration'], .5)
+        self.assertLessEqual(result['target_peak_jerk'], 10.)
+        self.assertEqual(result['requested_jerk'], 10.)
         self.assertEqual(json_value([float('nan'), float('-inf')]), [None, None])
+
+    def diagnostic_row(self, attempt=1, **changes):
+        data = dict(boot_id=1, session=77, receive_attempt=attempt, pdo_sample=attempt,
+                    stamp=10.+attempt*.01, pdo_age=0., attempt_age=0., reference_valid=True,
+                    output_valid=True, wkc=67, expected_wkc=67, valid_mask=MASK,
+                    status=[0x27]*20, position=[0.]*20, speed=[0.]*20,
+                    reference_position=[0.]*16, reference_speed=[0.]*16, output_position=[0.]*16,
+                    csp_diagnostics_version=1, csp_send_attempt_ns=1000+attempt,
+                    csp_command_mask=0xf0000, csp_feedback_mask=0xf0000,
+                    csp_controlword=[0x1f]*4, csp_mode_command=[8]*4, csp_mode_display=[8]*4,
+                    csp_target_position_raw=[0, 0, 100, 200], csp_target_velocity_raw=[0]*4,
+                    csp_target_torque_raw=[0]*4, csp_actual_position_raw=[0, 0, 90, 170],
+                    csp_actual_velocity_raw=[0]*4)
+        return dict(kind='pdo', data=dict(data, **changes))
+
+    def analyze_rows(self, rows, **options):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp)/'capture.jsonl'
+            path.write_text(''.join(json.dumps(r)+'\n' for r in rows))
+            return analyze(path, **options)
+
+    def test_csp_analysis_keeps_bad_receives_and_rejects_stale_or_malformed_evidence(self):
+        rows = [self.diagnostic_row(), self.diagnostic_row(),
+                self.diagnostic_row(2, pdo_sample=1, wkc=66, reference_valid=False,
+                                    output_valid=False, csp_feedback_mask=0),
+                self.diagnostic_row(3, csp_mode_display=[8, 8, 9, 8]),
+                self.diagnostic_row(4, pdo_age=.03, attempt_age=.03),
+                self.diagnostic_row(5, csp_actual_position_raw=[123]),
+                self.diagnostic_row(6, csp_diagnostics_version=99)]
+        result = self.analyze_rows(rows)
+        raw = result['csp_diagnostics']
+        self.assertEqual(raw['unique_attempts'], 4)
+        self.assertEqual(raw['repeated_attempts_ignored'], 1)
+        self.assertEqual(raw['invalid_feedback_attempts'], 2)
+        self.assertEqual(raw['invalid_command_attempts'], 1)
+        self.assertEqual((raw['malformed_frames'], raw['unsupported_version_frames']), (1, 1))
+        self.assertEqual(raw['command_actual_mode_counts'], {'8/8': 1, '8/9': 1})
+        self.assertEqual(raw['mode_mismatch_attempts'], 1)
+        self.assertEqual(raw['following_error_raw_peak'], 10)
+        self.assertEqual(result['invalid_frame_reasons']['bad_wkc'], 1)
+        self.assertEqual(result['invalid_frame_reasons']['pdo_stale'], 1)
+        self.assertFalse(raw['command_is_drive_acknowledgement'])
+        self.assertFalse(raw['cause_identified'])
+
+    def test_csp_pitch_selection_session_filter_and_empty_reference_are_explicit(self):
+        event = dict(kind='event', data=dict(state='TARGET_SENT', code='SNOWBOT_TARGET:{"session":77}'))
+        rows = [self.diagnostic_row(session=66), event,
+                dict(kind='plan', data=dict(axis='body_joint_2')),
+                self.diagnostic_row(2, reference_valid=False, output_valid=False)]
+        result = self.analyze_rows(rows)
+        self.assertEqual(result['other_session_frames_ignored'], 1)
+        self.assertEqual(result['samples'], 0)
+        self.assertFalse(result['reference_analysis_available'])
+        self.assertEqual(result['csp_diagnostics']['following_error_raw_peak'], 30)
+        self.assertEqual(result['csp_diagnostics']['array_index'], 3)
+        self.assertFalse(result['hardware_acceptance'])
+        json.dumps(result, allow_nan=False)
+        rows.append(dict(kind='event', data=dict(state='TARGET_SENT', code='SNOWBOT_TARGET:{"session":88}')))
+        with self.assertRaisesRegex(ValueError, 'CAPTURE_SESSION_AMBIGUOUS'):
+            self.analyze_rows(rows)
+        self.assertEqual(self.analyze_rows(rows, session=77)['session'], 77)
+
+    def test_old_capture_does_not_fabricate_raw_csp_evidence(self):
+        row = self.diagnostic_row()
+        row['data'] = {k: v for k, v in row['data'].items() if not k.startswith('csp_')}
+        result = self.analyze_rows([row])['csp_diagnostics']
+        self.assertFalse(result['available'])
+        self.assertEqual(result['missing_extension_frames'], 1)
+        self.assertIsNone(result['following_error_raw_peak'])
+        self.assertEqual(result['actual_mode_counts'], {})
+
+    def test_old_capture_without_source_mapping_never_silently_mixes_sessions(self):
+        rows = [self.diagnostic_row(session=66), self.diagnostic_row(2, session=77)]
+        with self.assertRaisesRegex(ValueError, 'CAPTURE_SESSION_AMBIGUOUS'):
+            self.analyze_rows(rows)
+        result = self.analyze_rows(rows, session=77)
+        self.assertEqual(result['samples'], 1)
+        self.assertEqual(result['session_selection'], 'explicit')
+        self.assertEqual(self.analyze_rows(rows[:1])['session_selection'], 'observed_only_unmapped')
+
+    def test_pitch_analysis_selects_pitch_even_when_pdo_precedes_plan(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)/'pitch.jsonl'
+            rows = []
+            for i in range(20):
+                t = 10.+i*.01
+                q = [0.]*20; q[19] = .05*(t-10.)
+                v = [0.]*20; v[19] = 1.
+                ref = [0.]*16; ref[15] = q[19]+.001
+                rv = [0.]*16; rv[15] = .05
+                rows.append(dict(kind='pdo', data=dict(boot_id=1, pdo_sample=i+1,
+                    stamp=t, pdo_age=0., reference_valid=True, output_valid=True,
+                    wkc=67, expected_wkc=67, valid_mask=MASK, status=[0x27]*20,
+                    position=q, speed=v, reference_position=ref,
+                    reference_speed=rv, output_position=ref)))
+            rows.insert(1, dict(kind='plan', data=dict(axis='body_joint_2')))
+            path.write_text(''.join(json.dumps(r)+'\n' for r in rows))
+            result = analyze(path)
+            self.assertEqual(result['axis'], 'body_joint_2')
+            self.assertAlmostEqual(result['position_difference_speed_peak_rad_s'], .05)
+            self.assertAlmostEqual(result['reference_measurement_rms_rad'], .001)
 
     def test_actual_runner_with_memory_ros_holds_arms_and_releases_on_fault(self):
         # Execute the real runner with in-memory ROS objects and a virtual clock.
         # No launch, socket, ROS runtime or hardware process exists in this test.
-        for inject_fault in (False, True):
+        cases = [(n, f, 'rest') for n in NAMES[:2] for f in (False, True)]
+        cases += [('body_joint_1', False, scenario) for scenario in
+                  ('transient', 'moving', 'moving_pdo', 'drifting', 'reject')]
+        for axis, inject_fault, scenario in cases:
             clock = S(value=10.)
             requests = []; commands = []; subscriptions = {}
             current = {n: .1 for n in NAMES}; owned = S(value=False)
 
             def msg(**kwargs):
                 return S(**kwargs)
+
+            test_case = self
 
             class Client:
                 def __init__(self, service):
@@ -160,12 +314,19 @@ class WaistTests(unittest.TestCase):
                     if self.service.endswith('/lease'):
                         requests.append(request.operation)
                         if request.operation == 'acquire':
+                            if scenario == 'transient':
+                                test_case.assertGreaterEqual(clock.value, 10.65-1e-8)
                             owned.value = True
                         if request.operation == 'release':
                             owned.value = False
                         response = S(ok=True, lease_id='lease', epoch=1, profile_hash='hash')
                     else:
                         commands.append(request.command)
+                        if scenario == 'reject':
+                            subscriptions['/bindu_snowbot/events'](S(task_id='',
+                                command_id=request.command.command_id, state='TARGET_REJECTED',
+                                code='SNOWBOT_TARGET:trajectory_takeover_seed'))
+                            return S(done=lambda: True, result=lambda: S(accepted=False, code='INVALID_LEASE'))
                         current.update(zip(request.command.joint_names, request.command.positions))
                         response = S(accepted=True)
                     return S(done=lambda: True, result=lambda: response)
@@ -181,6 +342,8 @@ class WaistTests(unittest.TestCase):
                     return S(now=lambda: S(nanoseconds=int(clock.value*1e9)))
 
                 def get_publishers_info_by_topic(self, topic):
+                    if axis == 'body_joint_2' and clock.value < 10.15:
+                        return []
                     return [S(node_name='servo_node')]
 
                 def destroy_node(self):
@@ -194,8 +357,15 @@ class WaistTests(unittest.TestCase):
                 clock.value += .005
                 s = state(); s.feedback_stamp = s.stamp = stamp(clock.value)
                 s.lease_active = owned.value; s.lease_epoch = 1; s.lease_resources = list(waist.GROUPS)
+                if scenario == 'drifting' and not owned.value:
+                    current['body_joint_2'] = .1+.01*(clock.value-10.)
                 s.joints.position = [current[n] for n in NAMES]
-                p = pdo(); p.header.stamp = stamp(clock.value); p.pdo_sample = round(clock.value*1000)
+                if not owned.value and (scenario == 'moving' or scenario == 'transient' and clock.value < 10.45):
+                    s.joints.velocity[1] = -.00995
+                p = pdo();
+                if not owned.value and scenario == 'moving_pdo':
+                    p.speed[19] = -.00995
+                p.header.stamp = stamp(clock.value); p.pdo_sample = round(clock.value*1000)
                 p.reference_valid = p.output_valid = True
                 p.source_stamp_ns = p.expires_at_ns = 0
                 p.reference_position = p.output_position = [current[n] for n in (*NAMES[2:], *NAMES[:2])]
@@ -203,7 +373,7 @@ class WaistTests(unittest.TestCase):
                 for n, slot in zip(NAMES, waist.SLOTS):
                     p.position[slot] = current[n]
                 if inject_fault and len(commands) >= 3 and owned.value:
-                    p.status[18] |= 8
+                    p.status[18 if axis == 'body_joint_1' else 19] |= 8
                 subscriptions['/bindu_snowbot/execution/state'](s)
                 subscriptions['/bindu/position/observation'](p)
 
@@ -225,22 +395,36 @@ class WaistTests(unittest.TestCase):
             module('bindu_runtime.robot_setup', RobotSetup=S(load=lambda path: S(profile=profile, path=path)))
             with tempfile.TemporaryDirectory() as directory, patch.dict(sys.modules, modules), patch.object(
                     waist.time, 'monotonic', lambda: clock.value):
-                args = S(robot_config=Path('/memory/robot.json'), output=Path(directory)/'capture.jsonl',
+                args = S(axis=axis, robot_config=Path('/memory/robot.json'), output=Path(directory)/'capture.jsonl',
                          namespace='bindu_snowbot', vendor_namespace='/', speed=.25, acceleration=.5, jerk=10.)
-                if inject_fault:
+                blocked = scenario in ('moving', 'moving_pdo', 'drifting')
+                if blocked or scenario == 'reject':
+                    error = 'TEST_NOT_SETTLED' if blocked else 'trajectory_takeover_seed'
+                    with self.assertRaisesRegex(RuntimeError, error):
+                        waist.execute(args, make_plan())
+                elif inject_fault:
                     with self.assertRaisesRegex(RuntimeError, 'PDO_NOT_READY'):
                         waist.execute(args, make_plan())
                 else:
                     waist.execute(args, make_plan())
                 rows = [json.loads(line) for line in args.output.read_text().splitlines()]
-                self.assertEqual(rows[-1]['data']['completed'], not inject_fault)
+                self.assertEqual(rows[-1]['data']['completed'], not inject_fault and not blocked and scenario != 'reject')
+                if blocked:
+                    self.assertEqual(requests, [])
+                    self.assertEqual(commands, [])
+                    continue
+                if scenario == 'reject':
+                    self.assertIn('trajectory_takeover_seed', rows[-1]['data']['error'])
+                    self.assertNotIn('INVALID_LEASE', rows[-1]['data']['error'])
+                self.assertTrue(any(row['kind'] == 'settled' for row in rows))
+                self.assertEqual(next(r['data']['axis'] for r in rows if r['kind'] == 'plan'), axis)
             self.assertTrue(commands)
             self.assertEqual(requests[0], 'acquire')
             self.assertEqual(requests[-1], 'release')
             self.assertFalse(owned.value)
             for command in commands:
                 goal = dict(zip(command.joint_names, command.positions))
-                self.assertTrue(all(goal[n] == .1 for n in NAMES if n != 'body_joint_1'))
+                self.assertTrue(all(goal[n] == .1 for n in NAMES if n != axis))
                 self.assertEqual(command.resource_groups, list(waist.GROUPS))
 
 

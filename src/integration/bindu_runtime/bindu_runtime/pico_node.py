@@ -321,7 +321,10 @@ class PicoNode(RuntimeNode):
         self.last_pair_monotonic=received_monotonic
         pair=tuple(VRFrame(m.source_id,m.seq,seconds(m.stamp),m.side,tuple(m.pose),m.grip,m.trigger,
                           m.init,m.stop,m.valid,m.clutch_seq,m.mapping,m.buttons,tuple(int(v) for v in m.button_edges),m.virtual_grip,
-                          tuple(m.stick))
+                          tuple(m.stick),head_pose=tuple(getattr(m,'head_pose',())),
+                          head_stamp=seconds(m.head_stamp) if getattr(m,'head_pose',()) else 0.,
+                          head_age_s=getattr(m,'head_age_s',0.),head_source_id=getattr(m,'head_source_id',''),
+                          head_seq=int(getattr(m,'head_seq',0)))
                    for m in (a,b))
         if self.base:
             self.base.ingest(pair, now)
@@ -358,7 +361,11 @@ class PicoNode(RuntimeNode):
                 mapping=PICO_MAPPING,buttons=0 if self.position_contract else m.buttons,
                 button_edges=([0]*6+list(m.button_edges[6:8]) if getattr(self,'independent_grippers',False) else
                               [0]*8 if self.position_contract else m.button_edges),
-                virtual_grip=self.control.virtual,stick=m.stick))
+                virtual_grip=self.control.virtual,stick=m.stick,
+                head_pose=getattr(m,'head_pose',()),head_stamp=getattr(m,'head_stamp',m.stamp),
+                head_age_s=getattr(m,'head_age_s',0.),head_seq=int(getattr(m,'head_seq',0)),
+                head_source_id=(m.head_source_id+':'+self.instance_id
+                    if getattr(m,'head_source_id','')==m.source_id else getattr(m,'head_source_id',''))))
         self.projected_publish_s=time.monotonic()-publish_started
 
     async def pause(self):
@@ -714,8 +721,6 @@ class PicoNode(RuntimeNode):
             raise RuntimeError('PICO_PREPARE_PRESET_REQUIRED')
         if not joints_at_rest(s.joints,self.names,.005 if self.position_contract else 1e-6):raise RuntimeError('PREPARE_REQUIRES_STATIONARY_START')
         gripper_move=targets is not None
-        if gripper_move and self.unheld_test and self.control.load=='held':
-            raise RuntimeError('PICO_UNHELD_TEST_WITH_HELD_LOAD')
         target=targets if gripper_move else {n:self.prepare_positions[n]
                 for g in self.tool_cfg['resource_groups'] for n in self.profile.groups[g]}
         end=time.monotonic()+self.validator.startup_timeout
@@ -750,15 +755,16 @@ class PicoNode(RuntimeNode):
                 tolerance_rad=(self.prepare_position_tolerance if self.prepare_limit_reference else
                                self.profile.feedback_tolerances['joint_position']))))
         self.validation_result=None
-        # Holding A explicitly requests an empty-hand return. Validate the
+        # Holding A explicitly requests a preset return. Validate the
         # robot path without preserving a previously captured tool grasp.
-        operation='gripper_path' if gripper_move else 'prepare_path'
+        tool_present=gripper_move and self.control.teleop_mode=='bimanual_tool'
+        operation=('gripper_path' if tool_present else 'gripper_body_path') if gripper_move else 'prepare_path'
         if allow_recovery and operation=='prepare_path' and self.cfg.get('prepare_collision_recovery'):
             operation='prepare_recovery_path'
         if self.prepare_limit_reference is not None:
             operation='prepare_limit_recovery_path'
         self.event('PICO_PREPARE_VALIDATION',json.dumps(dict(operation=operation,load_state=self.control.load,
-            load_state_checked=gripper_move,tool_present=gripper_move,coupling_checked=False,
+            load_state_checked=False,tool_present=tool_present,coupling_checked=False,
             measured_grasp_policy='unheld_test' if self.unheld_test else 'enforce')))
         if not self.validator.submit(operation,intent.token,q,
                                      target if gripper_move else [target[n] for n in names],**extra):
@@ -781,10 +787,10 @@ class PicoNode(RuntimeNode):
         f=self.feedback()
         if not f.healthy:raise RuntimeError('PICO_FEEDBACK_UNAVAILABLE')
         if not f.stopped:raise RuntimeError('PICO_MODE_REQUIRES_STOPPED')
-        if mode=='bimanual_tool' and not self.unheld_test and not getattr(self,'independent_grippers',False) and getattr(self,'automatic_close_grippers',False):
+        if mode=='bimanual_tool' and not self.position_contract and not self.unheld_test and not getattr(self,'independent_grippers',False) and getattr(self,'automatic_close_grippers',False):
             await self.position_ops.close_grippers(intent,allow_command=intent.operation in ('select_mode','confirm_tool'))
             self.current(intent)
-        if mode=='bimanual_tool' and getattr(self,'independent_grippers',False):
+        if mode=='bimanual_tool' and self.position_contract:
             self.operator_grasp_positions={}
             self.control.virtual=False
         elif mode=='bimanual_tool' and self.unheld_test:
@@ -805,7 +811,7 @@ class PicoNode(RuntimeNode):
                 reference_source='measured_rigid')))
         elif mode=='bimanual_tool' and self.position_ops and not self.position_ops.config['calibrated']:
             raise RuntimeError('PICO_TOOL_GRASP_UNCONFIRMED_UNCALIBRATED')
-        if mode=='bimanual_tool' and not getattr(self,'independent_grippers',False) and not self.unheld_test and not self.operator_grasp and (f.modes[0]!='closed' or f.modes[1] not in ('closed','virtual')):
+        if mode=='bimanual_tool' and not self.position_contract and not getattr(self,'independent_grippers',False) and not self.unheld_test and not self.operator_grasp and (f.modes[0]!='closed' or f.modes[1] not in ('closed','virtual')):
             raise RuntimeError('PICO_GRIPPER_CONFIRMATION_REQUIRED')
         client=self.arms_ready_client if mode=='independent_arms' else self.ready_client
         end=time.monotonic()+self.tool_cfg.get('worker_startup_timeout',30.)
@@ -815,7 +821,7 @@ class PicoNode(RuntimeNode):
                 reply=await self.wait(client.call_async(Trigger.Request()))
                 if reply.success:
                     self.current(intent)
-                    if mode=='bimanual_tool' and self.operator_grasp and not self.unheld_test and self.control.load!='held':
+                    if not self.position_contract and mode=='bimanual_tool' and self.operator_grasp and not self.unheld_test and self.control.load!='held':
                         # Invalidate older context declarations. The in-flight
                         # operation remains fenced by its unchanged pending token,
                         # independently of this context generation.
@@ -1085,7 +1091,7 @@ class PicoNode(RuntimeNode):
         feedback=self.feedback()
         if self.state and not self.state.lease_active and feedback.healthy and feedback.stopped:
             self.handoff_complete=True
-        if self.position_ops and not getattr(self,'independent_grippers',False) and not self.unheld_test and self.control.teleop_mode=='bimanual_tool' and feedback.healthy:
+        if self.position_ops and not self.position_contract and not getattr(self,'independent_grippers',False) and not self.unheld_test and self.control.teleop_mode=='bimanual_tool' and feedback.healthy:
             if (not self.operator_grasp and not self.control.pending and feedback.stopped and
                     self.control.phase in ('checking','standby','tool_standby') and
                     feedback.modes[1] in ('closed','virtual')):
@@ -1156,6 +1162,7 @@ class PicoNode(RuntimeNode):
                     axial_grasp=not self.unheld_test and (not self.operator_grasp and self.position_ops.axial_available if self.position_ops else True)),
                 measured_grasp_policy='unheld_test' if self.unheld_test else 'enforce',
                 tool_grasp_confirmation='unheld_test' if self.unheld_test else 'operator' if self.operator_grasp else 'calibrated',
+                direction_reference=getattr(self,'tool_cfg',{}).get('direction_reference','fixed'),
                 execution_state=self.state.state if self.state is not None else 'unavailable',
                 feedback_age_s=self.now()-seconds(self.state.feedback_stamp) if self.state is not None else None)
             feedback=self.feedback()

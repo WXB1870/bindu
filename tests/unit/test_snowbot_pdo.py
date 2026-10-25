@@ -161,6 +161,32 @@ class PdoTests(unittest.TestCase):
         missing = observation_payload(msg)
         self.assertTrue(all(name not in missing for name in ('wrench', 'sensor_data_no', 'sensor_age', 'sensor_valid_mask')))
 
+    def test_raw_csp_evidence_keeps_integer_precision_modes_and_distinct_validity(self):
+        raw = frame()
+        raw.pop('stamp')
+        evidence = dict(csp_diagnostics_version=1, csp_send_attempt_ns=2**60+7,
+                        csp_command_mask=0xf0000, csp_feedback_mask=0,
+                        csp_controlword=array('H', [0x1f]*4),
+                        csp_mode_command=array('b', [8]*4), csp_mode_display=array('b', [8, 8, 9, -1]),
+                        csp_target_position_raw=array('i', [2**31-1, -2**31, 123, -456]),
+                        csp_target_velocity_raw=array('i', [-2**31]*4),
+                        csp_target_torque_raw=array('h', [-2**15]*4),
+                        csp_actual_position_raw=array('i', [321]*4),
+                        csp_actual_velocity_raw=array('i', [2**31-1]*4))
+        msg = S(header=S(stamp=S(sec=10, nanosec=0)), **raw, **evidence)
+        payload = observation_payload(msg)
+        restored = json.loads(json.dumps(payload, allow_nan=False))
+        self.assertEqual(restored['csp_send_attempt_ns'], 2**60+7)
+        self.assertEqual(restored['csp_target_position_raw'], [2**31-1, -2**31, 123, -456])
+        self.assertEqual(restored['csp_mode_display'], [8, 8, 9, -1])
+        self.assertEqual((restored['csp_command_mask'], restored['csp_feedback_mask']), (0xf0000, 0))
+        self.assertEqual(restored['csp_target_torque_raw'], [-2**15]*4)
+        msg.csp_target_position_raw[0] = 0
+        self.assertEqual(payload['csp_target_position_raw'][0], 2**31-1)
+        for name in evidence:
+            delattr(msg, name)
+        self.assertTrue(all(name not in observation_payload(msg) for name in evidence))
+
     def test_optional_servo_reference_and_output_are_copied_without_reinterpreting_or_replacing_them(self):
         raw = frame()
         raw.pop('stamp')

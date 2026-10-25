@@ -21,6 +21,29 @@ from tools.simulation.shovel_control import GripLoadObserver, ControlClient
 
 
 class ShovelPhysicsTests(unittest.TestCase):
+    def test_feedback_wrapper_selects_physics_test_without_inheriting_ros_environment(self):
+        import subprocess
+        with tempfile.TemporaryDirectory() as directory:
+            directory=Path(directory);sdk=directory/'sdk';sdk.mkdir()
+            (sdk/'exts/isaacsim.pip.nv/pip_prebundle/nvidia/test/lib').mkdir(parents=True)
+            capture=directory/'arguments';environment=directory/'environment'
+            launcher=sdk/'python.sh'
+            launcher.write_text('#!/usr/bin/env bash\n'
+                'printf "%s\\n" "$@" > "$FAKE_ISAAC_ARGUMENTS"\n'
+                'printf "%s\\n" "${ROS_DISTRO-unset}" "${AMENT_PREFIX_PATH-unset}" "$PYTHONPATH" > "$FAKE_ISAAC_ENVIRONMENT"\n')
+            launcher.chmod(0o755)
+            env=dict(os.environ,ISAAC_SIM_PATH=str(sdk),BINDU_ISAAC_STATE=str(directory/'state'),
+                FAKE_ISAAC_ARGUMENTS=str(capture),FAKE_ISAAC_ENVIRONMENT=str(environment),
+                ROS_DISTRO='unexpected_real_environment',AMENT_PREFIX_PATH='/unexpected/install',
+                PYTHONPATH='/unexpected/python')
+            subprocess.run(['bash',str(ROOT/'tools/run_shovel_physics.sh'),'--task-feedback',
+                'settings.json','--output','results'],env=env,check=True)
+            arguments=capture.read_text().splitlines()
+            self.assertEqual(arguments[:4],['--no-ros-env',str(ROOT/'tests/physics/validate_shovel_isaac.py'),
+                '--task-feedback-comparison','settings.json'])
+            self.assertIn('--/isaac/startup/ros_bridge_extension=',arguments)
+            self.assertEqual(environment.read_text().splitlines(),['unset','unset',str(ROOT)])
+
     def test_drive_calibration_preserves_defaults_and_urdf_effort_ceiling(self):
         names = ['arm', 'waist']; limits = {n:dict(effort='80') for n in names}
         cfg = dict(joint_stiffness_nm_rad=100000., joint_damping_nm_s_rad=2000.)

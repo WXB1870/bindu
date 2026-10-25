@@ -91,6 +91,7 @@ class GripperController:
         self.trigger_opened = dict.fromkeys(SIDES, False)
         self.trigger_source = None
         self.trigger_frames = {}
+        self.last_request_rejection = None
         self.channels = {s: dict(state='IDLE', code='NO_COMMAND', touched=False, target=0.,
             hold=0., ack=0, sent_at=0., sample=0, deadline=0., steady_deadline=0.,
             settled=None, feedback_sequence=0., result='CANCELED', result_code='HELD') for s in SIDES}
@@ -471,7 +472,15 @@ class GripperController:
                          self.sequence+1,frame.stamp,self.cfg['command_ttl'])
             self.expires,self.steady_expires=self.now()+.25,self.steady()+.25
         except RuntimeError as exc:
-            if self.lease_id:self.stop(str(exc),revoke=True)
+            self.last_request_rejection = dict(stamp=self.now(),side=frame.side,
+                source_id=frame.source_id,seq=frame.seq,code=str(exc))
+            leased=bool(self.lease_id)
+            if leased:self.stop(str(exc),revoke=True)
+            if not leased or not self.channels[frame.side]['touched']:
+                # A refusal before lease acquisition used to disappear behind
+                # NO_COMMAND. Report it without latching a device fault or
+                # retrying a held trigger when conditions later improve.
+                self.channels[frame.side].update(state='IDLE',code=str(exc))
             self.trigger_frames={}
 
     def input(self, frame):

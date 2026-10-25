@@ -1,7 +1,7 @@
 import json
 import math
 from pathlib import Path
-from .vr.mapping import pose_matrix, mapping_rotation
+from .vr.mapping import pose_matrix, mapping_rotation, direction_reference
 from .vr.one_euro import validate_config
 
 
@@ -33,6 +33,7 @@ def load_config(path, profile, model_root):
     cfg.setdefault('mapping_mode', 'v34_anchor')
     cfg.setdefault('operator_yaw_rad', 0.)
     mapping_rotation(cfg['mapping_mode'], cfg['operator_yaw_rad'])
+    direction_reference(cfg)
     if 'pose_filter' in cfg:
         validate_config(cfg['pose_filter'])
     for key in ('smooth_weight', 'solve_timeout', 'position_tolerance', 'rotation_tolerance', 'max_joint_step'):

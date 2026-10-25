@@ -139,13 +139,13 @@ class DirectGripperTests(unittest.TestCase):
 
     def test_quick_release_replaces_open_and_ignores_stale_completion(self):
         r=self.rig('held');r.triggers=[1.,0.];opened=r.step()[-1]
-        self.assertEqual(r.core.load,'unknown');self.assertEqual(r.core.load_source,'direct_gripper_open')
+        self.assertEqual(r.core.load,'held');self.assertEqual(r.core.load_source,'configured_initial_state')
         r.stopped=False;r.triggers=[0.,0.];closed=r.step()[-1]
         self.assertEqual(closed.value,('closed',None))
         self.assertFalse(r.core.complete(opened.token,True,now=r.now))
         self.assertEqual(r.core.pending,closed)
         r.modes=('closed','closed');r.complete();self.assertEqual(r.core.phase,'standby')
-        self.assertEqual(r.core.load,'unknown')
+        self.assertEqual(r.core.load,'held')
 
     def test_two_triggers_update_independently_and_keep_hysteresis(self):
         r=self.rig();r.triggers=[1.,0.];r.step()

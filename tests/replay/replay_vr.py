@@ -9,40 +9,83 @@ Workflow/lease/stop acknowledgement need the separate ROS integration gate.
 from tests.support.paths import ROOT
 import argparse
 from collections import Counter
-from dataclasses import replace
+from dataclasses import fields, replace
 import gc
 import hashlib
 import json
+import math
 from pathlib import Path
 import time
 
-import numpy as np
-from ament_index_python.packages import get_package_prefix
 from bindu_contracts.teleoperation import VRFrame
-from bindu_hardware.drivers.simulated_joints import SimJointDriver, SynchronizedJointProgress
-from bindu_kinematics.bimanual import BimanualQP
-from bindu_kinematics.tool_geometry import make_collision_checker, coupling_metrics
-from bindu_runtime.robot_setup import RobotSetup
-from bindu_teleoperation.bimanual_session import BimanualSession
-from bindu_teleoperation.independent_session import IndependentArmsSession
 
-def records(path):
+
+def records(path, *, strict=False):
     chunks=[path]+sorted(path.parent.glob(path.stem+'-[0-9][0-9][0-9][0-9]'+path.suffix))
-    for chunk in chunks:
+    for chunk_index,chunk in enumerate(chunks):
+        if strict and (not chunk.is_file() or chunk_index and
+                       chunk.stem!=f'{path.stem}-{chunk_index:04d}'):
+            raise ValueError('REPLAY_MISSING_CHUNK:'+chunk.name)
         with chunk.open() as stream:
-            for line in stream:
+            for index,line in enumerate(stream,1):
                 try:yield json.loads(line)['data']
-                except ValueError:continue  # A writer may have an incomplete last line.
+                except (ValueError,KeyError,TypeError) as exc:
+                    if strict:raise ValueError(f'REPLAY_CORRUPT_RECORD:{chunk.name}:{index}') from exc
+                    continue  # Legacy diagnostic files may have an incomplete last line.
 
 
 def seconds(stamp):
-    return stamp['sec']+stamp['nanosec']*1e-9
+    return stamp['sec']+stamp['nanosec']*1e-9 if isinstance(stamp,dict) else float(stamp)
 
 
 def frame(d, stamp):
-    return VRFrame(d['source_id'],d['seq'],stamp,d['side'],tuple(d['pose']),
-        d['grip'],0.,valid=d['valid'],stop=d.get('stop',False),mapping='pico_snowbot_v1',
-        clutch_seq=d['clutch_seq'],virtual_grip=d.get('virtual_grip',False))
+    # One fixed clock offset preserves head age relative to the hand. Never
+    # replace head sample time with the replay delivery time or zero buttons.
+    values={f.name:d[f.name] for f in fields(VRFrame) if f.name in d}
+    values['stamp']=stamp
+    values.setdefault('mapping','pico_snowbot_v1')
+    for key in ('pose','button_edges','stick','head_pose'):
+        if key in values:values[key]=tuple(values[key])
+    if values.get('head_pose'):
+        values['head_stamp']=seconds(d['head_stamp'])+stamp-seconds(d['stamp'])
+    return VRFrame(**values)
+
+
+def input_audit(folder, *, require_full=False):
+    """Audit observer capture, without importing ROS, a solver, or a publisher."""
+    health_path=folder/'diagnostics-health.json'
+    health=json.loads(health_path.read_text()) if health_path.is_file() else {}
+    capture=health.get('input_recording',{})
+    full='vr-raw' in capture.get('full_streams',[])
+    if require_full and not full:raise ValueError('REPLAY_FULL_INPUTS_REQUIRED')
+    if full and (not capture.get('closed') or health.get('error') or
+                 any(capture.get('dropped',{}).get(s,0) for s in capture['full_streams'])):
+        raise ValueError('REPLAY_INPUT_CAPTURE_INCOMPLETE')
+    pairs={};last={};gaps=[];count=0
+    for d in records(folder/'vr-raw.jsonl',strict=full):
+        key=(d['source_id'],d['seq']);side=d['side'];count+=1
+        if side not in ('left','right'):raise ValueError('REPLAY_INPUT_SIDE')
+        pair=pairs.setdefault(key,set())
+        if side in pair:raise ValueError('REPLAY_DUPLICATE_INPUT')
+        pair.add(side)
+        previous=last.get((key[0],side));at=seconds(d['stamp'])
+        if not math.isfinite(at):raise ValueError('REPLAY_INPUT_STAMP')
+        if previous:
+            seq,stamp=previous
+            if key[1]<=seq or at<stamp:raise ValueError('REPLAY_INPUT_ORDER')
+            if key[1]>seq+1:gaps.append(dict(source_id=key[0],side=side,after_seq=seq,
+                before_seq=key[1],missing=key[1]-seq-1,interval_s=at-stamp))
+        last[(key[0],side)]=(key[1],at)
+    incomplete=sum(pair!={'left','right'} for pair in pairs.values())
+    if not count:raise ValueError('REPLAY_NO_INPUT')
+    if full:
+        written=capture.get('written',{}).get('vr-raw',0)
+        if count!=written or count!=capture.get('received',{}).get('vr-raw',0) or incomplete:
+            raise ValueError('REPLAY_INPUT_CAPTURE_COUNT_OR_PAIR')
+    return dict(mode='all_observer_received' if full else 'legacy_sampled_or_unknown',
+        messages=count,paired_events=len(pairs)-incomplete,incomplete_pairs=incomplete,
+        sources=sorted({source for source,_ in pairs}),sequence_gaps=gaps,
+        upstream_complete=False,scope='receiver coalescing/DDS loss cannot be excluded; no gap filling')
 
 
 def dataset(folder,until):
@@ -67,17 +110,24 @@ def dataset(folder,until):
             current['end']=seconds(e['stamp']);current['recorded_end']=c['code'];current=None
     for segment in segments:
         c=segment['capture'];seq=c['input_seq']
-        candidates=[k for k in pairs if k[1]==seq]
+        candidates=[k for k in pairs if k[1]==seq and
+                    (not c.get('input_source_id') or k[0]==c['input_source_id']) and
+                    abs(seconds(pairs[k][0]['stamp'])-c['input_stamp'])<=.05]
         if not candidates:raise ValueError('CAPTURE_INPUT_MISSING')
-        key=min(candidates,key=lambda k:abs(seconds(pairs[k][0]['stamp'])-c['input_stamp']))
-        if abs(seconds(pairs[key][0]['stamp'])-c['input_stamp'])>.05:
-            raise ValueError('CAPTURE_SOURCE_AMBIGUOUS')
+        if len(candidates)!=1:raise ValueError('CAPTURE_SOURCE_AMBIGUOUS')
+        key=candidates[0]
         segment['pairs']=[pairs[k] for k in sorted(pairs,key=lambda k:seconds(pairs[k][0]['stamp']))
             if k[0]==key[0] and k[1]>=seq and seconds(pairs[k][0]['stamp'])<=segment['end']]
     return segments,clocks
 
 
 def replay(segment,clocks,cfg,profile,clock):
+    import numpy as np
+    from bindu_hardware.drivers.simulated_joints import SimJointDriver, SynchronizedJointProgress
+    from bindu_kinematics.bimanual import BimanualQP
+    from bindu_kinematics.tool_geometry import make_collision_checker, coupling_metrics
+    from bindu_teleoperation.bimanual_session import BimanualSession
+    from bindu_teleoperation.independent_session import IndependentArmsSession
     c=segment['capture'];ind=c['grasp_mode'].startswith('independent:')
     qp=BimanualQP(cfg,profile)
     result=dict(input_seq=c['input_seq'],mode=c['grasp_mode'],recorded_end=segment.get('recorded_end'),
@@ -89,7 +139,8 @@ def replay(segment,clocks,cfg,profile,clock):
             recipe=dict(cfg['demo']);recipe['left_grip_in_tool_m']=(np.linalg.inv(qp.tool) @ np.r_[recipe['grip_offset_m'],1.])[:3].tolist()
             qp.empty_collision_check=make_collision_checker(Path(cfg['urdf']).parent/recipe['display_urdf'],
                 recipe,conservative_convex=True,tool_present=False,validation_only=True)
-        actual=dict(c['feedback']);reference=[actual[n] for n in qp.names]
+        actual=dict(c['feedback']);captured=c.get('capture_reference',actual)
+        reference=[captured[n] for n in qp.names]
         capture_joints={n:actual[n] for n in qp.names}
         previous_joints=dict(capture_joints)
         motion=result['joint_motion']=dict(
@@ -101,12 +152,17 @@ def replay(segment,clocks,cfg,profile,clock):
         if clock=='client' and client0 is None:raise ValueError('CLIENT_CLOCK_MISSING')
         # Restore a stationary released/pressed baseline before the logged
         # capture. These three setup frames do not count as replayed motion.
-        initial=[replace(frame(d,1.),virtual_grip=c['grasp_mode']=='right_axial') for d in first]
         for at,seq,released in ((1.,0,True),(1.02,1,False),(2.1,2,False)):
-            pair=[replace(f,stamp=at,seq=seq,grip=0. if released else f.grip) for f in initial]
+            pair=[replace(frame(d,at),seq=seq,grip=0. if released else d['grip'],
+                          virtual_grip=c['grasp_mode']=='right_axial') for d in first]
             session.ingest(*pair,at)
-        home=qp.capture_independent(actual) if ind else qp.capture(actual,c['grasp_mode'])
+        home=qp.capture_independent(captured) if ind else qp.capture(captured,c['grasp_mode'])
         session.capture(home)
+        yaw=c.get('latched_operator_yaw_rad')
+        if yaw is not None:
+            if ind:
+                for hand,value in zip(session.hands,yaw):hand.mapping_yaw=value
+            else:session.mapping_yaw=yaw
         # The field capture stores the mapping anchor after asynchronous FK.
         # Preserve it instead of silently choosing a different hand origin.
         anchor=np.asarray(c['controller_pose']).reshape((2,4,4) if ind else (4,4))
@@ -151,15 +207,17 @@ def replay(segment,clocks,cfg,profile,clock):
             key=(pair[0]['source_id'],pair[0]['seq'])
             if clock=='client' and key not in clocks:raise ValueError('CLIENT_CLOCK_MISSING')
             now=2.1+(clocks[key]-client0 if clock=='client' else seconds(pair[0]['stamp'])-t0)
-            if now<=previous:continue
+            if index==0:continue  # The recorded capture frame is the restored baseline.
+            if now<previous:raise ValueError('REPLAY_CLOCK_REVERSED')
             gap=now-previous
             if gap>cfg['input_max_age']:raise ValueError('RECORDED_INPUT_TIMEOUT')
-            frames=[replace(frame(d,now),seq=index+10,virtual_grip=c['grasp_mode']=='right_axial') for d in pair]
+            frames=[replace(frame(d,now),virtual_grip=c['grasp_mode']=='right_axial') for d in pair]
             if any(f.stop for f in frames):
                 result['ended_by']='RECORDED_OPERATOR_STOP';break
             session.ingest(*frames,now)
             if session.mode!='follow' or session.grasp_mode!=last_mask:
                 result['ended_by']='CLUTCH_OR_GRASP_TRANSITION';break
+            if gap==0:continue  # Same-time button changes were still ingested.
             before=time.perf_counter()
             if ind:
                 positions,_=qp.solve_independent(actual,session.target,active_mask=session.active_mask,
@@ -216,13 +274,27 @@ def replay(segment,clocks,cfg,profile,clock):
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--log',type=Path,required=True);p.add_argument('--output',type=Path,required=True)
-    p.add_argument('--clock',choices=['client','received'],default='client')
+    p.add_argument('--clock',choices=['client','received'],default='received',
+                   help='received preserves source reception gaps; client is a separate jitter-removal experiment')
+    p.add_argument('--require-full-inputs',action='store_true',help='Reject sampled, unclosed or lossy observer captures')
+    p.add_argument('--inspect-inputs',action='store_true',help='Audit input only, without ROS or QP dependencies')
     p.add_argument('--runs',type=int,default=1)
     p.add_argument('--config',type=Path);p.add_argument('--profile',type=Path)
     p.add_argument('--until',type=float,help='Freeze input/event time at this UNIX timestamp')
     args=p.parse_args();until=args.until if args.until is not None else time.time()
+    if args.runs<1 or not math.isfinite(until):p.error('runs must be positive and until must be finite')
+    audit=input_audit(args.log,require_full=args.require_full_inputs)
+    if args.inspect_inputs:
+        args.output.parent.mkdir(parents=True,exist_ok=True)
+        args.output.write_text(json.dumps(audit,ensure_ascii=False,indent=2)+'\n')
+        print(json.dumps(audit,ensure_ascii=False));return
+    from ament_index_python.packages import get_package_prefix
+    from bindu_runtime.robot_setup import RobotSetup
     segments,clocks=dataset(args.log,until)
-    dataset_hash=hashlib.sha256(json.dumps([s['pairs'] for s in segments],sort_keys=True).encode()).hexdigest()
+    if not segments:raise ValueError('REPLAY_NO_CAPTURED_SEGMENTS')
+    dataset_hash=hashlib.sha256(json.dumps(dict(segments=segments,
+        clocks=sorted((source,seq,at) for (source,seq),at in clocks.items()) if args.clock=='client' else []),
+        sort_keys=True).encode()).hexdigest()
     robot=RobotSetup.load(ROOT/'src/integration/bindu_runtime/config/robots/snowbot/robot_snowbot_real.json')
     cfg=json.loads((args.config or robot.tool_config).read_text());cfg['urdf']=str(robot.urdf)
     if args.profile:
@@ -237,10 +309,12 @@ def main():
             print(json.dumps(result,ensure_ascii=False),flush=True);results.append(result)
     args.output.parent.mkdir(parents=True,exist_ok=True)
     args.output.write_text(json.dumps(dict(schema=1,source=str(args.log),until=until,clock=args.clock,dataset_sha256=dataset_hash,
+        input_audit=audit,replay_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
         source_poses='recorded, unsmoothed; capture anchors restored',
         scope='mapping/QP/synchronized kinematic IO only; no ROS or hardware outputs',
         config=cfg,profile=dict(max_speed=profile.max_speed,joint_dynamics=profile.joint_dynamics),
         results=results),ensure_ascii=False,indent=2)+'\n')
+    return int(any(result.get('failure') for result in results))
 
 
-if __name__=='__main__':main()
+if __name__=='__main__':raise SystemExit(main())

@@ -124,7 +124,9 @@ class IndependentNativeTests(unittest.TestCase):
         target=self.solver.capture_independent(self.feedback)
         reference=[0.]*len(self.solver.names)
         check=self.solver.check_independent_path
-        with patch.object(self.solver.lib,'bq_solve_independent',return_value=0), \
+        entry=('bq_solve_feedback' if self.solver.tracking_feedback in
+               ('measured_task','measured_shared') else 'bq_solve_independent')
+        with patch.object(self.solver.lib,entry,return_value=0), \
                 patch.object(self.solver,'_error',return_value='QP_ITERATION_LIMIT_ZERO_FEASIBLE'), \
                 patch.object(self.solver,'check_independent_path',wraps=check) as guard:
             with self.assertRaisesRegex(ValueError,'^BIMANUAL_QP_DEFERRED$'):
