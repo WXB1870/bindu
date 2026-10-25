@@ -224,8 +224,9 @@ class ScenarioRuntimeTests(unittest.IsolatedAsyncioTestCase):
             seconds=lambda stamp:stamp.sec+stamp.nanosec*1e-9,
             joints_at_rest=lambda joints,names,tol:all(abs(v)<=tol for n,v in zip(joints.name,joints.velocity) if n in names),
             Trigger=S(Request=lambda:S()),Superseded=type('Superseded',(RuntimeError,),{}))
-        reference=next(n for n in ast.parse(path.read_text()).body if getattr(n,'name','')=='prepare_reference')
-        exec(compile(ast.Module(body=[reference],type_ignores=[]),str(path),'exec'),namespace)
+        helpers=[n for n in ast.parse(path.read_text()).body
+                 if getattr(n,'name','') in ('prepare_reference','prepare_start_tolerance')]
+        exec(compile(ast.Module(body=helpers,type_ignores=[]),str(path),'exec'),namespace)
         exec(compile(ast.fix_missing_locations(module),str(path),'exec'),namespace)
         actual=namespace['Actual']()
         actual.position_contract=False  # Legacy-only cases opt in explicitly below.
@@ -435,7 +436,7 @@ class ScenarioRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 node=self.production('validate_prepare');node.position_contract=True;node.unheld_test=True
                 node.control=S(load=load,teleop_mode=mode);node.prepare_positions=None;node.names=('joint',)
                 node.tool_cfg={'resource_groups':['arm']};node.cfg={};node.current=Mock();node.event=Mock()
-                node.profile=S(groups={'arm':['joint']},limits={'joint':(-1.,1.)})
+                node.profile=S(groups={'arm':['joint']},limits={'joint':(-1.,1.)},feedback_tolerances={'joint_position':.002})
                 node.reading=lambda:(S(joints=S(name=['joint'],velocity=[0.])),{'joint':0.})
                 def submit(*args,**kwargs):node.validation_result=('result',1,{});return True
                 node.validator=S(ready=True,busy=False,startup_timeout=1.,submit=Mock(side_effect=submit))
@@ -586,7 +587,8 @@ class LimitRecoveryRuntimeTests(unittest.IsolatedAsyncioTestCase):
         node.prepare_hold_reference.assert_not_awaited()
         node.validator.submit.assert_called_once_with('prepare_path',2,measured,[.2])
 
-    async def movement(self,*,outward=False,hold_error=False,renew_delay=None,renew_ok=True,revoked=False,renew_epoch=2):
+    async def movement(self,*,outward=False,hold_error=False,renew_delay=None,renew_ok=True,revoked=False,renew_epoch=2,
+                       start_delta=0.,start_tolerance=None):
         from types import SimpleNamespace as S
         from unittest.mock import Mock,AsyncMock
         from bindu_contracts.profile import Profile
@@ -608,6 +610,7 @@ class LimitRecoveryRuntimeTests(unittest.IsolatedAsyncioTestCase):
         node.prepare_hold_reference=AsyncMock(return_value=node.prepare_limit_reference)
         if hold_error:node.prepare_hold_reference.side_effect=RuntimeError('PREPARE_LIMIT_RECOVERY_HOLD_CHANGED')
         node.position_contract=True;node.names=('joint',);node.groups=('arm',);node.cfg={};node.simulation=False
+        if start_tolerance is not None:node.cfg['prepare_start_tolerance_rad']=start_tolerance
         node.instance_id='pico';node.runtime_mode='real'
         lease=S(ok=True,lease_id='lease',epoch=2,profile_hash='profile')
         renewal=S(done=lambda:clock[0]>=(renew_delay or 0.),
@@ -620,7 +623,7 @@ class LimitRecoveryRuntimeTests(unittest.IsolatedAsyncioTestCase):
             return value
         node.wait=wait;node.now=lambda:clock[0];node.release_lease=AsyncMock();node.event=Mock()
         def reading():
-            q=actual if not clock[0] else actual-.003 if outward else .2
+            q=actual+start_delta if not clock[0] else actual-.003 if outward else .2
             state.feedback_stamp=S(sec=int(clock[0]),nanosec=0)
             if revoked and clock[0]>=.12:
                 state.command_id=node.submit.call_async.call_args.args[0].command.command_id
@@ -652,6 +655,12 @@ class LimitRecoveryRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertAlmostEqual(command.positions[0],held)
         self.assertGreaterEqual(command.positions[0],lo)
         node.prepare_hold_reference.assert_awaited_once()
+
+    async def test_recovery_start_snapshot_uses_same_bounded_tolerance(self):
+        await self.movement(start_delta=.0002,start_tolerance=.001)
+        for delta,tolerance in ((.0002,None),(.00101,.001)):
+            with self.subTest(delta=delta,tolerance=tolerance),self.assertRaisesRegex(RuntimeError,'PREPARE_STATE_CHANGED'):
+                await self.movement(start_delta=delta,start_tolerance=tolerance)
 
     async def test_changed_hold_or_further_outward_motion_aborts_and_releases(self):
         for options,reason in [({'hold_error':True},'HOLD_CHANGED'),({'outward':True},'MOVED_OUTWARD')]:
@@ -741,6 +750,49 @@ class PrepareReturnPathTests(unittest.IsolatedAsyncioTestCase):
                 await PicoNode.validate_prepare(self.node(error=error),PicoIntent(1,'prepare'))
         with self.assertRaisesRegex(RuntimeError,'PREPARE_STATE_CHANGED'):
             await PicoNode.validate_prepare(self.node(changed=True),PicoIntent(1,'prepare'))
+
+    async def test_configured_prepare_start_tolerance_accepts_small_change_but_rejects_excess(self):
+        from bindu_runtime.pico_node import PicoNode
+        from bindu_teleoperation.pico import PicoIntent
+        for gripper in (False,True):
+            for delta in (.00019174768,.001,.001001):
+                with self.subTest(delta=delta,gripper=gripper):
+                    node=self.node();node.cfg['prepare_start_tolerance_rad']=.001
+                    state=next(node.reading.side_effect)[0]
+                    node.reading.side_effect=[(state,{'joint':0.}),(state,{'joint':delta})]
+                    target={'joint':.2} if gripper else None
+                    if delta<=.001:
+                        self.assertEqual(await PicoNode.validate_prepare(node,PicoIntent(1,'prepare'),target),{'joint':.2})
+                    else:
+                        with self.assertRaisesRegex(RuntimeError,'PREPARE_STATE_CHANGED'):
+                            await PicoNode.validate_prepare(node,PicoIntent(1,'prepare'),target)
+                        detail=json.loads(node.event.call_args.args[1])
+                        self.assertEqual((detail['joint'],detail['delta_rad'],detail['tolerance_rad']),
+                                         ('joint',delta,.001))
+
+    async def test_prepare_start_relaxation_keeps_default_and_stationary_guards(self):
+        from bindu_runtime.pico_node import PicoNode
+        from bindu_teleoperation.pico import PicoIntent
+        from types import SimpleNamespace as S
+        for configured,gripper,velocity in ((False,False,0.),(False,True,0.),(True,False,.00501),(True,True,.00501)):
+            with self.subTest(configured=configured,gripper=gripper,velocity=velocity):
+                node=self.node()
+                if configured:node.cfg['prepare_start_tolerance_rad']=.001
+                node.reading.side_effect=[(S(joints=S(name=['joint'],velocity=[0.])),{'joint':0.}),
+                    (S(joints=S(name=['joint'],velocity=[velocity])),{'joint':.0002})]
+                code='PREPARE_REQUIRES_STATIONARY_START' if velocity else 'PREPARE_STATE_CHANGED'
+                with self.assertRaisesRegex(RuntimeError,code):
+                    await PicoNode.validate_prepare(node,PicoIntent(1,'prepare'),{'joint':.2} if gripper else None)
+
+    async def test_prepare_start_tolerance_rejects_invalid_configuration(self):
+        from bindu_runtime.pico_node import PicoNode
+        from bindu_teleoperation.pico import PicoIntent
+        for tolerance in (0.,-.001,float('nan'),float('inf'),.002001):
+            with self.subTest(tolerance=tolerance):
+                node=self.node();node.cfg['prepare_start_tolerance_rad']=tolerance
+                with self.assertRaisesRegex(RuntimeError,'PICO_PREPARE_START_TOLERANCE_INVALID'):
+                    await PicoNode.validate_prepare(node,PicoIntent(1,'prepare'))
+                node.validator.submit.assert_not_called()
 
     async def test_boundary_reference_is_explicit_and_does_not_replace_measured_validation_start(self):
         from bindu_runtime.pico_node import PicoNode

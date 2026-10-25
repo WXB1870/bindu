@@ -33,6 +33,14 @@ class Superseded(RuntimeError):
     pass
 
 
+def prepare_start_tolerance(profile,cfg):
+    """Bound snapshot drift independently of the final arrival tolerance."""
+    value=float(cfg.get('prepare_start_tolerance_rad',.0001))
+    if not math.isfinite(value) or not 0<value<=profile.feedback_tolerances['joint_position']:
+        raise RuntimeError('PICO_PREPARE_START_TOLERANCE_INVALID')
+    return value
+
+
 def prepare_reference(profile,names,measured):
     """Keep explicit A references legal without rewriting measured feedback."""
     result=dict(measured)
@@ -603,7 +611,16 @@ class PicoNode(RuntimeNode):
                 from bindu_kinematics.bimanual_worker import prepare_limit_reference
                 held=await self.prepare_hold_reference(intent,lease=lease,previous=recovery)
                 s,q=self.reading()
-                if any(abs(q[n]-self.prepare_limit_start[n])>.0001 for n in self.names):
+                if not joints_at_rest(s.joints,self.names,.005):
+                    raise RuntimeError('PREPARE_REQUIRES_STATIONARY_START')
+                changed=max(self.names,key=lambda n:abs(q[n]-self.prepare_limit_start[n]))
+                tolerance=prepare_start_tolerance(self.profile,self.cfg)
+                if abs(q[changed]-self.prepare_limit_start[changed])>tolerance:
+                    self.event('PICO_PREPARE_START_CHANGED',json.dumps(dict(joint=changed,
+                        before_rad=self.prepare_limit_start[changed],after_rad=q[changed],
+                        delta_rad=q[changed]-self.prepare_limit_start[changed],tolerance_rad=tolerance,
+                        before_feedback_stamp=getattr(self,'prepare_limit_start_stamp',None),
+                        after_feedback_stamp=seconds(s.feedback_stamp) if hasattr(s,'feedback_stamp') else None)))
                     raise RuntimeError('PREPARE_STATE_CHANGED')
                 start=prepare_limit_reference(self.profile,self.names,q,held['positions'],targets,
                                              self.prepare_limit_max,self.prepare_position_tolerance)
@@ -714,6 +731,7 @@ class PicoNode(RuntimeNode):
 
     async def validate_prepare(self,intent,targets=None,*,allow_recovery=True):
         self.current(intent);s,q=self.reading()
+        start_stamp=seconds(s.feedback_stamp) if hasattr(s,'feedback_stamp') else None
         self.prepare_recovery=None
         self.prepare_limit_reference=None
         self.prepare_limit_start=None
@@ -721,6 +739,7 @@ class PicoNode(RuntimeNode):
             raise RuntimeError('PICO_PREPARE_PRESET_REQUIRED')
         if not joints_at_rest(s.joints,self.names,.005 if self.position_contract else 1e-6):raise RuntimeError('PREPARE_REQUIRES_STATIONARY_START')
         gripper_move=targets is not None
+        start_tolerance=prepare_start_tolerance(self.profile,self.cfg)
         target=targets if gripper_move else {n:self.prepare_positions[n]
                 for g in self.tool_cfg['resource_groups'] for n in self.profile.groups[g]}
         end=time.monotonic()+self.validator.startup_timeout
@@ -743,6 +762,7 @@ class PicoNode(RuntimeNode):
                                              self.prepare_position_tolerance)
             self.prepare_limit_reference=held
             self.prepare_limit_start=dict(q)
+            self.prepare_limit_start_stamp=start_stamp
         elif self.position_contract and not gripper_move:
             reference=prepare_reference(self.profile,names,q)
         extra={}
@@ -776,8 +796,18 @@ class PicoNode(RuntimeNode):
             await self.pause()
         kind,token,value=self.validation_result
         if token!=intent.token or kind!='result':raise RuntimeError(str(value))
-        _,current=self.reading()
-        if any(abs(current[n]-q[n])>.0001 for n in (self.names if gripper_move else names)):raise RuntimeError('PREPARE_STATE_CHANGED')
+        current_state,current=self.reading()
+        if not joints_at_rest(current_state.joints,self.names,.005 if self.position_contract else 1e-6):
+            raise RuntimeError('PREPARE_REQUIRES_STATIONARY_START')
+        checked_names=self.names if gripper_move else names
+        changed=max(checked_names,key=lambda n:abs(current[n]-q[n]))
+        if abs(current[changed]-q[changed])>start_tolerance:
+            self.event('PICO_PREPARE_START_CHANGED',json.dumps(dict(joint=changed,
+                before_rad=q[changed],after_rad=current[changed],
+                delta_rad=current[changed]-q[changed],tolerance_rad=start_tolerance,
+                before_feedback_stamp=start_stamp,
+                after_feedback_stamp=seconds(current_state.feedback_stamp) if hasattr(current_state,'feedback_stamp') else None)))
+            raise RuntimeError('PREPARE_STATE_CHANGED')
         self.prepare_recovery=value.get('self_collision_recovery') if isinstance(value,dict) else None
         if self.prepare_recovery:
             self.event('PICO_PREPARE_RECOVERY',json.dumps(self.prepare_recovery))
