@@ -184,6 +184,8 @@
     }
   },
   "limit_margin": 0.15,
+  "limit_avoidance_margin": 0.15,
+  "limit_avoidance_weight": 0.05,
   "damper_gain": 6.0,
   "right_axial_grasp": {
     "grip_in_right_flange_m": [
