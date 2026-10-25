@@ -206,7 +206,8 @@ class Rig:
 
     def solve(self,operation,token,feedback,target,**kwargs):
         if operation=='capture':
-            value=np.eye(4)
+            value=(np.array([np.eye(4),np.eye(4)]) if kwargs.get('grasp_mode','').startswith('independent:')
+                   else np.eye(4))
         else:
             error=next(self.solve_errors,None)
             self.solve_attempts.append((self.clock,token,self.node.frames['left'].seq,
@@ -664,9 +665,9 @@ class BimanualTransactions(unittest.IsolatedAsyncioTestCase):
             original_update()
             s=rig.node.state
             at=rig.clock-.001
-            s.reference=S(name=list(rig.node.names),position=[0.,0.,.154],
+            s.reference=S(name=list(rig.node.names),position=[0.,0.,.154 if rig.commands else 0.],
                 header=S(stamp=S(sec=int(at),nanosec=round((at-int(at))*1e9))))
-            if rig.references and rig.references[0].captures:
+            if rig.commands:
                 s.joints.position[s.joints.name.index('r')]=.155
             if len(rig.commands)>=2:rig.goal.is_cancel_requested=True
         def solve(operation,token,feedback,target,**kwargs):
@@ -678,10 +679,49 @@ class BimanualTransactions(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(samples[0])  # First solve uses the confirmed hold bootstrap.
         self.assertEqual(samples[1],(0.,0.,.154))
         self.assertAlmostEqual(rig.commands[0].positions[-1],.001)
-        diagnostic=json.loads(next(e[1] for e in rig.events if e[0]=='BIMANUAL_QP_RESULT'))
+        diagnostic=json.loads([e[1] for e in rig.events if e[0]=='BIMANUAL_QP_RESULT'][-1])
         self.assertEqual(diagnostic['admission']['reference_basis'],'executed')
         self.assertGreater(diagnostic['admission']['target_lead_rad'],.15)
         self.assertLess(diagnostic['admission']['reference_lead_rad'],.15)
+
+    def empty_bootstrap_rig(self, mode='bimanual_tool', mask=3, *, publish_after_first=True):
+        rig=Rig();rig.node.trajectory_reference=True;rig.node.mode_state.mode=mode
+        async def held_reference(lease,revision):return (0.,0.,0.)
+        rig.node.held_reference=held_reference
+        original_update=rig.update
+        def update():
+            original_update()
+            if mode=='independent_arms':
+                rig.node.frames={side:replace(f,grip=f.grip if mask&(1<<i) else 0.)
+                                 for i,(side,f) in enumerate(rig.node.frames.items())}
+            at=rig.clock-.001
+            sample=rig.engine.reference if rig.commands and publish_after_first else None
+            rig.node.state.reference=S(name=list(rig.engine.reference_names) if sample else [],
+                position=list(sample.q) if sample else [],
+                header=S(stamp=S(sec=int(at),nanosec=round((at-int(at))*1e9))))
+            if len(rig.commands)>=2:rig.goal.is_cancel_requested=True
+        rig.update=update
+        return rig
+
+    async def test_empty_reference_bootstraps_single_dual_and_coupled_then_requires_real_samples(self):
+        for mode,mask in (('independent_arms',1),('independent_arms',2),
+                          ('independent_arms',3),('bimanual_tool',3)):
+            with self.subTest(mode=mode,mask=mask):
+                rig=self.empty_bootstrap_rig(mode,mask)
+                result=await rig.run()
+                self.assertGreaterEqual(len(rig.commands),2,result.code)
+                diagnostics=[json.loads(e[1])['admission'] for e in rig.events if e[0]=='BIMANUAL_QP_RESULT']
+                self.assertEqual(diagnostics[0]['reference_basis'],'accepted_target')
+                self.assertEqual(diagnostics[1]['reference_basis'],'executed')
+                self.assertFalse(rig.engine.lease_id)
+
+    async def test_missing_reference_after_first_acceptance_cannot_authorize_a_second_target(self):
+        rig=self.empty_bootstrap_rig(publish_after_first=False)
+        rig.node.cfg['integration_max_sample_gap']=.1
+        result=await rig.run()
+        self.assertEqual(len(rig.commands),1,result.code)
+        self.assertIn('SNOWBOT_TRAJECTORY_REFERENCE_UNAVAILABLE',result.code)
+        self.assertFalse(rig.engine.lease_id)
 
     async def test_current_reference_beyond_hard_guard_is_not_deferred(self):
         rig=self.recorded_result_rig(latest=.151)
