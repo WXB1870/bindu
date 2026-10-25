@@ -737,7 +737,9 @@ class BimanualToolNode(RuntimeNode):
                                 raise RuntimeError('BIMANUAL_REFERENCE_LIMIT_CONFIG')
                             leads=[abs(q-measured[n]) for n,q in zip(self.names,positions)]
                             executed=None
-                            if self.trajectory_reference:
+                            # No servo trajectory exists before the first accepted
+                            # target; use the authenticated hold/goal guard once.
+                            if self.trajectory_reference and not trajectory_bootstrap:
                                 from .snowbot_position_session import sampled_nominal_reference
                                 executed,_=sampled_nominal_reference(s,self.names,lease.epoch,self.now(),
                                     min(.1,self.cfg['feedback_max_age']))
