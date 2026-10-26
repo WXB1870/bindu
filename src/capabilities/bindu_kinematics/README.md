@@ -27,14 +27,14 @@ print('model nq:', model.nq, 'QP wrapper:', BimanualQP.__name__)
 PY
 ```
 
-预期能加载 Snowbot 控制模型及求解封装；此检查不执行设备运动，也不代表完整 IK／QP 验收。本包没有独立 ROS 节点，持续求解由 [遥操作装配](../bindu_teleoperation/README.md#编译与运行) 启动工作进程；单独更新原生接口时同步重建 `bindu_bimanual_qp`。
+预期能加载 Snowbot 控制模型及求解封装；此检查在离线环境运行，完整IK／QP验证另见下文。本包没有独立 ROS 节点，持续求解由 [遥操作装配](../bindu_teleoperation/README.md#编译与运行) 启动工作进程；单独更新原生接口时同步重建 `bindu_bimanual_qp`。
 
 ## 职责与边界
 
 - 从模型和配置读取链路、资源组与限制，避免在公共求解器中固定机器人型号。
 - 单臂路径使用 Pinocchio／CasADi；双臂持工具通过原生 QP 联合分配腰部与双臂运动。
 - 使用已接纳参考、实际关节反馈和显式周期维护连续性；求解器不直接写设备。
-- 碰撞检查仅覆盖启用的代理或 CAD 范围。可选工具位姿观测不等于已实现真机六维力控制或上层柔顺控制。
+- 碰撞检查仅覆盖启用的代理或 CAD 范围。可选工具位姿观测已提供；真机六维力控制和上层柔顺控制尚未实现。
 
 ## 扫雪求解与反馈
 
@@ -58,7 +58,7 @@ Isaac 物理实验在 [shovel_control.py](../../../tools/simulation/shovel_contr
 | [bimanual.py](bindu_kinematics/bimanual.py) / [bimanual_worker.py](bindu_kinematics/bimanual_worker.py) | 双臂 QP 的 C ABI 封装与隔离工作进程 |
 | [tool_geometry.py](bindu_kinematics/tool_geometry.py) | 工具／机器人 CAD 几何查询 |
 
-双臂 worker 的 `worker_timeout` / `worker_startup_timeout` 是父进程收到结果的单调时间预算，包含队列和调度等待；不能解读为纯 QP 计算耗时。轮询先核对期限，再消费结果。超时、子进程退出或初始化致命错误锁存故障并撤销 ready，迟到结果不会恢复就绪或允许再次提交；恢复须显式替换 worker，并沿上层既有停止确认、反馈校验与重新捕获流程重入。期限内的普通求解拒绝仍作为本次操作错误交给调用方处理，不自动重试。纯内存时序回归见 [test_bimanual_worker.py](../../../tests/unit/test_bimanual_worker.py)，不启动 ROS 或求解进程。
+双臂 worker 的 `worker_timeout` / `worker_startup_timeout` 是父进程收到结果的单调时间预算，包含队列和调度等待；纯QP计算耗时需使用原生QP内部计时。轮询先核对期限，再消费结果。超时、子进程退出或初始化致命错误锁存故障并撤销 ready，迟到结果不会恢复就绪或允许再次提交；恢复须显式替换 worker，并沿上层既有停止确认、反馈校验与重新捕获流程重入。期限内的普通求解拒绝仍作为本次操作错误交给调用方处理，不自动重试。纯内存时序回归见 [test_bimanual_worker.py](../../../tests/unit/test_bimanual_worker.py)，不启动 ROS 或求解进程。
 
 真实Snowbot配方的握持位置误差上限为30 mm、旋转上限0.04 rad，QP与几何校验总预算50 ms；杆体对机器人的最小净距仍为20 mm。接触区在每次实测捕获时定位，固定宽度与实体杆长取交集；越出实体杆的握点仍拒绝。在线仅判通过／拒绝时，AABB下界达到对应门槛即可跳过精确距离查询；完整报告仍计算最小距离。预算也覆盖测量到旧参考的基线校验，未完成校验不会作为安全参考返回。
 

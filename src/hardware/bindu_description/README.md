@@ -66,12 +66,12 @@ python3 -c "from xml.etree import ElementTree as ET; print(ET.parse('src/hardwar
 | [`g1_provisional.urdf`](urdf/g1_provisional.urdf) | 上游 G1 的临时 20 轴运动学派生模型；省略轮子和手爪子树、视觉及碰撞几何，供运动学模拟／IK 使用 | 无网格引用 |
 | [`g1_display.urdf`](urdf/g1_display.urdf) | 保留相同20轴控制结构，恢复固定上游版本的显示／碰撞几何；不启用新的IK碰撞策略 | `bindu_description/meshes/g1/` |
 | [`huawei_v34_kinematic.urdf`](urdf/huawei_v34_kinematic.urdf) | 历史v3.4的90连杆／19轴运动学基线，供旧单臂FK／IK及回归测试；保留原参数，省略几何 | 无网格引用 |
-| [`huawei_v34_display.urdf`](urdf/huawei_v34_display.urdf) | 与运动学模型相同关节结构，恢复源模型88个显示／81个碰撞几何；不代表启用了旧单臂IK碰撞策略 | `bindu_description/meshes/huawei_v34/` |
+| [`huawei_v34_display.urdf`](urdf/huawei_v34_display.urdf) | 与运动学模型相同关节结构，恢复源模型88个显示／81个碰撞几何；旧单臂IK碰撞策略单独配置 | `bindu_description/meshes/huawei_v34/` |
 | `artifacts/g1-physics-model/g1_physics.urdf` | 从G1显示模型增加合成差速轮与支撑；供Isaac物理仿真使用，需按当前来源重新生成 | 引用资产包的`meshes/g1/`和`usd/g1/`，不再复制原始资产 |
 
-Snowbot 的三份 URDF 是同一机器人针对不同用途的生成结果。31 个 STL 仅保存一份，完整模型与显示模型通过 `package://bindu_description/meshes/snowbot/…` 引用；`bindu_description` 的安装规则一起安装 `urdf/` 与 `meshes/`。文件存在不等于几何可用于碰撞：源资产中的 `head_link_1.STL` 为空网格，相关检查边界见[雪铲几何验证](#单杆雪铲的握姿与工作空间2026-10-08)。
+Snowbot 的三份 URDF 是同一机器人针对不同用途的生成结果。31 个 STL 仅保存一份，完整模型与显示模型通过 `package://bindu_description/meshes/snowbot/…` 引用；`bindu_description` 的安装规则一起安装 `urdf/` 与 `meshes/`。源资产中的`head_link_1.STL`为空网格，无法用于碰撞计算；相关检查边界见[雪铲几何验证](#单杆雪铲的握姿与工作空间2026-10-08)。
 
-**用户提供模型更新（2026-10-23）。** [`sources/snowbot.urdf`](sources/snowbot.urdf)逐字保存用户本次提供的文件，SHA256为`3024f5e3b45b188db7f3c0d1e13eaabb86ef726bd75b3c61d9984ced84c00798`。三份运行模型的共有20个活动关节以它为当前参数源；连接、安装变换和轴向与旧模型一致，头部及双臂J6/J7/J8限位已同步，仿真profile收窄到新模型内，真机已有的更窄任务范围不自动放大。R6上限1.274 rad，R7上限仍1.449 rad；R7目标1.42 rad在此模型范围内，更新模型不能据此认定昨天约1.27457 rad停点的根因已解决。
+**用户提供模型更新（2026-10-23）。** [`sources/snowbot.urdf`](sources/snowbot.urdf)逐字保存用户本次提供的文件，SHA256为`3024f5e3b45b188db7f3c0d1e13eaabb86ef726bd75b3c61d9984ced84c00798`。三份运行模型的共有20个活动关节以它为当前参数源；连接、安装变换和轴向与旧模型一致，头部及双臂J6/J7/J8限位已同步，仿真profile收窄到新模型内，真机已有的更窄任务范围不自动放大。R6上限1.274 rad，R7上限仍1.449 rad；R7目标1.42 rad在此模型范围内；历史约1.27457 rad停点的根因仍待定位。
 
 输入文件是简化的world／躯干模型，未包含当前底盘、F/T与TCP扩展，并引用未随本次提供的雷达网格；相机惯量／固定姿态也与原CAD不同。因此本次采用共有活动关节参数，原底盘、固定传感器／相机帧及配套网格作为一组保留，没有用缺少配套资产的子树替换当前显示和碰撞模型。三份运行模型均由同一脚本再生成；这不证明真实轴绑定、零偏或电机实际软限位已校验。
 
@@ -117,7 +117,7 @@ python3 -m tools.models.prepare_huawei_description /path/to/huawei_urdf_wheel.ur
 # --mesh-root 指向含 meshes/ 的目录；可追加 --output /tmp/bindu-huawei-description 检查派生结果
 ```
 
-旧单臂启动入口及观察节点的默认模型目录已改为安装后的`bindu_description/urdf/`；运行配置仍显式选择Huawei、G1或Snowbot模型。旧`bindu_kinematics/models/`路径不再提供副本。此次只统一资产与引用，未改变控制策略、关节参数或默认本体选择；有碰撞网格不等于现有IK或物理仿真已完成碰撞／接触验收。
+旧单臂启动入口及观察节点的默认模型目录已改为安装后的`bindu_description/urdf/`；运行配置仍显式选择Huawei、G1或Snowbot模型。旧`bindu_kinematics/models/`路径不再提供副本。此次只统一资产与引用，未改变控制策略、关节参数或默认本体选择；现有IK碰撞检查与物理仿真的接触效果仍需分别验证。
 
 G1固定上游版本、源URDF指纹及控制模型派生规则由[`derive_g1_model.py`](../../../tools/models/derive_g1_model.py)维护。此前物理准备脚本将源网格、完整上游USD与生成缓存混放在`artifacts/`；现在86个源网格引用合并为78份共享文件，保存在`meshes/g1/`，显示所需26份USD／纹理依赖在`usd/g1/`，与控制／显示模型及[`g1.assets.json`](g1.assets.json)一起安装。未使用的上游ROS、传感器、物理变体和演示环境不随当前包复制；历史源目录保持原样。
 
@@ -137,4 +137,4 @@ python3 -m tools.models.prepare_g1_physics
 
 ### 单杆雪铲的握姿与工作空间（2026-10-08）
 
-名义模型、握点与几何参数由`src/integration/bindu_runtime/config/robots/snowbot/`及`src/hardware/bindu_description/`维护；当前设备配置与名义实验姿态不能互相代替。`tools/analysis/plan_shovel_motion.py`负责工具位姿输入实验与几何评分，`tests.replay.validate_vr_axes`核对真实接合姿态的方向映射。原2026-10-08工作空间扫描、姿态比较和离线结果保留在本地`过程记录/2026-10-08.md`，不作为真机可达域验收。
+名义模型、握点与几何参数由`src/integration/bindu_runtime/config/robots/snowbot/`及`src/hardware/bindu_description/`维护；设备配置使用实际标定值，名义实验姿态单独用于对应实验。`tools/analysis/plan_shovel_motion.py`负责工具位姿输入实验与几何评分，`tests.replay.validate_vr_axes`核对真实接合姿态的方向映射。原2026-10-08工作空间扫描、姿态比较和离线结果保留在本地`过程记录/2026-10-08.md`，不作为真机可达域验收。
