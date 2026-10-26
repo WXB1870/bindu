@@ -155,8 +155,14 @@ cmake --build artifacts/execution-native-build
 构建需要 C++17 编译器和与运行环境匹配的 Python 开发头文件。`colcon build` 自动构建原生扩展；模块缺失时直接报导入错误，不静默回退到 Python。更新后须重建并加载工作区，不能复制另一架构或 Python 版本的 `.so`。无 ROS 的本地测试可先构建：
 
 ```bash
-(cd src/control/bindu_execution && python3 setup.py build_ext --inplace)
+bindu_python_build="$PWD/build/python-$(python3 -c 'import sys; print(str(sys.version_info.major)+str(sys.version_info.minor))')"
+(cd src/control/bindu_execution && python3 setup.py build \
+  --build-base "$bindu_python_build" --build-lib "$bindu_python_build/lib" \
+  --build-temp "$bindu_python_build/temp")
+export PYTHONPATH="$bindu_python_build/lib${PYTHONPATH:+:$PYTHONPATH}"
 ```
+
+无ROS构建将Python模块和扩展统一放入仓库根`build/python-<ABI>/lib/`，须先加载上面的路径，再添加其他明确选择的源码包；不在源码包内并存不同ABI的`.so`。标准ROS部署继续使用colcon安装结果。
 
 加载工作区后运行模块和 ROS 回归，`timed_chunks` 包含动作块原始时间轴、旧 revision 拒绝和减速取消：
 
@@ -184,7 +190,7 @@ artifacts/native-test/test_native
 保留历史源码的主工作区可运行以下对照。工具分别测旧 C++、标量自适应、新原生在线/五次曲线策略，输出 CSV/JSON；原生策略耗时包含 Python 绑定开销，七轴项目使用实际在线策略。当前本机离线正弦 RMS 为0.099219 rad，旧内核为0.097335 rad；固定时序策略不会为了降低误差自行改变轨迹时间。测试值描述该离线内核实验；机器人定位精度与端到端延迟需实测。内核仍有动态分配并使用Python/ROS串行执行壳，硬实时能力尚未验证。
 
 ```bash
-python3 -m tools.analysis.compare_interpolators --legacy-root 历史代码/legs_necks_control \
+python3 -m tools.analysis.compare_interpolators --legacy-root reference/source-archives/legs_necks_control \
   --output artifacts/interpolation-comparison
 ```
 

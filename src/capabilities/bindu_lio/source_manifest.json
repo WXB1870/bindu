@@ -1,5 +1,5 @@
 {
-  "archive": "历史代码/代码/导航-源码.zip",
+  "archive": "reference/source-archives/代码/导航-源码.zip",
   "archive_sha256": "dc0b9db7609685323b77d85deaeda8b5af62b32d3be496f3b16bfa945654ec6b",
   "upstream": "https://github.com/hku-mars/FAST_LIO",
   "license": "vendor/fast_lio/LICENSE",

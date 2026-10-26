@@ -31,12 +31,13 @@ bindu/
 │   ├── web/                    # 操作台静态页面
 │   └── *.sh                    # 常用启动入口
 ├── tests/                      # 单元、集成、物理、回放与公共夹具
+├── reference/                  # 本地只读原始资料、精选包与对照文档，不入库
 ├── README.md                   # 项目入口与模块导航
 ├── 运行与验证.md                # 环境、测试和运行说明入口
 └── build/、install/、log/、artifacts/、backups/  # 本机构建、实验与恢复材料
 ```
 
-常用启动命令保留在 `tools/*.sh`；Python 工具从仓库根目录以 `python3 -m tools.<分类>.<模块>` 调用，例如 `python3 -m tools.models.prepare_snowbot_description --help`。原始参考资产和本地过程记录保持原位。
+常用启动命令保留在 `tools/*.sh`；Python 工具从仓库根目录以 `python3 -m tools.<分类>.<模块>` 调用，例如 `python3 -m tools.models.prepare_snowbot_description --help`。原始参考资产集中在本地`reference/`，过程记录保留在`过程记录/`，都不参与源码装配。
 
 ## 项目内容
 
@@ -78,7 +79,9 @@ bindu/
 | 环境、构建、运行和验证步骤 | [运行与验证](运行与验证.md)；配置选择见[运行装配](src/integration/bindu_runtime/README.md#配置目录) |
 | Snowbot／118现场配方、问题与验收 | [Snowbot仓库](https://github.com/WXB1870/snowbot)及[底层驱动问题记录](https://github.com/WXB1870/snowbot/blob/main/底层驱动问题记录.md) |
 
-主工作区另有本地的`项目上下文.md`、`当前进度.md`、`决策记录.md`与`过程记录/`，分别保存稳定条件、当前摘要、重要取舍和历史证据；历史选型、来源对照、源码盘点及架构图册位于本地`参考文档/`，按主题检索；这些本地材料不随Git分发，新克隆按本文、工程文档与源码使用。Snowbot跨仓库入口使用GitHub链接，不依赖本机目录布局。
+主工作区另有本地的`项目上下文.md`、`当前进度.md`、`决策记录.md`与`过程记录/`，分别保存稳定条件、当前摘要、重要取舍和历史证据；历史选型、来源对照、源码盘点及架构图册位于本地`reference/documents/`，按主题检索；这些本地材料不随Git分发，新克隆按本文、工程文档与源码使用。Snowbot跨仓库入口使用GitHub链接，不依赖本机目录布局。
+
+本机参考入口：`reference/source-archives/`保留原始代码、压缩包和其中的嵌套Git历史，`reference/curated/`保留已有精选包，`reference/documents/`保存复用评估与来源对照，`reference/images/`保存设计图片；`reference/COLCON_IGNORE`阻止构建扫描。它们不作为第二份运行源码。
 
 ### 按任务定位
 

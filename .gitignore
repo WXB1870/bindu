@@ -10,16 +10,13 @@ __pycache__/
 .DS_Store
 
 # Local reference assets and historical experiment attachments
-/历史代码/
-/代码参考包/
-/图片/
+/reference/
 /过程记录/
 
 # Local planning and research notes; keep files locally, outside Git tracking
 /项目上下文.md
 /当前进度.md
 /决策记录.md
-/参考文档/
 
 # Machine-local credentials/configuration
 .env
