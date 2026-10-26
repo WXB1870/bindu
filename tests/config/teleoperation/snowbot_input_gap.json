@@ -1,5 +1,5 @@
 {
-  "source_path": "/Users/xavier/Documents/galbot/bindu/artifacts/118-target-stream-20261022/gripper-speed/vr_ce97e5935a45/vr-raw.jsonl",
+  "source_path": "/Users/xavier/Documents/snowbot/artifacts/archive/bindu/118-target-stream-20261022/gripper-speed/vr_ce97e5935a45/vr-raw.jsonl",
   "source_sha256": "ca2008623807f2a77cb7ade00ff26e37b8df39a48abeea960b103dd672a82d61",
   "recorded_session": "vr_ce97e5935a45",
   "recorded_runtime": "fad8585",
@@ -528,7 +528,7 @@
   ],
   "scope": "Replay uses original reception gap with synthetic engaged frames. Original packets retained for separate source/time validation. Does not replay physical pose or drive response.",
   "coordinator_callback_gap": {
-    "source_path": "/Users/xavier/Documents/galbot/bindu/artifacts/118-target-stream-20261022/gripper-speed/vr_ce97e5935a45/runtime-events.jsonl",
+    "source_path": "/Users/xavier/Documents/snowbot/artifacts/archive/bindu/118-target-stream-20261022/gripper-speed/vr_ce97e5935a45/runtime-events.jsonl",
     "source_sha256": "0b9c71c67ea6ebc3d528d4129b0d312e94ee023c05ae20cec92bd9a50e6dfac9",
     "interval_s": 1.2360286712646484,
     "clock": "ROS completed-pair callback interval, not wire or device sample time",

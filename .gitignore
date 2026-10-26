@@ -34,3 +34,7 @@ id_ed25519
 # Compiled native Python extension (built by colcon/setuptools)
 *.so
 *.dylib
+
+# Local generated releases, deployment receipts, and recovery copies
+/backups/*
+!/backups/COLCON_IGNORE

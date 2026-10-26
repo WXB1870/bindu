@@ -33,7 +33,7 @@ bindu/
 ├── tests/                      # 单元、集成、物理、回放与公共夹具
 ├── README.md                   # 项目入口与模块导航
 ├── 运行与验证.md                # 环境、测试和运行说明入口
-└── build/、install/、log/、artifacts/  # 本机构建及实验产物，不提交
+└── build/、install/、log/、artifacts/、backups/  # 本机构建、实验与恢复材料
 ```
 
 常用启动命令保留在 `tools/*.sh`；Python 工具从仓库根目录以 `python3 -m tools.<分类>.<模块>` 调用，例如 `python3 -m tools.models.prepare_snowbot_description --help`。原始参考资产和本地过程记录保持原位。

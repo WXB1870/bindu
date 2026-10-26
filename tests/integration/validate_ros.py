@@ -274,7 +274,7 @@ def timed_chunks(root, output):
 
 def main():
     parser=argparse.ArgumentParser()
-    parser.add_argument('--output',default='artifacts/ros-validation')
+    parser.add_argument('--output',default='artifacts/validation/ros')
     parser.add_argument('--case', action='append', help='Run only named cases')
     args=parser.parse_args()
     root=ROOT
