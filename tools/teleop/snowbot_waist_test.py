@@ -10,6 +10,7 @@ Use without a tool: moving the waist moves both arms in the world frame.
 import argparse
 from collections import Counter
 from dataclasses import dataclass
+import hashlib
 import json
 import math
 from pathlib import Path
@@ -22,6 +23,49 @@ NAMES = ('body_joint_1', 'body_joint_2',
          *(f'arm_{side}_joint_{i}' for side in ('l', 'r') for i in range(1, 8)))
 SLOTS = (18, 19, *range(7), *range(8, 15))
 MASK = sum(1 << i for i in SLOTS)
+ENCODER_PROFILES = {'legacy-65536': (65536, 65536), 'outer-262144': (262144, 65536)}
+
+
+def select_encoder(encoder_profile=None, position_release=None, declarations=()):
+    """Select code conversion from explicit provenance, never from the tool version.
+
+    CSP diagnostic wire version 1 exists with both position resolutions. A log
+    without scale metadata therefore cannot identify its encoder conversion.
+    """
+    choices = []
+
+    def add(value, source):
+        if not isinstance(value, dict):
+            raise ValueError('CSP_ENCODER_METADATA_INVALID')
+        pair = tuple(value.get(key) for key in ('position_counts_per_rev', 'speed_counts_per_rev'))
+        if any(type(v) is not int for v in pair) or pair not in ENCODER_PROFILES.values():
+            raise ValueError('CSP_ENCODER_RESOLUTION_UNSUPPORTED')
+        choices.append((pair, source))
+
+    if encoder_profile is not None:
+        if not isinstance(encoder_profile, str) or encoder_profile not in ENCODER_PROFILES:
+            raise ValueError('CSP_ENCODER_PROFILE_INVALID')
+        position, speed = ENCODER_PROFILES[encoder_profile]
+        add(dict(position_counts_per_rev=position, speed_counts_per_rev=speed),
+            dict(kind='explicit_profile', name=encoder_profile))
+    if position_release is not None:
+        path = Path(position_release).resolve()
+        raw = path.read_bytes()
+        release = json.loads(raw)
+        if not isinstance(release, dict) or 'csp_encoder' not in release:
+            raise ValueError('CSP_ENCODER_METADATA_REQUIRED: old releases need --encoder-profile')
+        add(release['csp_encoder'], dict(kind='position_release', path=str(path),
+                                       sha256=hashlib.sha256(raw).hexdigest()))
+    for value, source in declarations:
+        add(value, source)
+    if not choices:
+        return None
+    if len({pair for pair, _ in choices}) != 1:
+        raise ValueError('CSP_ENCODER_SCALE_CONFLICT')
+    position, speed = choices[0][0]
+    return dict(position_counts_per_rev=position, speed_counts_per_rev=speed,
+                sources=[source for _, source in choices], physical_units_verified=False,
+                running_driver_identity_verified=False)
 
 
 @dataclass(frozen=True)
@@ -136,6 +180,7 @@ def targets(plan, elapsed, initial, limits, axis='body_joint_1'):
 
 
 def execute(args, plan):
+    encoder = select_encoder(getattr(args, 'encoder_profile', None), getattr(args, 'position_release', None))
     # Imports below this boundary are deliberately absent from preview mode.
     import rclpy
     from rclpy.qos import qos_profile_sensor_data
@@ -267,7 +312,8 @@ def execute(args, plan):
             targets(plan, t, initial, robot.profile.limits, axis)
         record('plan', dict(task=task, robot_config=str(robot.path), profile_hash=robot.profile.digest,
                            joint_names=NAMES, axis=axis, initial=initial, amplitude_rad=plan.amplitude,
-                           move_seconds=plan.move_seconds, duration=plan.duration, **vars_limits(args)))
+                           move_seconds=plan.move_seconds, duration=plan.duration,
+                           csp_encoder=encoder, **vars_limits(args)))
         lease = call(leases, Lease.Request(operation='acquire', owner=task, resources=list(GROUPS)))
         if lease.profile_hash != robot.profile.digest:
             raise RuntimeError('LEASE_PROFILE_MISMATCH')
@@ -331,7 +377,7 @@ def vars_limits(args):
     return dict(requested_speed=args.speed, requested_acceleration=args.acceleration, requested_jerk=args.jerk)
 
 
-def summarize_csp(rows, slot):
+def summarize_csp(rows, slot, encoder=None):
     """Raw attempt evidence, including failed receives; never infer physical cause."""
     index = slot-16
     missing = malformed = unsupported = repeats = command_invalid = feedback_invalid = 0
@@ -374,7 +420,9 @@ def summarize_csp(rows, slot):
             output = data.get('output_position', [])
             if (data.get('output_valid') and isinstance(output, (list, tuple)) and len(output) == 16 and
                     type(output[slot-4]) in (int, float) and math.isfinite(output[slot-4])):
-                encoding.append(data['csp_target_position_raw'][index]-output[slot-4]*65536/(2*math.pi))
+                if encoder is not None:
+                    encoding.append(data['csp_target_position_raw'][index]-
+                                    output[slot-4]*encoder['position_counts_per_rev']/(2*math.pi))
         else:
             command_invalid += 1
         if feedback_valid:
@@ -397,19 +445,34 @@ def summarize_csp(rows, slot):
         following_error_raw_peak=max(map(abs, errors), default=None),
         following_error_raw_rms=math.sqrt(sum(x*x for x in errors)/len(errors)) if errors else None,
         sent_vs_output_peak_counts=max(map(abs, encoding), default=None),
-        output_conversion_counts_per_code_rad=65536/(2*math.pi),
+        output_conversion_counts_per_code_rad=(encoder['position_counts_per_rev']/(2*math.pi)
+                                               if encoder is not None else None),
+        speed_conversion_counts_per_code_rad=(encoder['speed_counts_per_rev']/(2*math.pi)
+                                              if encoder is not None else None),
+        encoder_scale_available=encoder is not None, encoder_selection=encoder,
+        encoding_comparison_reason=('CSP_ENCODER_SCALE_UNSPECIFIED' if encoder is None else
+                                    'OK' if encoding else 'NO_VALID_SENT_OUTPUT_PAIRS'),
         command_is_drive_acknowledgement=False, physical_units_verified=False, cause_identified=False)
 
 
-def analyze(path, session=None):
+def analyze(path, session=None, *, encoder_profile=None, position_release=None):
     """Compare same-PDO reference/output/measurement; estimate speed from position."""
     samples = []; result = None; repeats = 0; axis = 'body_joint_1'
     pdo_rows = []; sessions = set(); observed_sessions = set(); invalid = Counter(); other_sessions = 0
     selection = 'explicit' if session is not None else 'unavailable'
+    declarations = []
     with Path(path).open() as source:
         # PDO callbacks can write before plan metadata; select the axis first.
         for line in source:
             row = json.loads(line)
+            if row['kind'] in ('plan', 'metadata') and row['data'].get('csp_encoder') is not None:
+                declared_session = row['data'].get('session')
+                if declared_session is not None and (type(declared_session) is not int or declared_session <= 0):
+                    raise ValueError('CAPTURE_ENCODER_SESSION_INVALID')
+                declarations.append((declared_session, row['data']['csp_encoder'],
+                                     dict(kind='capture_metadata', record_kind=row['kind'],
+                                          provenance=row['data']['csp_encoder'].get('sources', [])
+                                          if isinstance(row['data']['csp_encoder'], dict) else [])))
             if row['kind'] == 'plan':
                 axis = row['data'].get('axis', 'body_joint_1')
                 if axis not in NAMES[:2]:
@@ -428,6 +491,9 @@ def analyze(path, session=None):
                 raise ValueError('CAPTURE_SESSION_AMBIGUOUS: select --session')
             session = next(iter(candidates), None)
             selection = 'target_sent' if sessions else 'observed_only_unmapped' if candidates else 'unavailable'
+        encoder = select_encoder(encoder_profile, position_release,
+                                 [(value, source) for declared_session, value, source in declarations
+                                  if declared_session is None or declared_session == session])
         source.seek(0)
         for line in source:
             row = json.loads(line)
@@ -467,7 +533,7 @@ def analyze(path, session=None):
                             values[0] <= samples[-1][2]):
                 raise ValueError('CAPTURE_BOOT_OR_SAMPLE_ORDER_CHANGED')
             samples.append((data['boot_id'], data['pdo_sample'], *values))
-    csp = summarize_csp(pdo_rows, 18 if axis == 'body_joint_1' else 19)
+    csp = summarize_csp(pdo_rows, 18 if axis == 'body_joint_1' else 19, encoder)
     diagnostics = dict(session=session, session_selection=selection, pdo_frames=len(pdo_rows), other_session_frames_ignored=other_sessions,
                        invalid_frame_reasons=dict(invalid), csp_diagnostics=csp)
     if not samples:
@@ -508,24 +574,30 @@ def main():
     mode.add_argument('--execute', action='store_true', help='operator only: acquire 16-axis lease and send targets')
     mode.add_argument('--analyze', type=Path, help='offline analysis of an existing capture')
     parser.add_argument('--session', type=int, help='select one servo session for offline analysis')
+    parser.add_argument('--encoder-profile', choices=tuple(ENCODER_PROFILES),
+                        help='explicit log/code encoder scale; old logs without metadata remain unspecified')
+    parser.add_argument('--position-release', type=Path,
+                        help='selected position_release.json with csp_encoder metadata; never selects it from current HEAD')
     parser.add_argument('--robot-config', type=Path)
     parser.add_argument('--namespace', default='bindu_snowbot')
     parser.add_argument('--vendor-namespace', default='/')
     parser.add_argument('--output', type=Path)
     args = parser.parse_args()
     if args.analyze:
-        print(json.dumps(analyze(args.analyze, args.session), indent=2, allow_nan=False))
+        print(json.dumps(analyze(args.analyze, args.session, encoder_profile=args.encoder_profile,
+                                 position_release=args.position_release), indent=2, allow_nan=False))
         return
     if args.session is not None:
         parser.error('--session requires --analyze')
     plan = make_plan(args.degrees, args.speed, args.acceleration, args.jerk)
+    encoder = select_encoder(args.encoder_profile, args.position_release)
     print(json.dumps(dict(preview=not args.execute, axis=args.axis, physical_units_verified=False, degrees=args.degrees,
         duration_s=plan.duration, move_seconds=plan.move_seconds,
         target_peak_speed=1.875*plan.amplitude/plan.move_seconds,
         target_peak_acceleration=10/math.sqrt(3)*plan.amplitude/plan.move_seconds**2,
         target_peak_jerk=60*plan.amplitude/plan.move_seconds**3,
         controlled_groups=GROUPS, holds_other_joint_targets=True,
-        starts_driver=False, **vars_limits(args)), indent=2))
+        starts_driver=False, csp_encoder=encoder, **vars_limits(args)), indent=2))
     if args.execute:
         execute(args, plan)
 

@@ -206,6 +206,65 @@ class WaistTests(unittest.TestCase):
             path.write_text(''.join(json.dumps(r)+'\n' for r in rows))
             return analyze(path, **options)
 
+    def test_unversioned_csp_does_not_guess_position_resolution_from_wire_version(self):
+        result = self.analyze_rows([self.diagnostic_row()])['csp_diagnostics']
+        self.assertTrue(result['available'])
+        self.assertEqual(result['following_error_raw_peak'], 10)
+        self.assertFalse(result['encoder_scale_available'])
+        self.assertIsNone(result['sent_vs_output_peak_counts'])
+        self.assertIsNone(result['output_conversion_counts_per_code_rad'])
+        self.assertEqual(result['encoding_comparison_reason'], 'CSP_ENCODER_SCALE_UNSPECIFIED')
+
+    def test_old_and_new_position_scales_preserve_speed_resolution_and_raw_evidence(self):
+        for profile, position_counts in (('legacy-65536', 65536), ('outer-262144', 262144)):
+            with self.subTest(profile=profile):
+                output = [0.]*16; output[14] = .1
+                target = round(.1*position_counts/(2*math.pi))
+                row = self.diagnostic_row(output_position=output,
+                    csp_target_position_raw=[0, 0, target, 0],
+                    csp_actual_position_raw=[0, 0, target-5, 0])
+                result = self.analyze_rows([row], encoder_profile=profile)['csp_diagnostics']
+                self.assertLessEqual(result['sent_vs_output_peak_counts'], .5)
+                self.assertEqual(result['following_error_raw_peak'], 5)
+                self.assertAlmostEqual(result['output_conversion_counts_per_code_rad'], position_counts/(2*math.pi))
+                self.assertAlmostEqual(result['speed_conversion_counts_per_code_rad'], 65536/(2*math.pi))
+                self.assertFalse(result['encoder_selection']['physical_units_verified'])
+                self.assertFalse(result['encoder_selection']['running_driver_identity_verified'])
+
+    def test_capture_and_release_select_scale_and_conflicting_sources_are_rejected(self):
+        metadata = dict(position_counts_per_rev=262144, speed_counts_per_rev=65536)
+        rows = [self.diagnostic_row(), dict(kind='plan', data=dict(csp_encoder=metadata))]
+        self.assertEqual(self.analyze_rows(rows)['csp_diagnostics']['encoder_selection']['position_counts_per_rev'], 262144)
+        with self.assertRaisesRegex(ValueError, 'CSP_ENCODER_SCALE_CONFLICT'):
+            self.analyze_rows(rows, encoder_profile='legacy-65536')
+        with tempfile.TemporaryDirectory() as tmp:
+            release = Path(tmp)/'position_release.json'
+            release.write_text(json.dumps(dict(csp_encoder=metadata)))
+            result = self.analyze_rows([self.diagnostic_row()], position_release=release)['csp_diagnostics']
+            self.assertEqual(result['encoder_selection']['position_counts_per_rev'], 262144)
+            self.assertEqual(len(result['encoder_selection']['sources'][0]['sha256']), 64)
+            with self.assertRaisesRegex(ValueError, 'CSP_ENCODER_SCALE_CONFLICT'):
+                self.analyze_rows([self.diagnostic_row()], position_release=release, encoder_profile='legacy-65536')
+            release.write_text('{}')
+            with self.assertRaisesRegex(ValueError, 'CSP_ENCODER_METADATA_REQUIRED'):
+                self.analyze_rows([self.diagnostic_row()], position_release=release)
+        for malformed in (True, {}, dict(position_counts_per_rev=True, speed_counts_per_rev=65536),
+                          dict(position_counts_per_rev=262144, speed_counts_per_rev=262144)):
+            with self.subTest(malformed=malformed), self.assertRaises(ValueError):
+                self.analyze_rows([dict(kind='plan', data=dict(csp_encoder=malformed)), self.diagnostic_row()])
+
+    def test_encoder_metadata_is_selected_for_the_requested_session(self):
+        rows = [dict(kind='metadata', data=dict(session=66, csp_encoder=dict(
+                    position_counts_per_rev=65536, speed_counts_per_rev=65536))),
+                dict(kind='metadata', data=dict(session=77, csp_encoder=dict(
+                    position_counts_per_rev=262144, speed_counts_per_rev=65536))),
+                self.diagnostic_row(session=66), self.diagnostic_row(2, session=77)]
+        result = self.analyze_rows(rows, session=77)
+        self.assertEqual(result['other_session_frames_ignored'], 1)
+        self.assertEqual(result['csp_diagnostics']['encoder_selection']['position_counts_per_rev'], 262144)
+        with self.assertRaisesRegex(ValueError, 'CAPTURE_SESSION_AMBIGUOUS'):
+            self.analyze_rows(rows)
+
     def test_csp_analysis_keeps_bad_receives_and_rejects_stale_or_malformed_evidence(self):
         rows = [self.diagnostic_row(), self.diagnostic_row(),
                 self.diagnostic_row(2, pdo_sample=1, wkc=66, reference_valid=False,
@@ -396,7 +455,8 @@ class WaistTests(unittest.TestCase):
             with tempfile.TemporaryDirectory() as directory, patch.dict(sys.modules, modules), patch.object(
                     waist.time, 'monotonic', lambda: clock.value):
                 args = S(axis=axis, robot_config=Path('/memory/robot.json'), output=Path(directory)/'capture.jsonl',
-                         namespace='bindu_snowbot', vendor_namespace='/', speed=.25, acceleration=.5, jerk=10.)
+                         namespace='bindu_snowbot', vendor_namespace='/', speed=.25, acceleration=.5, jerk=10.,
+                         encoder_profile='outer-262144')
                 blocked = scenario in ('moving', 'moving_pdo', 'drifting')
                 if blocked or scenario == 'reject':
                     error = 'TEST_NOT_SETTLED' if blocked else 'trajectory_takeover_seed'
@@ -418,6 +478,8 @@ class WaistTests(unittest.TestCase):
                     self.assertNotIn('INVALID_LEASE', rows[-1]['data']['error'])
                 self.assertTrue(any(row['kind'] == 'settled' for row in rows))
                 self.assertEqual(next(r['data']['axis'] for r in rows if r['kind'] == 'plan'), axis)
+                self.assertEqual(next(r['data']['csp_encoder']['position_counts_per_rev']
+                                      for r in rows if r['kind'] == 'plan'), 262144)
             self.assertTrue(commands)
             self.assertEqual(requests[0], 'acquire')
             self.assertEqual(requests[-1], 'release')
