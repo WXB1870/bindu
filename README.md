@@ -2,11 +2,11 @@
 
 Bindu 是基于 ROS 2 的模块化机器人控制系统，面向遥操作与移动操作。通过公共接口连接目标输入、运动求解、任务能力和设备控制，使算法与机器人硬件能够独立替换。
 
-Bindu维护硬件无关的机器人能力、共享执行契约和运行装配，允许按应用需求修改相关代码。本轮双臂遥操是Snowbot的定制场景；专属操作流程、场景参数和现场资料由文稿中的[snowbot工作区](../../snowbot/README.md)维护，可复用能力与接口在Bindu完善。
+Bindu提供硬件无关的机器人能力、共享执行契约和运行装配。Snowbot是基于Bindu的双臂遥操作应用，专属操作流程、场景参数和现场资料在独立的[Snowbot仓库](https://github.com/WXB1870/snowbot)维护，可复用能力与接口在Bindu维护。
 
 ## Snowbot 应用入口
 
-Snowbot 型号实现、模型与运行配方集中在独立的 [Snowbot 工作区](../../snowbot/README.md)：`snowbot_bringup` 管装配与配置，`snowbot_description` 管模型，`snowbot_hardware` 管厂商协议，`snowbot_teleop` 管扫雪操作流程。Bindu 保留公共契约、求解、执行和通用节点；原 Snowbot Python 模块仅保留兼容转发。运行 Snowbot 需要配套取得两个仓库，旧单仓库安装须按[部署说明](src/integration/bindu_runtime/README.md#x86-真机部署已有适配底层)重建，不能把本机目录移动视为部署完成。
+Snowbot 型号实现、模型与运行配方集中在独立的 [Snowbot 仓库](https://github.com/WXB1870/snowbot)：`snowbot_bringup` 管装配与配置，`snowbot_description` 管模型，`snowbot_hardware` 管厂商协议，`snowbot_teleop` 管扫雪操作流程。Bindu 保留公共契约、求解、执行和通用节点；原 Snowbot Python 模块仅保留兼容转发。运行 Snowbot 需要配套安装两个仓库；旧单仓库环境的重建步骤见[部署说明](src/integration/bindu_runtime/README.md#x86-真机部署已有适配底层)。
 
 ## 项目结构
 
@@ -48,7 +48,7 @@ bindu/
 
 ## 模块快速导航
 
-按现有 ROS 包划分为以下 16 个模块。各模块 README 提供职责、源码、配置与验证入口；目录存在不代表已完成真机接入。
+仓库包含以下16个ROS模块。各模块README列出职责、源码、配置、构建与运行命令，以及设备接入状态。
 
 | 分类 | 模块 | 主要职责 |
 |---|---|---|
@@ -76,9 +76,9 @@ bindu/
 | 模块职责、装配边界及尚未实现的设计 | [软件架构](软件架构设计.md)，具体实现见各模块 README |
 | 动作身份、时间、控制权、反馈与停止语义 | [动作执行契约](动作执行契约.md) |
 | 环境、构建、运行和验证步骤 | [运行与验证](运行与验证.md)；配置选择见[运行装配](src/integration/bindu_runtime/README.md#配置目录) |
-| Snowbot／118现场配方、问题与验收 | [Snowbot工作区](../../snowbot/README.md)及[底层驱动问题记录](../../snowbot/底层驱动问题记录.md) |
+| Snowbot／118现场配方、问题与验收 | [Snowbot仓库](https://github.com/WXB1870/snowbot)及[底层驱动问题记录](https://github.com/WXB1870/snowbot/blob/main/底层驱动问题记录.md) |
 
-主工作区另有本地的`项目上下文.md`、`当前进度.md`、`决策记录.md`与`过程记录/`，分别保存稳定条件、当前摘要、重要取舍和历史证据；历史选型、来源对照、源码盘点及架构图册位于本地`参考文档/`，按主题检索；这些本地材料不随Git分发，新克隆按本文、工程文档与源码使用。Snowbot链接指向独立本地工作区，未取得该目录时不影响阅读Bindu公共工程说明。
+主工作区另有本地的`项目上下文.md`、`当前进度.md`、`决策记录.md`与`过程记录/`，分别保存稳定条件、当前摘要、重要取舍和历史证据；历史选型、来源对照、源码盘点及架构图册位于本地`参考文档/`，按主题检索；这些本地材料不随Git分发，新克隆按本文、工程文档与源码使用。Snowbot跨仓库入口使用GitHub链接，不依赖本机目录布局。
 
 ### 按任务定位
 

@@ -40,9 +40,9 @@ ros2 launch bindu_runtime skeleton.launch.py runtime_mode:=simulation recording_
 
 ## 扫雪位置执行
 
-- 当前统一Snowbot VR位置契约使用`DelegatedPositionExecutor`，直接交目标给选定位置设备；准备、普通双臂及扫雪共用该接口。上层仅接纳非定时`joint_target`；具体设备协议决定底层参考生成方式，不能仅凭上层命令类型推断底层算法。滤波和插值的实际路径见[下表](#当前snowbot-vr链路的滤波与插值)。
-- 旧`tool_pose`运动学装配仍可使用通用`Executor`及`snowbot_shovel_sim.json`的同步插值；该路径与当前统一位置契约分别由装配选择，不能按配置名称推断正在使用的算法。
-- 换握、暂停和取消依赖新鲜实测反馈确认停稳。反馈过期或速度未知不能报告已停稳，停止超时会锁存未确认状态并阻止新接管。
+- 当前统一Snowbot VR位置契约使用`DelegatedPositionExecutor`，直接交目标给选定位置设备；准备、普通双臂及扫雪共用该接口。上层仅接纳非定时`joint_target`；底层参考生成方式由具体设备协议与对应装配决定。滤波和插值的实际路径见[下表](#当前snowbot-vr链路的滤波与插值)。
+- 旧`tool_pose`运动学装配仍可使用通用`Executor`及`snowbot_shovel_sim.json`的同步插值；该路径与当前统一位置契约分别由装配选择，实际算法以装配后的执行路径为准。
+- 换握、暂停和取消依赖新鲜实测反馈确认停稳。停稳确认要求反馈新鲜且速度有效；停止超时锁存未确认状态并阻止新接管。
 
 PICO协调器管理准备、夹爪请求与控制权交接；旧模拟入口使用短参考段，统一位置配方使用直接位置目标及独立夹爪服务。操作资格、确认和停止规则统一见[工具操作契约](../../../动作执行契约.md#61-snowbot-工具操作与握持切换)。真实设备接口已适配，实体夹持、现场标定及真机效果仍待验收。
 
@@ -55,7 +55,7 @@ PICO协调器管理准备、夹爪请求与控制权交接；旧模拟入口使�
 
 `rigid_reference`的连续目标先保留原刚性预测。仅当其前100 ms采样预测某轴领先目标、沿投影趋势运动却即将反向时，才尝试新接续：将趋势与有界位置纠偏投影到相对位姿约束的切空间，再由当前参考速度／加速度积分生成候选终点。候选须通过原动态限值、全段几何门槛及返回实际目标的有限尾段检查；另以4 ms间隔比较其前100 ms与原刚性曲线的相对位姿误差，复用原P95检查的10 μm／10 μrad绝对裕量择优。新接续不可行时保留原刚性预测，诊断为`accepted_absolute_fallback`；无须修正时为`accepted_absolute`。这不是全程单调或实体握持保证，真实输入反向及PAUSE／期限／实测停稳语义保持原契约。
 
-纠偏投影仅在确认需要修正后计算。原生回归[`test_rigid_prediction.cpp`](../../../tests/native/test_rigid_prediction.cpp)需要Eigen，覆盖同向输入减速后的回拉、C2、动态限值、真实反向、边界替代及有限停止尾段；另嵌入冻结双臂运动学与一帧目标流状态，验证新接续被前缀几何检查拒绝后确实返回原刚性曲线，移除该检查会使此用例失败。均为离线参考检查，不代表实体握持或物理停止验收。
+纠偏投影仅在确认需要修正后计算。原生回归[`test_rigid_prediction.cpp`](../../../tests/native/test_rigid_prediction.cpp)需要Eigen，覆盖同向输入减速后的回拉、C2、动态限值、真实反向、边界替代及有限停止尾段；另嵌入冻结双臂运动学与一帧目标流状态，验证新接续被前缀几何检查拒绝后确实返回原刚性曲线，移除该检查会使此用例失败。上述结果均来自离线参考检查，实体握持和物理停止仍待验证。
 
 配置、动态限制及可选阻抗的配对条件在[运行装配](../../integration/bindu_runtime/README.md#扫雪遥操作)维护。两种执行路径由装配选择；上层不重复叠加底层已有的柔顺控制。场景与入口见[扫雪运行装配](../../integration/bindu_runtime/README.md#扫雪遥操作)，完整时间／停止规则见执行契约。
 
@@ -99,11 +99,11 @@ ROS_LOCALHOST_ONLY=1 ROS_DOMAIN_ID=209 python3 -m tests.integration.validate_exe
   --output artifacts/execution-stop-check
 ```
 
-覆盖异步底盘取消／旧租约、停止前旧采样拒绝、实际节点SIGINT／SIGTERM握手、未停稳失败退出和ROS时钟冻结后的单调期限。停止验收直接运行安装后的节点程序，`ros2 run`包装进程的SIGTERM退出码不能代替节点停止结果。初始位置参考为空，只有已成功发送的目标才出现在`reference`；混合仿真／真实反馈、畸形速度维度／数据和设备时间戳回退均拒绝。
+覆盖异步底盘取消／旧租约、停止前旧采样拒绝、实际节点SIGINT／SIGTERM握手、未停稳失败退出和ROS时钟冻结后的单调期限。停止验证直接运行安装后的节点程序，分别记录节点停止结果与`ros2 run`包装进程的SIGTERM退出码。初始位置参考为空，只有已成功发送的目标才出现在`reference`；混合仿真／真实反馈、畸形速度维度／数据和设备时间戳回退均拒绝。
 
-本批证据在`artifacts/control-fixes-2026-10-14/`；多轮检查保留修复前的失败、旧用例即时接管预期及ROS包装进程测试问题，不覆盖原数据。Jazzy／Humble的模块、重复停止、模式隔离和Snowbot接口结果由本批`verification.json`索引；仅x86_64软件／合成反馈验证，不能替代真机、ARM64、载荷或实测通信延迟验收。
+本批证据在`artifacts/control-fixes-2026-10-14/`；多轮检查保留修复前的失败、旧用例即时接管预期及ROS包装进程测试问题，不覆盖原数据。Jazzy／Humble的模块、重复停止、模式隔离和Snowbot接口结果由本批`verification.json`索引；该批覆盖x86_64软件与合成反馈，真机、ARM64、载荷及通信延迟仍待验证。
 
-后续全面检查见`artifacts/comprehensive-qa-2026-10-14/verification.json`：扩大到16包完整构建、全部Python模块、C++与内存／未定义行为检查、100组故障交错、ROS链路及Isaac基础物理验证。复现并修正Snowbot单调停止预算遗漏、真实执行可切换仿真时钟、Python标准测试未接入及LIO默认未优化构建；任务补齐反馈时效门槛、就绪查询和拒绝诊断。旧插值用例和物理验证器同步按独立停稳确认等待，不放宽阈值。首轮QP超时及两轮导航启动失败保留，预检后的复测通过仍不代表长时间负载／DDS调度原因已全部解决；底层全包在Jazzy仍有Python3.10头文件硬编码／KDL依赖问题，真机、ARM64和底层完整目标平台构建不在通过范围。
+后续全面检查见`artifacts/comprehensive-qa-2026-10-14/verification.json`：扩大到16包完整构建、全部Python模块、C++与内存／未定义行为检查、100组故障交错、ROS链路及Isaac基础物理验证。复现并修正Snowbot单调停止预算遗漏、真实执行可切换仿真时钟、Python标准测试未接入及LIO默认未优化构建；任务补齐反馈时效门槛、就绪查询和拒绝诊断。旧插值用例和物理验证器同步按独立停稳确认等待，不放宽阈值。首轮QP超时及两轮导航启动失败保留，预检后的复测通过，长时间负载及DDS调度问题仍待定位；底层全包在Jazzy仍有Python3.10头文件硬编码／KDL依赖问题，真机、ARM64和底层完整目标平台构建不在通过范围。
 
 关节参考统一由 [C++ 内核](native/interpolation.hpp)生成；[Python 接口](bindu_execution/interpolation.py)只负责对象/时间轴适配，不再保留第二套曲线数学实现。在线目标用自适应策略，定时 P2P、导数轨迹和动作块用时序策略，共用曲线求值、限幅及制动。ROS 执行器继续管理 revision、控制权和实测到达确认，语义见[动作执行契约](../../../动作执行契约.md#2-输入模式必须显式选择)。原实验目录已合入 `native/`，历史源码仍只读。
 
@@ -111,9 +111,9 @@ ROS_LOCALHOST_ONLY=1 ROS_DOMAIN_ID=209 python3 -m tests.integration.validate_exe
 
 连续位置目标另用`PreparedSegment::stream_target(...)`：非实时侧复用`AdaptiveStream`生成30 ms受限前缀，按所有轴的急动度相位边界拆成共同时间片段，再接原`fit_target`的有限静止尾段。接近静止终点时直接使用原收敛曲线，避免重复目标一直推迟捕获；前缀无法认证时，原整段规划仍须独立通过全部检查。周期侧继续使用同一不可变预备段采样器，不运行在线生成器、不分配或释放内存。此策略允许各轴进度不同，不保证刚性握持或碰撞约束；工具模式须核对生成曲线上的实际几何。它供servo目标流本地规划调用，不通过旧整段轨迹wire导出／重建这些短片段；原`target`、`stop`及旧整段轨迹入口保持原义。
 
-周期仅调用`segment.sample_into(now, q, v, a, j, capacity) noexcept`；四个互不重叠的`double`缓冲须预分配且容量不小于`axes()`。失败不写输出；端点后保持最终位置并返回零`v/a/j`。最多256轴、1024片段，以二分选择片段和固定6元素栈上求值，采样不规划、不分配或释放内存。段创建、验证和对象回收留在非实时侧，调用方须保证采样期间对象存活，不能在周期内销毁最后一个引用。`sample()`及Python对象／缓冲接口仍有分配或解释器开销，不能据此宣称硬实时。
+周期仅调用`segment.sample_into(now, q, v, a, j, capacity) noexcept`；四个互不重叠的`double`缓冲须预分配且容量不小于`axes()`。失败不写输出；端点后保持最终位置并返回零`v/a/j`。最多256轴、1024片段，以二分选择片段和固定6元素栈上求值，采样不规划、不分配或释放内存。段创建、验证和对象回收留在非实时侧，调用方须保证采样期间对象存活，不能在周期内销毁最后一个引用。`sample()`及Python对象／缓冲接口仍有分配或解释器开销，硬实时能力尚未验证。
 
-`describe()`导出每个真实片段的`(start, duration, source_duration, source_elapsed, controls[axis])`；位置控制点采用Bernstein基，每轴4个（cubic）或6个（quintic）。`source_duration==0`时按`elapsed/duration`求值，否则按`(elapsed+source_elapsed)/source_duration`保留原曲线裁剪区间。`from_description(description, limits)`只在非实时侧重建导数、核验片段时间／`q/v/a`接续、动态限制及最终静止条件，不拟合、重排或重定时。轴序、源身份、原期限、时钟异常和真实停止确认由调用方管理；取样、派生帧和心跳都不能续期。到达采样端点也不能报告机器人实际到达。Python同名类提供`target`／`stop`／`describe`／`from_description`／`sample_into`。
+`describe()`导出每个真实片段的`(start, duration, source_duration, source_elapsed, controls[axis])`；位置控制点采用Bernstein基，每轴4个（cubic）或6个（quintic）。`source_duration==0`时按`elapsed/duration`求值，否则按`(elapsed+source_elapsed)/source_duration`保留原曲线裁剪区间。`from_description(description, limits)`只在非实时侧重建导数、核验片段时间／`q/v/a`接续、动态限制及最终静止条件，不拟合、重排或重定时。轴序、源身份、原期限、时钟异常和真实停止确认由调用方管理；取样、派生帧和心跳沿用原期限。机器人实际到达由设备实测反馈判定。Python同名类提供`target`／`stop`／`describe`／`from_description`／`sample_into`。
 
 `session_v3`是纯位置目标流协议（wire 5、reference 2、目标配方version 2）。上层退休曲线发送及跨层提前量配置；旧`session_v2`配方拒绝加载。目标轴序为左臂J1～J7、右臂J1～J7、腰部J1～J2，单位rad；动态界逐轴取profile与发送端只读启动参数`trajectory_max_velocity`（默认0.25 rad/s）、`trajectory_max_acceleration`（默认0.5 rad/s²）及固定162 rad/s³的较小值。消息同时保留session、源command／lease／epoch／profile身份、sequence、源时间及原始期限；中层只透传，派生帧、接纳、采样和心跳不续期。普通目标原始TTL最多300 ms（旧follower／trajectory及阻抗普通目标仍为200 ms）；纯目标流PAUSE作为独立停止命令，由源端一次生成固定2 s原始期限，须在该期限内完成制动参考并转入固定保持，不续期旧目标或授权恢复运动。旧follower／trajectory及阻抗PAUSE仍最多200 ms；新停止命令须与更新后的三层配对。
 
@@ -121,13 +121,13 @@ servo在非实时后台从已采用名义轨迹的未来`q/v/a`快照调用`trac
 
 普通在途生成不因更新取消，待处理普通目标只保留最新一份；PAUSE及控制权／故障边界使旧结果失效，仍调用原`stop`。首次从失能接管用新鲜实测播种；已带电暂停后的重新接管延续原固定参考，避免跟随偏差变成参考跳变，正常更新不逐帧用实测重置。周期采样不规划、不分配或释放内存；共同时间不承诺任意换目标的共同标量进度、闭链几何或jerk连续。旧整段轨迹入口和`stream_target`公共接口仍保留。此处描述本机源码，现场仍须核对选定版本是否已构建并加载。
 
-纯位置PAUSE在原期限内完成制动参考后，由servo复用本地固定参考保持；不再接收运动点也不因2 s到期撤使能。原source时间与期限保持不变，仅继续新鲜的本地采样，普通运动断流及反馈／Fault／撤权／采样超时保护保留。Bindu仍先核对同一PAUSE的有效保持回执，再要求100 ms内新鲜、持续推进的实测满足原速度界及固定实测锚点的位置变化界；名义到位误差单独诊断，不作为target_stream暂停停稳的前提。回执缺失、速度超界或窗口内漂移不能报告停稳，原停止总预算不延长。下发保持、实测停稳与运动目标到达分别判定。
+纯位置PAUSE在原期限内完成制动参考后，由servo复用本地固定参考保持；不再接收运动点也不因2 s到期撤使能。原source时间与期限保持不变，仅继续新鲜的本地采样，普通运动断流及反馈／Fault／撤权／采样超时保护保留。Bindu仍先核对同一PAUSE的有效保持回执，再要求100 ms内新鲜、持续推进的实测满足原速度界及固定实测锚点的位置变化界；名义到位误差单独诊断，不作为target_stream暂停停稳的前提。停稳确认要求回执有效、速度合规且窗口内位置稳定，原停止总预算保持不变。下发保持、实测停稳与运动目标到达分别判定。
 
-真机target_stream在明确开放写入后，通过正常租约／接管／PAUSE链路完成一次实测原位带电保持；就绪前不接收跟随租约，失败不自动再次使能。Squeeze只控制跟随。目标生产者断流时，执行端在原目标期限前60 ms请求PAUSE：300 ms上限对应源年龄240 ms，显式更短的TTL仍按原值提前制动，启动原位保持目标仍为200 ms。源时间不重置，重复tick／派生帧不续期；本地控制线程停滞仍受底层watchdog约束，不能保证在设备或控制故障时继续带电。
+真机target_stream在明确开放写入后，通过正常租约／接管／PAUSE链路完成一次实测原位带电保持；就绪前不接收跟随租约，失败不自动再次使能。Squeeze只控制跟随。目标生产者断流时，执行端在原目标期限前60 ms请求PAUSE：300 ms上限对应源年龄240 ms，显式更短的TTL仍按原值提前制动，启动原位保持目标仍为200 ms。源时间不重置，重复tick／派生帧不续期；本地控制线程停滞时仍由底层watchdog处理，设备或控制故障时的带电状态取决于底层故障策略。
 
 首次／恢复接管保留一次接纳握手，避免op1在中层或DDS的latest缓存被普通目标覆盖；等待期间上层只保留最新目标，原接管期限不变。接纳后普通目标不逐段等待回执；PAUSE立即绕过该等待。接纳／拒绝通过`/bindu/position/servo_receipt`或周期状态观察，配置20 ms执行tick，submit也可触发发送，50 Hz不是硬限频。真实生效以servo采样身份与时刻判断，参考终点不表示真实到达；正常暂停、期限失效、撤权、Fault和STOP_UNCONFIRMED分别保留。目标配置周期及servo名义1 ms采样不变，本地准备预算和离线对比证据在[Snowbot运行说明](../../../../../snowbot/运行与验证.md#执行侧联合目标流)。真实手柄到运动、调度尾峰及持载停止仍待现场验收。
 
-本机[时序对比工具](../../../tools/analysis/compare_session_latency.py)使用相同输入与动态限制比较冻结的旧方案和新目标流，仅覆盖相应本机软件／内存设备替身。结果不能代替ROS/DDS和硬件验收。
+本机[时序对比工具](../../../tools/analysis/compare_session_latency.py)使用相同输入与动态限制比较冻结的旧方案和新目标流，仅覆盖相应本机软件／内存设备替身。ROS/DDS与硬件仍需单独验证。
 
 刚性双臂预测与[离线回放](../../../tools/analysis/replay_geometric_prediction.py)共用可选的[rigid_prediction.hpp](native/rigid_prediction.hpp)。它将趋势速度投影至相对位姿雅可比的零空间，非线性修正预测末点以保持已接纳目标的六维相对位姿，再约束末速度与含曲率项的末加速度。各轴共用预测增益及100 ms起的连接时域，普通趋势基线复用同一`tracking_target`。保留解析动态限制、有限返回尾段和原采样几何门槛；可行候选不再被40 ms位置误差评分切回静止终点，几何或动态候选失败仍退回无趋势联合曲线。`A`、仅切空间投影与自适应增益保留作离线消融，不是生产策略开关。
 
@@ -143,7 +143,7 @@ python3 -m tools.analysis.replay_geometric_prediction \
 python3 -m unittest tests.unit.test_geometric_prediction
 ```
 
-预测末点服从六维相对约束，但连接曲线仍只做有限采样几何检查；无趋势回退也不是连续闭链证书。当前不支持轴向五维握持、完整工具／CAD准入或真实闭环保证。后台`TARGET_PREDICTION`记录源session／sequence、生成结果、增益、回退原因和准备耗时，`TARGET_PREDICTION_MODEL`记录模型SHA；这些INFO事件由既有只读观察器保存，不能当作已采用回执。是否实际采用仍以servo参考身份／采样时刻核对。当前仅完成本机软件接入，真实ROS/DDS构建、运行时调度和真机效果未验收。
+预测末点服从六维相对约束，但连接曲线仍只做有限采样几何检查；无趋势回退也不是连续闭链证书。当前不支持轴向五维握持、完整工具／CAD准入或真实闭环保证。后台`TARGET_PREDICTION`记录源session／sequence、生成结果、增益、回退原因和准备耗时，`TARGET_PREDICTION_MODEL`记录模型SHA；这些INFO事件由既有只读观察器保存，段采用状态由独立回执确认。是否实际采用仍以servo参考身份／采样时刻核对。当前仅完成本机软件接入，真实ROS/DDS构建、运行时调度和真机效果未验收。
 
 原生消费者可`add_subdirectory(path/to/native)`并链接`bindu::execution_native`；独立安装后也可`find_package(bindu_execution_native CONFIG REQUIRED)`。Python包会将同一份源码与CMake入口安装到`share/bindu_execution/native`，避免servo另写插值器。独立构建不需要ROS、Python或设备SDK：
 
@@ -179,9 +179,9 @@ c++ -std=c++17 -O2 -Wall -Wextra -pedantic \
 artifacts/native-test/test_native
 ```
 
-`tests/native/test_prepared_segment.cpp`用同样编译命令替换测试源即可运行，覆盖16轴共同动态限制、静止与非零初速、连续非共线换目标、停止参考接续、wire多片段及source时间往返、非法缓冲和采样零动态分配。1kHz时间戳序列验证数学接口，不代表操作系统调度或真实设备周期验收。
+`tests/native/test_prepared_segment.cpp`用同样编译命令替换测试源即可运行，覆盖16轴共同动态限制、静止与非零初速、连续非共线换目标、停止参考接续、wire多片段及source时间往返、非法缓冲和采样零动态分配。1kHz时间戳序列用于验证数学接口；操作系统调度和真实设备周期需实测。
 
-保留历史源码的主工作区可运行以下对照。工具分别测旧 C++、标量自适应、新原生在线/五次曲线策略，输出 CSV/JSON；原生策略耗时包含 Python 绑定开销，七轴项目使用实际在线策略。当前本机离线正弦 RMS 为0.099219 rad，旧内核为0.097335 rad；固定时序策略不会为了降低误差自行改变轨迹时间。测试值不等于机器人定位精度或端到端延迟，内核仍有动态分配，Python/ROS 串行执行壳仍在，不宣称硬实时。
+保留历史源码的主工作区可运行以下对照。工具分别测旧 C++、标量自适应、新原生在线/五次曲线策略，输出 CSV/JSON；原生策略耗时包含 Python 绑定开销，七轴项目使用实际在线策略。当前本机离线正弦 RMS 为0.099219 rad，旧内核为0.097335 rad；固定时序策略不会为了降低误差自行改变轨迹时间。测试值描述该离线内核实验；机器人定位精度与端到端延迟需实测。内核仍有动态分配并使用Python/ROS串行执行壳，硬实时能力尚未验证。
 
 ```bash
 python3 -m tools.analysis.compare_interpolators --legacy-root 历史代码/legs_necks_control \
@@ -195,7 +195,7 @@ python3 -m tools.analysis.compare_interpolators --legacy-root 历史代码/legs_
 | 环节 | 当前位置契约的实际路径 |
 |---|---|
 | 手柄位姿滤波 | 共用Snowbot配方已启用One Euro；普通双臂分别滤波手柄，扫雪滤波合成中点／姿态。按键与时效使用原始输入，参数及重置规则见[遥操作模块](../../capabilities/bindu_teleoperation/README.md#vr-位姿-one-euro-滤波) |
-| 共享位置执行 | `DelegatedPositionExecutor.prepare_path`保留直接位置目标，不调用通用执行器的原生自适应／S曲线生成；profile中的`joint_target_interpolation=adaptive`不能据此证明此路径使用了自适应插值 |
+| 共享位置执行 | `DelegatedPositionExecutor.prepare_path`保留直接位置目标，不调用通用执行器的原生自适应／S曲线生成；该路径的插值方式由实际执行入口决定，profile中的`joint_target_interpolation=adaptive`在此处不生效 |
 | 当前PhysX设备 | 腰与双臂共用一个限速向量进度，生成一致的位置／速度参考；实际关节由物理驱动跟随，头部与夹爪独立 |
 | 真实设备 | `legacy_guard/session_v1`委托底层跟随；`session_v3`由servo后台生成联合曲线并统一采样，实际配置和同步性能仍需按现场记录与实测核对 |
 

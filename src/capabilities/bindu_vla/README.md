@@ -81,4 +81,4 @@ ros2 action send_goal /bindu_sim/vla/pi/session bindu_interfaces/action/PiSessio
   "{task_id: pi_demo, prompt: 'pick water', resource_group: arm, duration: 5.0}" --feedback
 ```
 
-缺少新鲜观测时拒绝启动，原因通过 `PI_GOAL_REJECTED` 事件和节点日志给出。会话持续时间结束表示控制会话停止，不代表抓取成功。目前每个会话控制一个关节组，默认使用模拟设备，ACT 未接入。
+缺少新鲜观测时拒绝启动，原因通过 `PI_GOAL_REJECTED` 事件和节点日志给出。会话持续时间结束时停止控制；抓取结果依据独立任务反馈判定。目前每个会话控制一个关节组，默认使用模拟设备，ACT 未接入。
