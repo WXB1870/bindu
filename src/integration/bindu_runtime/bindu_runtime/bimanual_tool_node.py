@@ -248,7 +248,7 @@ class BimanualToolNode(RuntimeNode):
             else:
                 measured=dict(zip(s.joints.name,s.joints.position))
                 self.preflight_token-=1
-                operation='independent_capture' if mode=='independent_arms' else 'capture'
+                operation='independent_capture' if mode=='independent_arms' else 'preflight_capture'
                 if self.worker.submit(operation,self.preflight_token,measured,grasp_mode=grasp):
                     self.preflight_status='pending'
                     self.preflight_at=self.now()

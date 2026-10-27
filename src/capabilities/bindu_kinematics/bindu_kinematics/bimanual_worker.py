@@ -95,6 +95,8 @@ def _run(config, profile, requests, results, preload_path_checks=False):
                 independent=isinstance(grasp_mode,str) and grasp_mode.startswith('independent:')
                 if operation=='independent_capture':
                     value=solver.capture_independent(feedback,reference=reference,preserve_rigid_grasp=True)
+                elif operation=='preflight_capture':
+                    value=solver.capture(feedback,grasp_mode,reference=reference,commit_grasp=False)
                 elif operation=='capture' and independent:
                     value=solver.capture_independent(feedback,reference=reference)
                 elif operation == 'capture': value=solver.capture(feedback,grasp_mode,reference=reference)
