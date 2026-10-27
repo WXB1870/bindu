@@ -3,6 +3,11 @@
 set -eo pipefail
 bindu_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 cd -- "$bindu_root"
+if [[ "${1:-}" == real ]]; then
+  shift
+  # Let the prepared deployment select and validate its environment/site file.
+  exec /usr/bin/python3 -m tools.deployment.x86_real start "$@"
+fi
 for bindu_argument in "$@"; do
   if [[ "$bindu_argument" == --help || "$bindu_argument" == -h ]]; then
     exec python3 -m tools.teleop.run_vr "$@"
