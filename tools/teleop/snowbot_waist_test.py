@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Single waist-axis diagnostic. Preview is offline; --execute uses an existing executor.
 
-The operator starts the reviewed position stack separately. This program never
-starts/stops drivers, changes limits, resets faults or writes the legacy body
-topic. The current Snowbot session owns all 16 waist/arm joints: arm joint
-targets and the other waist axis stay at the captured measurement, not Cartesian poses.
+The operator starts the reviewed driver separately. This program never starts/
+stops drivers or changes limits. Session mode owns 16 waist/arm joints.
+The waist_topic backend requires standalone servo and only publishes the two
+waist positions to /body/motor_cmd; it never writes arm/head commands.
 Use without a tool: moving the waist moves both arms in the world frame.
 """
 import argparse
@@ -248,6 +248,173 @@ def targets(plan, elapsed, initial, limits, axis='body_joint_1'):
         if not math.isfinite(q[n]) or not limits[n][0]+margin <= q[n] <= limits[n][1]-margin:
             raise ValueError('TEST_POSITION_LIMIT:'+n)
     return q
+
+
+
+def checked_waist_topic_pdo(msg, now, received, steady, boot=None):
+    if getattr(msg, 'session_selected', False):
+        raise RuntimeError('WAIST_TOPIC_SESSION_ACTIVE: standalone servo required')
+    if (not 0 <= steady-received <= .05 or not msg.pdo_sample or
+            boot is not None and msg.boot_id != boot or
+            not 0 <= now-(msg.header.stamp.sec+msg.header.stamp.nanosec*1e-9) <= .05 or
+            not math.isfinite(msg.pdo_age) or not 0 <= msg.pdo_age <= .02 or
+            msg.expected_wkc <= 0 or msg.wkc != msg.expected_wkc or
+            msg.valid_mask & (3 << 18) != (3 << 18) or
+            len(msg.position) != 20 or len(msg.speed) != 20 or len(msg.status) != 20 or
+            any(msg.status[i] & 8 or not all(math.isfinite(v) for v in
+                (msg.position[i], msg.speed[i])) for i in (18, 19)) or
+            len(msg.csp_mode_display) != 4 or any(m != 8 for m in msg.csp_mode_display[2:])):
+        raise RuntimeError('WAIST_TOPIC_PDO_NOT_READY')
+    return tuple(msg.position[18:20])
+
+
+def waist_topic_targets(plan, elapsed, initial, limits, axis):
+    index = NAMES[:2].index(axis)
+    if len(initial) != 2 or any(not math.isfinite(q) for q in initial):
+        raise ValueError('WAIST_TOPIC_BASELINE_INVALID')
+    for i, name in enumerate(NAMES[:2]):
+        lo, hi = limits[name]
+        excursion = plan.amplitude+.01 if i == index else 0.
+        if not lo+excursion <= initial[i] <= hi-excursion:
+            raise ValueError('TEST_POSITION_LIMIT:'+name)
+    q = list(initial)
+    q[index] += plan.sample(elapsed)[0]
+    return q
+
+
+def execute_waist_topic(args, plan):
+    """Standalone legacy waist topic only; no arm/head publishers or leases."""
+    import rclpy
+    from rclpy.qos import qos_profile_sensor_data
+    from rclpy.signals import SignalHandlerOptions
+    from std_msgs.msg import Float64MultiArray
+    from snowbot_ctl_msgs.msg import PositionObservation, PositionSessionState
+    if not args.robot_config or not args.output:
+        raise ValueError('--execute requires --robot-config and --output')
+    config_path = args.robot_config.resolve()
+    config = json.loads(config_path.read_text())
+    profile = json.loads((config_path.parent/config['profile']).read_text())
+    execution = profile['execution']
+    dynamics = execution.get('joint_dynamics', {}).get(args.axis, {})
+    caps = (dynamics.get('velocity', profile['max_speed']),
+            dynamics.get('acceleration', execution['max_acceleration']),
+            dynamics.get('jerk', execution['max_jerk']))
+    if any(v > cap for v, cap in zip((args.speed, args.acceleration, args.jerk), caps)):
+        raise ValueError('TEST_EXCEEDS_SELECTED_PROFILE')
+    encoder = select_encoder(args.encoder_profile, args.position_release)
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    log = args.output.open('x')
+    rclpy.init(args=[], signal_handler_options=SignalHandlerOptions.NO)
+    node = rclpy.create_node('waist_topic_test_'+uuid.uuid4().hex[:8],
+                            enable_rosout=False, start_parameter_services=False)
+    prefix = '/'+args.vendor_namespace.strip('/') if args.vendor_namespace.strip('/') else ''
+    command_topic = prefix+'/body/motor_cmd'
+    latest = {}; last_sample = None; progress = time.monotonic(); failure = None; sent = 0
+
+    def record(kind, **data):
+        log.write(json.dumps(dict(kind=kind, steady=time.monotonic(), data=json_value(data)),
+                             allow_nan=False)+'\n')
+
+    def observe(msg):
+        nonlocal last_sample, progress
+        now = time.monotonic()
+        if msg.pdo_sample != last_sample:
+            last_sample, progress = msg.pdo_sample, now
+        latest['pdo'] = (msg, now)
+        if now-latest.get('logged', 0.) >= .01:
+            record('waist_pdo', stamp=msg.header.stamp.sec+msg.header.stamp.nanosec*1e-9,
+                   boot_id=msg.boot_id, sample=msg.pdo_sample, pdo_age=msg.pdo_age,
+                   wkc=msg.wkc, expected_wkc=msg.expected_wkc, valid_mask=msg.valid_mask,
+                   position=list(msg.position[18:20]), speed=list(msg.speed[18:20]),
+                   status=list(msg.status[18:20]), mode=list(msg.csp_mode_display[2:4]),
+                   raw_target=list(msg.csp_target_position_raw[2:4]),
+                   raw_actual=list(msg.csp_actual_position_raw[2:4]),
+                   session_selected=msg.session_selected)
+            latest['logged'] = now
+
+    node.create_subscription(PositionObservation, prefix+'/bindu/position/observation',
+                             observe, qos_profile_sensor_data)
+    node.create_subscription(PositionSessionState, prefix+'/bindu/position/servo_state',
+                             lambda m: latest.update(state=(m, time.monotonic())), 10)
+    publisher = node.create_publisher(Float64MultiArray, command_topic, 1)
+
+    def check(discovering=False, boot=None):
+        if not checked_pdo_source(node.get_publishers_info_by_topic(
+                prefix+'/bindu/position/observation'), discovering=discovering):
+            return None
+        if 'pdo' not in latest or 'state' not in latest:
+            if discovering: return None
+            raise RuntimeError('WAIST_TOPIC_FEEDBACK_MISSING')
+        state, received = latest['state']
+        if state.selected:
+            raise RuntimeError('WAIST_TOPIC_SESSION_ACTIVE: standalone servo required')
+        if not state.startup_complete:
+            if discovering: return None
+            raise RuntimeError('WAIST_TOPIC_STARTUP_NOT_COMPLETE')
+        if state.control_source != 'position' or not 0 <= time.monotonic()-received <= .2:
+            raise RuntimeError('WAIST_TOPIC_SERVO_NOT_READY')
+        pubs = node.get_publishers_info_by_topic(command_topic)
+        subscriptions = publisher.get_subscription_count()
+        if (len(pubs) != 1 or pubs[0].node_name != node.get_name() or subscriptions != 1):
+            pending = not pubs or (len(pubs) == 1 and pubs[0].node_name in
+                                   (node.get_name(), '_NODE_NAME_UNKNOWN_'))
+            if discovering and pending and subscriptions <= 1: return None
+            raise RuntimeError('WAIST_TOPIC_COMPETING_OR_MISSING_ENDPOINT')
+        msg, received = latest['pdo']
+        if time.monotonic()-progress > .05:
+            raise RuntimeError('WAIST_TOPIC_PDO_NOT_ADVANCING')
+        return checked_waist_topic_pdo(msg, node.get_clock().now().nanoseconds*1e-9,
+                                      received, time.monotonic(), boot)
+
+    try:
+        deadline = time.monotonic()+5.; baseline = None; rest_since = None
+        while True:
+            rclpy.spin_once(node, timeout_sec=.005)
+            q = check(discovering=True)
+            if q is not None:
+                msg = latest['pdo'][0]
+                if (any(abs(v) > .005 for v in msg.speed[18:20]) or
+                        baseline is None or any(abs(a-b) > .001 for a, b in zip(q, baseline))):
+                    baseline, rest_since = q, time.monotonic()
+                elif time.monotonic()-rest_since >= .2:
+                    initial = q; boot = msg.boot_id; break
+            if time.monotonic() >= deadline:
+                raise RuntimeError('WAIST_TOPIC_DISCOVERY_OR_REST_TIMEOUT')
+        waist_topic_targets(plan, 0., initial, profile['limits'], args.axis)
+        record('plan', backend='waist_topic', command_topic=command_topic, axis=args.axis,
+               initial=list(initial), amplitude_rad=plan.amplitude, duration=plan.duration,
+               csp_encoder=encoder, controlled_joints=list(NAMES[:2]), **signal_metadata(plan))
+        start = next_tick = time.monotonic(); rest_since = None
+        while True:
+            rclpy.spin_once(node, timeout_sec=.002)
+            now = time.monotonic()
+            q = check(boot=boot); elapsed = now-start
+            if now-next_tick > .08:
+                raise RuntimeError('TEST_STREAM_GAP')
+            if now >= next_tick:
+                goal = waist_topic_targets(plan, elapsed, initial, profile['limits'], args.axis)
+                publisher.publish(Float64MultiArray(data=goal)); sent += 1
+                record('waist_target', elapsed=elapsed, position=goal)
+                next_tick = now+.02
+            if elapsed >= plan.duration:
+                resting = (all(abs(a-b) < execution['feedback_tolerances']['joint_position']
+                               for a, b in zip(q, initial)) and
+                           all(abs(v) <= execution['feedback_tolerances']['joint_velocity']
+                               for v in latest['pdo'][0].speed[18:20]))
+                rest_since = now if resting and rest_since is None else rest_since if resting else None
+                if rest_since is not None and now-rest_since >= .1: break
+                if elapsed-plan.duration >= execution['stop_timeout']:
+                    raise RuntimeError('WAIST_TOPIC_REST_UNCONFIRMED')
+    except (Exception, KeyboardInterrupt) as exc:
+        failure = str(exc) or type(exc).__name__
+    finally:
+        # Legacy topic has no PAUSE/disable API. Last target remains held by servo;
+        # after a fault we do not invent a safe return or claim a physical stop.
+        record('result', completed=failure is None, error=failure, targets_sent=sent,
+               driver_started=False, physical_stop_confirmed=False, hardware_acceptance=False)
+        node.destroy_node(); rclpy.shutdown(); log.close()
+    if failure:
+        raise RuntimeError(failure)
 
 
 def execute(args, plan):
@@ -641,6 +808,7 @@ def main():
     parser.add_argument('--speed', type=float, default=.1, help='code-scale rad/s; default .1, <=0.375 and selected profile')
     parser.add_argument('--acceleration', type=float, default=.5, help='code-scale rad/s^2; default .5, <=2.25 and selected profile')
     parser.add_argument('--jerk', type=float, default=10., help='code-scale rad/s^3; default 10, <=162')
+    parser.add_argument('--backend', choices=('session', 'waist_topic'), default='session')
     parser.add_argument('--waveform', choices=('quintic', 'sine'), default='quintic')
     parser.add_argument('--frequency', type=float, default=.2, help='sine frequency in Hz')
     parser.add_argument('--cycles', type=int, default=5, help='sine cycles including first/last envelope cycles')
@@ -671,10 +839,11 @@ def main():
         target_peak_speed=None if isinstance(plan, SinePlan) else 1.875*plan.amplitude/plan.move_seconds,
         target_peak_acceleration=None if isinstance(plan, SinePlan) else 10/math.sqrt(3)*plan.amplitude/plan.move_seconds**2,
         target_peak_jerk=None if isinstance(plan, SinePlan) else 60*plan.amplitude/plan.move_seconds**3,
-        controlled_groups=GROUPS, holds_other_joint_targets=True,
+        backend=args.backend, controlled_groups=('waist',) if args.backend == 'waist_topic' else GROUPS,
+        holds_other_joint_targets=args.backend == 'session',
         starts_driver=False, csp_encoder=encoder, **signal_metadata(plan), **vars_limits(args)), indent=2))
     if args.execute:
-        execute(args, plan)
+        (execute_waist_topic if args.backend == 'waist_topic' else execute)(args, plan)
 
 
 if __name__ == '__main__':

@@ -30,6 +30,86 @@ def pdo():
 
 class WaistTests(unittest.TestCase):
 
+    def test_waist_topic_checks_only_waist_and_refuses_active_session(self):
+        msg = pdo()
+        msg.session_selected = False
+        msg.csp_mode_display = [0, 0, 8, 8]
+        msg.valid_mask = 3 << 18
+        msg.status[:16] = [8]*16
+        msg.position[0] = float('nan')
+        self.assertEqual(waist.checked_waist_topic_pdo(msg, 10.01, 2., 2.01), (0., 0.))
+        for change, error in ((dict(session_selected=True), 'WAIST_TOPIC_SESSION_ACTIVE'),
+                              (dict(wkc=66), 'WAIST_TOPIC_PDO_NOT_READY'),
+                              (dict(pdo_age=.03), 'WAIST_TOPIC_PDO_NOT_READY')):
+            value = S(**vars(msg)); value.__dict__.update(change)
+            with self.assertRaisesRegex(RuntimeError, error):
+                waist.checked_waist_topic_pdo(value, 10.01, 2., 2.01)
+        msg.status[18] |= 8
+        with self.assertRaisesRegex(RuntimeError, 'WAIST_TOPIC_PDO_NOT_READY'):
+            waist.checked_waist_topic_pdo(msg, 10.01, 2., 2.01)
+
+    def test_waist_topic_message_has_two_waist_positions_and_full_limits(self):
+        plan = waist.make_sine_plan()
+        limits = {'body_joint_1': (-1., 1.), 'body_joint_2': (-.5, .5)}
+        self.assertEqual(waist.waist_topic_targets(plan, 0., (.1, .2), limits, 'body_joint_1'), [.1, .2])
+        goal = waist.waist_topic_targets(plan, 7.25, (.1, .2), limits, 'body_joint_1')
+        self.assertEqual(len(goal), 2)
+        self.assertAlmostEqual(goal[0], .1+math.pi/180)
+        self.assertEqual(goal[1], .2)
+        with self.assertRaisesRegex(ValueError, 'TEST_POSITION_LIMIT'):
+            waist.waist_topic_targets(plan, 0., (.99, .2), limits, 'body_joint_1')
+
+    def test_direct_waist_runner_blocks_owned_session_before_any_command(self):
+        clock = S(value=10.)
+        subscriptions = {}; publishers = []; sent = []
+        node_name = 'waist_test_memory'
+        class Node:
+            def create_subscription(self, kind, topic, callback, qos):
+                subscriptions[topic] = callback
+            def create_publisher(self, kind, topic, qos):
+                publishers.append(topic)
+                return S(get_subscription_count=lambda: 1, publish=lambda msg: sent.append(msg))
+            def get_publishers_info_by_topic(self, topic):
+                return [S(node_name=node_name if topic == '/body/motor_cmd' else 'servo_node')]
+            def get_name(self): return node_name
+            def get_clock(self): return S(now=lambda: S(nanoseconds=int(clock.value*1e9)))
+            def destroy_node(self): pass
+        def spin_once(node, timeout_sec):
+            clock.value += .005
+            msg = pdo(); msg.session_selected = True
+            msg.csp_mode_display = [8]*4
+            msg.csp_target_position_raw = msg.csp_actual_position_raw = [0]*4
+            msg.header.stamp = S(sec=10, nanosec=round((clock.value-10)*1e9))
+            subscriptions['/bindu/position/observation'](msg)
+            subscriptions['/bindu/position/servo_state'](S(
+                selected=True, startup_complete=True, control_source='position'))
+        modules = {}
+        def module(name, **attrs):
+            value=ModuleType(name);value.__dict__.update(attrs);modules[name]=value
+        module('rclpy', init=lambda **kwargs:None, shutdown=lambda:None,
+               create_node=lambda *args, **kwargs:Node(), spin_once=spin_once)
+        module('rclpy.qos', qos_profile_sensor_data=object())
+        module('rclpy.signals', SignalHandlerOptions=S(NO=0))
+        module('std_msgs.msg', Float64MultiArray=S)
+        module('snowbot_ctl_msgs.msg', PositionObservation=S, PositionSessionState=S)
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            profile=dict(limits={'body_joint_1':[-1,1],'body_joint_2':[-.5,.5]}, max_speed=.375,
+                         execution=dict(max_acceleration=.5,max_jerk=10.))
+            (root/'profile.json').write_text(json.dumps(profile))
+            (root/'robot.json').write_text(json.dumps(dict(profile='profile.json')))
+            args=S(axis='body_joint_1',robot_config=root/'robot.json',output=root/'capture.jsonl',
+                   vendor_namespace='/',speed=.1,acceleration=.5,jerk=10.,
+                   encoder_profile=None,position_release=None)
+            with patch.dict(sys.modules,modules), patch.object(waist.time,'monotonic',lambda:clock.value):
+                with self.assertRaisesRegex(RuntimeError,'WAIST_TOPIC_SESSION_ACTIVE'):
+                    waist.execute_waist_topic(args,waist.make_sine_plan())
+            result=json.loads(args.output.read_text().splitlines()[-1])['data']
+            self.assertEqual(result['targets_sent'],0)
+        self.assertEqual(publishers,['/body/motor_cmd'])
+        self.assertEqual(sent,[])
+
+
     def test_sine_has_exact_steady_cycles_and_smooth_finite_envelope(self):
         plan = waist.make_sine_plan()
         self.assertEqual(plan.duration, 27.)
