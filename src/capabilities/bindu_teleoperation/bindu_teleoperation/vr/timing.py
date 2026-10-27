@@ -1,5 +1,62 @@
 """Diagnostic browser clocks are untrusted and never determine control freshness."""
 import math
+import time
+from collections import deque
+
+
+class WebSocketTiming:
+    """Optional observation of complete WS messages, never kernel packet arrival."""
+    def __init__(self, websocket):
+        self.websocket = websocket
+        self.last_message = None
+        self.sequence = 0
+
+    def __getattr__(self, name):
+        return getattr(self.websocket, name)
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        started = time.monotonic()
+        message = await self.websocket.__anext__()
+        received = time.monotonic()
+        self.sequence += 1
+        self.last_message = dict(message_seq=self.sequence, received_monotonic_s=received,
+            read_wait_s=received-started,
+            payload_bytes=len(message.data) if isinstance(message.data, bytes) else None)
+        return message
+
+
+class TransportWindow:
+    """Eight preceding reports and four recovery frames; no extra normal traffic."""
+    def __init__(self):
+        self.history = deque(maxlen=8)
+        self.source = None
+        self.remaining = 0
+        self.trigger_seq = None
+
+    def observe(self, report):
+        if report['source_id'] != self.source:
+            self.history.clear()
+            self.remaining = 0
+            self.source = report['source_id']
+        gap = report.get('server_controller_interval_s', 0.) > .1
+        if gap:
+            samples = list(self.history)+[report]
+            self.trigger_seq = report['seq']
+            self.remaining = 4
+        elif self.remaining:
+            samples = [report]
+            self.remaining -= 1
+        else:
+            self.history.append(report)
+            return None
+        self.history.append(report)
+        return dict(stage='transport_window', stamp=report['stamp'], source_id=self.source,
+            seq=report['seq'], trigger_seq=self.trigger_seq, phase='gap' if gap else 'recovery',
+            remaining_recovery_frames=self.remaining, samples=samples,
+            clock_semantics='host_monotonic; client intervals only; not packet arrival')
 
 
 class InputPipelineTiming:
@@ -31,6 +88,11 @@ class InputPipelineTiming:
             self.maximum('controller_handler',delivery['frame_ready']-delivery['handler_started'],identity)
             if delivery.get('dispatched') is not None:
                 self.maximum('server_task_dispatch',delivery['handler_started']-delivery['dispatched'],identity)
+                websocket=delivery.get('websocket')
+                if websocket:
+                    self.maximum('websocket_read_wait',websocket['read_wait_s'],identity)
+                    self.maximum('websocket_to_dispatch',
+                        delivery['dispatched']-websocket['received_monotonic_s'],identity)
             self.maximum('ros_after_dequeue',now-delivery['dequeued'],identity)
             if delivery['shared_monotonic']:
                 self.maximum('frame_queue_wait',delivery['dequeued']-delivery['frame_ready'],identity)
@@ -63,6 +125,12 @@ class ControllerTiming:
             report['client'] = {k: value[k] for k in required}
             for k in ('page_visibility', 'xr_visibility'):
                 if isinstance(value.get(k), str):report['client'][k] = value[k][:32]
+            previous_send=value.get('previous_send')
+            fields=('seq','prepare_ms','send_call_ms','buffered_after_bytes','wire_bytes')
+            if isinstance(previous_send,dict) and all(type(previous_send.get(k)) in (int,float)
+                    and math.isfinite(previous_send[k]) and previous_send[k]>=0 for k in fields) and (
+                    previous_send['seq']<value['seq']):
+                report['client']['previous_send']={k:previous_send[k] for k in fields}
         previous = self.previous
         if previous and previous[0] == source_id:
             report['server_controller_interval_s'] = received_monotonic - previous[1]

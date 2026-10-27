@@ -702,7 +702,7 @@ class BimanualToolNode(RuntimeNode):
                             'executor_instance_id':execution_instance_id,'lease_epoch':lease.epoch,
                             'source_stamp':work_stamp,'source_valid_for_s':self.cfg['command_max_age'],
                             'acknowledged_at':self.now(),'submit_round_trip_s':now-pending_at,
-                            'server_monotonic_s':now}),goal.request.task_id)
+                            'server_monotonic_s':now}),goal.request.task_id,command.command_id)
                         pending_reference=None
                         accepted+=1
                         pending=None

@@ -5,7 +5,7 @@ import subprocess
 import unittest
 from pathlib import Path
 
-from bindu_teleoperation.vr.timing import ControllerTiming
+from bindu_teleoperation.vr.timing import ControllerTiming, TransportWindow, WebSocketTiming
 
 SCRIPT = ROOT/'src/capabilities/bindu_teleoperation/bindu_teleoperation/vr/client_timing.js'
 
@@ -82,12 +82,28 @@ class ControllerSocketTests(unittest.TestCase):
 
     def test_kernel_tcp_metrics_are_not_confused_with_one_way_latency(self):
         import struct,socket
-        from unittest.mock import Mock
+        from unittest.mock import Mock,patch
         from bindu_teleoperation.vr.receiver import controller_socket_status
-        info=bytearray(104)
-        for offset,value in ((68,14000),(72,3000),(100,9)):struct.pack_into('=I',info,offset,value)
-        sock=Mock();sock.getsockopt.side_effect=lambda _level,option,*_args: bytes(info) if option==socket.TCP_INFO else 1
-        actual=controller_socket_status(sock)
+        info=bytearray(232)
+        for offset,value in ((8,200000),(24,3),(68,14000),(72,3000),(100,9),
+                             (144,1334),(224,2),(228,65535)):
+            struct.pack_into('=I',info,offset,value)
+        for offset,value in ((120,2**34),(128,2**35),(200,2**36),(208,1334)):
+            struct.pack_into('=Q',info,offset,value)
+        sock=Mock()
+        with patch.object(socket,'TCP_INFO',11,create=True):
+            sock.getsockopt.side_effect=lambda _level,option,*_args: bytes(info) if option==socket.TCP_INFO else 1
+            actual=controller_socket_status(sock)
+            self.assertAlmostEqual(actual['rto_s'],.2)
+            self.assertEqual(actual['notsent_bytes'],1334)
+            self.assertEqual(actual['bytes_received'],2**35)
+            self.assertEqual(actual['received_out_of_order_packets'],2)
+            self.assertEqual(actual['retransmissions_direction'],'server_to_peer')
+            del info[104:]
+            old_kernel=controller_socket_status(sock)
+            self.assertEqual(old_kernel['total_retransmissions'],9)
+            self.assertNotIn('notsent_bytes',old_kernel)
+            self.assertNotIn('bytes_received',old_kernel)
         self.assertTrue(actual['tcp_nodelay'])
         self.assertAlmostEqual(actual['rtt_s'],.014)
         self.assertEqual(actual['total_retransmissions'],9)
@@ -97,6 +113,23 @@ class ControllerSocketTests(unittest.TestCase):
 
 
 class ControllerWebSocketTests(unittest.IsolatedAsyncioTestCase):
+    async def test_optional_message_probe_preserves_data_and_does_not_send_or_prefetch(self):
+        from types import SimpleNamespace as S
+        from unittest.mock import AsyncMock,patch
+        message=S(data=b'original message')
+        ws=S(__anext__=AsyncMock(side_effect=[message,StopAsyncIteration]),
+             ping=AsyncMock(),send_bytes=AsyncMock(),closed=False)
+        probe=WebSocketTiming(ws)
+        with patch('bindu_teleoperation.vr.timing.time.monotonic',side_effect=[10.,10.15,10.2]):
+            self.assertIs(await probe.__anext__(),message)
+            self.assertAlmostEqual(probe.last_message['read_wait_s'],.15)
+            self.assertEqual(probe.last_message['payload_bytes'],16)
+            self.assertEqual(probe.last_message['message_seq'],1)
+            with self.assertRaises(StopAsyncIteration):await probe.__anext__()
+        self.assertFalse(probe.closed)
+        self.assertIs(probe.send_bytes,ws.send_bytes)
+        ws.send_bytes.assert_not_called();ws.ping.assert_not_called()
+
     async def test_controller_transport_reply_is_bounded_and_does_not_emit_input(self):
         import asyncio, struct
         from types import SimpleNamespace as S
@@ -184,6 +217,41 @@ class ControllerWebSocketTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ControllerTimingTests(unittest.TestCase):
+    def test_gap_window_is_bounded_preserves_burst_and_resets_on_source_change(self):
+        probe=ControllerTiming();window=TransportWindow()
+        for seq in range(1,101):
+            report=probe.observe(sample(seq*16.,seq),50.+seq*.016,10.+seq*.016,'source',seq)
+            self.assertIsNone(window.observe(report))
+        gap=probe.observe(sample(1616.,101),51.766,11.766,'source',101)
+        before=window.observe(gap)
+        self.assertEqual([r['seq'] for r in before['samples']],list(range(93,102)))
+        self.assertEqual(before['phase'],'gap')
+        self.assertAlmostEqual(before['samples'][-1]['server_controller_interval_s'],.166)
+        self.assertAlmostEqual(before['samples'][-1]['client_controller_interval_s'],.016)
+        for seq in range(102,106):
+            after=window.observe(probe.observe(sample(seq*16.,seq),52.,11.766+(seq-101)*.001,'source',seq))
+            self.assertEqual(after['trigger_seq'],101)
+            self.assertEqual(after['phase'],'recovery')
+            self.assertEqual(len(after['samples']),1)
+        self.assertEqual(after['remaining_recovery_frames'],0)
+        self.assertIsNone(window.observe(probe.observe(sample(1696.,106),52.,11.8,'source',106)))
+        self.assertEqual(len(window.history),8)
+        window.observe(dict(gap,seq=107,server_controller_interval_s=.2))
+        self.assertIsNone(window.observe(probe.observe(sample(1.),53.,12.,'new-source',1)))
+        self.assertEqual(len(window.history),1)
+        self.assertEqual(window.remaining,0)
+
+    def test_previous_send_is_optional_bounded_and_not_a_freshness_timestamp(self):
+        value=sample(1000.,2)
+        previous=dict(seq=1,prepare_ms=.3,send_call_ms=.2,buffered_after_bytes=1334,wire_bytes=1400)
+        value['previous_send']=dict(previous,ignored='untrusted')
+        actual=ControllerTiming().observe(value,50.,10.,'source',1)
+        self.assertEqual(actual['stamp'],50.)
+        self.assertEqual(actual['client']['previous_send'],previous)
+        for invalid in [dict(previous,send_call_ms=float('nan')),dict(previous,seq=2),None]:
+            value['previous_send']=invalid
+            self.assertNotIn('previous_send',ControllerTiming().observe(value,50.,10.,'source',1)['client'])
+
     def test_blocked_diagnostic_dds_publish_does_not_block_input_report_enqueue(self):
         import queue
         import threading
@@ -236,6 +304,38 @@ class ControllerTimingTests(unittest.TestCase):
         self.assertNotIn('transport_interval_excess_s', reset)
         reconnect = probe.observe(sample(20.), 56., 16., 'new-source', 6)
         self.assertNotIn('server_controller_interval_s', reconnect)
+
+    @unittest.skipUnless(shutil.which('node'), 'Node required for browser wire test')
+    def test_send_completion_piggybacks_on_next_message_without_retry_or_extra_send(self):
+        import base64,msgpack
+        wire=base64.b64encode(msgpack.packb(dict(etype='CONTROLLER_MOVE',value={}),use_bin_type=True)).decode()
+        harness=r'''
+const fs=require('fs'),vm=require('vm');let now=1000,packets=[],failNative=false;
+class Socket {constructor(){this.bufferedAmount=0;}
+ send(b){packets.push(Buffer.from(b).toString('base64'));if(failNative)throw Error('original-failure');
+  now+=4;this.bufferedAmount=123;return 'original-result';}}
+const ctx={TextEncoder,Uint8Array,DataView,ArrayBuffer,WeakMap,WebSocket:Socket,
+ performance:{now:()=>now},Date,document:{visibilityState:'visible'},setInterval:()=>{},
+ window:{requestAnimationFrame:()=>{}}};
+vm.createContext(ctx);vm.runInContext(fs.readFileSync(process.argv[1],'utf8'),ctx);
+const socket=new Socket(),data=Uint8Array.from(Buffer.from(process.argv[2],'base64'));
+const returns=[socket.send(data)];now=1016;returns.push(socket.send(data));
+let reads=0;ctx.performance.now=()=>{if(++reads===2)throw Error('diagnostic-clock');return now;};
+returns.push(socket.send(data));ctx.performance.now=()=>now;failNative=true;
+let failure;try{socket.send(data);}catch(error){failure=error.message;}
+process.stdout.write(JSON.stringify({returns,packets,failure}));
+'''
+        result=subprocess.run(['node','-e',harness,str(SCRIPT),wire],check=True,capture_output=True,text=True)
+        result=json.loads(result.stdout)
+        self.assertEqual(result['returns'],['original-result']*3)
+        self.assertEqual(result['failure'],'original-failure')
+        packets=[base64.b64decode(p) for p in result['packets']]
+        self.assertEqual(len(packets),4)
+        timings=[msgpack.unpackb(p,raw=False)['bindu_timing'] for p in packets]
+        self.assertIsNone(timings[0]['previous_send'])
+        self.assertEqual(timings[1]['previous_send'],dict(seq=1,prepare_ms=0.,send_call_ms=4.,
+            buffered_after_bytes=123,wire_bytes=len(packets[0])))
+        self.assertEqual(timings[1]['send_interval_ms'],16.)
 
     @unittest.skipUnless(shutil.which('node'), 'Node required for browser wire test')
     def test_browser_hook_preserves_actual_msgpack_payload_and_records_gap(self):

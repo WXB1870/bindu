@@ -189,12 +189,21 @@ def controller_socket_status(sock):
     except OSError:pass
     if hasattr(socket,'TCP_INFO'):
         try:
-            info=sock.getsockopt(socket.IPPROTO_TCP,socket.TCP_INFO,104)
-            if len(info)>=104:
-                # Linux struct tcp_info's stable initial 104 bytes.
-                result.update(rtt_s=struct.unpack_from('=I',info,68)[0]*1e-6,
-                    rtt_variation_s=struct.unpack_from('=I',info,72)[0]*1e-6,
-                    total_retransmissions=struct.unpack_from('=I',info,100)[0])
+            info=sock.getsockopt(socket.IPPROTO_TCP,socket.TCP_INFO,232)
+            # Linux's append-only layout; older kernels omit unavailable fields.
+            for name,offset,scale in (
+                    ('rto_s',8,1e-6),('unacked_segments',24,1),('sacked_segments',28,1),
+                    ('lost_segments',32,1),('retransmitting_segments',36,1),
+                    ('last_data_sent_age_s',44,.001),('last_data_received_age_s',52,.001),
+                    ('last_ack_received_age_s',56,.001),('rtt_s',68,1e-6),
+                    ('rtt_variation_s',72,1e-6),('send_cwnd_segments',80,1),
+                    ('total_retransmissions',100,1),('notsent_bytes',144,1),
+                    ('received_out_of_order_packets',224,1),('send_window_bytes',228,1)):
+                if len(info)>=offset+4:result[name]=struct.unpack_from('=I',info,offset)[0]*scale
+            for name,offset in (('bytes_acked',120),('bytes_received',128),
+                                ('bytes_sent',200),('bytes_retransmitted',208)):
+                if len(info)>=offset+8:result[name]=struct.unpack_from('=Q',info,offset)[0]
+            result['retransmissions_direction']='server_to_peer'
         except OSError:pass
     return result
 
@@ -236,6 +245,8 @@ def _serve(config, output, feedback, health):
                             event=yield outgoing
                             if event.etype=='CONTROLLER_MOVE':
                                 event.bindu_dispatched_monotonic=time.monotonic()
+                                ws=self.ws.get(session_proxy.CURRENT_WS_ID)
+                                event.bindu_websocket_timing=getattr(ws,'last_message',None)
                             outgoing=await upstream.asend(event)
                     finally:
                         await upstream.aclose()
@@ -263,6 +274,9 @@ def _serve(config, output, feedback, health):
                 if sock is not None:
                     try:sock.setsockopt(socket.IPPROTO_TCP,socket.TCP_NODELAY,1)
                     except OSError:pass
+                if config.get('input_timing_enabled',False):
+                    from .timing import WebSocketTiming
+                    ws=WebSocketTiming(ws)
                 controller_sockets[id(ws)]=sock
                 quick_ack(sock)
                 try:return await super().downlink(request,ws)
@@ -294,8 +308,9 @@ def _serve(config, output, feedback, health):
         last_event = None
         last_report = 0.
         loop_delay = 0.
-        from .timing import ControllerTiming
+        from .timing import ControllerTiming, TransportWindow
         controller_timing = ControllerTiming()
+        transport_window = TransportWindow()
         health_overflows = 0
 
         def emit_health(report):
@@ -344,8 +359,17 @@ def _serve(config, output, feedback, health):
                 identity=uuid.uuid4().hex  # XR session/reference reset fences old intent.
             if head:head['head_source_id']=identity
             handler_started=time.monotonic()
-            emit_health(controller_timing.observe(getattr(event, 'bindu_timing', None),
-                now, handler_started, identity, seq))
+            timing=controller_timing.observe(getattr(event, 'bindu_timing', None),
+                now, handler_started, identity, seq)
+            dispatched=getattr(event,'bindu_dispatched_monotonic',None) if config.get('input_timing_enabled',False) else None
+            websocket=getattr(event,'bindu_websocket_timing',None) if dispatched is not None else None
+            if dispatched is not None:
+                timing.update(dispatched_monotonic_s=dispatched,
+                              dispatch_to_handler_s=handler_started-dispatched)
+            if websocket is not None:timing['websocket']=websocket
+            emit_health(timing)
+            window=transport_window.observe(timing)
+            if window:emit_health(window)
             gap=now-last_event if last_event is not None else None
             last_event=now
             if now-last_report>=1. or gap is not None and gap>.1:report_health(now,gap)
@@ -369,7 +393,7 @@ def _serve(config, output, feedback, health):
             packet=('frame',tuple(paired) if len(paired)==2 else paired[0])
             if config.get('input_timing_enabled',False):
                 packet+= (dict(handler_started=handler_started,frame_ready=time.monotonic(),
-                               dispatched=getattr(event,'bindu_dispatched_monotonic',None)),)
+                               dispatched=dispatched,websocket=websocket),)
             _latest_put(output,packet)
             if config.get('mapping')=='pico_snowbot_v1' and (controller_ack is None or controller_ack.done()):
                 ws=app.ws.get(session.CURRENT_WS_ID)
