@@ -7,7 +7,7 @@ from pathlib import Path
 import time
 from types import SimpleNamespace as S
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 import numpy as np
 from bindu_kinematics.tool_geometry import _shaft_contact_span
 
@@ -17,6 +17,94 @@ TREE=ast.parse(SOURCE.read_text())
 # native construction, and every solve executes the full production method.
 TREE.body=[n for n in TREE.body if not (isinstance(n,ast.ImportFrom) and n.module=='ament_index_python.packages')]
 NS={};exec(compile(TREE,str(SOURCE),'exec'),NS);QP=NS['BimanualQP']
+
+
+class GraspReferenceLifetimeTests(unittest.TestCase):
+    def solver(self):
+        s=QP.__new__(QP);s.handle=object();s.captured=False
+        s.names=s.model_names=('joint',);s.nq=1;s._ptr=lambda x:x
+        s.cfg={'flange_distance_range':[0.,1.]}
+        s.limits={'joint':(-4.,4.)};s.posture_policy=None;s.posture_reference=None
+        s.measured_grasp_policy='enforce';s.measured_rigid_grasp=True
+        s.expected_relative=np.eye(4);s.rigid_grasp_q=s.rigid_grasp_reference=None
+        s.reference_kinematics=True;s.max_reference_error=.15
+        s.grasp_position_tolerance=.01;s.grasp_rotation_tolerance=.02
+        s.axial=None;s.tool=np.eye(4);s.collision_check=None;s.tracking_point=np.zeros(3)
+        s.native_config=NS['NativeConfig']();s.coupled_locked_joints=()
+        s.shared_motion_weight=0.;s.limit_avoidance=(0.,0.)
+        def relative(handle,q,n,out):
+            angle=q[0];out[:]=np.eye(4)
+            out[:2,:2]=[[math.cos(angle),-math.sin(angle)],
+                         [math.sin(angle),math.cos(angle)]]
+            out[0,3]=.1*angle
+            return 1
+        def tool(handle,q,n,out):out[:]=np.eye(4);return 1
+        s.lib=S(bq_relative_pose=relative,bq_tool_pose=tool,
+                bq_capture=Mock(return_value=1),bq_destroy=Mock(),
+                bq_capture_independent=Mock(return_value=1))
+        def flanges(handle,q,n,left,right):left[:]=right[:]=np.eye(4);return 1
+        s.lib.bq_flange_poses=flanges;s.independent_abi=Mock()
+        s.check_independent_path=Mock()
+        s.check_path=Mock();s.set_shared_targets=Mock()
+        self.addCleanup(s.close)
+        return s
+
+    def test_mode_preview_then_a_return_can_preview_and_capture_the_new_pose(self):
+        s=self.solver()
+        s.capture({'joint':0.},commit_grasp=False)
+        self.assertIsNone(s.rigid_grasp_q)
+        self.assertIsNone(s.rigid_grasp_reference)
+        # B back to independent mode is also only a readiness check. A may
+        # then change the actual pose; neither query establishes a held grasp.
+        s.capture_independent({'joint':0.},preserve_rigid_grasp=True)
+        ready={'joint':.8}
+        s.capture(ready,commit_grasp=False)
+        self.assertIsNone(s.rigid_grasp_reference)
+        s.capture(ready)
+        np.testing.assert_array_equal(s.rigid_grasp_q,[.8])
+        self.assertAlmostEqual(s.rigid_grasp_reference[0,3],.08)
+        self.assertEqual(s.check_path.call_count,3)
+
+    def test_previews_and_reclutches_keep_the_first_actual_grasp_and_reject_drift(self):
+        s=self.solver();s.capture({'joint':0.})
+        original=s.rigid_grasp_reference.copy()
+        for drift in (.006,.012,.018):
+            s.capture_independent({'joint':drift},preserve_rigid_grasp=True)
+            for commit in (False,True):
+                s.capture({'joint':drift},commit_grasp=commit)
+                np.testing.assert_array_equal(s.rigid_grasp_reference,original)
+                np.testing.assert_array_equal(s.rigid_grasp_q,[0.])
+        for commit in (False,True,False):
+            with self.assertRaisesRegex(ValueError,'BIMANUAL_GRASP_POSE'):
+                s.capture({'joint':.024},commit_grasp=commit)
+            self.assertFalse(s.captured)
+            np.testing.assert_array_equal(s.rigid_grasp_reference,original)
+        s.capture({'joint':0.},commit_grasp=False)
+        np.testing.assert_array_equal(s.rigid_grasp_reference,original)
+
+    def test_failed_preview_does_not_latch_or_erase_a_grasp(self):
+        s=self.solver()
+        with patch.object(s,'check_path',side_effect=ValueError('SELF_COLLISION')):
+            with self.assertRaisesRegex(ValueError,'SELF_COLLISION'):
+                s.capture({'joint':0.},commit_grasp=False)
+        self.assertIsNone(s.rigid_grasp_reference)
+        s.capture({'joint':0.});original=s.rigid_grasp_reference.copy()
+        with patch.object(s,'check_path',side_effect=ValueError('SELF_COLLISION')):
+            with self.assertRaisesRegex(ValueError,'SELF_COLLISION'):
+                s.capture({'joint':.001},commit_grasp=False)
+        np.testing.assert_array_equal(s.rigid_grasp_reference,original)
+        self.assertFalse(s.captured)
+
+    def test_preview_still_checks_nominal_grasp_limits_and_feedback(self):
+        s=self.solver();s.measured_rigid_grasp=False
+        with self.assertRaisesRegex(ValueError,'BIMANUAL_GRASP_POSE'):
+            s.capture({'joint':.1},commit_grasp=False)
+        s.lib.bq_capture.assert_not_called()
+        with self.assertRaisesRegex(ValueError,'BIMANUAL_FEEDBACK_NONFINITE'):
+            s.capture({'joint':float('nan')},commit_grasp=False)
+        s.measured_rigid_grasp=True;s.capture({'joint':0.})
+        with self.assertRaisesRegex(ValueError,'BIMANUAL_MEASURED_POSITION_LIMIT'):
+            s.capture({'joint':4.01},commit_grasp=False)
 
 
 class ShaftContactBandTests(unittest.TestCase):

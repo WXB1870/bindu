@@ -350,7 +350,7 @@ class BimanualQP:
             raise ValueError('BIMANUAL_TOOL_TRANSFORM')
         return transform
 
-    def capture(self, feedback, grasp_mode='rigid', *, reference=None):
+    def capture(self, feedback, grasp_mode='rigid', *, reference=None, commit_grasp=True):
         self.captured = False
         self.target_sample = None
         if not self.handle:
@@ -453,13 +453,16 @@ class BimanualQP:
         except (ValueError, TypeError, TimeoutError):
             self.captured = False
             raise
-        if (grasp_mode == 'rigid' and self.measured_grasp_policy == 'enforce' and
-                self.expected_relative is not None):
-            if not retained:
-                self.rigid_grasp_q = q.copy()
-                self.rigid_grasp_reference = measured.copy()
-        else:
-            self.rigid_grasp_q = self.rigid_grasp_reference = None
+        # A readiness query validates any held grasp, but cannot establish or
+        # replace one. Only actual capture starts/changes the hold scope.
+        if commit_grasp:
+            if (grasp_mode == 'rigid' and self.measured_grasp_policy == 'enforce' and
+                    self.expected_relative is not None):
+                if not retained:
+                    self.rigid_grasp_q = q.copy()
+                    self.rigid_grasp_reference = measured.copy()
+            else:
+                self.rigid_grasp_q = self.rigid_grasp_reference = None
         # Keep successful posture preferences independently of input origins.
         if self.posture_policy is not None:
             self.posture_reference = posture_reference.copy()

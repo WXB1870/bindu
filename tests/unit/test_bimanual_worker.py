@@ -201,6 +201,42 @@ class WorkerReceiptTests(unittest.TestCase):
             unittest.mock.call({},reference=None,preserve_rigid_grasp=True),
             unittest.mock.call({},reference=None)])
 
+    def test_tool_readiness_previews_grasp_but_actual_capture_commits_it(self):
+        from bindu_kinematics.bimanual_worker import _run
+        requests,results=queue.Queue(),queue.Queue()
+        requests.put(('preflight_capture',-1,{},None,None,None,'rigid',None))
+        requests.put(('capture',1,{},None,None,None,'rigid',None))
+        requests.put(None)
+        solver=SimpleNamespace(capture=Mock(return_value=[]),close=Mock())
+        with patch('bindu_kinematics.bimanual.BimanualQP',return_value=solver), \
+                patch('bindu_kinematics.bimanual_worker.gc.collect'), \
+                patch('bindu_kinematics.bimanual_worker.gc.freeze'):
+            _run({},None,requests,results)
+        self.assertEqual(list(results.queue),[('ready',0,None),('result',-1,[]),('result',1,[])])
+        self.assertEqual(solver.capture.call_args_list,[
+            unittest.mock.call({},'rigid',reference=None,commit_grasp=False),
+            unittest.mock.call({},'rigid',reference=None)])
+
+    def test_mode_readiness_dispatches_preview_with_fresh_feedback(self):
+        source=Path(__file__).resolve().parents[2]/'src/integration/bindu_runtime/bindu_runtime/bimanual_tool_node.py'
+        node=next(n for n in ast.parse(source.read_text()).body
+                  if isinstance(n,ast.ClassDef) and n.name=='BimanualToolNode')
+        method=next(n for n in node.body if getattr(n,'name','')=='preflight')
+        namespace={'seconds':lambda stamp:stamp}
+        exec(compile(ast.Module(body=[method],type_ignores=[]),str(source),'exec'),namespace)
+        for mode,operation in (('bimanual_tool','preflight_capture'),('independent_arms','independent_capture')):
+            with self.subTest(mode=mode):
+                owner=SimpleNamespace(worker=SimpleNamespace(ready=True,busy=False,submit=Mock(return_value=True)),
+                    worker_error='',busy=False,simulation=False,profile=SimpleNamespace(digest='profile'),
+                    state=SimpleNamespace(profile_hash='profile',simulated=False,feedback_stamp=10.,
+                        joints=SimpleNamespace(name=['joint'],position=[.8])),
+                    now=lambda:10.01,cfg={'feedback_max_age':.2},axial_position_ready=lambda:False,
+                    preflight_mode='',preflight_grasp='',preflight_status='',preflight_token=0)
+                reply=namespace['preflight'](owner,SimpleNamespace(),mode)
+                self.assertFalse(reply.success)
+                self.assertEqual(reply.message,'BIMANUAL_PREFLIGHT_PENDING')
+                owner.worker.submit.assert_called_once_with(operation,-1,{'joint':.8},grasp_mode='rigid')
+
     def test_dead_process_or_fatal_cannot_advertise_ready_or_accept_work(self):
         for cause in ('exit', 'fatal'):
             with self.subTest(cause=cause):
