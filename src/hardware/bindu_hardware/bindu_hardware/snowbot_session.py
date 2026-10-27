@@ -226,6 +226,9 @@ def stop_diagnostic(health, engine, now):
     speeds = {n: abs(fb.joint_velocities[n]) for n in names
               if n in fb.joint_velocities and math.isfinite(fb.joint_velocities[n])}
     position_error = max(errors.values()) if errors else None
+    arrival_names = names if getattr(io, 'stop_requires_arrival', True) else tuple(getattr(io, 'stop_arrival_joints', ()))
+    arrival_errors = {n: errors[n] for n in arrival_names if n in errors}
+    arrival_error = max(arrival_errors.values()) if arrival_errors else None
     max_speed = max(speeds.values()) if speeds else None
     fresh = fb.stamp > io.stop_requested_at and 0 <= now-fb.stamp <= .2
     steady = engine.steady()
@@ -240,7 +243,9 @@ def stop_diagnostic(health, engine, now):
             reason = 'STOP_FEEDBACK_NOT_FRESH'
         elif len(errors) != len(names) or len(speeds) != len(names):
             reason = 'STOP_FEEDBACK_INCOMPLETE'
-        elif getattr(io, 'stop_requires_arrival', True) and position_error >= position_tolerance:
+        elif not set(arrival_names) <= set(names):
+            reason = 'STOP_REFERENCE_INVALID'
+        elif arrival_error is not None and arrival_error >= position_tolerance:
             reason = 'STOP_POSITION_ERROR'
         elif max_speed > velocity_tolerance:
             reason = 'STOP_SPEED_NOT_ZERO'
@@ -270,7 +275,11 @@ def stop_diagnostic(health, engine, now):
         remaining_steady_s=engine.stop_steady_deadline-steady,
         max_position_error_rad=position_error, max_speed_rad_s=max_speed,
         position_error_basis='observed_hold_position',
-        arrival_required=getattr(io, 'stop_requires_arrival', True),
+        arrival_required=bool(arrival_names), arrival_required_joints=list(arrival_names),
+        required_reference_arrived=bool(len(arrival_errors)==len(arrival_names) and
+            all(e < position_tolerance for e in arrival_errors.values())),
+        max_required_position_error_rad=arrival_error,
+        worst_required_position_joint=max(arrival_errors, key=arrival_errors.get) if arrival_errors else None,
         reference_arrived=bool(len(errors)==len(names) and position_error < position_tolerance),
         worst_position_joint=max(errors, key=errors.get) if errors else None,
         position_tolerance_rad=position_tolerance, velocity_tolerance_rad_s=velocity_tolerance,

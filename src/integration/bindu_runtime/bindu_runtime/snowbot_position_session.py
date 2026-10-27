@@ -37,6 +37,12 @@ class PositionSessionIO(SnowbotIO):
         # One atomic envelope and one PAUSE identity for waist and both arms.
         self.stop_group_sets = (('waist', 'left_arm', 'right_arm'),)
 
+    @property
+    def stop_arrival_joints(self):
+        # A quiet speed sample cannot prove CSP rest while the drive still
+        # has position travel left to its fixed, acknowledged hold point.
+        return tuple(self.profile.groups.get('waist', ())) if self.target_stream else ()
+
     def validate_motion(self, motion, now):
         SourceEnvelope.validate_motion(motion, now, target_stream=self.target_stream)
 
