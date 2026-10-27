@@ -223,6 +223,8 @@ def checked_pdo_source(publishers, *, discovering=False):
 
 
 def json_value(value):
+    if hasattr(value, 'tolist'):
+        value = value.tolist()
     if isinstance(value, float) and not math.isfinite(value):
         return None
     if isinstance(value, dict):
