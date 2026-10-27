@@ -108,6 +108,71 @@ def make_plan(degrees=1., speed=.1, acceleration=.5, jerk=10.):
     return Plan(distance, math.ceil(duration/.02)*.02)
 
 
+
+@dataclass(frozen=True)
+class SinePlan:
+    amplitude: float
+    frequency: float
+    cycles: int
+    dwell: float = 1.
+
+    @property
+    def period(self):
+        return 1. / self.frequency
+
+    @property
+    def move_seconds(self):
+        return self.period / 4.
+
+    @property
+    def duration(self):
+        return 2*self.dwell + self.cycles*self.period
+
+    @property
+    def dynamic_bounds(self):
+        omega = 2*math.pi*self.frequency
+        dw, ddw, dddw = 1.875/self.period, 10/math.sqrt(3)/self.period**2, 60/self.period**3
+        return (self.amplitude*(dw+omega),
+                self.amplitude*(ddw+2*dw*omega+omega**2),
+                self.amplitude*(dddw+3*ddw*omega+3*dw*omega**2+omega**3))
+
+    def sample(self, elapsed):
+        if not math.isfinite(elapsed) or elapsed < 0:
+            raise ValueError('INVALID_ELAPSED_TIME')
+        t = elapsed-self.dwell
+        total = self.cycles*self.period
+        if t <= 0 or t >= total:
+            return 0., 0., 0.
+        u = min(t, total-t, self.period)/self.period
+        sign = 1 if t < self.period else -1 if t > total-self.period else 0
+        w = 10*u**3-15*u**4+6*u**5
+        dw = sign*(30*u**2-60*u**3+30*u**4)/self.period
+        ddw = (60*u-180*u**2+120*u**3)/self.period**2 if sign else 0.
+        omega = 2*math.pi*self.frequency
+        s, c = math.sin(omega*t), math.cos(omega*t)
+        return (self.amplitude*w*s, self.amplitude*(dw*s+w*omega*c),
+                self.amplitude*(ddw*s+2*dw*omega*c-w*omega**2*s))
+
+
+def make_sine_plan(degrees=1., frequency=.2, cycles=5, speed=.1, acceleration=.5, jerk=10.):
+    make_plan(degrees, speed, acceleration, jerk)
+    if (type(frequency) not in (int, float) or not math.isfinite(frequency) or
+            not .05 <= frequency <= 1. or type(cycles) is not int or not 3 <= cycles <= 20):
+        raise ValueError('INVALID_SINE_PARAMETERS')
+    plan = SinePlan(math.radians(degrees), frequency, cycles)
+    if any(bound > limit for bound, limit in zip(plan.dynamic_bounds, (speed, acceleration, jerk))):
+        raise ValueError('SINE_EXCEEDS_REQUESTED_DYNAMICS')
+    return plan
+
+
+def signal_metadata(plan):
+    if isinstance(plan, SinePlan):
+        return dict(waveform='sine', frequency_hz=plan.frequency, cycles=plan.cycles,
+                    envelope_cycles=1, dwell_s=plan.dwell,
+                    dynamic_upper_bounds=dict(zip(('speed', 'acceleration', 'jerk'), plan.dynamic_bounds)))
+    return dict(waveform='quintic')
+
+
 def checked_state(msg, now, received, steady, profile_hash, *, owned=False, epoch=0, stationary=True):
     feedback_age = now-(msg.feedback_stamp.sec+msg.feedback_stamp.nanosec*1e-9)
     if (msg.runtime_mode != 'real' or msg.simulated or msg.device_backend != 'snowbot_vendor' or
@@ -147,7 +212,9 @@ def checked_pdo(msg, now, received, steady, boot):
 
 
 def checked_pdo_source(publishers, *, discovering=False):
-    if not publishers and discovering:
+    # DDS can expose the endpoint before its participant/node name arrives.
+    if discovering and (not publishers or (len(publishers) == 1 and
+            publishers[0].node_name == '_NODE_NAME_UNKNOWN_')):
         return False
     if len(publishers) != 1 or publishers[0].node_name != 'servo_node':
         raise RuntimeError('PDO_SOURCE_NOT_UNIQUE_SERVO:count='+str(len(publishers))+
@@ -168,6 +235,10 @@ def json_value(value):
 def targets(plan, elapsed, initial, limits, axis='body_joint_1'):
     if axis not in NAMES[:2]:
         raise ValueError('TEST_AXIS_INVALID')
+    if isinstance(plan, SinePlan):
+        lo, hi = limits[axis]
+        if not lo+.01 <= initial[axis]-plan.amplitude <= initial[axis]+plan.amplitude <= hi-.01:
+            raise ValueError('TEST_POSITION_LIMIT:'+axis)
     offset, _, _ = plan.sample(elapsed)
     q = {n: initial[n] for n in NAMES}
     q[axis] += offset
@@ -313,7 +384,7 @@ def execute(args, plan):
         record('plan', dict(task=task, robot_config=str(robot.path), profile_hash=robot.profile.digest,
                            joint_names=NAMES, axis=axis, initial=initial, amplitude_rad=plan.amplitude,
                            move_seconds=plan.move_seconds, duration=plan.duration,
-                           csp_encoder=encoder, **vars_limits(args)))
+                           csp_encoder=encoder, **signal_metadata(plan), **vars_limits(args)))
         lease = call(leases, Lease.Request(operation='acquire', owner=task, resources=list(GROUPS)))
         if lease.profile_hash != robot.profile.digest:
             raise RuntimeError('LEASE_PROFILE_MISMATCH')
@@ -570,6 +641,9 @@ def main():
     parser.add_argument('--speed', type=float, default=.1, help='code-scale rad/s; default .1, <=0.375 and selected profile')
     parser.add_argument('--acceleration', type=float, default=.5, help='code-scale rad/s^2; default .5, <=2.25 and selected profile')
     parser.add_argument('--jerk', type=float, default=10., help='code-scale rad/s^3; default 10, <=162')
+    parser.add_argument('--waveform', choices=('quintic', 'sine'), default='quintic')
+    parser.add_argument('--frequency', type=float, default=.2, help='sine frequency in Hz')
+    parser.add_argument('--cycles', type=int, default=5, help='sine cycles including first/last envelope cycles')
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument('--execute', action='store_true', help='operator only: acquire 16-axis lease and send targets')
     mode.add_argument('--analyze', type=Path, help='offline analysis of an existing capture')
@@ -589,15 +663,16 @@ def main():
         return
     if args.session is not None:
         parser.error('--session requires --analyze')
-    plan = make_plan(args.degrees, args.speed, args.acceleration, args.jerk)
+    plan = (make_sine_plan(args.degrees, args.frequency, args.cycles, args.speed, args.acceleration, args.jerk)
+            if args.waveform == 'sine' else make_plan(args.degrees, args.speed, args.acceleration, args.jerk))
     encoder = select_encoder(args.encoder_profile, args.position_release)
     print(json.dumps(dict(preview=not args.execute, axis=args.axis, physical_units_verified=False, degrees=args.degrees,
         duration_s=plan.duration, move_seconds=plan.move_seconds,
-        target_peak_speed=1.875*plan.amplitude/plan.move_seconds,
-        target_peak_acceleration=10/math.sqrt(3)*plan.amplitude/plan.move_seconds**2,
-        target_peak_jerk=60*plan.amplitude/plan.move_seconds**3,
+        target_peak_speed=None if isinstance(plan, SinePlan) else 1.875*plan.amplitude/plan.move_seconds,
+        target_peak_acceleration=None if isinstance(plan, SinePlan) else 10/math.sqrt(3)*plan.amplitude/plan.move_seconds**2,
+        target_peak_jerk=None if isinstance(plan, SinePlan) else 60*plan.amplitude/plan.move_seconds**3,
         controlled_groups=GROUPS, holds_other_joint_targets=True,
-        starts_driver=False, csp_encoder=encoder, **vars_limits(args)), indent=2))
+        starts_driver=False, csp_encoder=encoder, **signal_metadata(plan), **vars_limits(args)), indent=2))
     if args.execute:
         execute(args, plan)
 

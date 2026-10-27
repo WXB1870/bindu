@@ -29,6 +29,56 @@ def pdo():
 
 
 class WaistTests(unittest.TestCase):
+
+    def test_sine_has_exact_steady_cycles_and_smooth_finite_envelope(self):
+        plan = waist.make_sine_plan()
+        self.assertEqual(plan.duration, 27.)
+        for t in (0., 1., 26., 27., 28.):
+            self.assertEqual(plan.sample(t), (0., 0., 0.))
+        for t, sign in ((7.25, 1), (9.75, -1), (12.25, 1)):
+            self.assertAlmostEqual(plan.sample(t)[0], sign*math.pi/180)
+        previous = plan.sample(0.)
+        for index in range(1, 27001):
+            q, v, a = current = plan.sample(index*.001)
+            self.assertLessEqual(abs(q), math.pi/180+1e-12)
+            self.assertLessEqual(abs(v), .1)
+            self.assertLessEqual(abs(a), .5)
+            self.assertLessEqual(abs(a-previous[2])/.001, 10.)
+            self.assertAlmostEqual((q-previous[0])/.001, (v+previous[1])/2, delta=1e-6)
+            previous = current
+
+    def test_sine_refuses_invalid_or_excessive_dynamics(self):
+        for values in (dict(frequency=0), dict(frequency=float('nan')),
+                       dict(cycles=True), dict(cycles=2), dict(cycles=21),
+                       dict(degrees=20, frequency=1), dict(speed=.001)):
+            with self.subTest(values=values), self.assertRaises(ValueError):
+                waist.make_sine_plan(**values)
+
+    def test_sine_full_excursion_checked_before_zero_offset_start(self):
+        plan = waist.make_sine_plan()
+        initial = dict.fromkeys(NAMES, 0.)
+        limits = dict.fromkeys(NAMES, (-2., 2.))
+        limits['body_joint_1'] = (-2., plan.amplitude+.005)
+        with self.assertRaisesRegex(ValueError, 'TEST_POSITION_LIMIT'):
+            targets(plan, 0., initial, limits, 'body_joint_1')
+        limits['body_joint_1'] = (-2., 2.)
+        goal = targets(plan, 7.25, initial, limits, 'body_joint_2')
+        self.assertAlmostEqual(goal['body_joint_2'], math.pi/180)
+        self.assertTrue(all(goal[n] == 0. for n in NAMES if n != 'body_joint_2'))
+
+    def test_sine_cli_preview_is_offline_and_records_signal_parameters(self):
+        result = subprocess.run([sys.executable, '-m', 'tools.teleop.snowbot_waist_test',
+                                 '--waveform', 'sine', '--frequency', '.2', '--cycles', '5'],
+                                cwd=Path(__file__).resolve().parents[2], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        data = json.loads(result.stdout)
+        self.assertTrue(data['preview'])
+        self.assertEqual(data['waveform'], 'sine')
+        self.assertEqual(data['duration_s'], 27.)
+        self.assertEqual(data['frequency_hz'], .2)
+        self.assertEqual(data['cycles'], 5)
+        self.assertFalse(data['starts_driver'])
+
     def test_signal_limits_and_rest_at_every_boundary(self):
         for degrees, speed in ((3., .05), (3., .1), (3., .25), (20., .25)):
             plan = make_plan(degrees, speed, .5, 162.)
@@ -144,6 +194,17 @@ class WaistTests(unittest.TestCase):
                 waist.checked_pdo_source(publishers)
         with self.assertRaisesRegex(RuntimeError, 'PDO_SOURCE_NOT_UNIQUE_SERVO'):
             waist.checked_pdo_source([S(node_name='other')], discovering=True)
+
+    def test_unknown_dds_name_waits_only_during_bounded_source_discovery(self):
+        unknown = S(node_name='_NODE_NAME_UNKNOWN_')
+        self.assertFalse(waist.checked_pdo_source([unknown], discovering=True))
+        self.assertTrue(waist.checked_pdo_source([S(node_name='servo_node')], discovering=True))
+        with self.assertRaisesRegex(RuntimeError, 'PDO_SOURCE_NOT_UNIQUE_SERVO'):
+            waist.checked_pdo_source([unknown])
+        for publishers in ([unknown, S(node_name='servo_node')],
+                           [unknown, unknown], [S(node_name='other')]):
+            with self.assertRaisesRegex(RuntimeError, 'PDO_SOURCE_NOT_UNIQUE_SERVO'):
+                waist.checked_pdo_source(publishers, discovering=True)
 
     def test_offline_analysis_exposes_speed_scale_disagreement(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -351,7 +412,8 @@ class WaistTests(unittest.TestCase):
         # No launch, socket, ROS runtime or hardware process exists in this test.
         cases = [(n, f, 'rest') for n in NAMES[:2] for f in (False, True)]
         cases += [('body_joint_1', False, scenario) for scenario in
-                  ('transient', 'moving', 'moving_pdo', 'drifting', 'reject')]
+                  ('transient', 'moving', 'moving_pdo', 'drifting', 'reject',
+                   'source_pending', 'source_unknown', 'sine')]
         for axis, inject_fault, scenario in cases:
             clock = S(value=10.)
             requests = []; commands = []; subscriptions = {}
@@ -375,6 +437,8 @@ class WaistTests(unittest.TestCase):
                         if request.operation == 'acquire':
                             if scenario == 'transient':
                                 test_case.assertGreaterEqual(clock.value, 10.65-1e-8)
+                            if scenario == 'source_pending':
+                                test_case.assertGreaterEqual(clock.value, 10.35-1e-8)
                             owned.value = True
                         if request.operation == 'release':
                             owned.value = False
@@ -401,6 +465,8 @@ class WaistTests(unittest.TestCase):
                     return S(now=lambda: S(nanoseconds=int(clock.value*1e9)))
 
                 def get_publishers_info_by_topic(self, topic):
+                    if scenario == 'source_unknown' or scenario == 'source_pending' and clock.value < 10.15:
+                        return [S(node_name='_NODE_NAME_UNKNOWN_')]
                     if axis == 'body_joint_2' and clock.value < 10.15:
                         return []
                     return [S(node_name='servo_node')]
@@ -457,16 +523,18 @@ class WaistTests(unittest.TestCase):
                 args = S(axis=axis, robot_config=Path('/memory/robot.json'), output=Path(directory)/'capture.jsonl',
                          namespace='bindu_snowbot', vendor_namespace='/', speed=.25, acceleration=.5, jerk=10.,
                          encoder_profile='outer-262144')
-                blocked = scenario in ('moving', 'moving_pdo', 'drifting')
+                test_plan = waist.make_sine_plan() if scenario == 'sine' else make_plan()
+                blocked = scenario in ('moving', 'moving_pdo', 'drifting', 'source_unknown')
                 if blocked or scenario == 'reject':
-                    error = 'TEST_NOT_SETTLED' if blocked else 'trajectory_takeover_seed'
+                    error = ('TEST_WAIT_TIMEOUT' if scenario == 'source_unknown' else
+                             'TEST_NOT_SETTLED' if blocked else 'trajectory_takeover_seed')
                     with self.assertRaisesRegex(RuntimeError, error):
-                        waist.execute(args, make_plan())
+                        waist.execute(args, test_plan)
                 elif inject_fault:
                     with self.assertRaisesRegex(RuntimeError, 'PDO_NOT_READY'):
-                        waist.execute(args, make_plan())
+                        waist.execute(args, test_plan)
                 else:
-                    waist.execute(args, make_plan())
+                    waist.execute(args, test_plan)
                 rows = [json.loads(line) for line in args.output.read_text().splitlines()]
                 self.assertEqual(rows[-1]['data']['completed'], not inject_fault and not blocked and scenario != 'reject')
                 if blocked:
@@ -478,6 +546,8 @@ class WaistTests(unittest.TestCase):
                     self.assertNotIn('INVALID_LEASE', rows[-1]['data']['error'])
                 self.assertTrue(any(row['kind'] == 'settled' for row in rows))
                 self.assertEqual(next(r['data']['axis'] for r in rows if r['kind'] == 'plan'), axis)
+                if scenario == 'sine':
+                    self.assertEqual(next(r['data']['waveform'] for r in rows if r['kind'] == 'plan'), 'sine')
                 self.assertEqual(next(r['data']['csp_encoder']['position_counts_per_rev']
                                       for r in rows if r['kind'] == 'plan'), 262144)
             self.assertTrue(commands)
