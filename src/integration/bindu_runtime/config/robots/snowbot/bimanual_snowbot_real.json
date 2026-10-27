@@ -171,7 +171,7 @@
   "tool_gain": 10.0,
   "posture_gain": 0.1,
   "shared_motion_weight": 0.1,
-  "coupled_locked_joints": ["body_joint_1", "body_joint_2"],
+  "coupled_locked_joints": [],
   "pose_filter": {
     "enabled": true,
     "position": {

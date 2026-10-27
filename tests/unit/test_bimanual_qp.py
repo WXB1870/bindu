@@ -1339,6 +1339,35 @@ class NativeBimanual(unittest.TestCase):
             finally:
                 solver.close()
 
+    def test_real_recipe_uses_both_waist_axes_within_limits(self):
+        base=ROOT/'src/integration/bindu_runtime/config/robots/snowbot'
+        config=json.loads((base/'bimanual_snowbot_real.json').read_text())
+        self.assertEqual(config['coupled_locked_joints'],[])
+        config['urdf']=str(ROOT/'src/hardware/bindu_description/urdf/snowbot_control.urdf')
+        profile=Profile.load(base/'snowbot_real_position.json')
+        pose=json.loads((base/'pico_snowbot_position_real.json').read_text())['prepare_positions_rad']
+        for mode in ('rigid','right_axial'):
+            with self.subTest(mode=mode):
+                solver=BimanualQP(config,profile)
+                try:
+                    feedback=dict.fromkeys(solver.model_names,0.);feedback.update(pose)
+                    tool=solver.capture(feedback,mode)
+                    reference=np.array([feedback[n] for n in solver.names])
+                    changes=[]
+                    for axis in (0,1,2):
+                        target=tool.copy();target[axis,3]+=.01
+                        positions,_=propose(solver,feedback,target,dt=config['sample_period'])
+                        changes.append(np.abs(np.array(positions[:2])-reference[:2]))
+                        for name,value,start in zip(solver.names,positions,reference):
+                            lo,hi=profile.limits[name]
+                            self.assertTrue(np.isfinite(value))
+                            self.assertLessEqual(lo,value);self.assertLessEqual(value,hi)
+                            self.assertLessEqual(abs(value-start),profile.speed(name)*config['sample_period']+1e-6)
+                        self.assertLessEqual(abs(positions[1]),.45)
+                    self.assertTrue(np.all(np.max(changes,axis=0)>1e-5))
+                finally:
+                    solver.close()
+
     def test_snowbot_cad_waist_and_seven_axis_arm_layout(self):
         config=json.loads((ROOT/'src/integration/bindu_runtime/config/robots/snowbot/bimanual_snowbot_sim.json').read_text())
         config['urdf']=str(ROOT/'src/hardware/bindu_description/urdf/snowbot_control.urdf')
