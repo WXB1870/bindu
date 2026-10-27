@@ -67,6 +67,9 @@ def sampling_policy(stream, value):
     elif stream == 'mode-state':
         state = _fields(value, 'generation mode side phase code')
     elif stream == 'vr-health':
+        # Producer bounds these to eight pre-gap and four recovery reports.
+        # Sampling them at 1 Hz would erase the burst needed for diagnosis.
+        if _field(value,'stage')=='transport_window':return 0.,key,None
         # Independent stages used to share one sampler slot: a normal client
         # report could suppress the publish stall/handler/queue evidence.
         stage=_field(value,'stage')

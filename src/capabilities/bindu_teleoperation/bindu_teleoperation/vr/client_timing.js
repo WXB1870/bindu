@@ -107,7 +107,7 @@
   }
   const send = WebSocket.prototype.send;
   WebSocket.prototype.send = function(data) {
-    let outgoing = data;
+    let outgoing = data, probe = null;
     try {
       const b = data instanceof ArrayBuffer ? new Uint8Array(data) :
         ArrayBuffer.isView(data) ? new Uint8Array(data.buffer, data.byteOffset, data.byteLength) : null;
@@ -124,7 +124,8 @@
             send_interval_ms: state.last === null ? null : now - state.last,
             buffered_bytes: this.bufferedAmount, loop_max_ms: loopMax, raf_max_ms: rafMax,
             xr_max_ms: xrMax, long_task_max_ms: longMax, long_task_count: longCount,
-            page_visibility: document.visibilityState, xr_visibility: xrVisibility};
+            page_visibility: document.visibilityState, xr_visibility: xrVisibility,
+            previous_send: state.completed || null};
           const fields = [['bindu_timing', timing]];
           if (heads.size) fields.push(['bindu_head', {version: 1, samples: Array.from(heads.values(), head =>
             ({seq: head.seq, frame_id: head.frameId, tracking_id: head.trackingId, frame_time_ms: head.frameTime,
@@ -137,10 +138,24 @@
           outgoing.set(header); outgoing.set(b.subarray(offset), header.length);
           outgoing.set(extra, header.length + b.length - offset);
           state.last = now; sockets.set(this, state);
+          probe = {state, seq: state.seq, started: now};
           loopMax = rafMax = xrMax = longMax = 0;
         }
       }
     } catch (_) { /* Diagnostics must never prevent the original send. */ }
-    return send.call(this, outgoing);
+    // Report completion on the next existing message, never an extra heartbeat.
+    // A returned send only queued data locally; it does not prove wire delivery.
+    if (!probe) return send.call(this, outgoing);
+    let started;
+    try { started = performance.now(); }
+    catch (_) { return send.call(this, outgoing); }
+    const result = send.call(this, outgoing);
+    try {
+      const finished = performance.now();
+      probe.state.completed = {seq: probe.seq, prepare_ms: started - probe.started,
+        send_call_ms: finished - started, buffered_after_bytes: this.bufferedAmount,
+        wire_bytes: outgoing.byteLength};
+    } catch (_) { /* Diagnostics must not change the original send result. */ }
+    return result;
   };
 })();

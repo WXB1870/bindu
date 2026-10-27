@@ -931,6 +931,8 @@ class BimanualTransactions(unittest.IsolatedAsyncioTestCase):
         result=await rig.run()
         self.assertTrue(result.success,result.code)
         seqs=[json.loads(e[1])['input_seq'] for e in rig.events if e[0]=='BIMANUAL_SUBMIT_TIMING']
+        command_ids={command.command_id for command in rig.commands}
+        self.assertTrue(all(e[3] in command_ids for e in rig.events if e[0]=='BIMANUAL_SUBMIT_TIMING'))
         self.assertGreater(len(seqs),2)
         self.assertEqual(len(seqs),len(set(seqs)))
         self.assertEqual(len(rig.references[0].commits),len(seqs))

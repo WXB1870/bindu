@@ -37,6 +37,18 @@ class TimingSummaries(unittest.TestCase):
             self.assertEqual(rows,list(stages))
             self.assertEqual(writer.status()['dropped'],0)
 
+    def test_gap_and_each_recovery_frame_survive_default_writer_sampling(self):
+        from tools.teleop.snowbot_diagnostics import DiagnosticWriter
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);writer=DiagnosticWriter(root/'diagnostics.jsonl')
+            for seq in range(5):
+                writer.record('vr-health',dict(stage='transport_window',source_id='source',
+                    seq=seq,phase='gap' if seq==0 else 'recovery'))
+            writer.close()
+            rows=[json.loads(line)['data'] for line in (root/'vr-health.jsonl').read_text().splitlines()]
+            self.assertEqual([r['seq'] for r in rows],list(range(5)))
+            self.assertEqual(writer.status()['dropped'],0)
+
     def test_cli_timing_is_opt_in_and_does_not_change_write_authority_or_recipe(self):
         from tools.teleop.run_vr import commands
         args=S(deployment=dict(robot_config='fixture',runtime_mode='simulation',
@@ -224,10 +236,13 @@ class TimingSummaries(unittest.TestCase):
     def test_queue_handler_dispatch_and_publish_are_separate_bounded_metrics(self):
         timing=InputPipelineTiming();timing.begin(11.)
         sample=dict(source_id='source',seq=7,dispatched=10.,handler_started=10.8,
-                    frame_ready=10.81,dequeued=11.,shared_monotonic=True)
+                    frame_ready=10.81,dequeued=11.,shared_monotonic=True,
+                    websocket=dict(received_monotonic_s=9.9,read_wait_s=.15))
         report=timing.finish(12.236,sample)
         values=report['maxima']
         self.assertAlmostEqual(values['server_task_dispatch']['seconds'],.8)
+        self.assertAlmostEqual(values['websocket_read_wait']['seconds'],.15)
+        self.assertAlmostEqual(values['websocket_to_dispatch']['seconds'],.1)
         self.assertAlmostEqual(values['controller_handler']['seconds'],.01)
         self.assertAlmostEqual(values['frame_queue_wait']['seconds'],.19)
         self.assertAlmostEqual(values['ros_after_dequeue']['seconds'],1.236)
@@ -263,7 +278,10 @@ class VuerPipeline(unittest.IsolatedAsyncioTestCase):
                 'bindu_teleoperation.vr.receiver.time',clock):
             _serve(config,output,feedback,health)
             self.assertTrue(apps,list(output.queue))
-            app=apps[0];app.ws['offline']=S()
+            from bindu_teleoperation.vr.timing import WebSocketTiming
+            app=apps[0];app.ws['offline']=WebSocketTiming(S())
+            app.ws['offline'].last_message=dict(message_seq=1,received_monotonic_s=9.99,
+                                               read_wait_s=.15,payload_bytes=100)
             session=app._proxy('offline')
             generator=app.bound_fn(session)
             await generator.__anext__()
@@ -293,6 +311,8 @@ class VuerPipeline(unittest.IsolatedAsyncioTestCase):
             self.assertEqual([m.stamp for m in published],[100.,100.])
             self.assertEqual(summary['published_messages'],2)
             self.assertIn('server_task_dispatch',summary['maxima'])
+            self.assertAlmostEqual(summary['maxima']['websocket_to_dispatch']['seconds'],.01)
+            self.assertAlmostEqual(summary['maxima']['websocket_read_wait']['seconds'],.15)
             await generator.aclose()
             await app.app.cleanup()
 

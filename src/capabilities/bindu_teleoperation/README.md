@@ -369,7 +369,9 @@ ROS_DOMAIN_ID=191 ROS_LOCALHOST_ONLY=1 python3 -m tests integration position \
 
 排查输入间断时，统一入口可临时加 `--input-timing`（`x86_real start`透传该选项），底层launch对应`input_timing_enabled:=true`；默认关闭，不改变运动授权、源时间或TTL。保持默认诊断开启，保存完整`vr-health.jsonl`及分卷、`session.json`、原始/投影输入和运行事件。该标志只开启观测；实际启动仍按既有人工流程及禁写/停止条件执行。输入诊断使用禁写配方、松握和静止反馈，保持驱动及故障状态不变。
 
-`PICO_INPUT_DELIVERY_GAP.interval_s`是协调器完整双手帧回调的ROS时间间隔，另记`monotonic_interval_s`，设备采样间隔和网络时延需分别测量。源`VRInput.stamp`记录服务端控制回调时刻，头显采样时间另行记录。分段摘要`input_pipeline`每秒记录轮询/回调最大耗时、Vuer解码后任务派发等待、控制回调处理、帧队列等待及出队到ROS轮询结束的耗时（含实际发布），带对应源/序号；无输入时仍记录轮询次数，以区分上游安静和本进程停顿。它不是硬实时性能证明；旧macOS/Python不能共享单调时钟时省略跨进程差值。浏览器`perf_ms`与服务端单调时钟使用不同时间基准，跨端诊断比较各自的间隔变化；socket接收/解码之前的细分仍未知。停顿定位需联合浏览器发送间隔、服务端事件循环摘要、队列/发布摘要和协调器记录。
+`PICO_INPUT_DELIVERY_GAP.interval_s`是协调器完整双手帧回调的ROS时间间隔，另记`monotonic_interval_s`，设备采样间隔和网络时延需分别测量。源`VRInput.stamp`记录服务端控制回调时刻，头显采样时间另行记录。分段摘要`input_pipeline`每秒记录轮询/回调最大耗时、Vuer解码后任务派发等待、控制回调处理、帧队列等待及出队到ROS轮询结束的耗时（含实际发布），带对应源/序号；无输入时仍记录轮询次数，以区分上游安静和本进程停顿。`--input-timing`还记录完整WebSocket消息返回的时间、消息序号/字节数、等待读取耗时，以及返回消息到解码后派发的耗时；它不是网卡到包时间，也不把后一个耗时全部归为解码。它不是硬实时性能证明；旧macOS/Python不能共享单调时钟时省略跨进程差值。浏览器`perf_ms`与服务端单调时钟使用不同时间基准，跨端诊断比较各自的间隔变化；网卡、内核和TLS内部细分仍未知。停顿定位需联合浏览器发送间隔、服务端事件循环摘要、队列/发布摘要和协调器记录。
+
+默认轻量诊断在内存保留最近8条controller timing；接收间隔超过100 ms时，`transport_window`立即保存这8条和触发帧，再保留后续4帧，使用`source_id`与`trigger_seq`关联。正常帧不额外发布窗口；窗口不受1 Hz采样压缩，但仍可能因有界队列或DDS丢失，须核对既有丢弃计数，未满4帧的恢复窗口不算完整。`websocket_handler.socket`沿用既有采样时机，增加RTO、未确认/重传中段数、收发字节计数、最近数据/ACK年龄、未发送字节及乱序包计数；旧内核缺失字段省略，累计重传明确为服务端发送方向。浏览器将上一次发送的准备/原生调用耗时、调用后积压和字节数附在下一条原有消息的`client.previous_send`中，用其`seq`关联；它可能属于其他WebSocket事件，且尾条没有后继时无法补报。调用返回和积压为0都不证明对端收到。新增观测不增加连接、心跳、抓包或逐帧写盘，不参与源时间、TTL及保护判断；软件提交回执`BIMANUAL_SUBMIT_TIMING.command_id`可直接关联目标发送和超时事件。
 
 首次接实体头显先运行独立输入诊断，再做机器人仿真跟随。该入口复用正式的 Vuer／`CONTROLLER_MOVE` 解码与 PICO 按键计数，但不加载 ROS、IK、执行器或驱动，也不发布运动命令。头显直接使用**自带 PICO 浏览器**，与电脑在可互通的局域网；不需要 XRoboToolkit 或 pico-ros2-bridge。
 
