@@ -353,6 +353,19 @@ class WaistTests(unittest.TestCase):
         self.assertEqual(result['requested_jerk'], 10.)
         self.assertEqual(json_value([float('nan'), float('-inf')]), [None, None])
 
+    def test_json_value_detaches_ros_numeric_scalars_and_preserves_counts(self):
+        class RosNumber:
+            def __init__(self, value): self.value = value
+            def tolist(self): return self.value
+        payload = dict(status=[RosNumber(0x1237)], mode=RosNumber([8, 8]),
+                       raw=[RosNumber(2147483647), RosNumber(-2147483648)],
+                       selected=RosNumber(False), invalid=RosNumber(float('nan')))
+        result = json.loads(json.dumps(json_value(payload), allow_nan=False))
+        self.assertEqual(result, dict(status=[0x1237], mode=[8, 8],
+                         raw=[2147483647, -2147483648], selected=False, invalid=None))
+        self.assertIs(type(result['raw'][0]), int)
+        self.assertIs(type(result['selected']), bool)
+
     def diagnostic_row(self, attempt=1, **changes):
         data = dict(boot_id=1, session=77, receive_attempt=attempt, pdo_sample=attempt,
                     stamp=10.+attempt*.01, pdo_age=0., attempt_age=0., reference_valid=True,
