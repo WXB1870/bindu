@@ -293,10 +293,12 @@ class PrepareLimitReferenceTests(unittest.TestCase):
             self.assertAlmostEqual(cfg['posture_reference_margin_rad'],.01+math.radians(1.))
             if name=='bimanual_snowbot_real.json':
                 prepare=json.loads((root/'pico_snowbot_position_real.json').read_text())['prepare_positions_rad']
-                preferred=cfg['posture_policy']['reference']
-                self.assertEqual(preferred,{n:0. if n.startswith('body_') else v for n,v in prepare.items()})
-                self.assertEqual(cfg['shared_targets'],{'body_joint_1':0.,'body_joint_2':0.})
-                self.assertGreater(cfg['shared_target_weight'],cfg['posture_weight'])
+                self.assertEqual(cfg['posture_policy']['reference'],'initial_capture')
+                self.assertEqual(cfg['posture_weight'],0.)
+                self.assertEqual(cfg['shared_targets'],{n:prepare[n] for n in ('body_joint_1','body_joint_2')})
+                for name,(lo,hi,weight) in cfg['posture_comfort']['joint_bands'].items():
+                    self.assertLess(lo,prepare[name]);self.assertGreater(hi,prepare[name])
+                    self.assertGreater(weight,0.)
             else:
                 self.assertEqual(cfg['posture_policy']['reference'],'initial_capture')
 

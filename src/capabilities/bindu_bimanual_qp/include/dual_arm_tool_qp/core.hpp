@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Eigen/Core>
+#include <array>
 #include <pinocchio/multibody/data.hpp>
 #include <pinocchio/multibody/model.hpp>
 #include <pinocchio/spatial/se3.hpp>
@@ -63,6 +64,9 @@ public:
   const pinocchio::SE3 &getFramePose(const std::string &name) const;
   Eigen::MatrixXd jacobian(pinocchio::FrameIndex frame) const;
   Eigen::MatrixXd getFrameJacobian(const std::string &name) const;
+  // Unit shoulder-to-elbow vector in torso axes, and its active-joint derivative.
+  std::pair<Eigen::Vector3d, Eigen::MatrixXd> relativeDirection(
+      const std::string &torso, const std::string &shoulder, const std::string &elbow) const;
   Eigen::MatrixXd leftJacobian() const { return jacobian(left_frame_); }
   Eigen::MatrixXd rightJacobian() const { return jacobian(right_frame_); }
   Eigen::VectorXd activePositions() const;
@@ -142,6 +146,11 @@ public:
                         const Eigen::VectorXd &lower, const Eigen::VectorXd &upper);
   void setPostureReferenceMargin(double margin);
   void setTrackingPoint(const Eigen::Vector3d &point);
+  void setArmComfort(int side, const std::string &torso, const std::string &shoulder,
+                     const std::string &elbow, double max_height, double max_outward,
+                     double gain, double weight);
+  void setJointComfort(const Eigen::VectorXd &lower, const Eigen::VectorXd &upper,
+                       const Eigen::VectorXd &weights, double gain);
   SolveResult solve(const pinocchio::SE3 &desired_tool, double dt,
                     const Eigen::VectorXd &reference,
                     const Eigen::Matrix<double, 6, 1> &world_velocity = Eigen::Matrix<double, 6, 1>::Zero(),
@@ -163,6 +172,15 @@ private:
   int shared_count_{0};
   bool have_shared_targets_{false};
   std::unique_ptr<proxsuite::proxqp::dense::QP<double>> qp_;
+  std::unique_ptr<proxsuite::proxqp::dense::QP<double>> posture_qp_;
+  struct ArmComfort {
+    std::string torso, shoulder, elbow;
+    double max_height{0.}, max_outward{1.}, gain{0.}, weight{0.};
+  };
+  std::array<ArmComfort, 2> arm_comfort_;
+  Eigen::VectorXd comfort_lower_, comfort_upper_, comfort_weights_;
+  double comfort_gain_{0.};
+  bool comfortEnabled() const;
   bool initialized_{false};
   bool fresh_start_{true};
   bool independent_{false};

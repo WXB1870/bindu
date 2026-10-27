@@ -142,6 +142,20 @@ Eigen::MatrixXd RobotModel::jacobian(pinocchio::FrameIndex frame) const {
   return selected;
 }
 
+std::pair<Eigen::Vector3d, Eigen::MatrixXd> RobotModel::relativeDirection(
+    const std::string &torso, const std::string &shoulder, const std::string &elbow) const {
+  const auto &t=getFramePose(torso), &s=getFramePose(shoulder), &e=getFramePose(elbow);
+  const Eigen::Vector3d p=t.rotation().transpose()*(e.translation()-s.translation());
+  const double length=p.norm();
+  if (!std::isfinite(length) || length<1e-6)
+    throw std::invalid_argument("degenerate shoulder-elbow geometry");
+  const Eigen::Vector3d u=p/length;
+  const auto jt=getFrameJacobian(torso), js=getFrameJacobian(shoulder), je=getFrameJacobian(elbow);
+  const Eigen::MatrixXd jp=t.rotation().transpose()*(e.rotation()*je.topRows(3)-
+      s.rotation()*js.topRows(3))+pinocchio::skew(p)*jt.bottomRows(3);
+  return {u,(Eigen::Matrix3d::Identity()-u*u.transpose())*jp/length};
+}
+
 Eigen::VectorXd RobotModel::activePositions() const {
   Eigen::VectorXd result(variables());
   for (int i = 0; i < variables(); ++i) result[i] = q_[active_q_indices_[i]];
@@ -283,6 +297,35 @@ void QpController::setSharedMotionWeight(double weight) {
   config_.shared_motion_weight = weight;
 }
 
+bool QpController::comfortEnabled() const {
+  return arm_comfort_[0].weight>0. || arm_comfort_[1].weight>0. ||
+      (comfort_weights_.size() && comfort_weights_.maxCoeff()>0.);
+}
+
+void QpController::setArmComfort(int side, const std::string &torso,
+    const std::string &shoulder, const std::string &elbow, double max_height,
+    double max_outward, double gain, double weight) {
+  if (side<0 || side>1 || !std::isfinite(max_height) || max_height < -1. || max_height > 1. ||
+      !std::isfinite(max_outward) || max_outward < 0. || max_outward > 1. ||
+      !std::isfinite(gain) || gain<=0. || !std::isfinite(weight) || weight<0.)
+    throw std::invalid_argument("invalid arm comfort policy");
+  robot_.relativeDirection(torso,shoulder,elbow);
+  arm_comfort_[side]={torso,shoulder,elbow,max_height,max_outward,gain,weight};
+  reset();
+}
+
+void QpController::setJointComfort(const Eigen::VectorXd &lower,
+    const Eigen::VectorXd &upper, const Eigen::VectorXd &weights, double gain) {
+  if (lower.size()!=robot_.variables() || upper.size()!=lower.size() || weights.size()!=lower.size() ||
+      !lower.allFinite() || !upper.allFinite() || !weights.allFinite() ||
+      (lower.array()>=upper.array()).any() || (weights.array()<0.).any() ||
+      (lower.array()<robot_.lowerLimits().array()).any() ||
+      (upper.array()>robot_.upperLimits().array()).any() || !std::isfinite(gain) || gain<=0.)
+    throw std::invalid_argument("invalid joint comfort policy");
+  comfort_lower_=lower; comfort_upper_=upper; comfort_weights_=weights; comfort_gain_=gain;
+  reset();
+}
+
 void QpController::setCoupledLockedJoints(const std::vector<std::string> &names) {
   const auto &active = robot_.activeJointNames();
   std::vector<bool> locked(active.size(), false);
@@ -327,6 +370,7 @@ void QpController::setPostureReferenceMargin(double margin) {
 }
 
 void QpController::reset() {
+  posture_qp_.reset();
   const int n = robot_.variables();
   const bool avoidance = avoidance_weight_ > 0.;
   qp_ = std::make_unique<proxsuite::proxqp::dense::QP<double>>(
@@ -458,16 +502,17 @@ SolveResult QpController::solve(const pinocchio::SE3 &desired_tool, double dt,
     }
   }
   Eigen::VectorXd b = -config_.relative_gain * e_rel;
+  const bool comfort=comfortEnabled();
   const Eigen::VectorXd nominal_velocity = config_.posture_gain * (nominal_ - q);
   Eigen::MatrixXd h = jt.transpose() * jt +
-      (config_.posture_weight + config_.regularization) * Eigen::MatrixXd::Identity(n, n);
-  Eigen::VectorXd g = -jt.transpose() * task_twist -
-      config_.posture_weight * nominal_velocity;
+      ((comfort ? 0. : config_.posture_weight) + config_.regularization) * Eigen::MatrixXd::Identity(n, n);
+  Eigen::VectorXd g = -jt.transpose() * task_twist;
+  if (!comfort) g-=config_.posture_weight * nominal_velocity;
   // Penalize motion of the model-selected shared group, without a fixed pose
   // target or a speed reduction. Tool/grasp tasks may still use these joints.
   for (int i = 0; i < shared_count_; ++i)
     h(i, i) += config_.shared_motion_weight;
-  if (have_shared_targets_) {
+  if (have_shared_targets_ && !comfort) {
     for (int i = 0; i < shared_count_; ++i) {
       const double desired_velocity = std::clamp(
           config_.shared_target_gain * (shared_targets_[i] - q[i]),
@@ -628,6 +673,64 @@ SolveResult QpController::solve(const pinocchio::SE3 &desired_tool, double dt,
     }
     fresh_start_ = false;
     out.velocity = candidate.head(n);
+    if (comfort) {
+      // Preserve the achieved primary task velocity, including its feasible
+      // limit/closure recovery, while selecting posture in the remaining DoFs.
+      // All original bounds and inequalities remain inside this second QP.
+      Eigen::MatrixXd ph=h;
+      ph.topLeftCorner(n,n)-=jt.transpose()*jt;
+      ph.topLeftCorner(n,n).diagonal().array()+=config_.posture_weight;
+      Eigen::VectorXd pg=Eigen::VectorXd::Zero(g.size());
+      pg.head(n)=-config_.posture_weight*nominal_velocity;
+      if (have_shared_targets_) for (int i=0;i<shared_count_;++i) {
+        ph(i,i)+=config_.shared_target_weight;
+        pg[i]-=config_.shared_target_weight*std::clamp(config_.shared_target_gain*(shared_targets_[i]-q[i]),
+            -robot_.velocityLimits()[i],robot_.velocityLimits()[i]);
+      }
+      for (int i=0;i<comfort_weights_.size();++i) {
+        const double error=std::clamp(q[i],comfort_lower_[i],comfort_upper_[i])-q[i];
+        if (error!=0.) { ph(i,i)+=comfort_weights_[i]; pg[i]-=comfort_weights_[i]*comfort_gain_*error; }
+      }
+      for (int side=0;side<2;++side) {
+        const auto &policy=arm_comfort_[side];
+        if (policy.weight==0. || (independent_ && !(active_mask&(1<<side)))) continue;
+        const auto [direction,jac]=robot_.relativeDirection(policy.torso,policy.shoulder,policy.elbow);
+        for (int axis : {2,1}) {
+          const double sign=axis==1 && side==1 ? -1. : 1.;
+          const double excess=sign*direction[axis]-(axis==2 ? policy.max_height : policy.max_outward);
+          if (excess<=0.) continue;
+          const Eigen::RowVectorXd row=sign*jac.row(axis);
+          ph.topLeftCorner(n,n).noalias()+=policy.weight*row.transpose()*row;
+          pg.head(n).noalias()+=policy.weight*policy.gain*excess*row.transpose();
+        }
+      }
+      Eigen::MatrixXd pa=Eigen::MatrixXd::Zero(a.rows()+jt.rows(),h.cols());
+      pa.topRows(a.rows())=a;pa.bottomLeftCorner(jt.rows(),n)=jt;
+      Eigen::VectorXd pb(pa.rows());pb.head(b.size())=b;pb.tail(jt.rows())=jt*out.velocity;
+      // A secondary failure keeps the already validated primary solution.
+      // It must never relax a primary task or turn infeasibility into success.
+      try {
+        if (!posture_qp_) {
+          posture_qp_=std::make_unique<proxsuite::proxqp::dense::QP<double>>(
+              h.rows(),pa.rows(),avoidance_weight_>0. ? 2*n : 0,true);
+          posture_qp_->settings.verbose=false;posture_qp_->settings.compute_timings=true;
+          posture_qp_->settings.eps_abs=1e-9;posture_qp_->settings.max_iter=100;
+          if (avoidance_weight_>0.) posture_qp_->init(ph,pg,pa,pb,inequalities,inequality_lower,inequality_upper,lower,upper);
+          else posture_qp_->init(ph,pg,pa,pb,proxsuite::nullopt,proxsuite::nullopt,proxsuite::nullopt,lower,upper);
+        } else {
+          if (avoidance_weight_>0.) posture_qp_->update(ph,pg,pa,pb,inequalities,inequality_lower,inequality_upper,lower,upper,true);
+          else posture_qp_->update(ph,pg,pa,pb,proxsuite::nullopt,proxsuite::nullopt,proxsuite::nullopt,lower,upper,true);
+        }
+        posture_qp_->solve();out.solve_time_us+=posture_qp_->results.info.solve_time;
+        const auto &x=posture_qp_->results.x;
+        if (posture_qp_->results.info.status==proxsuite::proxqp::QPSolverOutput::PROXQP_SOLVED &&
+            x.allFinite() && (x.array()>=lower.array()-1e-9).all() && (x.array()<=upper.array()+1e-9).all() &&
+            (pa*x-pb).lpNorm<Eigen::Infinity>()<=1e-6 &&
+            (avoidance_weight_==0. || (inequalities*x-inequality_upper).maxCoeff()<=1e-7))
+          out.velocity=x.head(n);
+        else posture_qp_.reset();
+      } catch (const std::exception &) { posture_qp_.reset(); }
+    }
     out.relative_gain_scale = scale;
     out.ok = true;
     out.reason = "ok";

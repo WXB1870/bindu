@@ -263,6 +263,26 @@ int bq_posture_reference_margin(void *ptr, double margin) {
     } catch (...) { h.qp.reset(); h.kin->reset(); throw; }
   });
 }
+int bq_arm_comfort(void *ptr, int side, const char *torso, const char *shoulder,
+    const char *elbow, double max_height, double max_outward, double gain, double weight) {
+  return checked(ptr, [&](Handle &h) {
+    try {
+      if (!h.qp || !torso || !shoulder || !elbow) throw std::invalid_argument("invalid arm comfort input");
+      h.qp->setArmComfort(side,torso,shoulder,elbow,max_height,max_outward,gain,weight);
+    } catch (...) { h.qp.reset(); h.kin->reset(); throw; }
+  });
+}
+int bq_joint_comfort(void *ptr, const double *lower, const double *upper,
+    const double *weights, int n, double gain) {
+  return checked(ptr, [&](Handle &h) {
+    try {
+      if (!h.qp || !lower || !upper || !weights || n!=h.robot->variables())
+        throw std::invalid_argument("invalid joint comfort input");
+      h.qp->setJointComfort(Eigen::Map<const Eigen::VectorXd>(lower,n),
+          Eigen::Map<const Eigen::VectorXd>(upper,n),Eigen::Map<const Eigen::VectorXd>(weights,n),gain);
+    } catch (...) { h.qp.reset(); h.kin->reset(); throw; }
+  });
+}
 int bq_tracking_point(void *ptr, const double *point) {
   return checked(ptr, [&](Handle &h) {
     try {

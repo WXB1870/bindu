@@ -384,7 +384,7 @@ def task_feedback_worker(settings_path):
     """System-Python QP/native reference worker; no ROS node or device IO."""
     import numpy as np
     settings=json.loads(Path(settings_path).read_text());root=Path(settings['root'])
-    sys.path[:0]=[str(root)]+[str(root/'src'/p) for p in (
+    sys.path[:0]=[str(Path(settings['candidate'])/'src/shared/bindu_contracts'),str(root)]+[str(root/'src'/p) for p in (
         'shared/bindu_contracts','capabilities/bindu_kinematics','control/bindu_execution')]
     import bindu_kinematics,bindu_execution
     bindu_kinematics.__path__.insert(0,str(Path(settings['candidate'])/'src/capabilities/bindu_kinematics/bindu_kinematics'))
@@ -465,8 +465,10 @@ def compare_task_feedback(settings_path, output):
     view.set_world_poses(np.array([[0.,0.,-10.]]),np.array([[1.,0.,0.,0.]]),indices=[2])
     UsdGeom.Imageable(prim).MakeInvisible()
     names=list(body.dof_names);lookup={n:i for i,n in enumerate(names)};dt=cfg['physics_dt_s']
-    env=os.environ.copy();env['PYTHONPATH']='/opt/ros/jazzy/lib/python3.12/site-packages:/opt/ros/jazzy/local/lib/python3.12/dist-packages'
-    env['LD_LIBRARY_PATH']='/opt/ros/jazzy/lib:/opt/ros/jazzy/lib/x86_64-linux-gnu:/usr/lib/x86_64-linux-gnu'
+    env=os.environ.copy();env['PYTHONPATH']=':'.join(settings.get('worker_python_paths',[])+[
+        '/opt/ros/jazzy/lib/python3.12/site-packages','/opt/ros/jazzy/local/lib/python3.12/dist-packages'])
+    env['LD_LIBRARY_PATH']=':'.join(settings.get('worker_library_paths',[])+[
+        '/opt/ros/jazzy/lib','/opt/ros/jazzy/lib/x86_64-linux-gnu','/usr/lib/x86_64-linux-gnu'])
     env['AMENT_PREFIX_PATH']=':'.join(str(p) for p in (root/'install').iterdir() if (p/'share/ament_index').exists())+':/opt/ros/jazzy'
     results=[]
     for job in settings['jobs']:
@@ -533,6 +535,7 @@ def compare_task_feedback(settings_path, output):
         except Exception as exc:failure=str(exc)
         finally:
             worker.stdin.close();worker.wait(timeout=10);stderr.close()
+            if worker.returncode and failure is None:failure=f'TASK_FEEDBACK_WORKER_EXIT:{worker.returncode}'
         position=np.array([r['position_error_m'] for r in rows]);rotation=np.array([r['rotation_error_rad'] for r in rows])
         result=dict(job=job,error=failure,samples=len(rows),position_rms_m=float(np.sqrt(np.mean(position**2))) if len(rows) else None,
             rotation_rms_rad=float(np.sqrt(np.mean(rotation**2))) if len(rows) else None,

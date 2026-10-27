@@ -1317,6 +1317,21 @@ class NativeBimanual(unittest.TestCase):
             BimanualQP(dict(self.config,posture_policy={
                 'reference':preferred,'position_bounds':{name:[.1,.2]}}),self.profile)
 
+    def test_comfort_policy_rejects_invalid_configuration_before_capture(self):
+        policy=dict(torso_frame='torso',shoulder_frames=['left','right'],
+            elbow_frames=['left_elbow','right_elbow'],max_height_ratio=-.25,
+            max_outward_ratio=.75,gain=.3,elbow_weight=.01,joint_bands={})
+        name=self.qp.names[0]
+        invalid=[{},dict(policy,gain=float('nan')),dict(policy,elbow_weight=-1.),
+            dict(policy,max_height_ratio=2.),dict(policy,max_outward_ratio=-.1),
+            dict(policy,shoulder_frames=['left']),dict(policy,torso_frame=''),
+            dict(policy,joint_bands={'unknown':[-.1,.1,.01]}),
+            dict(policy,joint_bands={name:[-.1,.1,True]}),
+            dict(policy,joint_bands={name:[-1e6,1e6,.01]})]
+        for value in invalid:
+            with self.subTest(policy=value),self.assertRaisesRegex(ValueError,'POSTURE_COMFORT'):
+                BimanualQP(dict(self.config,posture_comfort=value),self.profile)
+
     def test_profile_position_limits_are_used_inside_qp(self):
         tool = self.qp.capture(self.feedback)
         target = tool.copy(); target[0,3] += .015

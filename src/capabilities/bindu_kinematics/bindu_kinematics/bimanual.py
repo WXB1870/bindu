@@ -245,6 +245,40 @@ class BimanualQP:
                 except AttributeError as exc:
                     raise ValueError('BIMANUAL_POSTURE_MARGIN_ABI_MISSING: rebuild bindu_bimanual_qp') from exc
                 fn.argtypes,fn.restype=[p,d],i
+            self.comfort_policy=config.get('posture_comfort')
+            if self.comfort_policy is not None:
+                policy=self.comfort_policy
+                expected={'torso_frame','shoulder_frames','elbow_frames','max_height_ratio',
+                          'max_outward_ratio','gain','elbow_weight','joint_bands'}
+                if not isinstance(policy,dict) or set(policy)!=expected:
+                    raise ValueError('BIMANUAL_POSTURE_COMFORT_CONFIG')
+                frames=[policy['torso_frame']]
+                for key in ('shoulder_frames','elbow_frames'):
+                    if not isinstance(policy[key],list) or len(policy[key])!=2:
+                        raise ValueError('BIMANUAL_POSTURE_COMFORT_FRAMES')
+                    frames+=policy[key]
+                values=[policy[k] for k in ('max_height_ratio','max_outward_ratio','gain','elbow_weight')]
+                if (any(not isinstance(v,str) or not v for v in frames) or
+                        any(isinstance(v,bool) or not isinstance(v,(int,float)) or not math.isfinite(v) for v in values) or
+                        not -1<=values[0]<=1 or not 0<=values[1]<=1 or values[2]<=0 or values[3]<0):
+                    raise ValueError('BIMANUAL_POSTURE_COMFORT_CONFIG')
+                bands=policy['joint_bands']
+                if not isinstance(bands,dict) or not set(bands).issubset(self.names):
+                    raise ValueError('BIMANUAL_POSTURE_COMFORT_LAYOUT')
+                self.comfort_lower=lower.copy();self.comfort_upper=upper.copy()
+                self.comfort_weights=np.zeros(len(self.names))
+                for name,band in bands.items():
+                    j=self.names.index(name)
+                    if (not isinstance(band,list) or len(band)!=3 or
+                            any(isinstance(v,bool) or not isinstance(v,(int,float)) or not math.isfinite(v) for v in band) or
+                            not lower[j]<=band[0]<band[1]<=upper[j] or band[2]<0):
+                        raise ValueError('BIMANUAL_POSTURE_COMFORT_BAND:'+name)
+                    self.comfort_lower[j],self.comfort_upper[j],self.comfort_weights[j]=band
+                try:
+                    lib.bq_arm_comfort.argtypes,lib.bq_arm_comfort.restype=[p,i,string,string,string,d,d,d,d],i
+                    lib.bq_joint_comfort.argtypes,lib.bq_joint_comfort.restype=[p,array,array,array,i,d],i
+                except AttributeError as exc:
+                    raise ValueError('BIMANUAL_POSTURE_COMFORT_ABI_MISSING: rebuild bindu_bimanual_qp') from exc
             self.tool = self._transform(config['left_to_tool'])
             self.axial = config.get('right_axial_grasp')
             self.grasp_mode = 'rigid'
@@ -429,6 +463,7 @@ class BimanualQP:
             if not fn(self.handle,self._ptr(self.tracking_point)):
                 raise ValueError('BIMANUAL_TRACKING_POINT:'+self._error())
         posture_reference = self._apply_posture_policy(feedback)
+        self._apply_posture_comfort()
         if self.measured_rigid_grasp and self.collision_check is not None:
             # Freeze the actual right grip at capture, rather than moving the
             # contact exemption with later feedback. Width and all gates stay fixed.
@@ -664,6 +699,18 @@ class BimanualQP:
         if self.limit_avoidance[1] > 0 and not self.lib.bq_limit_avoidance(self.handle,*self.limit_avoidance):
             raise ValueError('BIMANUAL_LIMIT_AVOIDANCE:'+self._error())
 
+    def _apply_posture_comfort(self):
+        policy=getattr(self,'comfort_policy',None)
+        if policy is None:return
+        for side in (0,1):
+            if not self.lib.bq_arm_comfort(self.handle,side,policy['torso_frame'].encode(),
+                    policy['shoulder_frames'][side].encode(),policy['elbow_frames'][side].encode(),
+                    policy['max_height_ratio'],policy['max_outward_ratio'],policy['gain'],policy['elbow_weight']):
+                raise ValueError('BIMANUAL_POSTURE_COMFORT:'+self._error())
+        if not self.lib.bq_joint_comfort(self.handle,self._ptr(self.comfort_lower),self._ptr(self.comfort_upper),
+                self._ptr(self.comfort_weights),len(self.names),policy['gain']):
+            raise ValueError('BIMANUAL_POSTURE_COMFORT:'+self._error())
+
     def _reject_constraint(self, code, **diagnostic):
         # Keep established error codes stable; the worker transports bounded
         # quantitative evidence separately under the same request token.
@@ -715,6 +762,7 @@ class BimanualQP:
         self._apply_shared_motion_weight()
         self._apply_limit_avoidance()
         posture_reference = self._apply_posture_policy(feedback)
+        self._apply_posture_comfort()
         self.check_independent_path(feedback,measured if reference is None else reference)
         if posture_reference is not None:
             self.posture_reference = posture_reference.copy()
