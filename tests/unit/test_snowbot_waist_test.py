@@ -59,6 +59,23 @@ class WaistTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'TEST_POSITION_LIMIT'):
             waist.waist_topic_targets(plan, 0., (.99, .2), limits, 'body_joint_1')
 
+    def test_two_waist_sine_uses_both_limits_and_same_phase(self):
+        plan = waist.make_sine_plan(15., .1, 5, .25, .5, 10.)
+        limits = {'body_joint_1': (-1., 1.), 'body_joint_2': (-.5, .5)}
+        goal = waist.waist_topic_targets(plan, 13.5, (.1, .1), limits, 'both')
+        self.assertEqual(len(goal), 2)
+        self.assertAlmostEqual(goal[0], .1+math.pi/12)
+        self.assertAlmostEqual(goal[1], .1+math.pi/12)
+        self.assertEqual(plan.duration, 52.)
+        self.assertLessEqual(plan.dynamic_bounds[0], .25)
+        with self.assertRaisesRegex(ValueError, 'TEST_POSITION_LIMIT:body_joint_2'):
+            waist.waist_topic_targets(plan, 0., (.1, .3), limits, 'both')
+        result = subprocess.run([sys.executable, '-m', 'tools.teleop.snowbot_waist_test',
+                                 '--axis', 'both'], cwd=Path(__file__).resolve().parents[2],
+                                capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('--axis both requires --backend waist_topic', result.stderr)
+
     def test_direct_waist_runner_blocks_owned_session_before_any_command(self):
         clock = S(value=10.)
         subscriptions = {}; publishers = []; sent = []
@@ -102,6 +119,15 @@ class WaistTests(unittest.TestCase):
                    vendor_namespace='/',speed=.1,acceleration=.5,jerk=10.,
                    encoder_profile=None,position_release=None)
             with patch.dict(sys.modules,modules), patch.object(waist.time,'monotonic',lambda:clock.value):
+                args.axis = 'both'
+                profile['execution']['joint_dynamics'] = {'body_joint_2': {'velocity': .05}}
+                (root/'profile.json').write_text(json.dumps(profile))
+                with self.assertRaisesRegex(ValueError, 'TEST_EXCEEDS_SELECTED_PROFILE:body_joint_2'):
+                    waist.execute_waist_topic(args, waist.make_sine_plan())
+                self.assertEqual(publishers, [])
+                args.axis = 'body_joint_1'
+                profile['execution'].pop('joint_dynamics')
+                (root/'profile.json').write_text(json.dumps(profile))
                 with self.assertRaisesRegex(RuntimeError,'WAIST_TOPIC_SESSION_ACTIVE'):
                     waist.execute_waist_topic(args,waist.make_sine_plan())
             result=json.loads(args.output.read_text().splitlines()[-1])['data']

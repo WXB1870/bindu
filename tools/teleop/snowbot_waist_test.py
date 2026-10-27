@@ -269,16 +269,18 @@ def checked_waist_topic_pdo(msg, now, received, steady, boot=None):
 
 
 def waist_topic_targets(plan, elapsed, initial, limits, axis):
-    index = NAMES[:2].index(axis)
+    indices = (0, 1) if axis == 'both' else (NAMES[:2].index(axis),)
     if len(initial) != 2 or any(not math.isfinite(q) for q in initial):
         raise ValueError('WAIST_TOPIC_BASELINE_INVALID')
     for i, name in enumerate(NAMES[:2]):
         lo, hi = limits[name]
-        excursion = plan.amplitude+.01 if i == index else 0.
+        excursion = plan.amplitude+.01 if i in indices else 0.
         if not lo+excursion <= initial[i] <= hi-excursion:
             raise ValueError('TEST_POSITION_LIMIT:'+name)
     q = list(initial)
-    q[index] += plan.sample(elapsed)[0]
+    offset = plan.sample(elapsed)[0]
+    for index in indices:
+        q[index] += offset
     return q
 
 
@@ -295,12 +297,13 @@ def execute_waist_topic(args, plan):
     config = json.loads(config_path.read_text())
     profile = json.loads((config_path.parent/config['profile']).read_text())
     execution = profile['execution']
-    dynamics = execution.get('joint_dynamics', {}).get(args.axis, {})
-    caps = (dynamics.get('velocity', profile['max_speed']),
-            dynamics.get('acceleration', execution['max_acceleration']),
-            dynamics.get('jerk', execution['max_jerk']))
-    if any(v > cap for v, cap in zip((args.speed, args.acceleration, args.jerk), caps)):
-        raise ValueError('TEST_EXCEEDS_SELECTED_PROFILE')
+    for axis in NAMES[:2] if args.axis == 'both' else (args.axis,):
+        dynamics = execution.get('joint_dynamics', {}).get(axis, {})
+        caps = (dynamics.get('velocity', profile['max_speed']),
+                dynamics.get('acceleration', execution['max_acceleration']),
+                dynamics.get('jerk', execution['max_jerk']))
+        if any(v > cap for v, cap in zip((args.speed, args.acceleration, args.jerk), caps)):
+            raise ValueError('TEST_EXCEEDS_SELECTED_PROFILE:'+axis)
     encoder = select_encoder(args.encoder_profile, args.position_release)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     log = args.output.open('x')
@@ -803,7 +806,8 @@ def analyze(path, session=None, *, encoder_profile=None, position_release=None):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--axis', choices=NAMES[:2], default='body_joint_1', help='only this waist target changes')
+    parser.add_argument('--axis', choices=(*NAMES[:2], 'both'), default='body_joint_1',
+                        help='both is available only with --backend waist_topic')
     parser.add_argument('--degrees', type=float, default=1., help='code-scale excursion each way; default 1 deg, <=20')
     parser.add_argument('--speed', type=float, default=.1, help='code-scale rad/s; default .1, <=0.375 and selected profile')
     parser.add_argument('--acceleration', type=float, default=.5, help='code-scale rad/s^2; default .5, <=2.25 and selected profile')
@@ -831,6 +835,8 @@ def main():
         return
     if args.session is not None:
         parser.error('--session requires --analyze')
+    if args.axis == 'both' and args.backend != 'waist_topic':
+        parser.error('--axis both requires --backend waist_topic')
     plan = (make_sine_plan(args.degrees, args.frequency, args.cycles, args.speed, args.acceleration, args.jerk)
             if args.waveform == 'sine' else make_plan(args.degrees, args.speed, args.acceleration, args.jerk))
     encoder = select_encoder(args.encoder_profile, args.position_release)
