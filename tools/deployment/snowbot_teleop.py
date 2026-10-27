@@ -16,7 +16,8 @@ import uuid
 
 from tools import ROOT
 SHARE = ROOT/'src/integration/bindu_runtime'
-RECIPE = package_share("snowbot_bringup")/'config/deployments/snowbot_real_teleop.json'
+def recipe_path():
+    return package_share('snowbot_bringup')/'config/deployments/snowbot_real_teleop.json'
 
 
 def namespace(value):
@@ -58,7 +59,7 @@ def validate_recipe(data):
 
 
 def configure(options):
-    data = json.loads(RECIPE.read_text())
+    data = json.loads(recipe_path().read_text())
     data['arguments'].update({
         key: getattr(options, key) for key in
         ('host', 'port', 'namespace', 'vendor_namespace', 'arm_receiver_node',
@@ -306,12 +307,13 @@ def operate_gripper(args, robot, options):
 
 
 def parser():
-    p = argparse.ArgumentParser(description='Snowbot 最小遥操作：现场配置、构建、检查、前台启动和只读状态。通过 snowbot_teleop.sh 自动加载环境。')
+    p = argparse.ArgumentParser(description='Snowbot 旧四节点专项配置、检查、前台启动和只读状态。通过 snowbot_teleop.sh 加载选定安装环境；构建使用 x86_real。')
     commands = p.add_subparsers(dest='command')
     selected_workspace = os.environ.get('BINDU_TELEOP_WORKSPACE')
     workspace = Path(selected_workspace) if selected_workspace else None
     for command in ('configure', 'build', 'check', 'start', 'status', 'gripper'):
-        sub = commands.add_parser(command)
+        sub = commands.add_parser(command, **({'help':'已弃用；改用 tools.deployment.x86_real build'}
+                                               if command == 'build' else {}))
         if command == 'build':
             continue
         sub.add_argument('--config', type=Path, default=workspace/'site.json' if workspace else None,
@@ -345,7 +347,7 @@ def main(argv=None):
         p.print_help()
         return 2
     if options.command == 'build':
-        p.error('请通过 bash tools/snowbot_teleop.sh build 构建')
+        p.error('旧专项工具不再单独构建；请使用 python3 -m tools.deployment.x86_real build --workspace /已准备的部署目录')
     try:
         options.config = options.config.expanduser().absolute()
         if options.command == 'configure':

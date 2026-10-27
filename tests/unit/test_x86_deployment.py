@@ -22,10 +22,23 @@ class X86DeploymentTests(unittest.TestCase):
                 folder=root/name
                 (folder/'src').mkdir(parents=True)
                 subprocess.run(['git','init','-q',str(folder)],check=True)
-                (folder/'src/value.py').write_text('original')
+            for repository, name, dependencies in (
+                    ('framework','bindu_bimanual_qp','<depend>bindu_contracts</depend>'),
+                    ('framework','bindu_contracts',''),('framework','bindu_lio',''),
+                    ('application','snowbot_bringup','<exec_depend>bindu_bimanual_qp</exec_depend>')):
+                package=root/repository/'src'/name;package.mkdir()
+                (package/'package.xml').write_text('<package><name>'+name+'</name>'+dependencies+'</package>')
+                (package/'value.py').write_text('original')
             with patch.object(x86_real,'ROOT',root/'framework'):
                 first=x86_real.source_digest(root/'application')
-                source=root/'application/src/value.py'
+                (root/'framework/src/bindu_lio/value.py').write_text('unrelated')
+                (root/'application/src/snowbot_bringup/README.md').write_text('documentation')
+                self.assertEqual(first,x86_real.source_digest(root/'application'))
+                dependency=root/'framework/src/bindu_contracts/value.py'
+                dependency.write_text('changed dependency')
+                self.assertNotEqual(first,x86_real.source_digest(root/'application'))
+                dependency.write_text('original')
+                source=root/'application/src/snowbot_bringup/value.py'
                 source.write_text('changed')
                 self.assertNotEqual(first,x86_real.source_digest(root/'application'))
                 source.unlink()
@@ -284,6 +297,13 @@ class X86DeploymentTests(unittest.TestCase):
                 for name in ('pinocchio', 'coal'):
                     self.assertIn('-D'+name+'_DIR='+str(prefix/'lib/cmake'/name), command)
                 self.assertTrue(json.loads((workspace/'build.json').read_text())['native_process_exit_success'])
+                execute.reset_mock()
+                x86_real.build(workspace)
+                self.assertNotIn('--cmake-clean-cache',execute.call_args_list[0].args[1])
+                (prefix/'lib/cmake/coal/coalConfig.cmake').write_text('# changed numeric dependency')
+                execute.reset_mock()
+                x86_real.build(workspace)
+                self.assertIn('--cmake-clean-cache',execute.call_args_list[0].args[1])
                 # A child may finish its test body and still fail in native exit handlers.
                 execute.reset_mock()
                 execute.side_effect = [None, subprocess.CalledProcessError(-6, 'native-lifecycle')]

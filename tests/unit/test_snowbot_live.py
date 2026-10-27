@@ -387,6 +387,15 @@ class SimulationEntryTests(unittest.TestCase):
         environment.start()
         self.addCleanup(environment.stop)
         entry.os.environ.pop('BINDU_VR_CONFIG', None)
+        entry.os.environ.pop('BINDU_VR_ENV', None)
+        # Only the package index is replaced; configuration/model validation is real.
+        packages=S(get_package_share_directory=lambda name: str(ROOT/'src/integration/bindu_runtime')
+                   if name=='bindu_runtime' else str(package_share(name)))
+        index=patch.dict(sys.modules,{'ament_index_python':S(packages=packages),
+                                     'ament_index_python.packages':packages})
+        index.start();self.addCleanup(index.stop)
+        revision=patch.object(entry.subprocess,'check_output',return_value='fixture_tool_revision\n')
+        revision.start();self.addCleanup(revision.stop)
 
     def test_local_default_recipe_and_explicit_override(self):
         fallback=package_share("snowbot_bringup")/'config/deployments/snowbot_vr_sim.json'
@@ -441,10 +450,16 @@ class SimulationEntryTests(unittest.TestCase):
         args=entry.parse_args(['--config',str(recipe),'--enable-commands'])
         self.assertEqual(args.deployment['command_enabled'],'true')
         self.assertIn('command_enabled:=true',entry.commands(args)[0])
-        with patch.object(entry,'check',side_effect=RuntimeError('online check rejected')), \
-                patch.object(entry.subprocess,'Popen') as start:
-            with self.assertRaisesRegex(RuntimeError,'online check rejected'):entry.run(args)
-            start.assert_not_called()
+        with tempfile.TemporaryDirectory() as directory:
+            args.output=Path(directory)/'rejected'
+            with patch.object(entry,'check',side_effect=RuntimeError('online check rejected')), \
+                    patch.object(entry.subprocess,'Popen') as start:
+                with self.assertRaisesRegex(RuntimeError,'online check rejected'):entry.run(args)
+                start.assert_not_called()
+            record=json.loads((args.output/'session.json').read_text())
+            self.assertEqual(record['failed_phase'],'preflight')
+            self.assertEqual(record['error']['message'],'online check rejected')
+            self.assertEqual(record['effective_arguments']['command_enabled'],'true')
         self.assertEqual(recipe.read_bytes(),before)
 
     def test_write_enable_rejects_simulation_physics_and_load_declaration(self):
@@ -466,6 +481,42 @@ class SimulationEntryTests(unittest.TestCase):
                 with self.assertRaisesRegex(OSError, 'display could not start'):
                     entry.run(args)
                 stop.assert_called_once_with(control)
+
+    def test_session_freezes_build_identity_and_effective_configuration(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);build=root/'build.json'
+            installed=dict(ready=True,native_process_exit_success=True,source_sha256='installed',
+                           source_revisions={'bindu':{'commit':'built_revision','dirty':False}})
+            build.write_text(json.dumps(installed))
+            recipe=package_share('snowbot_bringup')/'config/deployments/snowbot_vr_real.json'
+            args=entry.parse_args(['--config',str(recipe),'--enable-commands','--namespace','cli_namespace',
+                                  '--output',str(root/'run'),'--duration','.001','--no-diagnostics'])
+            with patch.dict(entry.os.environ,BINDU_VR_ENV=str(root/'env.sh')), \
+                    patch.object(entry,'check',return_value={}), \
+                    patch.object(entry.subprocess,'Popen',return_value=S(poll=lambda:None)), \
+                    patch.object(entry,'stop_group',return_value=True):
+                self.assertEqual(entry.run(args),0)
+            build.write_text('{"source_sha256":"next_build"}')
+            record=json.loads((args.output/'session.json').read_text())
+            self.assertEqual(record['installed_build']['record'],installed)
+            self.assertEqual(record['configuration']['arguments']['namespace'],'cli_namespace')
+            self.assertEqual(record['configuration']['arguments']['command_enabled'],'true')
+            self.assertEqual(record['configs']['deployment']['content']['arguments']['command_enabled'],False)
+            self.assertIn('display_urdf',record['configuration']['sources'])
+            self.assertEqual(record['phase'],'finished')
+
+    def test_check_leaves_no_run_directory_and_existing_output_is_preserved(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output=Path(directory)/'run'
+            args=entry.parse_args(['--check','--output',str(output)])
+            with patch.object(entry,'check',return_value={}),patch.object(entry.subprocess,'Popen') as start:
+                self.assertEqual(entry.run(args),0)
+                start.assert_not_called()
+            self.assertFalse(output.exists())
+            output.mkdir();marker=output/'session.json';marker.write_text('previous session')
+            args.check=False
+            with self.assertRaises(FileExistsError):entry.run(args)
+            self.assertEqual(marker.read_text(),'previous session')
 
     def test_partial_start_failure_drains_and_closes_the_shared_process_log_writer(self):
         with tempfile.TemporaryDirectory() as directory:

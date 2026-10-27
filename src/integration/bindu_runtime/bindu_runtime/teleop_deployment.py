@@ -144,7 +144,7 @@ def load_deployment(path, share):
     return launch, result
 
 
-def configuration_snapshot(path, share):
+def configuration_snapshot(path, share, *, effective_arguments=None):
     """Resolve the application once and record effective inputs without ROS IO.
 
     TLS material is never opened here. Execution and device guards still
@@ -152,8 +152,10 @@ def configuration_snapshot(path, share):
     """
     from .robot_setup import RobotSetup
     launch, arguments = load_deployment(path, share)
+    if effective_arguments is not None:
+        arguments = dict(effective_arguments)
     files = {'deployment': Path(path).resolve()}
-    for key in ('robot_config', 'profile', 'pico_config', 'gripper_config', 'base_config', 'physics_config'):
+    for key in ('robot_config', 'profile', 'bimanual_config', 'pico_config', 'gripper_config', 'base_config', 'physics_config'):
         if arguments.get(key):
             files[key] = Path(arguments[key])
     if arguments.get('robot_config'):

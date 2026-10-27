@@ -9,12 +9,14 @@ import platform
 import shlex
 import subprocess
 import sys
+import xml.etree.ElementTree as ET
 
 from tools import ROOT
 from tools.deployment.process_guard import require_stopped
 
 REQUIREMENTS = ROOT/'tools/requirements/requirements-x86-real.txt'
 TEMPLATE_NAME = 'config/deployments/snowbot_vr_real.json'
+BUILD_TARGETS = ('snowbot_bringup', 'bindu_bimanual_qp')
 SYSTEM_PATH = '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
 OVERLAYS = ('PYTHONPATH', 'PYTHONHOME', 'AMENT_PREFIX_PATH', 'COLCON_PREFIX_PATH',
             'CMAKE_PREFIX_PATH', 'LD_LIBRARY_PATH', 'LD_PRELOAD', 'LIBRARY_PATH',
@@ -110,11 +112,46 @@ def read_profile(workspace):
     return profile
 
 
-def source_digest(application_source=None):
-    digest = hashlib.sha256()
-    roots = [('bindu', ROOT, ('src', 'tools/requirements'))]
+def build_packages(application_source):
+    """Conservative local dependency closure; conditional dependencies stay included.
+
+    Colcon remains responsible for condition evaluation and build ordering.
+    Including every dependency branch here prevents a condition change from
+    hiding an input. No second package list is maintained.
+    """
+    packages = {}
+    for root in (ROOT, Path(application_source)):
+        for manifest in (root/'src').rglob('package.xml'):
+            data = ET.parse(manifest).getroot()
+            name = data.findtext('name')
+            if not name or name in packages:
+                raise ValueError('部署包名称缺失或重复：'+str(manifest))
+            dependencies = {element.text for element in data
+                            if element.tag.endswith('depend') and element.tag != 'test_depend'}
+            packages[name] = (manifest.parent, dependencies)
+    selected, pending = {}, list(BUILD_TARGETS)
+    if any(name not in packages for name in pending):
+        raise ValueError('缺少部署目标包，请核对两仓源码')
+    while pending:
+        name = pending.pop()
+        if name in selected:
+            continue
+        directory, dependencies = packages[name]
+        selected[name] = directory
+        pending.extend(dependencies & packages.keys() - selected.keys())
+    return selected
+
+
+def source_files(application_source=None):
+    roots = [('bindu', ROOT, ['src', 'tools/requirements'])]
     if application_source:
-        roots.append(('snowbot', Path(application_source), ('src',)))
+        application = Path(application_source)
+        selected = build_packages(application)
+        roots = [(name, root, [str(path.relative_to(root)) for path in selected.values()
+                              if path.is_relative_to(root)] +
+                  (['tools/requirements'] if name == 'bindu' else []))
+                 for name, root in (('bindu', ROOT), ('snowbot', application))]
+    files = {}
     for name, root, folders in roots:
         paths = subprocess.check_output(
             ['git', 'ls-files', '--cached', '--others', '--exclude-standard', '-z', '--', *folders],
@@ -123,8 +160,14 @@ def source_digest(application_source=None):
             path = root/os.fsdecode(raw)
             if not path.is_file():
                 continue  # A tracked deletion is represented by absence from this snapshot.
-            digest.update(name.encode()+b'/'+raw+b'\0')
-            digest.update(path.read_bytes())
+            files[name+'/'+os.fsdecode(raw)] = hashlib.sha256(path.read_bytes()).hexdigest()
+    return files
+
+
+def source_digest(application_source=None, *, files=None):
+    digest = hashlib.sha256()
+    for name, value in sorted((source_files(application_source) if files is None else files).items()):
+        digest.update(name.encode()+b'\0'+value.encode()+b'\0')
     return digest.hexdigest()
 
 
@@ -133,7 +176,15 @@ def require_current_build(workspace):
     profile = json.loads((workspace/'deployment.json').read_text())
     if (not build_info.get('ready') or not build_info.get('native_process_exit_success') or
             build_info.get('source_sha256') != source_digest(profile.get('application_source'))):
-        raise ValueError('构建未完成或源码/依赖清单已变更，请重新 build')
+        changed = []
+        if build_info.get('source_files'):
+            current = source_files(profile.get('application_source'))
+            previous = build_info['source_files']
+            changed = sorted(name for name in previous.keys() | current.keys()
+                             if previous.get(name) != current.get(name))
+        detail = '；变化文件：'+', '.join(changed[:8]) if changed else ''
+        raise ValueError('构建未完成或所选包源码/依赖清单已变更，请重新 build'+detail)
+    return build_info
 
 
 def prepare(options):
@@ -150,7 +201,6 @@ def prepare(options):
     application = (Path(selected).expanduser().resolve() if selected else
                    package_share('snowbot_bringup').parents[1])
     expected = {'snowbot_bringup', 'snowbot_description', 'snowbot_hardware', 'snowbot_teleop'}
-    import xml.etree.ElementTree as ET
     found = {ET.parse(p).findtext('name') for p in (application/'src').glob('*/package.xml')}
     if not expected <= found:
         raise ValueError('--application-source 需要包含四个 Snowbot 应用包的工作区根目录')
@@ -204,7 +254,9 @@ def build(workspace):
     application = profile.get('application_source')
     if not application:
         raise ValueError('部署缺少 Snowbot 应用源码身份，请重新 prepare 并指定 --application-source')
-    before = source_digest(application)
+    files = source_files(application)
+    before = source_digest(application, files=files)
+    previous = json.loads((workspace/'build.json').read_text()) if (workspace/'build.json').is_file() else {}
     identities = {}
     for name, root in (('bindu', ROOT), ('snowbot', Path(application))):
         identities[name] = {
@@ -212,15 +264,28 @@ def build(workspace):
             'commit': subprocess.check_output(['git','rev-parse','HEAD'], cwd=root, text=True).strip(),
             'dirty': bool(subprocess.check_output(['git','status','--porcelain','--','src','tools/requirements'],
                                                   cwd=root, text=True))}
-    info = dict(ready=False, source_sha256=before, source_revisions=identities)
+    info = dict(ready=False, source_sha256=before, source_revisions=identities, source_files=files)
     (workspace/'build.json').write_text(json.dumps(info, indent=2)+'\n')
+    numeric = numeric_cmake_arguments(workspace)
+    cmake_identity = dict(python=profile['python'], ros=profile.get('ros'),
+        vendor_setup=profile.get('vendor_setup'), numeric=numeric,
+        requirements=hashlib.sha256(REQUIREMENTS.read_bytes()).hexdigest(),
+        compilers={key: os.environ.get(key, '') for key in ('CC', 'CXX')},
+        numeric_configs={argument: hashlib.sha256((Path(argument.split('=', 1)[1])/
+            (argument[2:].split('_DIR=', 1)[0]+'Config.cmake')).read_bytes()).hexdigest()
+            for argument in numeric})
+    info['cmake_identity'] = cmake_identity
+    (workspace/'build.json').write_text(json.dumps(info, indent=2)+'\n')
+    clean_cache = previous.get('cmake_identity') != cmake_identity
+    print('构建：'+('首次或工具链/数值依赖变化，重新配置' if clean_cache else '复用现有CMake缓存'))
     command = ['python3', '/usr/bin/colcon', '--log-base', workspace/'log', 'build',
         '--base-paths', ROOT/'src', Path(application)/'src',
-        '--packages-up-to', 'snowbot_bringup', 'bindu_bimanual_qp',
+        '--packages-up-to', *BUILD_TARGETS,
         '--build-base', workspace/'build', '--install-base', workspace/'install',
-        '--executor', 'sequential', '--cmake-clean-cache', '--cmake-args', '-DCMAKE_BUILD_TYPE=Release',
+        '--executor', 'sequential', *(['--cmake-clean-cache'] if clean_cache else []),
+        '--cmake-args', '-DCMAKE_BUILD_TYPE=Release',
         '-DPython3_EXECUTABLE='+str(workspace/'venv/bin/python3'),
-        '-DPYTHON_EXECUTABLE='+str(workspace/'venv/bin/python3'), *numeric_cmake_arguments(workspace)]
+        '-DPYTHON_EXECUTABLE='+str(workspace/'venv/bin/python3'), *numeric]
     in_environment(workspace, command)
     # Actual loaded modules/paths plus the resolved pip set are useful on a second machine.
     in_environment(workspace, ['python3', '-c', '''

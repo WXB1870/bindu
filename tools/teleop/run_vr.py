@@ -132,6 +132,53 @@ def stop_group(process, grace=12.):
 
 
 def run(args):
+    if args.check or args.declare_load:
+        return run_session(args, None)
+    args.output.mkdir(parents=True, exist_ok=False)
+    manifest = dict(schema=1, run_id=args.run_id, started_at=time.time(),
+        phase='preflight', domain_id=args.domain_id, namespace=args.namespace,
+        effective_arguments=dict(args.deployment))
+    path = args.output/'session.json'
+
+    def save():
+        path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2)+'\n')
+
+    save()
+    print(f'本次记录：{path}', flush=True)
+    try:
+        # Capture the installed build separately from the tool currently running.
+        environment = os.environ.get('BINDU_VR_ENV')
+        build_path = Path(environment).resolve().with_name('build.json') if environment else None
+        manifest['installed_build'] = None
+        if build_path and build_path.is_file():
+            raw = build_path.read_bytes()
+            manifest['installed_build'] = dict(path=str(build_path),
+                sha256=hashlib.sha256(raw).hexdigest(), record=json.loads(raw))
+        launcher = Path(__file__).resolve()
+        manifest['launcher_source'] = dict(path=str(launcher),
+            sha256=hashlib.sha256(launcher.read_bytes()).hexdigest())
+        try:
+            manifest['launcher_source'].update(
+                commit=subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT,
+                                               text=True, stderr=subprocess.DEVNULL).strip(),
+                dirty=bool(subprocess.check_output(['git', 'status', '--porcelain', '--', 'tools'],
+                                                  cwd=ROOT, stderr=subprocess.DEVNULL)))
+        except (OSError, subprocess.CalledProcessError):
+            manifest['launcher_source'].update(commit=None, dirty=None)
+        save()
+        result = run_session(args, manifest)
+    except (Exception, KeyboardInterrupt) as exc:
+        manifest.update(failed_phase=manifest['phase'], phase='failed', ended_at=time.time(),
+                        error=dict(type=type(exc).__name__, message=str(exc)))
+        save()
+        print(f'启动或运行失败，阶段与原因见：{path}', file=sys.stderr, flush=True)
+        raise
+    manifest.update(phase='finished', ended_at=time.time(), process_result=result)
+    save()
+    return result
+
+
+def run_session(args, manifest):
     os.environ['ROS_DOMAIN_ID']=str(args.domain_id)
     if args.declare_load:
         from tools.teleop.snowbot_live import declare_load
@@ -153,7 +200,6 @@ def run(args):
             print(json.dumps(report, ensure_ascii=False))
             print('只读检查结束；未启动控制节点。')
             return 0
-        args.output.mkdir(parents=True, exist_ok=False)
         env = dict(os.environ, ROS_DOMAIN_ID=str(args.domain_id),
                    ROS_LOG_DIR=str(args.output/'ros-log'))
         if args.deployment.get('device_backend')=='external_simulation':
@@ -165,9 +211,16 @@ def run(args):
         process_logs = None
         try:
             resolved_commands=commands(args)
-            configs={}
             from bindu_runtime.robot_setup import RobotSetup
+            from bindu_runtime.teleop_deployment import configuration_snapshot
+            from ament_index_python.packages import get_package_share_directory
             robot=RobotSetup.load(args.deployment['robot_config'])
+            snapshot=configuration_snapshot(args.config, get_package_share_directory('bindu_runtime'),
+                                            effective_arguments=args.deployment)
+            # Retain the existing JSON config fields for older log consumers.
+            aliases={'profile':'profile_config','tool':'tool_config'}
+            configs={aliases.get(key,key):dict(path=value['path'],sha256=value['sha256'],content=value['values'])
+                     for key,value in snapshot['sources'].items() if 'values' in value}
             if args.deployment.get('device_backend')=='external_simulation':
                 physics_session=dict(run_id=args.run_id,namespace=args.namespace,runtime_mode='simulation',
                     profile=str(robot.profile_path),profile_hash=robot.profile.digest,
@@ -175,18 +228,11 @@ def run(args):
                     pico_config=args.deployment['pico_config'],gripper_config=args.deployment['gripper_config'],
                     physics_config=args.deployment['physics_config'])
                 (args.output/'physics-session.json').write_text(json.dumps(physics_session,indent=2))
-            config_paths=dict(deployment=str(args.config),**args.deployment,
-                tool_config=str(robot.tool_config),profile_config=str(robot.profile_path))
-            for key,value in config_paths.items():
-                if key=='deployment' or key.endswith('_config'):
-                    path=Path(value)
-                    if path.is_file():
-                        configs[key]=dict(path=str(path),sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
-                                          content=json.loads(path.read_text()))
             from bindu_teleoperation.vr import receiver
             probe=Path(receiver.__file__).with_name('client_timing.js')
-            manifest=dict(schema=1,run_id=args.run_id,started_at=time.time(),domain_id=args.domain_id,
+            manifest.update(dict(schema=1,run_id=args.run_id,domain_id=args.domain_id,
                 namespace=args.namespace,diagnostics=args.diagnostics,commands=resolved_commands,configs=configs,
+                configuration=snapshot, phase='starting_processes',
                 input_timing_enabled=bool(getattr(args,'input_timing',False)),
                 input_recording=dict(enabled=bool(getattr(args,'record_inputs',False)),
                     scope='all observer-received raw/projected ROS VR messages and timing reports',
@@ -195,11 +241,16 @@ def run(args):
                     clock_semantics='browser monotonic send time; never used as control freshness or one-way latency'),
                 diagnostic_format='JSONL: received_at, received_monotonic_ns, data; ROS fields retained',
                 diagnostic_chunk_bytes=128*1024*1024, process_log_repeat_interval_s=5.,
-                process_log_health='process-log-health.json')
+                process_log_health='process-log-health.json'))
             # Keep CLI overrides next to file provenance; the selected site may
             # differ from the values actually passed to the control processes.
             manifest['effective_arguments'] = dict(args.deployment)
             (args.output/'session.json').write_text(json.dumps(manifest,ensure_ascii=False,indent=2))
+            print(f"配置：{args.config}，sha256={snapshot['sha256']}，写入={args.deployment.get('command_enabled','false')}", flush=True)
+            build=manifest.get('installed_build')
+            revisions=build['record'].get('source_revisions',{}) if build else {}
+            print('安装版本：'+(', '.join(name+'='+str(value.get('commit')) for name,value in revisions.items())
+                                  if revisions else '无构建身份记录'), flush=True)
             if args.diagnostics:
                 from tools.teleop.snowbot_diagnostics import DiagnosticWriter
                 process_logs=DiagnosticWriter(args.output/'process-output.jsonl',
@@ -223,6 +274,8 @@ def run(args):
                   f'头显：{"https" if args.cert_file else "http"}://{"<开发机局域网 IP>" if args.host=="0.0.0.0" else args.host}:{args.vr_port}/\n'
                   '等待 SNOWBOT_WEB_READY 后打开页面；Ctrl+C 统一停止。', flush=True)
             start = time.monotonic()
+            manifest['phase']='running'
+            (args.output/'session.json').write_text(json.dumps(manifest,ensure_ascii=False,indent=2))
             while not stop.wait(.2):
                 if any(p.poll() is not None for p in children):
                     print('子进程已退出，正在收尾本次遥操作。', file=sys.stderr)
