@@ -515,7 +515,11 @@ class Interpolation(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path=Path(directory)/'bad.json'
             for cfg in ({'max_jerk':float('nan')},{'control_period':1.,'max_tick_gap':.1},
-                        {'joint_dynamics':{'unknown':{'velocity':1.}}}):
+                        {'joint_dynamics':{'unknown':{'velocity':1.}}},
+                        *({'stop_position_tolerances': value} for value in
+                          ([], {'unknown':.01}, {next(iter(raw['limits'])):0.},
+                           {next(iter(raw['limits'])):float('nan')},
+                           {next(iter(raw['limits'])):True}))):
                 raw['execution']=cfg;path.write_text(json.dumps(raw))
                 with self.assertRaises(ValueError): Profile.load(path)
 

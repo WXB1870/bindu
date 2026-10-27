@@ -2,6 +2,7 @@
 from bindu_contracts.resources import package_share
 from types import SimpleNamespace as S
 import ast
+import math
 from dataclasses import replace
 from pathlib import Path
 import json
@@ -368,6 +369,68 @@ class PauseHandoffTests(unittest.TestCase):
         self.assertEqual(self.engine.stop_deadline, deadline)
         self.assertTrue(self.engine.stop_fault.startswith('STOP_UNCONFIRMED'))
         self.assertFalse(any(e.state == 'CANCELED' for e in self.engine.events))
+
+    def test_configured_waist_stop_tolerance_accepts_recorded_residual_after_rest(self):
+        from bindu_contracts.profile import Profile
+        self.enable_rest_window()
+        selected = Profile.load(package_share('snowbot_bringup')/'config/robots/snowbot/snowbot_real_position.json')
+        self.profile = replace(self.profile, stop_position_tolerances=selected.stop_position_tolerances)
+        self.io.profile = self.engine.profile = self.profile
+        self.assertEqual(self.profile.stop_position_tolerances,
+                         dict.fromkeys(GROUPS['waist'], math.radians(1)))
+        self.assertEqual(self.profile.feedback_tolerances['joint_position'], .002)
+        hold = self.start_stop()
+        hold[CONTROL_NAMES.index('body_joint_2')] += .006064
+        for _ in range(20):
+            self.update(hold=hold); self.engine.tick(self.now)
+            self.assertTrue(self.engine.stopping)
+        for _ in range(3):
+            self.update(hold=hold); self.engine.tick(self.now)
+        self.assertIsNone(self.engine.stopping)
+        self.assertFalse(self.engine.stop_fault)
+
+    def test_configured_waist_stop_tolerance_still_rejects_excess_position_error(self):
+        self.enable_rest_window()
+        self.profile = replace(self.profile, stop_position_tolerances={'body_joint_2':math.radians(1)})
+        self.io.profile = self.engine.profile = self.profile
+        hold = self.start_stop()
+        hold[CONTROL_NAMES.index('body_joint_2')] += .018
+        deadline = self.engine.stop_deadline
+        for _ in range(105):
+            self.update(hold=hold); self.engine.tick(self.now)
+        self.assertEqual(self.engine.stop_deadline, deadline)
+        self.assertTrue(self.engine.stop_fault.startswith('STOP_UNCONFIRMED'))
+
+    def test_relaxed_arrival_keeps_original_speed_and_position_stability_checks(self):
+        self.enable_rest_window()
+        self.profile = replace(self.profile, stop_position_tolerances={'body_joint_2':math.radians(1)})
+        self.io.profile = self.engine.profile = self.profile
+        hold = self.start_stop()
+        hold[CONTROL_NAMES.index('body_joint_2')] += .006064
+        for _ in range(24):
+            self.update(hold=hold, waist_velocity=.02); self.engine.tick(self.now)
+        self.assertIsNone(self.engine.stop_rest_window)
+        for _ in range(16):
+            self.update(hold=hold); self.engine.tick(self.now)
+        self.q['body_joint_2'] += .003  # Inside arrival tolerance, beyond the 2 mrad rest anchor.
+        self.update(hold=hold); self.engine.tick(self.now)
+        for _ in range(8):
+            self.update(hold=hold); self.engine.tick(self.now)
+        self.assertTrue(self.engine.stopping)
+        for _ in range(14):
+            self.update(hold=hold); self.engine.tick(self.now)
+        self.assertIsNone(self.engine.stopping)
+
+    def test_waist_override_does_not_relax_arm_arrival(self):
+        self.enable_rest_window()
+        self.io.stop_requires_arrival = True
+        self.profile = replace(self.profile, stop_position_tolerances={'body_joint_2':math.radians(1)})
+        self.io.profile = self.engine.profile = self.profile
+        hold = self.start_stop()
+        hold[CONTROL_NAMES.index('arm_l_joint_1')] += .003
+        for _ in range(105):
+            self.update(hold=hold); self.engine.tick(self.now)
+        self.assertTrue(self.engine.stop_fault.startswith('STOP_UNCONFIRMED'))
 
     def test_target_pause_requires_continuous_measured_rest_window(self):
         self.enable_rest_window()

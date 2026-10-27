@@ -4,6 +4,7 @@ from tests.support.paths import ROOT
 import copy
 import importlib.util
 import json
+import math
 import sys
 from dataclasses import replace
 from pathlib import Path
@@ -691,6 +692,22 @@ class SnowbotStopDiagnosticTests(unittest.TestCase):
         self.assertEqual(result['reason'], 'WAIT_REST_WINDOW')
         self.assertTrue(result['required_reference_arrived'])
         self.assertFalse(result['reference_arrived'])
+
+    def test_per_joint_stop_tolerances_are_reported_without_relaxing_other_checks(self):
+        self.io.stop_requires_arrival = False
+        self.io.stop_arrival_joints = ('body_joint_1', 'body_joint_2')
+        self.engine.profile.stop_position_tolerances = dict.fromkeys(self.io.stop_arrival_joints, math.radians(1))
+        self.engine.feedback.positions['body_joint_2'] = .006064
+        self.engine.feedback.positions[self.names[0]] = .038
+        result = self.diagnose(self.health, self.engine, self.now)
+        self.assertEqual(result['reason'], 'WAIT_REST_WINDOW')
+        self.assertEqual(result['arrival_position_tolerances_rad'],
+                         dict.fromkeys(self.io.stop_arrival_joints, math.radians(1)))
+        self.assertEqual(result['position_tolerance_rad'], .002)
+        self.assertTrue(result['required_reference_arrived'])
+        self.assertFalse(result['reference_arrived'])
+        self.engine.feedback.positions['body_joint_2'] = .018
+        self.assertEqual(self.diagnose(self.health, self.engine, self.now)['reason'], 'STOP_POSITION_ERROR')
 
     def test_missing_request_fault_and_lost_progress_stay_visible_without_authorizing_a_stop(self):
         request=self.io.pause_request
