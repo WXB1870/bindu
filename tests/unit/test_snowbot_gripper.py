@@ -77,6 +77,39 @@ class Rig:
 
 
 class GripperTests(unittest.TestCase):
+    def test_site_opening_fits_deadline_with_actual_native_command_ramp(self):
+        config=json.loads((CONFIG/'snowbot_grippers_real.json').read_text())
+        r=Rig(require_driver_ack=False,grippers=config['grippers'])
+        for side in SIDES:r.q[JOINTS[side]]=config['grippers'][side]['closed']
+        r.step(track=False)
+        path=package_share('snowbot_hardware')/'snowbot_hardware/gripper_node.py'
+        cls=next(n for n in ast.parse(path.read_text()).body if isinstance(n,ast.ClassDef))
+        method=next(n for n in cls.body if getattr(n,'name','')=='send')
+        ns=dict(time=S(monotonic=lambda:r.steady),JOINTS=JOINTS,native_command=native_command)
+        exec(compile(ast.Module(body=[method],type_ignores=[]),str(path),'exec'),ns)
+        positions={side:[] for side in SIDES}
+        def publish(side,msg):
+            positions[side].append(msg.data[0]);r.goals[side]=msg.data[0]
+        adapter=S(core=r.core,health=lambda:r.health,session_protocol=True,sent_positions={},
+                  node=S(profile=r.profile),devices=S(array_type=lambda **kw:S(**kw)),
+                  publishers={side:S(publish=lambda msg,side=side:publish(side,msg)) for side in SIDES})
+        r.core.send=lambda *args:ns['send'](adapter,*args)
+        r.acquire();r.command('authorize_direct')
+        for operation in ('open','close'):
+            start=r.now
+            for side in SIDES:r.command(operation,side)
+            while any(r.core.channels[s]['state'] in ('MOVING','STOPPING') for s in SIDES):
+                r.core.lease('renew',lease_id=r.core.lease_id,epoch=r.core.epoch)
+                r.step()
+            self.assertLess(r.now-start,config['motion_timeout'])
+            for side in SIDES:
+                self.assertEqual(r.core.channels[side]['state'],'SUCCEEDED')
+                self.assertLessEqual(abs(r.q[JOINTS[side]]-config['grippers'][side][
+                    'open' if operation=='open' else 'closed']),config['direct_position_tolerance'])
+        for side,values in positions.items():
+            self.assertTrue(all(abs(b-a)<=config['grippers'][side]['max_speed']*r.profile.control_period+1e-12
+                                for a,b in zip(values,values[1:])))
+
     def test_independent_trigger_edges_and_contact_do_not_require_endpoint(self):
         r=Rig(require_driver_ack=False,independent_trigger_control=True,motion_timeout=.2)
         r.core.input(r.frame('left',1,1.,(1,0)))
@@ -497,6 +530,117 @@ class GripperTests(unittest.TestCase):
         for i in range(20):
             r.core.input(r.frame('left',i));r.step()
         self.assertFalse(r.core.lease_id)
+
+
+class IndependentInputHandoffTests(unittest.TestCase):
+    def rig(self, *, independent=True, phase='tool_standby', mode='independent_arms', **barriers):
+        from copy import copy
+        r=Rig(require_driver_ack=False,independent_trigger_control=independent)
+        # This handoff regression is independent of the site's endpoint calibration.
+        r.config['grippers']['left'].update(open=-.4,closed=0.)
+        r.config['grippers']['right'].update(open=.4,closed=0.,virtual=.02)
+        coordinator=package_share('snowbot_teleop')/'snowbot_teleop/node.py'
+        adapter=package_share('snowbot_hardware')/'snowbot_hardware/gripper_node.py'
+        ns=dict(json=json,time=S(monotonic=lambda:r.steady),copy=copy,VRFrame=VRFrame,
+                VRInput=lambda **kw:S(**kw),PICO_MAPPING='pico_snowbot_v1',seconds=lambda value:value,
+                GripperState=object,Lease=object,GripperControl=object,qos_profile_sensor_data=object())
+        for path,names in ((coordinator,('on_frame',)),(adapter,('bind_services','input'))):
+            cls=next(n for n in ast.parse(path.read_text()).body if isinstance(n,ast.ClassDef)
+                     and any(getattr(m,'name','')==names[0] for m in n.body))
+            methods=[n for n in cls.body if getattr(n,'name','') in names]
+            exec(compile(ast.Module(body=methods,type_ignores=[]),str(path),'exec'),ns)
+        device=S(core=r.core,node=S(closing=False,matches_mode=lambda _:True,event=Mock()),
+                 input=None,lease=Mock(),control=Mock())
+        device.input=lambda msg:ns['input'](device,msg)
+        subscriptions=[]
+        device.node.create_publisher=Mock(return_value=Mock())
+        device.node.create_service=Mock()
+        device.node.create_subscription=lambda kind,topic,callback,qos:subscriptions.append((topic,callback))
+        ns['bind_services'](device)
+        outputs={'teleop/vr/input':[],'teleop/vr/gripper_input':[]}
+        def publish(topic,msg):
+            outputs[topic].append(copy(msg))
+            for subscribed,callback in subscriptions:
+                if subscribed==topic:callback(msg)
+        control=S(source=None,seq=-1,frames=None,reason='SQUEEZE_RELEASED',last_pose_jump=None,
+                  last_prepare_check=None,phase=phase,teleop_mode=mode,
+                  squeeze_released=[True,True],virtual=False,fault_active=False,stop_failure=None,
+                  recovery_required='',update_feedback=Mock())
+        control.__dict__.update(barriers)
+        def ingest(left,right,now):control.source,control.seq,control.frames=left.source_id,left.seq,(left,right)
+        control.ingest=ingest
+        node=S(matches_mode=lambda _:True,frames={},last_pair_at=None,base=None,control=control,
+               now=lambda:r.now,feedback=Mock(),event=Mock(),last_prepare_check=None,release_until=0.,
+               handoff_complete=False,independent_grippers=independent,position_contract=True,
+               instance_id='coordinator',projected=S(publish=lambda msg:publish('teleop/vr/input',msg)),
+               gripper_projected=S(publish=lambda msg:publish('teleop/vr/gripper_input',msg)))
+        def pair(seq,trigger=0.,edges=(0,0),source='headset',stop=False):
+            for side in SIDES:
+                frame=r.frame(side,seq,trigger,edges)
+                msg=S(**dict(frame.__dict__,source_id=source,runtime_mode='real',stop=stop))
+                ns['on_frame'](node,msg)
+        return r,node,pair,outputs,subscriptions
+
+    def test_first_open_close_survives_ordinary_arm_handoff(self):
+        r,node,pair,outputs,subscriptions=self.rig()
+        pair(1);pair(2,1.,(1,0))
+        self.assertEqual([(s,p) for s,p,hold,_ in r.sent if not hold], [('left',-.4),('right',.4)])
+        pair(3,0.,(1,1))
+        self.assertTrue(all(r.core.channels[s]['target']==0. for s in SIDES))
+        self.assertTrue(all(msg.stop for msg in outputs['teleop/vr/input']))
+        self.assertTrue(all(not msg.stop and msg.grip==0. for msg in outputs['teleop/vr/gripper_input']))
+        self.assertEqual([topic for topic,_ in subscriptions],['teleop/vr/gripper_input'])
+        for seq in range(4,18):pair(seq,0.,(1,1));r.step()
+        self.assertTrue(all(r.core.channels[s]['state']=='SUCCEEDED' for s in SIDES))
+
+    def test_startup_held_trigger_and_reconnect_are_not_replayed(self):
+        r,node,pair,_,_=self.rig(phase='checking')
+        pair(1);pair(2,1.,(1,0));node.control.phase='standby'
+        pair(3,1.,(1,0));pair(4,1.,(1,0))
+        self.assertFalse(r.sent)
+        pair(5,0.,(1,1));self.assertTrue(r.sent)
+        before=len(r.sent)
+        pair(6,1.,(1,0),source='reconnected')
+        self.assertTrue(all(hold for _,_,hold,_ in r.sent[before:]))
+
+    def test_coupled_mode_uses_same_enlarged_site_endpoints(self):
+        config=json.loads((CONFIG/'snowbot_grippers_real.json').read_text())
+        for phase in ('engaging','following','tool_standby'):
+            with self.subTest(phase=phase):
+                r,node,pair,outputs,_=self.rig(mode='bimanual_tool',phase=phase)
+                r.config['grippers']=config['grippers']
+                pair(1);pair(2,1.,(1,0))
+                self.assertEqual([(s,p) for s,p,hold,_ in r.sent if not hold],
+                                 [('left',-.8),('right',.8)])
+                pair(3,0.,(1,1))
+                for side in SIDES:
+                    self.assertEqual(r.core.channels[side]['target'],config['grippers'][side]['closed'])
+                self.assertTrue(all(msg.stop for msg in outputs['teleop/vr/input']))
+
+    def test_global_stop_fault_and_unconfirmed_stop_still_hold(self):
+        for barrier in (dict(phase='locked'),dict(phase='checking'),dict(fault_active=True),
+                        dict(stop_failure={'code':'STOP_UNCONFIRMED'}),dict(recovery_required='FAULT')):
+            with self.subTest(barrier=barrier):
+                r,node,pair,outputs,_=self.rig()
+                pair(1);pair(2,1.,(1,0));before=len(r.sent)
+                node.control.__dict__.update(barrier);pair(3,1.,(1,0))
+                self.assertTrue(outputs['teleop/vr/gripper_input'][-1].stop)
+                self.assertFalse(r.core.lease_id)
+                self.assertTrue(r.sent[before:])
+                self.assertTrue(all(hold for _,_,hold,_ in r.sent[before:]))
+        r,node,pair,outputs,_=self.rig()
+        pair(1);pair(2,1.,(1,0));before=len(r.sent)
+        pair(3,1.,(1,0),stop=True)
+        self.assertTrue(outputs['teleop/vr/gripper_input'][-1].stop)
+        self.assertTrue(all(hold for _,_,hold,_ in r.sent[before:]))
+
+    def test_legacy_grippers_keep_original_input_and_handoff_barrier(self):
+        r,node,pair,outputs,subscriptions=self.rig(independent=False)
+        pair(1);pair(2,1.,(1,0))
+        self.assertEqual([topic for topic,_ in subscriptions],['teleop/vr/input'])
+        self.assertFalse(outputs['teleop/vr/gripper_input'])
+        self.assertTrue(all(msg.stop for msg in outputs['teleop/vr/input']))
+        self.assertFalse(r.sent)
 
 
 class NativeGripperTests(unittest.TestCase):
