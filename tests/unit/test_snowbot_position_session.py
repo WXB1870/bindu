@@ -372,7 +372,7 @@ class PauseHandoffTests(unittest.TestCase):
     def test_configured_waist_stop_tolerance_accepts_recorded_residual_after_rest(self):
         from bindu_contracts.profile import Profile
         self.enable_rest_window()
-        selected = Profile.load(package_share('snowbot_bringup')/'config/robots/snowbot/snowbot_real_position.json')
+        selected = Profile.load(Path(__file__).resolve().parents[2]/'src/integration/bindu_runtime/config/robots/snowbot/snowbot_real_position.json')
         self.profile = replace(self.profile, stop_position_tolerances=selected.stop_position_tolerances)
         self.io.profile = self.engine.profile = self.profile
         self.assertEqual(self.profile.stop_position_tolerances,

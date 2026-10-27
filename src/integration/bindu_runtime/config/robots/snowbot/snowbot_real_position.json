@@ -130,6 +130,10 @@
       "joint_position": 0.002,
       "joint_velocity": 0.01
     },
+    "stop_position_tolerances": {
+      "body_joint_1": 0.017453292519943295,
+      "body_joint_2": 0.017453292519943295
+    },
     "joint_target_interpolation": "adaptive",
     "joint_dynamics": {
       "body_joint_1": {

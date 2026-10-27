@@ -229,6 +229,8 @@ def stop_diagnostic(health, engine, now):
     arrival_names = names if getattr(io, 'stop_requires_arrival', True) else tuple(getattr(io, 'stop_arrival_joints', ()))
     arrival_errors = {n: errors[n] for n in arrival_names if n in errors}
     arrival_error = max(arrival_errors.values()) if arrival_errors else None
+    overrides = getattr(engine.profile, 'stop_position_tolerances', {})
+    arrival_tolerances = {n: overrides.get(n, position_tolerance) for n in arrival_names}
     max_speed = max(speeds.values()) if speeds else None
     fresh = fb.stamp > io.stop_requested_at and 0 <= now-fb.stamp <= .2
     steady = engine.steady()
@@ -245,7 +247,7 @@ def stop_diagnostic(health, engine, now):
             reason = 'STOP_FEEDBACK_INCOMPLETE'
         elif not set(arrival_names) <= set(names):
             reason = 'STOP_REFERENCE_INVALID'
-        elif arrival_error is not None and arrival_error >= position_tolerance:
+        elif any(e >= arrival_tolerances[n] for n, e in arrival_errors.items()):
             reason = 'STOP_POSITION_ERROR'
         elif max_speed > velocity_tolerance:
             reason = 'STOP_SPEED_NOT_ZERO'
@@ -277,12 +279,14 @@ def stop_diagnostic(health, engine, now):
         position_error_basis='observed_hold_position',
         arrival_required=bool(arrival_names), arrival_required_joints=list(arrival_names),
         required_reference_arrived=bool(len(arrival_errors)==len(arrival_names) and
-            all(e < position_tolerance for e in arrival_errors.values())),
+            all(e < arrival_tolerances[n] for n, e in arrival_errors.items())),
         max_required_position_error_rad=arrival_error,
         worst_required_position_joint=max(arrival_errors, key=arrival_errors.get) if arrival_errors else None,
         reference_arrived=bool(len(errors)==len(names) and position_error < position_tolerance),
         worst_position_joint=max(errors, key=errors.get) if errors else None,
-        position_tolerance_rad=position_tolerance, velocity_tolerance_rad_s=velocity_tolerance,
+        position_tolerance_rad=position_tolerance,
+        arrival_position_tolerances_rad=arrival_tolerances,
+        velocity_tolerance_rad_s=velocity_tolerance,
         rest_window_required_s=getattr(io, 'stop_confirmation_window', 0.),
         rest_window_elapsed_s=max(0., steady-window[0]) if window else None,
         stop_failures=list(io.stop_failures))
