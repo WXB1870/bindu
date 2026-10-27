@@ -471,10 +471,10 @@ bash tools/snowbot_teleop.sh build
 
 ```bash
 export SNOWBOT_VENDOR_NS=/
-bash tools/snowbot_teleop.sh configure --config artifacts/real-teleop/site-readonly.json \
+bash tools/snowbot_teleop.sh configure --config "$BINDU_TELEOP_WORKSPACE/site-readonly.json" \
   --host 0.0.0.0 --cert-file /绝对路径/cert.pem --key-file /绝对路径/key.pem \
   --vendor-namespace "$SNOWBOT_VENDOR_NS"
-bash tools/snowbot_teleop.sh check --config artifacts/real-teleop/site-readonly.json
+bash tools/snowbot_teleop.sh check --config "$BINDU_TELEOP_WORKSPACE/site-readonly.json"
 ```
 
 检查工具安装尺寸、URDF／关节方向／限位、准备握姿、地面与工作区配置；现有profile和QP的速度等数值不是已验收的实机低速参数。需要调整时在本机现场副本维护配套robot/profile/tool配置及部署引用，校验后同步，再重新`check`，不靠修改安装目录临时绕过检查。首次只读核对时底层可未加补丁；写入前必须采用与当前适配器匹配的补丁版本。`check`只离线检查文件、消息和数值库，不证明设备已就绪。
@@ -482,7 +482,7 @@ bash tools/snowbot_teleop.sh check --config artifacts/real-teleop/site-readonly.
 **4．按现场核实流程启动底层，再启动Bindu只读装配。** 底层可能运动，须先核对空手／支撑、空间、急停及启动回位行为；本文不提供未经现场核实的一键电机启动命令。已有控制进程保持运行时，先核对其版本与状态，不为运行Bindu重复启动。上层四节点启动命令为：
 
 ```bash
-bash tools/snowbot_teleop.sh start --config artifacts/real-teleop/site-readonly.json
+bash tools/snowbot_teleop.sh start --config "$BINDU_TELEOP_WORKSPACE/site-readonly.json"
 ```
 
 另开观察终端，在同一仓库设置与启动终端一致的四个`BINDU_*`变量、`SNOWBOT_VENDOR_NS`及ROS域／RMW设置。脚本加载的环境只在子进程内生效，手工执行`ros2`命令前还须在观察终端加载：
@@ -492,7 +492,7 @@ source /opt/ros/humble/setup.bash
 source "$BINDU_VENDOR_SETUP"
 source "$BINDU_VENV/bin/activate"
 source "$BINDU_TELEOP_WORKSPACE/install/local_setup.bash"
-bash tools/snowbot_teleop.sh status --config artifacts/real-teleop/site-readonly.json
+bash tools/snowbot_teleop.sh status --config "$BINDU_TELEOP_WORKSPACE/site-readonly.json"
 ros2 topic info -v "${SNOWBOT_VENDOR_NS%/}/dualArmCtl_fdback"
 ros2 topic echo "${SNOWBOT_VENDOR_NS%/}/dualArmCtl_fdback" --once
 ros2 topic echo /bindu_snowbot/execution/state --once
@@ -516,11 +516,11 @@ ros2 topic echo "${SNOWBOT_VENDOR_NS%/}/bindu/servo_health"
 **6．现场获准后切换写入，先做最小跟随。** 保持手柄释放，退出只读Bindu，确认旧四节点从ROS图中清退。核对应用补丁的底层已按现场流程以`control_source:=topic`、`bindu_guard:=true`运行；不要把这两个参数当作启动回位已被取消。按步骤3同样的TLS／前缀／接收节点参数生成另一份配置，额外加`--enable-commands`，再检查和启动：
 
 ```bash
-bash tools/snowbot_teleop.sh configure --config artifacts/real-teleop/site-write.json \
+bash tools/snowbot_teleop.sh configure --config "$BINDU_TELEOP_WORKSPACE/site-write.json" \
   --host 0.0.0.0 --cert-file /绝对路径/cert.pem --key-file /绝对路径/key.pem \
   --vendor-namespace "$SNOWBOT_VENDOR_NS" --enable-commands
-bash tools/snowbot_teleop.sh check --config artifacts/real-teleop/site-write.json
-bash tools/snowbot_teleop.sh start --config artifacts/real-teleop/site-write.json
+bash tools/snowbot_teleop.sh check --config "$BINDU_TELEOP_WORKSPACE/site-write.json"
+bash tools/snowbot_teleop.sh start --config "$BINDU_TELEOP_WORKSPACE/site-write.json"
 ```
 
 若步骤3还配置了自定义robot/profile/tool或接收节点，写入副本也须保留同样配置，只改变写权限。先用已核实的底层操作将空手双臂置于符合名义握杆几何的姿态，核对实测FK与实物，再选择模式；任意姿态不保证能通过双手几何检查，不以关闭检查消除拒绝。观察终端执行：
@@ -547,10 +547,11 @@ ros2 action send_goal /bindu_snowbot/teleop/tool_session \
 
 ### 部署自动化
 
-[`tools/snowbot_teleop.sh`](../../../tools/snowbot_teleop.sh)提供下列命令，复用现有四节点真机配方；辅助校验在[`snowbot_teleop.py`](../../../tools/deployment/snowbot_teleop.py)。默认面向Humble，不安装系统依赖、不启动底层控制、不自动选择模式或开启会话。先完成[环境准备](../../../运行与验证.md#环境准备与构建)及匹配的Pinocchio／ProxSuite／SciPy依赖安装，在新终端设置现场路径：
+[`tools/snowbot_teleop.sh`](../../../tools/snowbot_teleop.sh)提供下列命令，复用现有四节点真机配方；辅助校验在[`snowbot_teleop.py`](../../../tools/deployment/snowbot_teleop.py)。仅作旧四节点专项检查，不安装系统依赖、不启动底层控制。ROS发行版沿用已加载的环境，或由`BINDU_ROS_DISTRO`显式指定。先完成[环境准备](../../../运行与验证.md#环境准备与构建)及匹配的Pinocchio／ProxSuite／SciPy依赖安装，在新终端设置现场路径：
 
 ```bash
 export BINDU_ROS_DISTRO=humble
+export BINDU_TELEOP_WORKSPACE=/绝对路径/已选定的旧接口检查工作区
 export BINDU_VENDOR_SETUP=/绝对路径/底层消息工作区/install/local_setup.bash
 # 按实际依赖安装方式选填；venv须继承系统ROS依赖。
 export BINDU_VENV=/绝对路径/遥操作venv
@@ -558,7 +559,7 @@ export BINDU_VENV=/绝对路径/遥操作venv
 # export BINDU_TELEOP_DEPS=/绝对路径/teleop-deps
 ```
 
-脚本依次加载ROS、底层消息和可选venv，补充cmeel库路径。`build`使用独立的`artifacts/real-teleop/{build,install,log}`，标准安装遥操作依赖链15包，指定当前Python和Release；其他命令加载该目录的`install/local_setup.bash`。可通过`BINDU_TELEOP_WORKSPACE`更换整个构建目录；不复制其他架构／ROS／Python环境的产物。开发机Jazzy测试须显式改为`BINDU_ROS_DISTRO=jazzy`，已有发行版与指定值冲突时拒绝继续。
+脚本依次加载选定ROS、底层消息和可选venv，补充cmeel库路径。只有显式设置`BINDU_TELEOP_WORKSPACE`后才允许构建或运行专项工具；`build/install/log`均放在所选工作区，不再自动创建`artifacts/real-teleop`。该工作区属于旧四节点检查，不得与统一PICO部署共用配方或安装目录；已有发行版与指定值冲突时拒绝继续。
 
 ```bash
 # 无ROS依赖也能生成本机只读配方；已存在的文件不会覆盖。
@@ -570,14 +571,14 @@ bash tools/snowbot_teleop.sh start
 bash tools/snowbot_teleop.sh status --seconds 3
 ```
 
-默认配置为`artifacts/real-teleop/site.json`，在本机修改副本后同步，机器人端不直接编辑；源码示例保持默认只读。每条命令可用`--help`；`configure/check/start/status/gripper`可用`--config /绝对路径/site.json`指定文件。夹爪位置操作及VR装卸授权通过`gripper`子命令，见[夹爪闭环](../../hardware/bindu_hardware/README.md#snowbot真实夹爪位置闭环)。局域网PICO接入示例（证书须在现场有效且受头显信任；路径不等于证书内容）：
+默认配置仅在已显式设置工作区时取`$BINDU_TELEOP_WORKSPACE/site.json`；否则`configure`必须传`--config`，不会猜测输出目录。在本机修改后同步选定版本，机器人端不直接编辑；源码示例保持默认只读。每条命令可用`--help`；`configure/check/start/status/gripper`可用`--config /绝对路径/site.json`指定文件。夹爪位置操作及VR装卸授权通过`gripper`子命令，见[夹爪闭环](../../hardware/bindu_hardware/README.md#snowbot真实夹爪位置闭环)。局域网PICO接入示例（证书须在现场有效且受头显信任；路径不等于证书内容）：
 
 ```bash
-bash tools/snowbot_teleop.sh configure --config artifacts/real-teleop/site-lan.json \
+bash tools/snowbot_teleop.sh configure --config "$BINDU_TELEOP_WORKSPACE/site-lan.json" \
   --host 0.0.0.0 --cert-file /绝对路径/cert.pem --key-file /绝对路径/key.pem \
   --vendor-namespace /snowbot
-bash tools/snowbot_teleop.sh check --config artifacts/real-teleop/site-lan.json
-bash tools/snowbot_teleop.sh start --config artifacts/real-teleop/site-lan.json
+bash tools/snowbot_teleop.sh check --config "$BINDU_TELEOP_WORKSPACE/site-lan.json"
+bash tools/snowbot_teleop.sh start --config "$BINDU_TELEOP_WORKSPACE/site-lan.json"
 ```
 
 现场底层沿用根话题时，生成配置须选择`--vendor-namespace /`；默认接收节点身份由此前缀推导，非默认名称使用`--arm-receiver-node`、`--servo-receiver-node`及`--mid-receiver-node`显式填写完整绝对名称。ROS域、RMW及跨机发现设置沿用当前终端，脚本打印但不修改；需要跨机DDS时须核对`ROS_LOCALHOST_ONLY`，不能照搬本机隔离测试值。

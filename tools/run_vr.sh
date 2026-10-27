@@ -21,13 +21,6 @@ elif [[ -n "${BINDU_VR_ENV:-}" || -z "${ROS_DISTRO:-}" ]]; then
   exit 2
 fi
 bindu_viewer_deps="${BINDU_VIEWER_DEPS:-}"
-if [[ -z "$bindu_viewer_deps" ]]; then
-  for bindu_candidate in "$bindu_root/artifacts/snowbot-viewer-deps" "$bindu_root/artifacts/vr-live-2026-10-18/viewer-deps"; do
-    if [[ -d "$bindu_candidate/meshcat" ]]; then
-      bindu_viewer_deps="$bindu_candidate"; break
-    fi
-  done
-fi
 if [[ -n "$bindu_viewer_deps" ]]; then
   export PYTHONPATH="$bindu_viewer_deps${PYTHONPATH:+:$PYTHONPATH}"
 fi
