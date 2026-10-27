@@ -555,7 +555,7 @@ class PositionSessionDevices:
             msg.trajectory.segment_id = metadata['sequence']
             for field, getter, ceiling in (('max_velocity', self.io.profile.speed, self.trajectory_limits['trajectory_max_velocity']),
                     ('max_acceleration', self.io.profile.acceleration, self.trajectory_limits['trajectory_max_acceleration']),
-                    ('max_jerk', self.io.profile.jerk, 162.)):
+                    ('max_jerk', self.io.profile.jerk, self.trajectory_limits.get('trajectory_max_jerk', 162.))):
                 setattr(msg.trajectory, field, [min(ceiling, getter(n)) for n in CONTROL_NAMES])
         msg.command.l_arm_position = [float(target[n]) for n in GROUPS['left_arm']]
         msg.command.r_arm_position = [float(target[n]) for n in GROUPS['right_arm']]

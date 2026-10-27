@@ -137,12 +137,14 @@
     "joint_target_interpolation": "adaptive",
     "joint_dynamics": {
       "body_joint_1": {
-        "velocity": 0.375,
-        "acceleration": 2.25
+        "velocity": 0.6,
+        "acceleration": 3.6,
+        "jerk": 259.2
       },
       "body_joint_2": {
-        "velocity": 0.375,
-        "acceleration": 2.25
+        "velocity": 0.6,
+        "acceleration": 3.6,
+        "jerk": 259.2
       },
       "head_joint_1": {
         "velocity": 0.75

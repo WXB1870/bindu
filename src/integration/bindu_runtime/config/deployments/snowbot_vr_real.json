@@ -28,6 +28,7 @@
     "pico_config": "@runtime/config/robots/snowbot/pico_snowbot_position_real.json",
     "base_config": "@runtime/config/robots/snowbot/snowbot_base.json",
     "trajectory_max_velocity": 1.0,
-    "trajectory_max_acceleration": 4.5
+    "trajectory_max_acceleration": 4.5,
+    "trajectory_max_jerk": 259.2
   }
 }
