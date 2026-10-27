@@ -93,7 +93,7 @@ Python 调用入口为 [bindu_kinematics/bimanual.py](../bindu_kinematics/bindu_
 | 参数 | 默认值 | 含义 |
 | --- | ---: | --- |
 | `tool_gain` / `relative_gain` | 2 / 2 | 工具跟踪／闭合误差恢复增益 |
-| `posture_gain` / `posture_weight` | 0.3 / 0.001 | 捕获姿态回归增益／权重 |
+| `posture_gain` / `posture_weight` | 0.3 / 0.001 | 姿态偏好回归增益／权重 |
 | `shared_target_gain` / `shared_target_weight` | 3 / 0 | 独立共享关节姿态目标增益／权重 |
 | `regularization` | 0.0001 | 速度正则项 |
 | `shared_motion_weight` | 0 | 共享组额外的速度平方代价；越大越少使用共享关节，不设置固定腰角 |
@@ -104,6 +104,8 @@ Python 调用入口为 [bindu_kinematics/bimanual.py](../bindu_kinematics/bindu_
 | `equality_tolerance` | 0.0005 | 速度闭合等式复核容差 |
 
 所有字段必须有限；权重、姿态增益与margin可为零，其余必须为正；两侧margin之和必须小于对应有效关节范围。已有配置对速度和闭合误差设有更严格值，以上不是硬件标定值。可选`shared_targets`为共享组全部关节名到目标位置的映射，须配合正的`shared_target_weight`；未配置时腰部仍参与工具跟踪。Python `set_shared_targets(None)`清除该独立姿态目标。
+
+`posture_policy.reference`支持`initial_capture`或覆盖全部活动关节的具名位置映射（rad），映射必须有限且位于profile／任务姿态边界内。固定映射不会把当前反馈补成零或改变捕获锚点，重接合后仍使用相同偏好。Snowbot real配方以已有准备姿态作为手臂偏好候选、两腰取零，`posture_gain=0.1、posture_weight=0.01`；另用`shared_targets=0、shared_target_gain=0.1、shared_target_weight=0.05`加强腰部回中。均为QP软代价，可能与末端跟踪折中，不保证所有任务下都回中或姿态自然；硬限位、姿态包络、握持等式与碰撞检查继续生效。普通双臂模式仍冻结腰及未接合臂，偏好仅影响已接合臂；待命／松握不主动回位。此候选尚未部署或完成实体姿态验收。
 
 可选软代价只惩罚作用带内朝模型／profile硬界的速度，距离同时参考求解状态和已接纳参考；向内退出不加此代价。每次捕获后通过`bq_limit_avoidance`设置，ABI v1布局不变，旧库缺接口须重建。启用需正宽度、非负权重且两侧作用带不重叠，通用默认关闭；Snowbot real配方启用`margin=0.15 rad、weight=0.05`。它不主动回退、不保证固定余量，原有硬限位、姿态包络、握持、碰撞和停止保护保持；`reference`模式沿用原实测保护。
 

@@ -214,7 +214,8 @@ class BimanualQP:
             if self.posture_policy is not None:
                 policy = self.posture_policy
                 if (not isinstance(policy,dict) or set(policy) != {'reference','position_bounds'} or
-                        policy['reference'] != 'initial_capture' or not isinstance(policy['position_bounds'],dict) or
+                        not (policy['reference'] == 'initial_capture' or isinstance(policy['reference'],dict)) or
+                        not isinstance(policy['position_bounds'],dict) or
                         not set(policy['position_bounds']).issubset(active)):
                     raise ValueError('BIMANUAL_POSTURE_POLICY')
                 for name, bounds in policy['position_bounds'].items():
@@ -224,6 +225,15 @@ class BimanualQP:
                             not lower[j] <= values[0] < values[1] <= upper[j]):
                         raise ValueError('BIMANUAL_POSTURE_BOUNDS:'+name)
                     self.posture_lower[j],self.posture_upper[j]=values
+                preferred=policy['reference']
+                if isinstance(preferred,dict):
+                    if (set(preferred)!=set(self.names) or
+                            any(isinstance(v,bool) or not isinstance(v,(int,float)) or
+                                not math.isfinite(v) for v in preferred.values())):
+                        raise ValueError('BIMANUAL_POSTURE_REFERENCE')
+                    values=np.array([preferred[n] for n in self.names],dtype=np.float64)
+                    if np.any(values<self.posture_lower) or np.any(values>self.posture_upper):
+                        raise ValueError('BIMANUAL_POSTURE_REFERENCE')
                 try:
                     fn=lib.bq_posture_policy
                 except AttributeError as exc:
@@ -624,8 +634,11 @@ class BimanualQP:
         posture_reference = self.posture_reference
         if self.posture_policy is not None:
             if posture_reference is None:
-                posture_reference = np.array([feedback[n] for n in self.names],dtype=np.float64)
-                if self.measured_limit_tolerance:
+                preferred=self.posture_policy['reference']
+                posture_reference = np.array([
+                    (preferred if isinstance(preferred,dict) else feedback)[n]
+                    for n in self.names],dtype=np.float64)
+                if self.measured_limit_tolerance and not isinstance(preferred,dict):
                     # This is a soft nominal preference, never substituted for feedback.
                     posture_reference=np.clip(posture_reference,self.posture_lower,self.posture_upper)
             if not self.lib.bq_posture_policy(self.handle,self._ptr(posture_reference),

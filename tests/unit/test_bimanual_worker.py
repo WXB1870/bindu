@@ -255,7 +255,14 @@ class PrepareLimitReferenceTests(unittest.TestCase):
         for name in ('bimanual_snowbot_real.json','bimanual_snowbot_shovel.json'):
             cfg=json.loads((root/name).read_text())
             self.assertAlmostEqual(cfg['posture_reference_margin_rad'],.01+math.radians(1.))
-            self.assertEqual(cfg['posture_policy']['reference'],'initial_capture')
+            if name=='bimanual_snowbot_real.json':
+                prepare=json.loads((root/'pico_snowbot_position_real.json').read_text())['prepare_positions_rad']
+                preferred=cfg['posture_policy']['reference']
+                self.assertEqual(preferred,{n:0. if n.startswith('body_') else v for n,v in prepare.items()})
+                self.assertEqual(cfg['shared_targets'],{'body_joint_1':0.,'body_joint_2':0.})
+                self.assertGreater(cfg['shared_target_weight'],cfg['posture_weight'])
+            else:
+                self.assertEqual(cfg['posture_policy']['reference'],'initial_capture')
 
     def test_limit_exit_moves_only_violating_axes_before_full_return(self):
         from bindu_kinematics.bimanual_worker import prepare_limit_exit_target,prepare_limit_reference
