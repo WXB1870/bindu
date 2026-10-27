@@ -448,12 +448,16 @@ class Executor:
                       (':'+str(exc) if str(exc).startswith('PARTIAL_WRITE:') else ''),
                       revoke=True, emergency=True)
 
-    def references_arrived(self):
+    def references_arrived(self, names=None):
         targets = dict(self.held_references)
         if self.reference:
             targets.update(zip(self.reference_names, self.reference.q))
+        if names is not None:
+            if any(n not in targets for n in names):
+                return False
+            targets = {n: targets[n] for n in names}
         tolerance = self.profile.feedback_tolerances.get('joint_position', 1e-5)
-        return all(abs(self.feedback.positions[j]-q) < tolerance and
+        return all(j in self.feedback.positions and abs(self.feedback.positions[j]-q) < tolerance and
                    self.joint_at_rest(j) for j, q in targets.items())
 
     def joint_at_rest(self, name):
