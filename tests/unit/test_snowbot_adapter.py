@@ -675,6 +675,23 @@ class SnowbotStopDiagnosticTests(unittest.TestCase):
         self.assertFalse(result['arrival_required'])
         self.assertEqual(result['max_position_error_rad'],.038)
 
+    def test_waist_arrival_gate_reports_the_required_joint_without_hiding_arm_offset(self):
+        self.io.stop_requires_arrival = False
+        self.io.stop_arrival_joints = ('body_joint_1', 'body_joint_2')
+        self.engine.feedback.positions[self.names[0]] = .038
+        self.engine.feedback.positions['body_joint_2'] = .007425
+        result = self.diagnose(self.health, self.engine, self.now)
+        self.assertEqual(result['reason'], 'STOP_POSITION_ERROR')
+        self.assertEqual(result['worst_required_position_joint'], 'body_joint_2')
+        self.assertAlmostEqual(result['max_required_position_error_rad'], .007425)
+        self.assertEqual(result['arrival_required_joints'], ['body_joint_1', 'body_joint_2'])
+        self.assertFalse(result['required_reference_arrived'])
+        self.engine.feedback.positions['body_joint_2'] = .001
+        result = self.diagnose(self.health, self.engine, self.now)
+        self.assertEqual(result['reason'], 'WAIT_REST_WINDOW')
+        self.assertTrue(result['required_reference_arrived'])
+        self.assertFalse(result['reference_arrived'])
+
     def test_missing_request_fault_and_lost_progress_stay_visible_without_authorizing_a_stop(self):
         request=self.io.pause_request
         self.io.pause_request=None

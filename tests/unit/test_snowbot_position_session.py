@@ -339,6 +339,35 @@ class PauseHandoffTests(unittest.TestCase):
         self.io.stop_confirmation_window = .1
         self.io.stop_confirmation_max_gap = .04
         self.io.stop_requires_arrival = False
+        self.io.target_stream = True
+
+    def test_target_pause_low_waist_speed_cannot_hide_remaining_hold_travel(self):
+        self.enable_rest_window()
+        hold = self.start_stop()
+        waist = CONTROL_NAMES.index('body_joint_2')
+        # 118 A-return: 29.7 mrad in the old 65536-count coordinate,
+        # converted to the selected 262144-count position coordinate.
+        hold[waist] = self.q['body_joint_2'] + .0297 / 4
+        for _ in range(24):
+            self.update(hold=hold); self.engine.tick(self.now)
+        self.assertTrue(self.engine.stopping)
+        self.assertIsNone(self.engine.stop_rest_window)
+        self.q['body_joint_2'] = hold[waist] - .001
+        for _ in range(24):
+            self.update(hold=hold); self.engine.tick(self.now)
+        self.assertIsNone(self.engine.stopping)
+        self.assertFalse(self.engine.stop_fault)
+
+    def test_target_pause_unreached_waist_expires_without_claiming_stop(self):
+        self.enable_rest_window()
+        hold = self.start_stop()
+        hold[CONTROL_NAMES.index('body_joint_1')] += .007
+        deadline = self.engine.stop_deadline
+        for _ in range(105):
+            self.update(hold=hold); self.engine.tick(self.now)
+        self.assertEqual(self.engine.stop_deadline, deadline)
+        self.assertTrue(self.engine.stop_fault.startswith('STOP_UNCONFIRMED'))
+        self.assertFalse(any(e.state == 'CANCELED' for e in self.engine.events))
 
     def test_target_pause_requires_continuous_measured_rest_window(self):
         self.enable_rest_window()
