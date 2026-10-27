@@ -308,12 +308,15 @@ def operate_gripper(args, robot, options):
 def parser():
     p = argparse.ArgumentParser(description='Snowbot 最小遥操作：现场配置、构建、检查、前台启动和只读状态。通过 snowbot_teleop.sh 自动加载环境。')
     commands = p.add_subparsers(dest='command')
-    workspace = Path(os.environ.get('BINDU_TELEOP_WORKSPACE', ROOT/'artifacts/real-teleop'))
+    selected_workspace = os.environ.get('BINDU_TELEOP_WORKSPACE')
+    workspace = Path(selected_workspace) if selected_workspace else None
     for command in ('configure', 'build', 'check', 'start', 'status', 'gripper'):
         sub = commands.add_parser(command)
         if command == 'build':
             continue
-        sub.add_argument('--config', type=Path, default=workspace/'site.json')
+        sub.add_argument('--config', type=Path, default=workspace/'site.json' if workspace else None,
+                         required=workspace is None,
+                         help='专项配方文件；未设置 BINDU_TELEOP_WORKSPACE 时必须显式指定')
         if command == 'configure':
             sub.add_argument('--gripper-config', default='', help='现场标定的夹爪配置；默认示例禁止夹爪写入')
             sub.add_argument('--host', default='127.0.0.1')

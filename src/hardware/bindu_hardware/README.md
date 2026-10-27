@@ -162,27 +162,27 @@ ros2 launch bindu_runtime g1_sim.launch.py recording_mode:=normal namespace:=/bi
 
 只有臂会话已停止且释放租约、反馈与PDO健康、受保护接收方及发布者唯一、配置已标定时才允许取得夹爪控制权。夹爪租约、停止中或停止故障会拒绝新的手臂接管。装卸授权下，持物或状态不明开爪仍要求支撑；任意`position`操作在持物时也要求支撑。PICO停稳、双侧松握后的显式扳机操作使用独立`authorize_direct`，仅允许标定的`open`／`close`，不接受任意位置／虚握；空载、支撑和夹持状态依据各自的确认条件处理。未操作侧不发送目标，停止撤销授权并保持实测开度。实体标定、握持与防滑效果仍待现场验收，行为边界见[工具操作契约](../../../动作执行契约.md#61-snowbot-工具操作与握持切换)。
 
-**位置虚握。** 按用户确认，先以右爪轻微张开的可调开度接通X换握。修改现场夹爪配置的`grippers.right.virtual`，单位rad，示例暂设`0.02`（约1.15°），闭合位为`grippers.right.closed`；虚握值须位于闭合与完全张开之间，并与两端各相隔超过两倍位置容差。示例仍默认`calibrated=false`，现场调整开合／虚握值并核实后再按原步骤启用写入。普通模式不使用X换握；扫雪跟随中按住X先停稳并释放臂租约，确认左爪闭合停稳，检查右爪完整路径，再仅租用右爪执行虚握位，等底层接纳、实测到位和最终保持后按轴向释放模型捕获当前基准。释放X按同流程回闭合位，再以当前实际转角恢复刚握。切换期间不推进工具目标，双侧握和输入仍有效才恢复跟随；松握、Y或断流保持当前开度，不自动夹紧。这里只确认位置模式，`grasp_state=unknown`与`physical_gripper_confirmed=null`保持，实体承托、可转动及防滑效果由现场验证。
+**位置虚握。** 位置参数统一在现场`site.json`的`arguments.gripper_config`选定文件维护，源码模板见[Snowbot夹爪配置](https://github.com/WXB1870/snowbot/blob/main/src/snowbot_bringup/config/robots/snowbot/snowbot_grippers_real.json)。右爪`virtual`为虚握位、`closed`为闭合位，单位rad；虚握须位于开闭端点之间，并与两端各相隔超过两倍位置容差。本节不复制具体端点与速度值，修改后须核对实际加载的配置与标定状态。普通模式不使用X换握；扫雪跟随中按住X先停稳并释放臂租约，确认左爪闭合停稳，检查右爪完整路径，再仅租用右爪执行虚握位，等底层接纳、实测到位和最终保持后按轴向释放模型捕获当前基准。释放X按同流程回闭合位，再以当前实际转角恢复刚握。切换期间不推进工具目标，双侧握和输入仍有效才恢复跟随；松握、Y或断流保持当前开度，不自动夹紧。这里只确认位置模式，`grasp_state=unknown`与`physical_gripper_confirmed=null`保持，实体承托、可转动及防滑效果由现场验证。
 
-**118原生协议。** 当前发送到`<vendor>/gripper/left_cmd`和`right_cmd`，格式为`[position, velocity, torque, kp, kd]`；位置操作的速度参考和前馈力矩为0。位置会话链路在发送层按配置`max_speed`限制目标增量，单次推进时间最多计一个控制周期，发送间隔过长不补发大步；保持请求直接使用实测保持点。真实配置两侧均为`0.5 rad/s`，0.4 rad全行程的理想目标推进时间约0.8 s。该参数限制上层目标增量，协议速度参考与实体速度限幅需分别核对；旧非位置会话通道不使用此目标增量限制。实测位置、速度、电流复用`RetInformation`左右第8项；`*_cmd_sensor`是命令入口，不作为状态源。原生消息缺少命令序号和保持回执，到位及停止确认使用发送后推进的实测反馈与稳定区间；本地序号仅用于请求关联。
+**118原生协议。** 当前发送到`<vendor>/gripper/left_cmd`和`right_cmd`，格式为`[position, velocity, torque, kp, kd]`；位置操作的速度参考和前馈力矩为0。位置会话链路在发送层按配置`max_speed`限制目标增量，单次推进时间最多计一个控制周期，发送间隔过长不补发大步；保持请求直接使用实测保持点。理想目标推进时间按`abs(open-closed)/max_speed`估算，以实际选定配置为准。该参数限制上层目标增量，协议速度参考与实体速度限幅需分别核对；旧非位置会话通道不使用此目标增量限制。实测位置、速度、电流复用`RetInformation`左右第8项；`*_cmd_sensor`是命令入口，不作为状态源。原生消息缺少命令序号和保持回执，到位及停止确认使用发送后推进的实测反馈与稳定区间；本地序号仅用于请求关联。
 
-**现场启用前提。** 原生映射不解除标定、控制权、实际使能及PDO健康／看门狗门槛。118尚缺少这些保护契约的验证，写入仍保持关闭。历史`bindu_guard.patch`的自定义夹爪协议会屏蔽原生通道，不适用于当前映射；遇到该保护协议时预检／写入检查明确拒绝，不自动替换底层补丁。仿真后端原有应用序号确认继续保留。夹持与带载保持还需现场验收。
+**现场启用前提。** 原生映射仍检查写权限、控制权、实际使能及PDO健康／看门狗。直接端点操作是否允许未标定配置由`allow_uncalibrated_direct`决定，该选项不证明标定或实体握持；现场保护验证范围按对应版本记录核对。历史`bindu_guard.patch`的自定义夹爪协议会屏蔽原生通道，不适用于当前映射；遇到该保护协议时预检／写入检查明确拒绝，不自动替换底层补丁。仿真后端原有应用序号确认继续保留。夹持与带载保持还需现场验收。
 
 **分层预检。** 在完成本机改码、验证、版本同步与目标环境重建后，`python3 -m tools.deployment.x86_real check`只证明软件依赖、消息字段、配置、TLS和端口检查通过；16轴兼容时会列出缺失头腰，输出`ROBOT_INTERFACE_NOT_CHECKED`，不声称机器人在线。底层由现场按既有流程运行后，可执行只读`python3 -m tools.deployment.x86_real check-robot`，核对话题类型、发布者／接收节点、桥接端点、新鲜实测和保护健康；返回非零时保留具体阻断项。统一入口也支持`tools/run_vr.sh --check --check-robot --robot-check-timeout 3`。检查只创建观察节点和订阅，不启动底层、不调用运动服务或发布命令；允许写入的真实启动还会强制执行该在线门控。
 
 历史自定义夹爪补丁提供EtherCAT线程的独立TTL与保持回执；当前原生通道的底层保护仍待单独验证。上层停止／释放／断流先请求保持实测位置，再要求推进的PDO、新鲜实测位置与速度及稳定时间；超时锁存`GRIPPER_STOP_UNCONFIRMED`并拒绝重新接管。目标受阻未到达则报告`POSITION_TIMEOUT`，不伪装成夹持成功。软件保持不替代现场机械保持或急停；旧底层启动回位／清零仍未被此功能取消。
 
-复制夹爪配置到现场目录，依据实物标定每侧`open`／`closed`（rad）、`kp`／`kd`和`max_speed`（rad/s），核对位置／速度容差和超时后才把`calibrated`设为true。示例左开度−0.4、右+0.4及零位闭合仅用于说明驱动方向，默认`calibrated=false`；实机开度需独立标定。电流记录底层反馈数值，指面夹紧力仍需标定。将现场文件传给部署工具`configure --gripper-config /绝对路径/grippers-site.json`；其他TLS、话题和写权限参数沿用现场配方。
+现场配置在本机维护并同步选定版本，依据实物标定每侧`open`／`closed`（rad）、`kp`／`kd`和`max_speed`（rad/s），核对位置／速度容差和超时后才把`calibrated`设为true。是否允许未标定直接开合与实体标定完成是两项独立事实。电流记录底层反馈数值，指面夹紧力仍需标定。将现场文件传给部署工具`configure --gripper-config /绝对路径/grippers-site.json`；其他TLS、话题和写权限参数沿用现场配方。
 
-在已经标定、允许写入且本轮获准的运动实验中，工具提供有界的开合与收尾；以下是**操作命令**，应先结束工具／手臂会话。每条命令自动取得租约、授权、续租、等待实测到位并释放后确认保持：
+以下命令属于[旧四节点专项工具](../../integration/bindu_runtime/README.md#部署自动化)，须先按该节显式选择`BINDU_TELEOP_WORKSPACE`和ROS环境；日常PICO使用统一入口。在已经标定、允许写入且本轮获准的运动实验中，工具提供有界的开合与收尾；以下是**操作命令**，应先结束工具／手臂会话。每条命令自动取得租约、授权、续租、等待实测到位并释放后确认保持：
 
 ```bash
-bash tools/snowbot_teleop.sh gripper --config artifacts/real-teleop/site-write.json \
+bash tools/snowbot_teleop.sh gripper --config "$BINDU_TELEOP_WORKSPACE/site-write.json" \
   --side left --operation open --load-state empty
-bash tools/snowbot_teleop.sh gripper --config artifacts/real-teleop/site-write.json \
+bash tools/snowbot_teleop.sh gripper --config "$BINDU_TELEOP_WORKSPACE/site-write.json" \
   --side left --operation close --load-state empty
 # 持物装卸须明确已有外部支撑；同样适用于right。
-bash tools/snowbot_teleop.sh gripper --config artifacts/real-teleop/site-write.json \
+bash tools/snowbot_teleop.sh gripper --config "$BINDU_TELEOP_WORKSPACE/site-write.json" \
   --side right --operation open --load-state held --external-support
 ros2 topic echo /bindu_snowbot/gripper/state
 ```
@@ -191,7 +191,7 @@ ros2 topic echo /bindu_snowbot/gripper/state
 
 ```bash
 read -r -p '填入当前VRInput的source_id: ' SNOWBOT_VR_SOURCE
-bash tools/snowbot_teleop.sh gripper --config artifacts/real-teleop/site-write.json \
+bash tools/snowbot_teleop.sh gripper --config "$BINDU_TELEOP_WORKSPACE/site-write.json" \
   --side both --operation authorize_loading --load-state held --external-support \
   --vr-source-id "$SNOWBOT_VR_SOURCE"
 ```

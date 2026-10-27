@@ -3,7 +3,6 @@
 set -eo pipefail
 bindu_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 cd -- "$bindu_root"
-export BINDU_TELEOP_WORKSPACE="${BINDU_TELEOP_WORKSPACE:-$bindu_root/artifacts/real-teleop}"
 for bindu_argument in "$@"; do
   if [[ "$bindu_argument" == --help || "$bindu_argument" == -h ]]; then
     exec python3 -m tools.deployment.snowbot_teleop "$@"
@@ -14,7 +13,15 @@ case "${1:-}" in
   build|check|start|status|gripper) ;;
   *) echo "未知命令：$1；使用 --help 查看用法。" >&2; exit 2 ;;
 esac
-bindu_distro="${BINDU_ROS_DISTRO:-humble}"
+if [[ -z "${BINDU_TELEOP_WORKSPACE:-}" ]]; then
+  echo '旧四节点专项工具需要显式设置 BINDU_TELEOP_WORKSPACE；日常真机启动用 bash tools/run_vr.sh real --enable-commands。' >&2
+  exit 2
+fi
+bindu_distro="${BINDU_ROS_DISTRO:-${ROS_DISTRO:-}}"
+if [[ -z "$bindu_distro" ]]; then
+  echo '请显式设置 BINDU_ROS_DISTRO，或先加载选定的 ROS 环境。' >&2
+  exit 2
+fi
 if [[ -n "${ROS_DISTRO:-}" && "$ROS_DISTRO" != "$bindu_distro" ]]; then
   echo "已加载 ROS $ROS_DISTRO，与指定的 $bindu_distro 不一致；请使用新终端。" >&2
   exit 2

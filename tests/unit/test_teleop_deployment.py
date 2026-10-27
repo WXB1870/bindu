@@ -9,6 +9,45 @@ from bindu_runtime.teleop_deployment import load_deployment
 SHARE=ROOT/'src/integration/bindu_runtime'
 
 
+class LegacyDeploymentSelectionTests(unittest.TestCase):
+    def test_configuration_needs_an_explicit_destination_and_remains_readonly(self):
+        import os,io
+        from contextlib import redirect_stderr,redirect_stdout
+        from unittest.mock import patch
+        from tools.deployment import snowbot_teleop
+        with tempfile.TemporaryDirectory() as tmp,patch.dict(os.environ):
+            os.environ.pop('BINDU_TELEOP_WORKSPACE',None)
+            with redirect_stderr(io.StringIO()),self.assertRaises(SystemExit):
+                snowbot_teleop.parser().parse_args(['configure'])
+            root=Path(tmp);self.assertEqual(list(root.iterdir()),[])
+            config=root/'selected.json'
+            with redirect_stdout(io.StringIO()):
+                self.assertEqual(snowbot_teleop.main(['configure','--config',str(config)]),0)
+            self.assertFalse(json.loads(config.read_text())['arguments']['command_enabled'])
+            self.assertEqual(list(root.iterdir()),[config])
+            os.environ['BINDU_TELEOP_WORKSPACE']=str(root/'chosen')
+            options=snowbot_teleop.parser().parse_args(['status'])
+            self.assertEqual(options.config,root/'chosen/site.json')
+
+    def test_shell_refuses_an_unselected_workspace_before_loading_ros(self):
+        import os,subprocess
+        env=dict(os.environ);env.pop('BINDU_TELEOP_WORKSPACE',None)
+        for command in ('build','check','start','status','gripper'):
+            with self.subTest(command=command):
+                result=subprocess.run(['bash',str(ROOT/'tools/snowbot_teleop.sh'),command],
+                                      env=env,text=True,capture_output=True)
+                self.assertEqual(result.returncode,2)
+                self.assertIn('BINDU_TELEOP_WORKSPACE',result.stderr)
+                self.assertNotIn('缺少 /opt/ros',result.stderr)
+        with tempfile.TemporaryDirectory() as tmp:
+            env['BINDU_TELEOP_WORKSPACE']=tmp
+            env.pop('BINDU_ROS_DISTRO',None);env.pop('ROS_DISTRO',None)
+            result=subprocess.run(['bash',str(ROOT/'tools/snowbot_teleop.sh'),'build'],
+                                  env=env,text=True,capture_output=True)
+            self.assertEqual(result.returncode,2)
+            self.assertIn('BINDU_ROS_DISTRO',result.stderr)
+
+
 class ApplicationResourceTests(unittest.TestCase):
     def test_adapter_launch_selects_an_executable_from_its_owning_package(self):
         import ast

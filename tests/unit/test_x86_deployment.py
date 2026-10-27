@@ -167,6 +167,33 @@ class X86DeploymentTests(unittest.TestCase):
             self.assertIn('unrecognized arguments', result.stderr)
             self.assertNotIn('obsolete argparse imported', result.stderr)
 
+    def test_vr_wrapper_uses_selected_viewer_deps_without_searching_old_outputs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);tools=root/'tools'
+            (tools/'teleop').mkdir(parents=True)
+            (tools/'__init__.py').touch();(tools/'teleop/__init__.py').touch()
+            wrapper=tools/'run_vr.sh'
+            wrapper.write_text((x86_real.ROOT/'tools/run_vr.sh').read_text())
+            (tools/'teleop/run_vr.py').write_text(
+                'import json,os; print(json.dumps(os.environ.get("PYTHONPATH","").split(os.pathsep)))\n')
+            old=[root/'artifacts/snowbot-viewer-deps',
+                 root/'artifacts/vr-live-2026-10-18/viewer-deps']
+            for folder in old:(folder/'meshcat').mkdir(parents=True)
+            selected=root/'selected deps';selected.mkdir()
+            environment=root/'env.sh';environment.write_text(':\n')
+            for deps in (None,selected):
+                with self.subTest(deps=deps):
+                    env=dict(os.environ,BINDU_VR_ENV=str(environment),PYTHONPATH='',
+                             PYTHONDONTWRITEBYTECODE='1')
+                    env.pop('BINDU_VIEWER_DEPS',None)
+                    if deps:env['BINDU_VIEWER_DEPS']=str(deps)
+                    result=subprocess.run(['bash',str(wrapper)],cwd=root.parent,env=env,
+                                          text=True,capture_output=True)
+                    self.assertEqual(result.returncode,0,result.stderr)
+                    paths=json.loads(result.stdout)
+                    for folder in old:self.assertNotIn(str(folder),paths)
+                    self.assertEqual(str(selected) in paths,deps is not None)
+
     def test_workspace_identity_rejects_moved_repo_and_os(self):
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp)
