@@ -42,7 +42,9 @@ class SnowbotGrippers:
         self.state_pub = node.create_publisher(GripperState, 'gripper/state', 10)
         node.create_service(Lease, 'gripper/lease', self.lease)
         node.create_service(GripperControl, 'gripper/control', self.control)
-        node.create_subscription(VRInput, 'teleop/vr/input', self.input, qos_profile_sensor_data)
+        input_topic=('teleop/vr/gripper_input' if self.core.cfg.get('independent_trigger_control',False)
+                     else 'teleop/vr/input')
+        node.create_subscription(VRInput, input_topic, self.input, qos_profile_sensor_data)
 
     def arms_idle(self):
         engine = getattr(self.node, 'engine', None)

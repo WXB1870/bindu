@@ -8,6 +8,7 @@ import math
 import os
 import time
 import uuid
+from copy import copy
 from pathlib import Path
 from ament_index_python.packages import get_package_share_directory
 from rclpy.action import ActionClient
@@ -198,6 +199,8 @@ class PicoNode(RuntimeNode):
         self.modes=ActionClient(self,SelectTeleopMode,'teleop/select_mode')
         self.tools=ActionClient(self,TeleopSession,'teleop/tool_session')
         self.projected=self.create_publisher(VRInput,'teleop/vr/input',10)
+        self.gripper_projected=(self.create_publisher(VRInput,'teleop/vr/gripper_input',10)
+                                if self.independent_grippers else None)
         self.display=self.create_publisher(String,'teleop/pico/state',10)
         self.operator_state=self.create_publisher(String,'teleop/state',10)
         self.create_subscription(VRInput,'teleop/vr/raw',self.on_frame,10)
@@ -363,7 +366,7 @@ class PicoNode(RuntimeNode):
         publish_started=time.monotonic()
         for i,m in enumerate((a,b)):
             hand_allowed=allowed and (self.control.teleop_mode!='independent_arms' or self.control.squeeze_released[i])
-            self.projected.publish(VRInput(stamp=m.stamp,source_id=m.source_id+':'+self.instance_id,runtime_mode=m.runtime_mode,
+            projected=VRInput(stamp=m.stamp,source_id=m.source_id+':'+self.instance_id,runtime_mode=m.runtime_mode,
                 seq=m.seq,side=m.side,pose=m.pose,grip=m.grip if hand_allowed else 0.,trigger=m.trigger if getattr(self,'independent_grippers',False) or not self.position_contract else 0.,
                 init=False,stop=self.control.phase=='locked' or not self.handoff_complete,valid=m.valid,clutch_seq=m.clutch_seq,
                 mapping=PICO_MAPPING,buttons=0 if self.position_contract else m.buttons,
@@ -373,7 +376,15 @@ class PicoNode(RuntimeNode):
                 head_pose=getattr(m,'head_pose',()),head_stamp=getattr(m,'head_stamp',m.stamp),
                 head_age_s=getattr(m,'head_age_s',0.),head_seq=int(getattr(m,'head_seq',0)),
                 head_source_id=(m.head_source_id+':'+self.instance_id
-                    if getattr(m,'head_source_id','')==m.source_id else getattr(m,'head_source_id',''))))
+                    if getattr(m,'head_source_id','')==m.source_id else getattr(m,'head_source_id','')))
+            self.projected.publish(projected)
+            if self.independent_grippers:
+                # Ordinary arm handoff must not erase independent trigger edges.
+                # Keep the arm stream fenced and all global gripper stops intact.
+                gripper_frame=copy(projected)
+                gripper_frame.stop=(m.stop or self.control.phase in ('checking','locked') or
+                    self.control.fault_active or bool(self.control.stop_failure or self.control.recovery_required))
+                self.gripper_projected.publish(gripper_frame)
         self.projected_publish_s=time.monotonic()-publish_started
 
     async def pause(self):
