@@ -17,7 +17,7 @@ spec.loader.exec_module(helper)
 
 class TeleopToolsTests(unittest.TestCase):
     def setUp(self):
-        self.recipe = json.loads(helper.RECIPE.read_text())
+        self.recipe = json.loads(helper.recipe_path().read_text())
 
     def test_unknown_wrong_or_duplicate_gripper_writer_cannot_establish_identity(self):
         node=Mock();topic='/fixture/gripper/state';expected='/fixture/execution'

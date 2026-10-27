@@ -31,7 +31,7 @@ class LegacyDeploymentSelectionTests(unittest.TestCase):
     def test_shell_refuses_an_unselected_workspace_before_loading_ros(self):
         import os,subprocess
         env=dict(os.environ);env.pop('BINDU_TELEOP_WORKSPACE',None)
-        for command in ('build','check','start','status','gripper'):
+        for command in ('check','start','status','gripper'):
             with self.subTest(command=command):
                 result=subprocess.run(['bash',str(ROOT/'tools/snowbot_teleop.sh'),command],
                                       env=env,text=True,capture_output=True)
@@ -39,12 +39,31 @@ class LegacyDeploymentSelectionTests(unittest.TestCase):
                 self.assertIn('BINDU_TELEOP_WORKSPACE',result.stderr)
                 self.assertNotIn('缺少 /opt/ros',result.stderr)
         with tempfile.TemporaryDirectory() as tmp:
-            env['BINDU_TELEOP_WORKSPACE']=tmp
-            env.pop('BINDU_ROS_DISTRO',None);env.pop('ROS_DISTRO',None)
             result=subprocess.run(['bash',str(ROOT/'tools/snowbot_teleop.sh'),'build'],
                                   env=env,text=True,capture_output=True)
             self.assertEqual(result.returncode,2)
-            self.assertIn('BINDU_ROS_DISTRO',result.stderr)
+            self.assertIn('tools.deployment.x86_real build',result.stderr)
+
+    def test_help_does_not_need_an_application_or_ros_installation(self):
+        import os,subprocess
+        env=dict(os.environ,PYTHONPATH='',PYTHONDONTWRITEBYTECODE='1')
+        for key in ('BINDU_PACKAGE_PATH','AMENT_PREFIX_PATH','BINDU_TELEOP_WORKSPACE'):
+            env.pop(key,None)
+        result=subprocess.run(['bash',str(ROOT/'tools/snowbot_teleop.sh'),'check','--help'],
+                              env=env,text=True,capture_output=True)
+        self.assertEqual(result.returncode,0,result.stderr)
+        self.assertIn('--config',result.stdout)
+
+    def test_selected_environment_failure_cannot_fall_through_to_legacy_loading(self):
+        import os,subprocess
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp)/'env.sh').write_text('echo selected_environment\nreturn 29\n')
+            env=dict(os.environ,BINDU_TELEOP_WORKSPACE=tmp,ROS_DISTRO='jazzy',BINDU_ROS_DISTRO='humble')
+            result=subprocess.run(['bash',str(ROOT/'tools/snowbot_teleop.sh'),'check','--config','chosen.json'],
+                                  env=env,text=True,capture_output=True)
+            self.assertEqual(result.returncode,29)
+            self.assertIn('selected_environment',result.stdout)
+            self.assertNotIn('不一致',result.stderr)
 
 
 class DeploymentTests(unittest.TestCase):

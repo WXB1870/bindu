@@ -1,5 +1,6 @@
 """Validate a small deployment recipe. No hardware enable or startup motion."""
 import json
+import hashlib
 import math
 from pathlib import Path
 from bindu_contracts.runtime_mode import resolve_mode
@@ -129,6 +130,42 @@ def load_deployment(path, share):
                 raise ValueError('TELEOP_DEPLOYMENT_MISSING:'+key)
         result[key] = str(value).lower() if type(value) is bool else str(value)
     return launch, result
+
+
+def configuration_snapshot(path, share, *, effective_arguments=None):
+    """Resolve the application once and record effective inputs without ROS IO.
+
+    TLS material is never opened here. Execution and device guards still
+    validate the values independently at their respective trust boundaries.
+    """
+    from .robot_setup import RobotSetup
+    launch, arguments = load_deployment(path, share)
+    if effective_arguments is not None:
+        arguments = dict(effective_arguments)
+    files = {'deployment': Path(path).resolve()}
+    for key in ('robot_config', 'profile', 'bimanual_config', 'pico_config', 'gripper_config', 'base_config', 'physics_config'):
+        if arguments.get(key):
+            files[key] = Path(arguments[key])
+    if arguments.get('robot_config'):
+        robot = RobotSetup.load(arguments['robot_config'])
+        files.update(profile=robot.profile_path, tool=robot.tool_config,
+                     urdf=robot.urdf, display_urdf=robot.display_urdf)
+        files.update({'single_arm_'+side: value for side, value in robot.single_arm.items()})
+    sources = {}
+    for key, source in files.items():
+        raw = source.read_bytes()
+        entry = {'path': str(source), 'sha256': hashlib.sha256(raw).hexdigest()}
+        if source.suffix == '.json':
+            entry['values'] = json.loads(raw)
+        sources[key] = entry
+    fingerprint = hashlib.sha256(json.dumps(
+        {'launch': launch, 'arguments': arguments,
+         'files': {key: value['sha256'] for key, value in sources.items()}},
+        sort_keys=True).encode()).hexdigest()
+    return {'schema': 1, 'launch': launch,
+            'package': json.loads(Path(path).read_text()).get('robot_package', 'bindu_runtime'),
+            'arguments': arguments,
+            'sources': sources, 'sha256': fingerprint}
 
 
 def apply_execution_tracking(config, mode='position', *, real, position_contract,

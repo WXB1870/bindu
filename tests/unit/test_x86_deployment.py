@@ -264,6 +264,13 @@ class X86DeploymentTests(unittest.TestCase):
                 for name in ('pinocchio', 'coal'):
                     self.assertIn('-D'+name+'_DIR='+str(prefix/'lib/cmake'/name), command)
                 self.assertTrue(json.loads((workspace/'build.json').read_text())['native_process_exit_success'])
+                execute.reset_mock()
+                x86_real.build(workspace)
+                self.assertNotIn('--cmake-clean-cache',execute.call_args_list[0].args[1])
+                (prefix/'lib/cmake/coal/coalConfig.cmake').write_text('# changed numeric dependency')
+                execute.reset_mock()
+                x86_real.build(workspace)
+                self.assertIn('--cmake-clean-cache',execute.call_args_list[0].args[1])
                 # A child may finish its test body and still fail in native exit handlers.
                 execute.reset_mock()
                 execute.side_effect = [None, subprocess.CalledProcessError(-6, 'native-lifecycle')]
@@ -313,6 +320,21 @@ class X86DeploymentTests(unittest.TestCase):
                 x86_real.prepare(options)
                 self.assertTrue(json.loads((workspace/'deployment.json').read_text())['ready'])
                 self.assertEqual(site.read_text(), 'reviewed site config\n')
+
+    def test_unrelated_package_does_not_invalidate_build(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)
+            subprocess.run(['git','init','-q',str(root)],check=True)
+            for name,deps in (('bindu_runtime','<depend>bindu_contracts</depend>'),('bindu_bimanual_qp',''),('bindu_contracts',''),('bindu_lio','')):
+                folder=root/'src'/name;folder.mkdir(parents=True)
+                (folder/'package.xml').write_text('<package><name>'+name+'</name>'+deps+'</package>')
+                (folder/'value.py').write_text('original')
+            with patch.object(x86_real,'ROOT',root):
+                before=x86_real.source_digest()
+                (root/'src/bindu_lio/value.py').write_text('unrelated')
+                self.assertEqual(before,x86_real.source_digest())
+                (root/'src/bindu_contracts/value.py').unlink()
+                self.assertNotEqual(before,x86_real.source_digest())
 
 
 class RuntimeCheckTests(unittest.TestCase):
