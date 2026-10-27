@@ -126,7 +126,8 @@ class DelegatedPositionExecutor(Executor):
                       and self.joint_at_rest(n) for n in self.reference_names)
         arrived = (self.feedback.stamp > self.io.stop_requested_at and
                    0 <= now-self.feedback.stamp <= .2 and resting and
-                   self.references_arrived(arrival_names))
+                   self.references_arrived(arrival_names,
+                       position_tolerances=self.profile.stop_position_tolerances))
         window = getattr(self.io, 'stop_confirmation_window', 0.)
         if arrived and window:
             positions = {n: self.feedback.positions[n] for n in self.reference_names}
