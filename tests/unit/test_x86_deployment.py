@@ -120,6 +120,39 @@ class X86DeploymentTests(unittest.TestCase):
                     self.assertEqual(child['PREPARED_BEFORE_DDS_FIX'], '1')
                     self.assertEqual((workspace/'env.sh').read_text(), old_script)
 
+    def test_real_vr_wrapper_delegates_before_loading_another_environment(self):
+        with tempfile.TemporaryDirectory(prefix="bindu real ' $ ") as tmp:
+            root=Path(tmp)
+            tools=root/'tools'
+            (tools/'deployment').mkdir(parents=True)
+            (tools/'__init__.py').touch()
+            (tools/'deployment/__init__.py').touch()
+            wrapper=tools/'run_vr.sh'
+            wrapper.write_text((x86_real.ROOT/'tools/run_vr.sh').read_text())
+            # A tiny Python entry records arguments; no ROS or controller runs.
+            (tools/'deployment/x86_real.py').write_text(
+                'import json,sys; print(json.dumps(sys.argv[1:]))\n')
+            wrong_env=root/'wrong-env.sh'
+            wrong_env.write_text('exit 73\n')
+            env=dict(os.environ,BINDU_VR_ENV=str(wrong_env),PYTHONPATH='',
+                     PYTHONDONTWRITEBYTECODE='1')
+            workspace=root/'selected workspace'
+            for extra in ([],['--enable-commands','--input-timing']):
+                with self.subTest(extra=extra):
+                    arguments=['--workspace',str(workspace),*extra]
+                    result=subprocess.run(['bash',str(wrapper),'real',*arguments],
+                        cwd=root.parent,env=env,text=True,capture_output=True)
+                    self.assertEqual(result.returncode,0,result.stderr)
+                    self.assertEqual(json.loads(result.stdout),['start',*arguments])
+
+    def test_real_vr_help_does_not_require_a_prepared_or_ros_environment(self):
+        env=dict(os.environ,BINDU_VR_ENV='/missing/env.sh',PYTHONPATH='',
+                 PYTHONDONTWRITEBYTECODE='1')
+        result=subprocess.run(['bash',str(x86_real.ROOT/'tools/run_vr.sh'),'real','--help'],
+                              env=env,text=True,capture_output=True)
+        self.assertEqual(result.returncode,0,result.stderr)
+        self.assertIn('--workspace',result.stdout)
+
     def test_vr_wrapper_keeps_stdlib_before_viewer_backports(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
