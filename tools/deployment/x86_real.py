@@ -24,7 +24,7 @@ OVERLAYS = ('PYTHONPATH', 'PYTHONHOME', 'AMENT_PREFIX_PATH', 'COLCON_PREFIX_PATH
             'VIRTUAL_ENV', 'CONDA_PREFIX',
             'CONDA_DEFAULT_ENV', 'BINDU_TELEOP_DEPS', 'BINDU_VIEWER_DEPS',
             'BINDU_VR_ENV', 'BINDU_VR_CONFIG', 'ROS_DISTRO', 'ROS_VERSION',
-            'ROS_PYTHON_VERSION', 'ROS_PACKAGE_PATH', 'BINDU_PACKAGE_PATH', 'BINDU_APPLICATION_SOURCE')
+            'ROS_PYTHON_VERSION', 'ROS_PACKAGE_PATH', 'BINDU_PACKAGE_PATH', 'BINDU_APPLICATION_SOURCE', 'BINDU_FRAMEWORK_SOURCE')
 
 
 def target_distro(os_info, machine, version):
@@ -86,6 +86,7 @@ def environment_script(workspace, profile):
         'export BINDU_VIEWER_DEPS='+q(str(site)),
         'export BINDU_VR_ENV='+q(str(workspace/'env.sh')),
         'export BINDU_VR_CONFIG='+q(str(workspace/'site.json')),
+        'export BINDU_FRAMEWORK_SOURCE='+q(str(ROOT)),
         *(['export BINDU_APPLICATION_SOURCE='+q(profile['application_source'])]
           if profile.get('application_source') else []),
         '',

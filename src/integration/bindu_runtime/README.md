@@ -337,13 +337,7 @@ ros2 topic echo /bindu_snowbot/teleop/mode_state
 
 以下检查自行启动替身控制器及真实模式上层，使用隔离本机ROS域，不连接EtherCAT或真实机器人；默认只读及替身写入分别验证：
 
-```bash
-ROS_LOCALHOST_ONLY=1 ROS_DOMAIN_ID=223 python3 -m tests.integration.validate_real_teleop \
-  --output artifacts/snowbot-real-wire-check
-# 当前PICO位置链路；普通双臂与工具模式共用真实WebSocket接收器。
-ROS_LOCALHOST_ONLY=1 ROS_DOMAIN_ID=224 python3 -m tests integration position \
-  --mode simulation --teleop-mode both --websocket-input --output artifacts/position-check
-```
+上述应用专项已迁至Snowbot的`tests/integration/`，从Snowbot根目录执行；构建、所选框架路径及PICO位置链路命令统一见[Snowbot仿真与验证](https://github.com/WXB1870/snowbot/blob/main/运行与验证.md#仿真与浏览器操作台)。
 
 
 
