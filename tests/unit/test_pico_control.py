@@ -448,6 +448,28 @@ class ScenarioRuntimeTests(unittest.IsolatedAsyncioTestCase):
             r.step();r.click(1,1)
             self.assertEqual(r.core.pending.value,'independent_arms')
 
+    async def test_calibrated_position_preflight_preserves_confirmed_virtual_grasp(self):
+        from types import SimpleNamespace as S
+        from unittest.mock import AsyncMock,Mock
+        for calibrated in (False,True):
+            with self.subTest(calibrated=calibrated):
+                node=self.production('confirm_tool');node.position_contract=True;node.operator_grasp=False
+                node.unheld_test=False;node.control=S(load='unknown',virtual=True)
+                node.feedback=lambda:PicoFeedback(1.,True,('closed','virtual'))
+                node.current=Mock();node.wait=AsyncMock(side_effect=lambda value:value);node.event=Mock()
+                node.position_ops=S(config={'calibrated':calibrated},reading=Mock())
+                node.ready_client=S(service_is_ready=lambda:True,call_async=Mock(return_value=S(success=True)))
+                node.tool_cfg={}
+                if not calibrated:
+                    with self.assertRaisesRegex(RuntimeError,'UNCONFIRMED_UNCALIBRATED'):
+                        await node.confirm_tool(S(operation='follow'))
+                    node.ready_client.call_async.assert_not_called()
+                else:
+                    await node.confirm_tool(S(operation='follow'))
+                    self.assertTrue(node.control.virtual)
+                    self.assertEqual(node.control.load,'unknown')
+                    node.position_ops.reading.assert_not_called()
+
     async def test_a_return_is_empty_hand_in_every_load_and_grasp_policy(self):
         from types import SimpleNamespace as S
         from unittest.mock import Mock
