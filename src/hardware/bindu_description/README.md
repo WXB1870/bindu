@@ -58,11 +58,11 @@ python3 -c "from xml.etree import ElementTree as ET; print(ET.parse('src/hardwar
 
 ### 机器人模型与资产
 
-`src/hardware/bindu_description/` 统一保存随源码分发的本体 URDF、共享网格及来源信息；运动学能力包只读取配置指定的模型路径，不再携带模型。`artifacts/` 保存本机生成的物理仿真资产与缓存，不提交 Git。以下表格统一说明其用途。生成模型由脚本维护，修改派生规则后统一重新生成，避免单独手改 URDF。
+Bindu的`src/hardware/bindu_description/`维护通用本体资产；Snowbot模型、网格和来源信息由独立的`snowbot_description`维护。运动学能力包读取配置指定的模型路径。`artifacts/` 保存本机生成的物理仿真资产与缓存，不提交 Git。以下表格说明各模型用途；生成模型由脚本维护，修改派生规则后统一重新生成，避免单独手改 URDF。
 
 | 模型 | 用途与派生关系 | 网格位置 |
 |---|---|---|
-| [`snowbot.urdf`](../../../../../snowbot/src/snowbot_description/urdf/snowbot.urdf) | 原CAD几何与扩展帧，叠加用户提供的20轴关节参数；修复两个力传感器固定关节重名，重写网格 URI；保留四轮转动及视觉、碰撞几何，共 24 个活动关节 | `bindu_description/meshes/snowbot/` |
+| [`snowbot.urdf`](../../../../../snowbot/src/snowbot_description/urdf/snowbot.urdf) | 原CAD几何与扩展帧，叠加用户提供的20轴关节参数；修复两个力传感器固定关节重名，重写网格 URI；保留四轮转动及视觉、碰撞几何，共 24 个活动关节 | `snowbot_description/meshes/snowbot/` |
 | [`snowbot_display.urdf`](../../../../../snowbot/src/snowbot_description/urdf/snowbot_display.urdf) | 从完整模型固定四轮，保留几何与其余 20 轴；供静止底盘显示及 `robot_state_publisher` 使用 | 与完整模型共用同一目录 |
 | [`snowbot_control.urdf`](../../../../../snowbot/src/snowbot_description/urdf/snowbot_control.urdf) | 从 display 模型移除视觉、碰撞几何，保留相同的 20 轴运动学结构；供 IK／双臂 QP 使用 | 无网格引用 |
 | [`g1_provisional.urdf`](urdf/g1_provisional.urdf) | 上游 G1 的临时 20 轴运动学派生模型；省略轮子和手爪子树、视觉及碰撞几何，供运动学模拟／IK 使用 | 无网格引用 |
@@ -71,7 +71,7 @@ python3 -c "from xml.etree import ElementTree as ET; print(ET.parse('src/hardwar
 | [`huawei_v34_display.urdf`](urdf/huawei_v34_display.urdf) | 与运动学模型相同关节结构，恢复源模型88个显示／81个碰撞几何；旧单臂IK碰撞策略单独配置 | `bindu_description/meshes/huawei_v34/` |
 | `artifacts/g1-physics-model/g1_physics.urdf` | 从G1显示模型增加合成差速轮与支撑；供Isaac物理仿真使用，需按当前来源重新生成 | 引用资产包的`meshes/g1/`和`usd/g1/`，不再复制原始资产 |
 
-Snowbot 的三份 URDF 是同一机器人针对不同用途的生成结果。31 个 STL 仅保存一份，完整模型与显示模型通过 `package://bindu_description/meshes/snowbot/…` 引用；`bindu_description` 的安装规则一起安装 `urdf/` 与 `meshes/`。源资产中的`head_link_1.STL`为空网格，无法用于碰撞计算；相关检查边界见[雪铲几何验证](#单杆雪铲的握姿与工作空间2026-10-08)。
+Snowbot 的三份 URDF 是同一机器人针对不同用途的生成结果。31 个 STL 仅保存一份，完整模型与显示模型通过 `package://snowbot_description/meshes/snowbot/…` 引用；`snowbot_description` 的安装规则一起安装 `urdf/` 与 `meshes/`。源资产中的`head_link_1.STL`为空网格，无法用于碰撞计算；相关检查边界见[雪铲几何验证](#单杆雪铲的握姿与工作空间2026-10-08)。
 
 **用户提供模型更新（2026-10-23）。** [`sources/snowbot.urdf`](../../../../../snowbot/src/snowbot_description/sources/snowbot.urdf)逐字保存用户本次提供的文件，SHA256为`3024f5e3b45b188db7f3c0d1e13eaabb86ef726bd75b3c61d9984ced84c00798`。三份运行模型的共有20个活动关节以它为当前参数源；连接、安装变换和轴向与旧模型一致，头部及双臂J6/J7/J8限位已同步，仿真profile收窄到新模型内，真机已有的更窄任务范围不自动放大。R6上限1.274 rad，R7上限仍1.449 rad；R7目标1.42 rad在此模型范围内；历史约1.27457 rad停点的根因仍待定位。
 
@@ -139,4 +139,4 @@ python3 -m tools.models.prepare_g1_physics
 
 ### 单杆雪铲的握姿与工作空间（2026-10-08）
 
-名义模型、握点与几何参数由`src/integration/bindu_runtime/config/robots/snowbot/`及`src/hardware/bindu_description/`维护；设备配置使用实际标定值，名义实验姿态单独用于对应实验。`tools/analysis/plan_shovel_motion.py`负责工具位姿输入实验与几何评分，`tests.replay.validate_vr_axes`核对真实接合姿态的方向映射。原2026-10-08工作空间扫描、姿态比较和离线结果保留在本地`过程记录/2026-10-08.md`，不作为真机可达域验收。
+Snowbot名义模型、握点与几何参数由独立应用的`snowbot_description`和`snowbot_bringup`配置维护；设备配置使用实际标定值，名义实验姿态单独用于对应实验。`tools/analysis/plan_shovel_motion.py`负责工具位姿输入实验与几何评分，`tests.replay.validate_vr_axes`核对真实接合姿态的方向映射。原2026-10-08工作空间扫描、姿态比较和离线结果保留在本地`过程记录/2026-10-08.md`，不作为真机可达域验收。

@@ -10,8 +10,8 @@
 |---|---|
 | 场景选择、配置与参数接线 | [配置目录](#配置目录)、[扫雪遥操作](#扫雪遥操作) |
 | 初次构建、数值依赖与ABI | [编译与运行](#编译与运行) |
-| 既有x86部署的日常操作 | [日常使用](#日常使用) |
-| 新机迁移或旧位置接口专项 | [首次部署](#首次部署)、[现场部署顺序](#现场部署顺序) |
+| Snowbot机器人部署与日常操作 | [应用部署指南](https://github.com/WXB1870/snowbot/blob/main/运行与验证.md) |
+| 旧位置接口专项 | [旧四节点接口](#snowbot-真机最小遥操作) |
 | 节点实现与相关验证 | [源码导航](#源码导航)、[接入与验证](#接入与验证) |
 
 各行按任务选择；历史最小接口步骤无需作为日常部署的前置阅读。
@@ -43,7 +43,7 @@ export OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1
 
 Pinocchio、Coal及其Octomap依赖须来自同一数值环境。切换环境时仅修改`CMAKE_PREFIX_PATH`不会替换旧的`coal_DIR`缓存；wheel与ROS的两套Octomap混入同一进程可在退出时重复释放。使用wheel手动构建时，应加`--cmake-clean-cache`，并在`--cmake-args`后显式指定`-Dpinocchio_DIR="$BINDU_TELEOP_DEPS/cmeel.prefix/lib/cmake/pinocchio" -Dcoal_DIR="$BINDU_TELEOP_DEPS/cmeel.prefix/lib/cmake/coal"`。不要通过改SONAME、库软链接或跳过退出处理规避错误。
 
-安装只需在首次准备或依赖变更时执行；每个新终端仍需加载 ROS、上述依赖路径和对应工作区。不要直接复用其他机器的 `.so` 或本地 `artifacts/vr/env.sh`。Conda／独立构建目录的配置见 [兼容性说明](../../../运行与验证.md#conda-兼容性)。
+安装只需在首次准备或依赖变更时执行；每个新终端仍需加载 ROS、上述依赖路径和对应工作区。不要直接复用其他机器的 `.so` 或本地 `artifacts/vr/env.sh`。已有Conda环境须使用与ROS消息匹配的Python和原生库；新部署按应用指南建立固定环境。
 
 ### 构建与模拟启动
 
@@ -70,158 +70,17 @@ ros2 topic echo /bindu_sim/execution/state --once
 
 ### VR、导航与真机入口
 
-- PICO 与浏览器操作台：按 [遥操作模块命令](../../capabilities/bindu_teleoperation/README.md#编译与运行) 加载查看器依赖与 TLS，再用 `bash tools/run_vr.sh --config src/integration/bindu_runtime/config/deployments/snowbot_vr_sim.json`。
+- PICO 与浏览器操作台：按 [遥操作模块命令](../../capabilities/bindu_teleoperation/README.md#编译与运行) 加载查看器依赖与 TLS，再显式选择Snowbot应用中的`snowbot_vr_sim.json`；模板归属和日常步骤见[应用指南](https://github.com/WXB1870/snowbot/blob/main/运行与验证.md#仿真与浏览器操作台)。
 - 三维建图／定位：按 [LIO 模块命令](../../capabilities/bindu_lio/README.md#编译与运行) 构建可选包并提供点云、IMU及标定配置。
-- 真实 Snowbot：目标为Orin ARM64，平台确认及验收缺口见[Snowbot运行记录](../../../../../snowbot/运行与验证.md)。下节[x86部署](#x86-真机部署已有适配底层)保留供x86环境复现；底层接口检查见[现场部署顺序](#snowbot-真机最小遥操作)。底层使能按独立现场流程执行，真机验证状态单独记录。
+- 真实Snowbot：从[应用部署指南](https://github.com/WXB1870/snowbot/blob/main/运行与验证.md)选择目标环境和配对源码；x86工具的职责见下节，Orin支持范围单独记录。
 
 ## x86 真机部署（已有适配底层）
 
-本节仅适用于x86_64；`x86_real.py`仅支持x86，Orin需使用ARM64目标环境的部署流程。Orin须核对实际系统／ROS／Python版本并原生重建厂商消息、驱动依赖及QP扩展，不能搬用x86的`install/`或二进制；Orin部署尚未验收。
+Snowbot的正式下载、底层与上层构建、现场配置和日常启动统一由[应用部署指南](https://github.com/WXB1870/snowbot/blob/main/运行与验证.md#新克隆的配对源码与构建)维护；已有安装使用[日常启动](https://github.com/WXB1870/snowbot/blob/main/运行与验证.md#日常启动)。本节只说明本仓库工具的职责。
 
-底层流程与接口差异见[真机驱动](../../../运行与验证.md#snowbot-真机驱动与双臂扫雪部署)。遵守[项目约束](../../../AGENTS.md#3-机器人软件工程约束)：本机改码后[同步版本](../../../运行与验证.md#开发同步)，机器人端不编辑源码或控制配置；本节包含真实硬件运动命令，启动前由现场操作者确认设备状态与操作条件。
+`tools.deployment.x86_real`是当前Snowbot专用的x86部署工具，源码位置暂保留在Bindu。`prepare`固定应用源码、厂商安装与Python环境；`build`选择两仓所需包并增量构建；`start`加载部署环境和现场配方，并包含预检。独立`check`用于诊断，日常启动无须先重复执行。
 
-目标机使用与本机相同的已适配厂商 `src`，支持 Ubuntu 22.04／ROS 2 Humble／Python 3.10，或 Ubuntu 24.04／Jazzy／Python 3.12。真机保留浏览器运动学显示，不需要 Isaac。新机重新编译，不复制本机 `install/`、`.so`、venv 或串联历史实验目录的 `artifacts/vr/env.sh`。
-
-### 日常使用
-
-首次部署完成后，在仓库根目录使用现有入口；自动加载ROS、底层消息、venv、Bindu安装和`artifacts/x86-real/site.json`：
-
-| 操作 | 命令 | 频率 |
-|---|---|---|
-| 仅预检 | `python3 -m tools.deployment.x86_real check` | 检查配置、依赖、证书、端口及重复节点 |
-| 现场人员启动 | `python3 -m tools.deployment.x86_real start` | 每次使用；已包含预检；由现场操作者确认运动条件后启动 |
-| 更新后构建 | `python3 -m tools.deployment.x86_real build` | 所选包及依赖的源码／包内配置变更后；文档、工具脚本及无关包更新无须重建 |
-
-日常复用现有环境、证书和现场配方，无须重新`prepare`、安装依赖、填参数或逐项`source`。正常启动已包含预检，不需要先单独`check`再`start`；`check`保留为独立诊断。ROS域／RMW沿用终端设置并与底层一致；需指定域时加`--domain-id <实际域号>`。非默认部署目录统一加`--workspace /实际部署目录`。
-
-`build`复用CMake缓存；首次构建、编译器选择、Python／ROS、依赖清单或Pinocchio／Coal配置变化时重新配置，数值库仍固定到该部署的wheel前缀。版本指纹只覆盖所选目标的本地包依赖和requirements；条件依赖保守纳入，colcon负责实际条件与增量编译。旧版构建记录需进行一次`build`以更新指纹和缓存身份，无需重新安装依赖。独立进程继续加载QP并完成空ROS节点创建／销毁，仅用回环域225且不发布目标；正常退出后才标记就绪，`environment.json`保留实际库路径。
-
-仅现场配方变更时，在本机修改并同步后预检；证书到期或访问地址变化时更新TLS。依赖清单变化时重新`prepare/build`，保留现有配方；系统／Python／ROS、源码根目录或底层安装位置变化时新建部署环境。手动监测终端仍需加载一次`env.sh`；原五终端驱动测试不属于每日重新配置。
-
-正式VR启动在预检前建立`log/vr/<run-id>/session.json`，打印配置来源、指纹、写权限及已安装两仓版本；配置／依赖／证书／在线预检失败也记录失败阶段与原因。会话冻结构建记录、工具源码身份、有效配置和命令行覆盖；后续构建不改写旧会话。`--check`不建立会话目录。记录描述软件与构建来源，不证明在线底层版本或物理停稳。
-
-### 首次部署
-
-**0．确认 Git 版本与需要单独准备的材料。** 新机普通双臂／持工具遥操均使用本节的 `tools.deployment.x86_real` 与统一 PICO 入口；后文 `snowbot_teleop.sh` 的旧四节点流程用于专项接口检查，按键和会话操作不混用。
-
-| 材料 | 是否随 Git 分发 | 新机处理 |
-|---|---|---|
-| `tools/deployment/x86_real.py`、`tools/run_vr.sh`、输入诊断、浏览器页面、依赖清单 | 是 | 克隆／拉取选定提交，无须另找启动脚本 |
-| `src/` 中的消息、QP、执行器、Snowbot URDF／网格与配方样例 | 是 | 从当前源码重新构建；模型不依赖历史参考目录 |
-| Snowbot底层准备工具与专属补丁 | 否，独立场景资产 | 在文稿/snowbot维护，按其运行说明准备后提供厂商安装入口 |
-| 底层原始 `src.zip`、已适配的独立底层工作区 | 否 | 单独携带源码并核对补丁版本；本机原包在 `/home/wxb/Downloads/src.zip` |
-| `artifacts/vr/env.sh`、`artifacts/vr/default.json`、其他历史环境脚本和构建结果 | 否，属于生成／本机文件 | 用下面的 `prepare/build` 生成新机环境与 `site.json`，不搬历史覆盖层 |
-| 现场标定文件、实际话题／节点、TLS 证书与私钥 | 不由通用配方提供 | 携带已核实参数或现场标定；按新机 IP 准备证书，私钥不入库 |
-
-出发前在源码机执行 `git fetch origin`、`git status --short --branch`、`git log --oneline origin/main..HEAD`，确认所需提交已经推送；只在本地提交或修改，新机无法通过 Git 获取。首次克隆：
-
-```bash
-git clone --branch main https://github.com/WXB1870/bindu.git
-cd bindu
-git rev-parse HEAD
-```
-
-已有目标工作区时，先检查分支及未提交修改，再在 `main` 执行 `git pull --ff-only origin main`；保留现场改动，核对源码机与新机 `HEAD` 一致。克隆不会带来底层原包、证书或现场参数。
-
-**1．准备系统依赖与现有底层消息。** 先安装对应 ROS 2。在新终端进入本仓库，以下以 Jazzy 为例，22.04 改用 Humble：
-
-```bash
-source /opt/ros/jazzy/setup.bash
-sudo apt-get update
-sudo apt-get install -y build-essential python3-dev python3-venv \
-  python3-colcon-common-extensions python3-rosdep libeigen3-dev libsimde-dev \
-  python3-yaml python3-zmq python3-cryptography patch \
-  "ros-$ROS_DISTRO-nav2-msgs" "ros-$ROS_DISTRO-robot-state-publisher"
-# 首次使用 rosdep 时先执行 sudo rosdep init；已初始化不重复执行。
-rosdep update
-mapfile -t bindu_packages < <(colcon list --base-paths src --packages-up-to bindu_runtime --paths-only)
-rosdep install --from-paths "${bindu_packages[@]}" --ignore-src --rosdistro "$ROS_DISTRO" \
-  --skip-keys 'pinocchio proxsuite' -r -y
-```
-
-Pinocchio／ProxSuite 由下一步固定版本 wheel 提供。这里只解析运行依赖链，不安装可选 LIO／Isaac；`python3-cryptography` 供本机生成 TLS 证书使用。底层 `src` 在自己的工作区按既有流程构建；若只准备上层编译和只读检查，可仅构建消息：
-
-```bash
-export BINDU_VENDOR_WS=/绝对路径/vendor_ws
-(
-  cd "$BINDU_VENDOR_WS"
-  colcon build --base-paths src --packages-select snowbot_ctl_msgs --executor sequential
-)
-```
-
-不要对已适配工作区重复套补丁或启动控制器。若只有已核对的**原始** `src.zip`，以下补丁准备仅在本机副本执行；校验、打包后同步到机器人新目录，再将`BINDU_VENDOR_WS`指向该目录构建消息。生成器核对原包SHA256，拒绝其他版本和已有输出：
-
-底层原包准备及版本检查由[Snowbot工作区](../../../../../snowbot/运行与验证.md#本机底层源码准备与离线验证)维护，完成后提供选定的厂商工作区及安装入口。
-
-历史 `artifacts/*/vendor*` 有不同补丁版本，不能按目录名里的 `final` 选取。已有底层源码须与当前补丁核对；构建消息成功不证明完整底层驱动已可运行。
-
-**2．独立准备并构建 Bindu。** [`x86_real.py`](../../../tools/deployment/x86_real.py) 自动核对 OS／架构／Python 配对，从系统 Python 建立继承 ROS 系统包的 venv，安装[完整固定依赖清单](../../../tools/requirements/requirements-x86-real.txt)，然后构建 Bindu 运行依赖链和四个 Snowbot 应用包：
-
-```bash
-# 将路径替换为新机已适配厂商工作区的实际安装位置。
-python3 -m tools.deployment.x86_real prepare \
-  --application-source /绝对路径/snowbot \
-  --vendor-setup /绝对路径/vendor_ws/install/local_setup.bash
-python3 -m tools.deployment.x86_real build
-```
-
-默认产物均在忽略入库的 `artifacts/x86-real/`，可在每条命令加同一个 `--workspace /绝对路径/部署目录`。`prepare` 可在同一部署目录重试，保留已编辑的现场配方；拒绝接管无部署标识的非空目录或改换厂商环境。源码移动、系统／Python／ROS 升级时新建部署目录。生成的 `env.sh` 清除继承的 Python／ROS 覆盖层，只加载选定 ROS、厂商 `local_setup.bash`、独立 venv 和本次安装；保留调用方 DDS／ROS 域设置。`environment.json` 记录实际 Python、模块路径／版本、包前缀、提交及脏工作区状态，`requirements-resolved.txt` 记录本次解析的依赖版本；直接依赖使用固定版本，传递依赖仍由包管理器解析。
-
-**3．先验 PICO 输入与证书。** 在 Bindu 仓库根目录，加载本次生成的环境，将示例 IP 换为新机连接头显的实际局域网 IPv4；已有匹配且受信任的证书时跳过生成步骤，改用原证书路径：
-
-```bash
-source artifacts/x86-real/env.sh
-export BINDU_VR_IP=192.168.1.100
-python3 -m tools.teleop.vr_connectivity \
-  --make-cert artifacts/x86-real/tls --advertise-host "$BINDU_VR_IP"
-python3 -m tools.teleop.vr_connectivity \
-  --host 0.0.0.0 --advertise-host "$BINDU_VR_IP" \
-  --cert-file artifacts/x86-real/tls/server.crt \
-  --key-file artifacts/x86-real/tls/server.key --duration 1800
-```
-
-只向头显导入公开 `rootCA.crt`，私钥留在电脑；生成证书后，头显还需配置证书信任。PICO 自带浏览器打开 `https://新机实际IP:8012/`、进入 VR，逐个检查左右位姿、Squeeze／Trigger、X／Y／A／B，并验证退出／重连。电脑与头显须可互通、8012 可达；本步骤排查VPN／虚拟网卡、访客隔离和无线断流，保留原输入时效配置。诊断不启动 ROS 或机器人，完成后 Ctrl+C 释放8012端口。详细判据见[首次输入诊断](../../capabilities/bindu_teleoperation/README.md#vr-首次连通检查)。
-
-**4．核实现场配方后预检。** 将生成的`artifacts/x86-real/site.json`带回本机，修改`arguments`后校验并同步；机器人端不直接编辑。配方默认`command_enabled=false`，按下表填写：
-
-| 字段／配置 | 现场填写依据 |
-|---|---|
-| `runtime_mode`、`device_backend` | 保持 `real`、`snowbot_vendor` |
-| `vendor_namespace` | 统一真机配方默认 `/`，匹配118原底层根话题；只有现场实际完成 `/snowbot/...` remap时才改为 `/snowbot` |
-| `arm_receiver_node`、`servo_receiver_node`、`mid_receiver_node` | 默认节点不匹配时增加字段，填实际完整节点名 |
-| `host`、`port`、`cert_file`、`key_file` | `0.0.0.0`、8012，以及新机 IP 对应的证书／私钥绝对路径 |
-| `pico_config` | 现场独立副本；具名关节 `prepare_positions_rad` 单位 rad，缺省为 `null`，A 准备不可用 |
-| `gripper_config` | 现场独立副本；默认 `calibrated=false`，实测开／闭／虚握开度与保持后才设为已标定 |
-
-`@runtime/` 指向本次安装包；其他配置路径相对 `site.json`，跨目录可用绝对路径。`prepare`保留已经存在的现场配方，更新源码模板不会自动迁移旧`site.json`；118已有的`/snowbot`副本应在本机改为`/`后同步，保留TLS路径、端口和只读状态。现场副本可从 `src/integration/bindu_runtime/config/robots/snowbot/` 的 `pico_snowbot_position_real.json`、`snowbot_grippers_real.json` 复制，未标定时保留原状态，不套模拟值。普通双臂从当前实测末端接合，不依赖 A 准备位；夹爪与持工具操作按各自标定和确认条件开放。源码或依赖清单变更后重新 `build`；检查入口会按构建时的源码指纹拒绝旧产物。
-
-**118反馈传输。** x86部署入口在加载现有环境前默认设置`FASTDDS_BUILTIN_TRANSPORTS=UDPv4`，新生成的`env.sh`也采用该默认值；显式传输选择、ROS域和RMW设置保留。更新入口脚本即可覆盖旧`env.sh`未设置传输的情况，不必为此重新`prepare`。该设置用于处理root驱动与cc观察端之间已确认的默认传输收包问题，证据及边界见[底层D118-13](../../../../../snowbot/底层驱动问题记录.md#已确认接口与问题)，不修改驱动或共享内存权限。接收帧率、ROS发布时间与成功PDO采样分别核验，收到16轴消息不能解除头腰测量和保护门槛。
-
-```bash
-ROS_DOMAIN_ID=42 python3 -m tools.deployment.x86_real check
-# 底层已按现场核实流程运行后，先以 command_enabled=false 启动上层和浏览器。
-ROS_DOMAIN_ID=42 python3 -m tools.deployment.x86_real start
-```
-
-底层与上层使用相同 ROS 域／兼容 RMW；分机通信另核对DDS发现与网卡配置，并按实际通信拓扑选择localhost设置。电脑页面默认 `http://127.0.0.1:8013/`，头显使用现场 HTTPS 地址8012端口。该工具不启动厂商控制器、不使能电机；写权限仍由已审阅的现场配方显式决定。底层本身启动可能回零／清零，持物时遵守[现场启动限制](#现场部署顺序)。
-
-`check` 在启动控制节点前实际加载执行层扩展、QP／Pinocchio 和 ROS 消息原生支持，构造并关闭 QP；核对安装中的 robot／profile／tool／PICO／夹爪配置与当前源码、TLS、端口和重复节点。它会短暂建立只读 ROS 图检查节点，不发送运动指令；通过不表示底层已就绪。
-
-**5．只读反馈通过后，再进入现场运动验收。** 在另一终端加载同一个 `env.sh`，使用与底层、启动终端相同的 `ROS_DOMAIN_ID`／RMW，检查：
-
-```bash
-source artifacts/x86-real/env.sh
-export ROS_DOMAIN_ID=42
-ros2 topic echo /bindu_snowbot/execution/state --once
-ros2 topic echo /bindu_snowbot/teleop/vr/input --once
-# 下面以底层根话题为例；有前缀时使用实际完整话题。
-ros2 topic echo /bindu/control_source --once
-ros2 topic echo /bindu/servo_health
-```
-
-浏览器应显示新鲜真实关节反馈与双手输入，模型方向／零偏／关节顺序与实物一致；持续检查PDO样本推进、年龄、WKC和故障，源采样有效性依据PDO数据判定。写入前还须核对 `source=topic`、`guard_enabled=true`、`ready=true` 及接收路由；只读阶段 `guard_armed=false` 本身不是故障。
-
-现场运动获准且上述条件通过后，松开 Squeeze，退出只读上层，在本机生成并同步`command_enabled=true`的配方后，由现场人员重新`check/start`；启动由现场操作者执行。先在普通双臂模式分别做小范围低速跟随，验证逐侧松握保持、Y停止、输入断流及重连后的重新接合；确认实测停稳后再验收 B 切模式、已标定的 A 准备与夹爪／持工具操作。软件位置到位、实体夹稳和虚握防滑分别确认，真实六维力／滑移接入仍待验证。完整按键与收尾见[统一入口](../../../运行与验证.md#vr-统一部署与启动)，不沿用旧四节点的手工会话指令。部署证据保留本次 `environment.json`、`requirements-resolved.txt`、现场配置和 `log/vr/<run-id>/`。
+该工具识别Ubuntu 22.04／Humble／Python 3.10与Ubuntu 24.04／Jazzy／Python 3.12的x86环境；Orin／ARM64不适用。底层源码准备和现场操作由Snowbot维护，构建与设备启动分开。
 
 ## Snowbot 应用与配置归属（2026-10-26）
 
@@ -271,7 +130,7 @@ Snowbot 当前配方、模型、设备适配及 PICO 操作分别由独立工作
 
 `runtime.launch.py` 的默认 [runtime_deployment.json](config/deployments/runtime_deployment.json) 选择位置适配入口的仿真模式。运行扫雪工具会话从 `teleop_only.launch.py` 进入；部署时选择完整的`snowbot_vr_real.json`或底层联调配方`snowbot_real_teleop.json`，不能只切换`runtime_mode`。
 
-统一PICO入口为[`tools/run_vr.sh`](../../../tools/run_vr.sh)，选择`snowbot_vr_sim.json`或`snowbot_vr_real.json`。两者使用`position_contract=true`、同一真实位置profile／工具几何和协调器；只在设备IO、初始测量状态及现场标定处区分。状态统一到`teleop/state`，夹爪由同一执行节点提供服务。旧四节点配方保留底层联调用途；具体启动与操作见[统一入口](../../../运行与验证.md#vr-统一部署与启动)。
+统一PICO入口为[`tools/run_vr.sh`](../../../tools/run_vr.sh)，选择`snowbot_vr_sim.json`或`snowbot_vr_real.json`。两者使用`position_contract=true`、同一真实位置profile／工具几何和协调器；只在设备IO、初始测量状态及现场标定处区分。状态统一到`teleop/state`，夹爪由同一执行节点提供服务。旧四节点配方保留底层联调用途；具体启动与操作见[统一入口](https://github.com/WXB1870/snowbot/blob/main/运行与验证.md#日常启动)。
 
 真实腰臂通过`position_protocol=session_v3`显式选择目标流，须与servo只读参数`position_reference_mode=target_stream`配对（wire 5／reference 2／普通目标配方version 2，显式刚性预测version 3），消息及使用方成套重建。上层只发送16轴联合目标和源身份／期限，servo非实时后台复用`PreparedSegment`生成；仅首次／恢复接管有一次真实接纳握手；正常更新不等待上一目标接纳，PAUSE立即绕过等待，由执行侧从已采用名义参考制动。适配器已移除旧`session_v2`曲线准备、ACK串行依赖及跨层提前量配置；`ExecutionState.reference`来自有效servo采样的q／dq／ddq及采样时刻，缺失时为空。
 
@@ -310,7 +169,7 @@ VR输入、PICO协调、双臂求解和执行进程入口在ROS初始化前默�
 
 `snowbot_vr_real.json`／`snowbot_vr_sim.json`已选择可选`base_config`，由原PICO节点承载，无新增控制进程。方向映射、`/cmd_vel`／`Odometry`前提及模拟预览范围见[底盘适配](../../capabilities/bindu_teleoperation/README.md#底盘摇杆适配)；修改`VRInput.stick`后须重建接口和运行包，不能只复制Python文件到旧安装。旧配方不配置`base_config`时保持原行为。
 
-PICO仿真由协调器管理上述Action，无需手动开启工具会话；真机最小配方仅接受位姿／Squeeze／Y，仍需显式启动Action。按职责查阅：[按键与相对映射](../../capabilities/bindu_teleoperation/README.md#pico-按键方案) · [启动、装卸及重接步骤](../../../运行与验证.md#pico-扫雪操作流程) · [状态契约](../../../动作执行契约.md#61-snowbot-工具操作与握持切换) · [真实底层启动与重启限制](../../../软件架构设计.md#832-snowbot-实机启动与准备)。
+统一PICO位置配方由协调器管理上述Action；旧四节点专项配方不启动该协调器，仍需显式启动Action。按职责查阅：[按键与相对映射](../../capabilities/bindu_teleoperation/README.md#pico-按键方案) · [启动、装卸及重接步骤](https://github.com/WXB1870/snowbot/blob/main/运行与验证.md#pico操作) · [状态契约](../../../动作执行契约.md#61-snowbot-工具操作与握持切换) · [真实底层启动与重启限制](../../../软件架构设计.md#832-snowbot-实机启动与准备)。
 
 `tool_pose`消费映射后的目标，`vr`在会话内完成相对映射；仿真中`tight=false`仅释放右手绕杆转动，当前真实位置链收到该请求会停止，完整输入语义见[遥操作模块](../../capabilities/bindu_teleoperation/README.md#扫雪输入与握持)。
 
@@ -348,7 +207,7 @@ PICO仿真由协调器管理上述Action，无需手动开启工具会话；真�
 
 常用构建、环境加载与启动命令见本文[编译与运行](#编译与运行)；完整场景参数、操作顺序和验证边界见 [运行与验证](../../../运行与验证.md)。
 
-- 环境切换：[统一仿真与真实模式选择](../../../运行与验证.md#统一仿真与真实模式选择)。
+- 环境切换：[统一仿真与真实模式选择](../../../运行与验证.md#框架运行与环境选择)。
 - 本体与装配检查：[本体配置](../../../tests/unit/test_robot_configuration.py)、[模式](../../../tests/unit/test_runtime_mode.py)、[遥操作装配](../../../tests/unit/test_teleop_deployment.py)。
 - ROS 检查：[示例任务](../../../tests/integration/validate_ros.py)、[环境一致性](../../../tests/integration/validate_runtime_mode.py)、[遥操作](../../../tests/integration/validate_teleop.py)、[底层适配](../../../tests/integration/validate_snowbot_adapter.py)。各脚本是否自行启动装配见其参数；[真机位置链合成验证](../../../tests/integration/validate_real_teleop.py)自带替身控制器，不接硬件。
 
@@ -437,7 +296,7 @@ python3 -m tests integration navigation --g1 --output artifacts/g1-navigation
 
 ### 现场部署顺序
 
-旧四节点最小遥操的历史部署与验收说明已归入[过程记录](../../../过程记录/2026-10-26.md#旧四节点接口检查操作说明迁自运行模块readme)，原始证据与停止边界保留。日常部署使用前文[x86真机入口](#x86-真机部署已有适配底层)；旧接口专项工具的显式环境与命令见下节，不再在此重复安装和启动流程。
+旧四节点最小遥操的历史部署与验收说明保存在本地过程记录，不随Git分发。日常部署使用前文[x86真机入口](#x86-真机部署已有适配底层)；旧接口专项工具的显式环境与命令见下节。
 
 ### 部署自动化
 
@@ -451,11 +310,11 @@ bash tools/snowbot_teleop.sh check --config "$BINDU_TELEOP_WORKSPACE/site-interf
 bash tools/snowbot_teleop.sh status --config "$BINDU_TELEOP_WORKSPACE/site-interface.json" --seconds 3
 ```
 
-脚本加载选定工作区的`env.sh`，复用ROS、厂商消息、数值依赖和应用安装；不再要求重复填写发行版、venv和依赖目录。配方与日常PICO的`site.json`分别选择，已有文件拒绝覆盖。没有`env.sh`的显式旧安装仍兼容原环境变量加载方式，原流程见[历史说明](../../../过程记录/2026-10-26.md#旧四节点接口检查操作说明迁自运行模块readme)。`build`返回迁移提示，不启动构建或设备。
+脚本加载选定工作区的`env.sh`，复用ROS、厂商消息、数值依赖和应用安装；不再要求重复填写发行版、venv和依赖目录。配方与日常PICO的`site.json`分别选择，已有文件拒绝覆盖。没有`env.sh`的显式旧安装仍兼容原环境变量加载方式，历史流程保存在本地过程记录。`build`返回迁移提示，不启动构建或设备。
 
 `--help`无需ROS或应用安装。`configure/check/start/status/gripper`继续支持显式`--config`；没有选择工作区时，`configure`必须指定输出文件，配置资源须已安装或通过`BINDU_PACKAGE_PATH`显式选择。局域网输入使用`--host/--cert-file/--key-file`；底层根话题用`--vendor-namespace /`，其他接收节点身份按实际完整名称指定。TLS、消息／本体／限位、唯一写入者与停止保护继续校验，`start`已包含预检；专项配方默认禁写。状态与夹爪操作边界见[设备适配说明](../../hardware/bindu_hardware/README.md#snowbot真实夹爪位置闭环)。
 
-### 配方与操作接口
+### 旧四节点配方与操作接口
 
 选择[snowbot_real_teleop.json](../../../../../snowbot/src/snowbot_bringup/config/deployments/snowbot_real_teleop.json)，装配仅有`execution`（`snowbot_adapter`）、`teleop_mode`、`teleop_tool`、`vr_input`四个ROS节点，QP子进程由工具节点管理。位置控制覆盖双臂各J1～J7及两轴腰部；头／第8轴作为实测上下文。不启动记录器、单臂、描述／显示、导航、任务、感知或VLA；ROS必要诊断仍保留。包安装依赖尚未裁剪。
 
@@ -463,7 +322,7 @@ bash tools/snowbot_teleop.sh status --config "$BINDU_TELEOP_WORKSPACE/site-inter
 
 ```bash
 ros2 launch bindu_runtime teleop_only.launch.py \
-  config:=$(ros2 pkg prefix --share bindu_runtime)/config/deployments/snowbot_real_teleop.json
+  config:=$(ros2 pkg prefix --share snowbot_bringup)/config/deployments/snowbot_real_teleop.json
 ros2 topic echo /bindu_snowbot/execution/state
 ros2 topic echo /bindu_snowbot/teleop/mode_state
 ```
@@ -472,7 +331,7 @@ ros2 topic echo /bindu_snowbot/teleop/mode_state
 
 启动默认`SAFE / MODE_NOT_SELECTED`，不回位、不准备、不使能电机、不清零。按用户当前要求，现场底层待命／保持及夹爪接口先作为可用条件准备，正式测试前再核实；旧底层源码仍包含启动回位／六维清零；待命改造与带载重启仍待实现和验证。
 
-当前真机配方使用`pico_snowbot_v1`相对位姿和Squeeze接合，Y停止并结束会话；**不启动模拟PICO协调器**。Trigger、X、A、B及摇杆点击均会停止活动工具会话；实体开合需先结束臂会话、通过独立夹爪租约显式授权，虚握／准备／确认仍未接通，第8轴模拟角不能用于真机。释放按键并确认停稳后，可以显式新开会话，旧目标不自动续跑。
+此旧四节点专项配方使用`pico_snowbot_v1`相对位姿和Squeeze接合，Y停止并结束会话；**不启动PICO协调器**。Trigger、X、A、B及摇杆点击均会停止活动工具会话；实体开合需先结束臂会话、通过独立夹爪租约显式授权，虚握／准备／确认不由此入口提供，第8轴模拟角不能用于真机。释放按键并确认停稳后，可以显式新开会话，旧目标不自动续跑。日常统一PICO配方的按键与能力见[遥操作说明](../../capabilities/bindu_teleoperation/README.md#扫雪输入与握持)。
 
 现场核实实测握姿／安装／支撑后，保持双侧Squeeze释放，先向`teleop/select_mode`发送`SelectTeleopMode`（`mode=bimanual_tool`、空`side`、当前`expected_generation`、`timeout≤15`）；成功后等待新状态／输入，再向`teleop/tool_session`发送`TeleopSession`（非空`task_id`、`resource_group=bimanual_tool`、有效`duration`）。然后两侧各先释放再同时握住Squeeze一秒；以当前实测工具和手柄建立基准。模式选择后仍需显式启动会话，实体夹持由独立反馈确认。
 
@@ -556,7 +415,7 @@ ros2 launch bindu_runtime teleop_only.launch.py config:=/absolute/path/deploymen
 
 借鉴 Galbot 的管理、业务就绪和配置分层，但首期不自建多级 launcher。一个 RuntimeSupervisor 装配配置/依赖；本地执行器强制检查权限，Supervisor 不承担高频采样。
 
-2026-10-14已实现配置级环境选择：`runtime_mode=simulation|real`由启动装配统一传给执行、记录和观察节点，与本体选择及下述业务模式分别表达。公共环境解析位于`bindu_contracts/runtime_mode.py`，具体设备路由仍由运行装配负责；Snowbot可选择运动学／外部仿真或底层接口，真实接口默认只读，未实现的真实遥操作、任务和VLA装配显式拒绝启动。命令、状态、事件和输入的环境一致性与兼容规则集中于[执行契约3.3](../../../动作执行契约.md#33-已实现的仿真与真实环境选择2026-10-14)，配置入口见[运行说明](../../../运行与验证.md#统一仿真与真实模式选择)。模式选择后需核对设备连接和反馈有效性，真机验证状态单独记录。
+2026-10-14已实现配置级环境选择：`runtime_mode=simulation|real`由启动装配统一传给执行、记录和观察节点，与本体选择及下述业务模式分别表达。公共环境解析位于`bindu_contracts/runtime_mode.py`，具体设备路由仍由运行装配负责；Snowbot可选择运动学／外部仿真或底层接口，真实接口默认只读，未实现的真实遥操作、任务和VLA装配显式拒绝启动。命令、状态、事件和输入的环境一致性与兼容规则集中于[执行契约3.3](../../../动作执行契约.md#33-已实现的仿真与真实环境选择2026-10-14)，配置入口见[运行说明](../../../运行与验证.md#框架运行与环境选择)。模式选择后需核对设备连接和反馈有效性，真机验证状态单独记录。
 
 首期模式：OBSERVE（只读）、TELEOP（示教控制）、AUTO（自主任务）、REPLAY（离线消费，真机执行另经正常合同）。readiness 按当前技能所需能力求交集：单臂实验不等待 ASR/Nav2，传统抓取不等待 VLA，示教必须检查记录能力。模式切换先撤销新输入、完成现有资源收敛、装配依赖，再发布模式可用；模式名更新不是就绪证据。
 

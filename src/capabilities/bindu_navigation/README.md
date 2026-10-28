@@ -10,7 +10,7 @@
 
 ### 简短启动入口
 
-所有终端先执行 `cd /home/wxb/bindu`。统一脚本会加载本机专用环境，不需要复制长串 launch 参数。先按后文安装依赖并填写配置，再依次运行：
+所有终端先进入本机的Bindu仓库根目录。统一脚本会加载选定工作区的环境，不需要复制长串 launch 参数。先按后文安装依赖并填写配置，再依次运行：
 
 ```bash
 tools/run_navigation.sh environment                     # 只读检查目标机
@@ -83,7 +83,7 @@ nano artifacts/orin-navigation/site.json
 先在终端A按实际驱动文档启动传感器及既有只读里程计发布，不启动会自动使能／回零的控制器。在终端B：
 
 ```bash
-cd /home/wxb/bindu
+cd /绝对路径/bindu
 source artifacts/orin-navigation/env.sh
 ros2 topic list -t
 ros2 node list
@@ -136,7 +136,7 @@ python3 -m tests unit test_navigation
 bash tools/deployment/validate_humble_navigation.sh
 ```
 
-ROS替身预检另外覆盖正常输入、扫描／odom断流、旧／冻结时间戳、错误frame和重复TF。实际测试范围和本轮结果见[当前验证说明](../../../运行与验证.md#orin-导航专用验证)；Orin构建、传感器标定和Tracer现场闭环仍待验收。
+ROS替身预检另外覆盖正常输入、扫描／odom断流、旧／冻结时间戳、错误frame和重复TF。历史平台验证结果保存在本地过程记录；Orin构建、传感器标定和Tracer现场闭环仍待验收。
 
 ## 编译与运行
 

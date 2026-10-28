@@ -6,7 +6,17 @@ Bindu提供硬件无关的机器人能力、共享执行契约和运行装配。
 
 ## Snowbot 应用入口
 
-Snowbot 型号实现、模型与运行配方集中在独立的 [Snowbot 仓库](https://github.com/WXB1870/snowbot)：`snowbot_bringup` 管装配与配置，`snowbot_description` 管模型，`snowbot_hardware` 管厂商协议，`snowbot_teleop` 管扫雪操作流程。Bindu 保留公共契约、求解、执行和通用节点；原 Snowbot Python 模块仅保留兼容转发。运行 Snowbot 需要配套安装两个仓库；旧单仓库环境的重建步骤见[部署说明](src/integration/bindu_runtime/README.md#x86-真机部署已有适配底层)。
+Snowbot 型号实现、模型与运行配方集中在独立的 [Snowbot 仓库](https://github.com/WXB1870/snowbot)：`snowbot_bringup` 管装配与配置，`snowbot_description` 管模型，`snowbot_hardware` 管厂商协议，`snowbot_teleop` 管扫雪操作流程。Bindu 保留公共契约、求解、执行和通用节点；原 Snowbot Python 模块仅保留兼容转发。运行Snowbot需要配套构建两个仓库；机器人下载、编译、配置和日常启动统一见[Snowbot部署与运行](https://github.com/WXB1870/snowbot/blob/main/运行与验证.md#新克隆的配对源码与构建)。
+
+## 两仓职责
+
+| 维护内容 | Bindu | Snowbot |
+|---|---|---|
+| 契约与算法 | 公共消息、控制权、动作期限、求解、轨迹与停止语义 | 选择能力并提供设备与场景参数 |
+| 型号与操作 | 通用输入、映射、会话和设备端口 | Snowbot模型、厂商协议、PICO按键流程与夹爪操作 |
+| 构建与使用 | 框架开发、通用运行节点和验证入口 | 机器人部署、现场配置、日常运行与设备问题记录 |
+
+同一实现只维护一次：通用能力改进进入Bindu，型号和扫雪流程改动进入Snowbot。现有旧导入与launch兼容入口保留转发，新实现按上述归属维护。
 
 ## 项目结构
 

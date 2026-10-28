@@ -46,7 +46,7 @@ BINDU_VR_ENV="$PWD/install/local_setup.bash" bash tools/run_vr.sh \
 
 `--check` 只做配置／依赖／端口检查，第二条命令启动。电脑访问 `http://127.0.0.1:8013/`；默认头显输入只监听本机。连接真实 PICO 时需在两条命令中都增加 `--host 0.0.0.0 --cert-file /绝对路径/server.crt --key-file /绝对路径/server.key`，并确保头显信任证书、地址与主机一致。首次连通先按 [输入诊断步骤](#vr-首次连通检查) 检查；诊断和正式入口不能同时占用8012端口。
 
-统一入口以待命开始，按键与接合步骤见本文 [PICO 按键方案](#pico-按键方案) 和 [运行流程](../../../运行与验证.md#vr-统一部署与启动)。收尾先松 Squeeze、确认保持，再 Ctrl+C。物理测试增加 `--physics` 并安装 Isaac Sim 6.2；真机改用已核实的现场配方，厂商消息、夹爪标定和反馈条件见 [现场部署](../../integration/bindu_runtime/README.md#snowbot-真机最小遥操作)。
+统一入口以待命开始，按键与接合步骤见本文 [PICO 按键方案](#pico-按键方案) 和 [运行流程](https://github.com/WXB1870/snowbot/blob/main/运行与验证.md#日常启动)。收尾先松 Squeeze、确认保持，再 Ctrl+C。物理测试增加 `--physics` 并安装 Isaac Sim 6.2；真机改用已核实的现场配方，厂商消息、夹爪标定和反馈条件见 [现场部署](../../integration/bindu_runtime/README.md#snowbot-真机最小遥操作)。
 
 ## 职责与边界
 
@@ -57,7 +57,7 @@ BINDU_VR_ENV="$PWD/install/local_setup.bash" bash tools/run_vr.sh \
 
 首次连接实体头显使用[独立连通检查](#vr-首次连通检查)：只采集双手柄并显示位姿、按键和断流，不启动机器人控制；通过后再进入仿真遥操作。
 
-PICO头显采用[简短六态HUD](bindu_teleoperation/vr/hud.py)，正常跟随隐藏诊断，暂停／异常显示原因与下一步，停稳与换握结果均以反馈确认。电脑端Meshcat模型、按键及事件诊断和默认关闭的简化运动学流程见[浏览器操作台](../../../运行与验证.md#真实-pico-的简化仿真与浏览器操作台)。
+PICO头显采用[简短六态HUD](bindu_teleoperation/vr/hud.py)，正常跟随隐藏诊断，暂停／异常显示原因与下一步，停稳与换握结果均以反馈确认。电脑端Meshcat模型、按键及事件诊断和默认关闭的简化运动学流程见[浏览器操作台](https://github.com/WXB1870/snowbot/blob/main/运行与验证.md#仿真与浏览器操作台)。
 
 ## 扫雪输入与握持
 
@@ -82,11 +82,11 @@ PICO头显采用[简短六态HUD](bindu_teleoperation/vr/hud.py)，正常跟随�
 
 ## PICO 按键方案
 
-**位置契约入口：** `snowbot_vr_sim/real.json`共用PICO协调器、模式Action、位置执行和夹爪服务。默认`independent_arms`普通双臂，B切换`bimanual_tool`扫雪；准备和跟随提交`joint_target`。A依赖现场准备位；X请求可调右爪位置虚握，真机须先完成开度标定，实体防滑效果需通过夹持实验验证。旧四节点配方仍采用原映射。启动与能力边界见[统一入口](../../../运行与验证.md#vr-统一部署与启动)。
+**位置契约入口：** `snowbot_vr_sim/real.json`共用PICO协调器、模式Action、位置执行和夹爪服务。默认`independent_arms`普通双臂，B切换`bimanual_tool`扫雪；准备和跟随提交`joint_target`。A依赖现场准备位；X请求可调右爪位置虚握，真机须先完成开度标定，实体防滑效果需通过夹持实验验证。旧四节点配方仍采用原映射。启动与能力边界见[统一入口](https://github.com/WXB1870/snowbot/blob/main/运行与验证.md#日常启动)。
 
 位置契约主流程为：连接并获得有效反馈 → 原位待命 → 对应侧Squeeze先松再握 → 捕获该臂当前末端与手柄基准 → 独立相对跟随，不检查固定工具握点。扫雪模式才要求双侧同时握合及工具握持几何。两种模式共用一个执行租约，普通模式腰部保持；逐侧离合变更先确认整组保持并隔离旧结果，再保留未变侧锚点、只重捕获变化侧。模式切换、A准备和独立装卸完成都只回待命。确认与故障边界见[执行契约6.1](../../../动作执行契约.md#61-snowbot-工具操作与握持切换)。
 
-**PICO准备／装卸已接入位置契约；实体载荷／滑移确认及真实底层恢复仍待验收。** 本文维护按键和相对映射；操作条件与状态图见[执行契约6.1](../../../动作执行契约.md#61-snowbot-工具操作与握持切换)，启动与使用见[运行流程](../../../运行与验证.md#pico-扫雪操作流程)。统一称呼 **Squeeze（侧握键）**、**Trigger（食指扳机）**。
+**PICO准备／装卸已接入位置契约；实体载荷／滑移确认及真实底层恢复仍待验收。** 本文维护按键和相对映射；操作条件与状态图见[执行契约6.1](../../../动作执行契约.md#61-snowbot-工具操作与握持切换)，启动与使用见[运行流程](https://github.com/WXB1870/snowbot/blob/main/运行与验证.md#pico操作)。统一称呼 **Squeeze（侧握键）**、**Trigger（食指扳机）**。
 
 ### 普通／扫雪按键（位置契约入口）
 
@@ -224,7 +224,7 @@ p_target = midpoint_target - R_target * c
 - 棍轴方向取两手柄连线相对接合连线的转动。先剥离连线转向，再分别从两手柄相对各自接合姿态的旋转中提取轴向分量，连续展开角度后等权平均；同向等量转动产生等量自转，单侧转动贡献一半，反向等量抵消。不平均左右手柄的绝对姿态。
 - 连线转向与共同拧腕合成完整的人手相对旋转，经固定方向标定施加到机器人短棍。初始人手连线与机器人杆轴不平行时，绕人手连线拧腕也绕该固定空间轴转动，可能同时改变机器人杆轴；若希望对应纯杆轴自转，应在接合时使两杆轴平行。初始腕姿不同、共同转动跨±π及任意接合方向的三轴转动由回归覆盖。
 - 接合与异步捕获沿用上文的确认保持参考及输入重锁语义；松握先停止并等待停稳，隔离旧工作结果。Y锁定后，输入恢复或持续握住均不能自动续跑；松握后B恢复待命。
-- 采样间隔与积分步长分别配置：Snowbot统一位置入口允许250ms采样间隔，积分步长仍最多100ms，输入／反馈有效期仍为250／200ms；模拟与实机接口共用。超过边界或时间倒退停止，实际间隔与积分值写入事件。旧演示最多250ms；配置不得超过输入有效期。客户端、接收与求解诊断见[运行日志](../../../运行与验证.md#vr-统一部署与启动)。
+- 采样间隔与积分步长分别配置：Snowbot统一位置入口允许250ms采样间隔，积分步长仍最多100ms，输入／反馈有效期仍为250／200ms；模拟与实机接口共用。超过边界或时间倒退停止，实际间隔与积分值写入事件。旧演示最多250ms；配置不得超过输入有效期。客户端、接收与求解诊断见[运行日志](https://github.com/WXB1870/snowbot/blob/main/运行与验证.md#日常启动)。
 
 轴向转换与[OpenTeleVision的基变换](https://github.com/OpenTeleVision/TeleVision/blob/main/teleop/constants_vuer.py)、[Unitree TeleVuer](https://github.com/unitreerobotics/televuer/blob/main/src/televuer/tv_wrapper.py)一致：XR右／上／前对应机器人右／上／前。Unitree另支持头部yaw参考；本相对工具会话使用固定基座方向，头部转动不改变已接合映射。重接合的位置与姿态重锁、仅缩放平移也与[NVIDIA Isaac Capture的clutch设计](https://nvidia.github.io/IsaacCapture/main/references/retargeting/so101.html)一致；其5自由度机械臂的姿态保持取舍不直接套用于本双臂工具。
 
@@ -361,7 +361,7 @@ ROS_DOMAIN_ID=191 ROS_LOCALHOST_ONLY=1 python3 -m tests integration position \
 
 ### VR 手柄控制右手虚握（2026-10-09）
 
-当前位置契约通过X请求右爪虚握位／闭合位，实测到位并保持后才重新捕获。操作及停止规则见[执行契约](../../../动作执行契约.md#61-snowbot-工具操作与握持切换)，入口见[统一部署](../../../运行与验证.md#vr-统一部署与启动)。旧实验使用的装配、参数与批次结果已保留在本地`过程记录/2026-10-09.md`，不作为现行按键操作。
+当前位置契约通过X请求右爪虚握位／闭合位，实测到位并保持后才重新捕获。操作及停止规则见[执行契约](../../../动作执行契约.md#61-snowbot-工具操作与握持切换)，入口见[统一部署](https://github.com/WXB1870/snowbot/blob/main/运行与验证.md#日常启动)。旧实验使用的装配、参数与批次结果已保留在本地`过程记录/2026-10-09.md`，不作为现行按键操作。
 
 
 
@@ -381,27 +381,28 @@ ROS_DOMAIN_ID=191 ROS_LOCALHOST_ONLY=1 python3 -m tests integration position \
 
 这些闸门作用于当前Bindu实例，其他进程与旧底层自身的启动回位需另行核对；取证期间保持驱动状态不变，并独立核验实体停稳状态。发现其他写者或现场状态不明时，先停留在独立输入诊断，不自行启停作业。禁写模式保留状态和诊断发布，硬件运动输出保持关闭。
 
-下面以电脑地址 `192.168.1.116` 为例。选择已装有 Vuer、NumPy、Pillow 的 Python 环境（依赖见 `tools/requirements/requirements-teleop.txt`）；生成证书还需 `cryptography`。本机已存在的 `bindu` 环境可用，其他电脑须改为自己的 Python 路径。已有可信的服务器证书时直接跳过生成步骤，指定原证书和私钥。
+选择已装有 Vuer、NumPy、Pillow 的 Python 环境（依赖见 `tools/requirements/requirements-teleop.txt`）；生成证书还需 `cryptography`。将下方地址设为头显可访问的电脑局域网IP。已有可信的服务器证书时直接跳过生成步骤，指定原证书和私钥。
 
 ```bash
-cd /home/wxb/bindu
-/home/wxb/miniforge3/envs/bindu/bin/python -m tools.teleop.vr_connectivity \
-  --make-cert artifacts/vr-connectivity/tls --advertise-host 192.168.1.116
-/home/wxb/miniforge3/envs/bindu/bin/python -m tools.teleop.vr_connectivity \
-  --host 0.0.0.0 --advertise-host 192.168.1.116 \
+cd /绝对路径/bindu
+export BINDU_VR_IP=电脑的局域网IP
+python3 -m tools.teleop.vr_connectivity \
+  --make-cert artifacts/vr-connectivity/tls --advertise-host "$BINDU_VR_IP"
+python3 -m tools.teleop.vr_connectivity \
+  --host 0.0.0.0 --advertise-host "$BINDU_VR_IP" \
   --cert-file artifacts/vr-connectivity/tls/server.crt \
   --key-file artifacts/vr-connectivity/tls/server.key --duration 1800
 ```
 
 生成命令不会覆盖已有证书，不修改电脑或头显的信任设置。将生成目录中的**公开 `rootCA.crt`**导入头显信任设置；具体导入入口取决于 PICO OS。`rootCA.key`／`server.key` 留在电脑，不复制到头显。WebXR安全上下文需浏览器成功验证服务证书；若头显无法导入该CA，使用头显已信任CA签发的服务证书，连接保持HTTPS。生成的证书只用于对应 IP，IP 改变后需重新准备证书。
 
-头显输入完整地址：
+头显输入以下地址，将 `电脑的局域网IP` 换成与证书一致的地址：
 
 ```text
-https://192.168.1.116:8012/?ws=wss%3A%2F%2F192.168.1.116%3A8012%2F
+https://电脑的局域网IP:8012/
 ```
 
-`https://`是页面，查询参数中的`wss://`是数据连接；不要填`localhost`或`0.0.0.0`。本地入口已为不带`ws`参数的短地址自动补上同主机、同端口的数据连接，避免 Vuer 0.0.60 的 HTTPS 默认地址漏掉8012端口；旧服务须重启后生效。页面和 WebSocket 都需通过证书验证。点击页面的 **Enter VR／VR** 并允许追踪，唤醒左右手柄，再完成下列检查：
+`https://`是页面；不要填`localhost`或`0.0.0.0`。本地入口为不带`ws`参数的短地址自动补上同主机、同端口的数据连接，旧服务须重启后生效。页面和 WebSocket 都需通过证书验证。点击页面的 **Enter VR／VR** 并允许追踪，唤醒左右手柄，再完成下列检查：
 
 1. 页面不再显示离线，出现 `BINDU | VR CONNECTIVITY | NO ROBOT` 面板。
 2. 移动两个手柄，状态为 `INPUT_LIVE`，左右 XYZ 连续变化。数值为 WebXR 追踪空间，单位米，尚未映射到机器人基座系。
@@ -511,29 +512,24 @@ PICO的`MotionControllers`显式以60 Hz发送手柄输入，其他旧映射保�
 
 ### 8.3.3 PICO 扫雪控制关系
 
-PICO操作链已接入ROS运动学仿真；下图实线为当前链路，虚线为实体接入目标。职责入口：[按键与相对映射](#pico-按键方案) · [操作契约与状态图](../../../动作执行契约.md#61-snowbot-工具操作与握持切换) · [配置、步骤及验证](../../../运行与验证.md#pico-扫雪操作流程)。
+PICO统一位置操作链可按配置选择运动学、Isaac物理或Snowbot位置接口；下图表达共用的控制关系，不表示各后端均已完成现场验收。职责入口：[按键与相对映射](#pico-按键方案) · [操作契约与状态图](../../../动作执行契约.md#61-snowbot-工具操作与握持切换) · [配置、步骤及验证](https://github.com/WXB1870/snowbot/blob/main/运行与验证.md#pico操作)。
 
 ```mermaid
 flowchart LR
     PICO[PICO位姿、Squeeze、Trigger及面键] --> RX[VR接收器：身份、时间及累计边沿]
     RX -->|teleop/vr/raw| CO[PicoControl／PicoNode<br/>操作资格、确认及控制权交接]
     CO -->|有效VRInput、模式及工具Action| MAP[BimanualSession<br/>相对映射与实测锚点]
-    CO --> OP[空手准备／模拟第8轴<br/>CAD路径预检]
+    CO --> OP[准备与夹爪操作<br/>资格及路径检查]
     MAP --> QP[双臂与两轴腰QP]
     QP --> EXEC[共享执行：唯一写入、限位与停止]
     OP --> EXEC
-    EXEC --> SIM[运动学设备]
-    SIM --> FB[关节位置／速度反馈]
+    EXEC --> DEV[选定位置设备<br/>运动学／Isaac／Snowbot]
+    DEV --> FB[关节位置／速度及设备健康反馈]
     FB --> CO
     FB --> MAP
     CO --> UI[VR状态面板／异步记录]
-    EXEC -.实体接入.-> LOW[底层位置控制：已有平滑／柔顺]
-    CO -.实体开合／虚握.-> CLAW[夹爪适配]
-    CLAW -.-> LOW
-    LOW -.-> REALFB[实际关节、夹持、六维及健康反馈]
-    REALFB -.-> CO
-    REALFB -.-> MAP
-    REALFB -.载荷观测／约束待接入.-> QP
+    CO --> CLAW[选定夹爪接口]
+    CLAW --> FB
 ```
 
-统一位置契约按配置选择运动学设备、Isaac物理设备或Snowbot真机接口，上层PICO、QP和夹爪状态机共用。轻量FK显示常驻并只读选定后端的关节反馈；Isaac作为独立设备进程通过既有仿真消息接收目标、返回物理关节状态，工具真值用于显示，不进入上层运动求解。独立Isaac私有实验的载荷观测仍为研究路径；统一VR的双腕六维、实体夹持确认与物理内力限值优化尚未接通。共同抵抗力矩范围及模型参数须标定，不在按键层增加控制环；启动与反馈语义见[统一入口](../../../运行与验证.md#vr-统一部署与启动)。
+统一位置契约按配置选择运动学设备、Isaac物理设备或Snowbot真机接口，上层PICO、QP和夹爪状态机共用。轻量FK显示常驻并只读选定后端的关节反馈；Isaac作为独立设备进程通过既有仿真消息接收目标、返回物理关节状态，工具真值用于显示，不进入上层运动求解。独立Isaac私有实验的载荷观测仍为研究路径；统一VR的双腕六维、实体夹持确认与物理内力限值优化尚未接通。共同抵抗力矩范围及模型参数须标定，不在按键层增加控制环；启动与反馈语义见[统一入口](https://github.com/WXB1870/snowbot/blob/main/运行与验证.md#日常启动)。
