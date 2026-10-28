@@ -76,9 +76,9 @@ ros2 topic echo /bindu_sim/execution/state --once
 
 ## x86 真机部署（已有适配底层）
 
-实机说明以118最后部署的兼容版`df2645a`为准，使用原单仓布局。其源码获取、编译、现场配置和日常启动由[Snowbot运行指南](https://github.com/WXB1870/snowbot/blob/main/运行与验证.md)维护；现有安装直接看[日常启动](https://github.com/WXB1870/snowbot/blob/main/运行与验证.md#日常启动)。
+完整机器人从[Snowbot运行指南](https://github.com/WXB1870/snowbot/blob/main/运行与验证.md)的统一入口开始：按`dependencies.repos`取得Bindu，构建servo、中层、topic上层与消息，再调用本工具构建框架和应用。默认行为以118的`df2645a`及其配套底层、现场配置为对照；软件整理不代表已更新118安装。
 
-当前两仓维护源码中的`x86_real prepare --application-source ...`属于拆仓后的装配入口，与该已部署版的命令不同。文档不将当前main或开发分支自动视为118安装版本。姿态优化列为未实现项，保留在`xavier/posture-optimization`。
+本工具只组织框架与应用的上层环境。独立使用时，`prepare --application-source ... --vendor-setup ...`显式选择Snowbot源码和已构建的vendor环境；`build`复用环境及缓存，不启动设备。日常启动和历史单仓安装的说明由Snowbot维护。姿态优化保留在`xavier/posture-optimization`，不进入默认配对。
 
 ## Snowbot 应用与配置归属（2026-10-26）
 
