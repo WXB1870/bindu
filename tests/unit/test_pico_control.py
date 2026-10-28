@@ -395,7 +395,8 @@ class ScenarioRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 await node.perform(intent)
                 self.assertEqual(r.core.phase,'standby' if standby else 'locked')
                 self.assertEqual(r.core.teleop_mode,'independent_arms')
-                self.assertIsNone(r.core.pending)
+                if feedback.healthy and feedback.stamp==1.:self.assertIsNone(r.core.pending)
+                else:self.assertEqual(r.core.pending.operation,'stop')
 
     async def test_prepare_closes_after_arm_arrival_and_failure_cannot_report_success(self):
         from types import SimpleNamespace as S
