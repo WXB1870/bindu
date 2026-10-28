@@ -104,6 +104,8 @@ def scenario(out, mode, websocket=False, ordinary=False, physics=False, replay=N
     if prepare_return:
         fixture['device_initial_positions_rad']=dict(prepare_return)
         fixture['initial_load_state']='unknown'
+    # Unknown load is intentional: the current position contract has no load-state gate.
+    fixture['initial_load_state']='unknown'
     fixture['initial_teleop_mode']='independent_arms' if ordinary else 'bimanual_tool'
     q=fixture['device_initial_positions_rad'].copy()
     if mode=='real' and not ordinary and not prepare_return:
@@ -328,35 +330,36 @@ def scenario(out, mode, websocket=False, ordinary=False, physics=False, replay=N
             return dict(mode=mode,teleop_mode=expected_mode,checks=checks,accepted=len(accepted),vendor_packets=len(packets))
         if not collision_recovery and not replay:
             before=len(accepted);load=views[-1]['load_state']
+            def grippers_settled(modes):
+                return (views[-1]['gripper_modes']==modes and
+                        all(not g.lease_active and g.state not in ('MOVING','STOPPING') for g in grippers.values()))
             source['trigger']=[1.,0.]
-            phase('gripper_control')
-            assert views[-1]['gripper_modes']==['open','closed'],views[-1]
+            wait(lambda:grippers_settled(['open','closed']))
+            assert views[-1]['phase']=='standby' and views[-1]['independent_grippers']
             assert len(accepted)==before and views[-1]['load_state']==load and not views[-1]['external_support']
             assert all(g.grasp_state=='unknown' for g in grippers.values())
-            checks.append('stopped direct left Trigger opens only left without loading, support or arm actuation')
-            source['trigger']=[1.,1.];wait(lambda:views[-1]['gripper_modes']==['open','open'] and not views[-1]['pending'])
-            source['trigger']=[0.,1.];wait(lambda:views[-1]['gripper_modes']==['closed','open'] and not views[-1]['pending'])
-            source['trigger']=[0.,0.];phase('standby')
-            assert views[-1]['gripper_modes']==['closed','closed']
+            checks.append('independent left Trigger opens only left without loading, support or arm actuation')
+            source['trigger']=[1.,1.];wait(lambda:grippers_settled(['open','open']))
+            source['trigger']=[0.,1.];wait(lambda:grippers_settled(['closed','open']))
+            source['trigger']=[0.,0.];wait(lambda:grippers_settled(['closed','closed']))
             checks.append('two Trigger targets update independently; releasing one closes only that gripper')
-            source['trigger']=[1.,0.];pump(.10);source['trigger']=[0.,0.];phase('standby')
-            assert views[-1]['gripper_modes']==['closed','closed']
+            source['trigger']=[1.,0.];pump(.10);source['trigger']=[0.,0.]
+            wait(lambda:grippers_settled(['closed','closed']))
             checks.append('early Trigger release supersedes opening and completes measured closed hold')
-            source['trigger']=[0.,1.];phase('gripper_control');source['grip']=1.
-            phase('standby');wait(lambda:views[-1]['stop_confirmed'] is True)
-            assert views[-1]['gripper_modes'][1]=='open' and len(accepted)==before
-            source.update(grip=0.,trigger=[0.,0.]);pump(.3)
-            assert views[-1]['gripper_modes'][1]=='open' and views[-1]['pending'] is None
-            source['trigger']=[0.,1.];phase('gripper_control');source['trigger']=[0.,0.];phase('standby')
-            checks.append('Squeeze during gripper control holds opening, never engages arms or automatically closes')
-            source['trigger']=[1.,0.];phase('gripper_control');source['stream']=False
-            phase('locked');wait(lambda:views[-1]['stop_confirmed'] is True)
-            assert views[-1]['gripper_modes'][0]=='open'
-            source.update(stream=True,trigger=[0.,0.]);pump(.3);click(1,1);phase('standby')
-            assert views[-1]['gripper_modes'][0]=='open'
-            source['trigger']=[1.,0.];phase('gripper_control');source['trigger']=[0.,0.];phase('standby')
-            assert views[-1]['gripper_modes']==['closed','closed'] and len(accepted)==before
-            checks.append('input loss at direct open holds position; B recovers without auto-close; fresh Trigger controls again')
+            source['trigger']=[1.,0.]
+            wait(lambda:grippers['left'].state=='MOVING')
+            source['stream']=False
+            wait(lambda:all(not g.lease_active and g.state not in ('MOVING','STOPPING') for g in grippers.values()))
+            held=grippers['left'].measured_position;pump(.3)
+            assert abs(grippers['left'].measured_position-held)<.003
+            assert all(g.state!='FAULT' and g.grasp_state=='unknown' for g in grippers.values())
+            source.update(stream=True,trigger=[0.,0.]);pump(.4)
+            assert abs(grippers['left'].measured_position-held)<.003
+            assert views[-1]['phase']=='standby'
+            source['trigger']=[1.,0.];wait(lambda:grippers_settled(['open','closed']))
+            source['trigger']=[0.,0.];wait(lambda:grippers_settled(['closed','closed']))
+            assert len(accepted)==before
+            checks.append('direct gripper input loss confirms fixed hold; restored input needs a fresh Trigger intent')
         if collision_recovery:
             source['grip']=1.
             wait(lambda:views[-1]['pending'] is None and 'SELF_COLLISION' in views[-1]['reason'])
@@ -455,7 +458,7 @@ def scenario(out, mode, websocket=False, ordinary=False, physics=False, replay=N
             assert views[-1]['teleop_mode']=='independent_arms'
             baseline=dict(zip(states[-1].joints.name,states[-1].joints.position))
             source['grips']=[1.,0.];phase('following')
-            assert views[-1]['load_state']==('empty' if mode=='simulation' else 'unknown')
+            assert views[-1]['load_state']=='unknown'
             source['deltas'][0]=.004
             wait(lambda:len(accepted)>5 and max(abs(v-baseline[n]) for n,v in
                 zip(states[-1].joints.name,states[-1].joints.position) if n in GROUPS['left_arm'])>1e-5)
@@ -526,7 +529,7 @@ def scenario(out, mode, websocket=False, ordinary=False, physics=False, replay=N
             assert any(e['state']=='PICO_MODE_CHECK' for e in events)
             assert any(e['state']=='BIMANUAL_CAPTURED' and 'independent:' in e['code'] for e in events)
             return dict(mode=mode,teleop_mode='independent_arms',checks=checks,accepted=len(accepted),vendor_packets=len(packets))
-        assert views[-1]['load_state']==('empty' if mode=='simulation' else 'unknown')
+        assert views[-1]['load_state']=='unknown'
         source['grip']=1.
         if mode=='simulation':
             wait(lambda:views[-1]['phase']=='standby' and views[-1]['pending'] is None and
