@@ -42,7 +42,8 @@ if "$bindu_ros"; then
   set +u
   source /opt/ros/jazzy/setup.bash
   source "${BINDU_ISAAC_ROS_PREFIX:?VR physics requires the current bindu_interfaces install}/share/bindu_interfaces/local_setup.bash"
-  source "${BINDU_ISAAC_APP_PREFIX:?VR physics requires the current Snowbot application install}/share/snowbot_bringup/local_setup.bash"
+  COLCON_CURRENT_PREFIX="${BINDU_ISAAC_APP_PREFIX:?VR physics requires the current Snowbot application install}" \
+    source "$BINDU_ISAAC_APP_PREFIX/share/snowbot_bringup/package.bash"
   set -u
   export PYTHONPATH="$bindu_root/src/shared/bindu_contracts:$bindu_root/src/hardware/bindu_hardware:$PYTHONPATH"
 fi
