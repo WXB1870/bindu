@@ -336,10 +336,10 @@ def scenario(out, mode, websocket=False, ordinary=False, physics=False, replay=N
                             g.state not in ('MOVING','STOPPING','FAULT') for g in grippers.values()))
             source['trigger']=[1.,0.]
             wait(lambda:grippers_settled(['open','closed']))
-            assert views[-1]['phase']=='standby' and views[-1]['independent_grippers']
+            assert views[-1]['phase']=='gripper_control' and not views[-1]['independent_grippers']
             assert len(accepted)==before and views[-1]['load_state']==load and not views[-1]['external_support']
             assert all(g.grasp_state=='unknown' for g in grippers.values())
-            checks.append('independent left Trigger opens only left without loading, support or arm actuation')
+            checks.append('direct left Trigger opens only left without loading, support or arm actuation')
             source['trigger']=[1.,1.];wait(lambda:grippers_settled(['open','open']))
             source['trigger']=[0.,1.];wait(lambda:grippers_settled(['closed','open']))
             source['trigger']=[0.,0.];wait(lambda:grippers_settled(['closed','closed']))
@@ -356,9 +356,12 @@ def scenario(out, mode, websocket=False, ordinary=False, physics=False, replay=N
             assert all(g.state!='FAULT' and g.grasp_state=='unknown' for g in grippers.values())
             source.update(stream=True,trigger=[0.,0.]);pump(.4)
             assert abs(grippers['left'].measured_position-held)<.003
-            assert views[-1]['phase']=='standby'
+            assert views[-1]['phase']=='locked'
+            click(1,1);phase('standby')
             source['trigger']=[1.,0.];wait(lambda:grippers_settled(['open','closed']))
             source['trigger']=[0.,0.];wait(lambda:grippers_settled(['closed','closed']))
+            phase('standby')
+            wait(lambda:all(not g.lease_active for g in grippers.values()))
             assert len(accepted)==before
             checks.append('direct gripper input loss confirms fixed hold; restored input needs a fresh Trigger intent')
         if collision_recovery:

@@ -82,7 +82,7 @@ class ApplicationResourceTests(unittest.TestCase):
                          {'grasp_reference_source','tool_grasp_confirmation'})
         grippers=json.loads(resource_file(deployment['arguments']['gripper_config']).read_text())
         self.assertIs(grippers['simulation_only'],True)
-        self.assertIs(grippers['independent_trigger_control'],True)
+        self.assertFalse(grippers.get('independent_trigger_control',False))
 
     def test_adapter_launch_selects_an_executable_from_its_owning_package(self):
         import ast

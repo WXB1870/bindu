@@ -270,6 +270,25 @@ class PhysicsPositionStopTests(unittest.TestCase):
         self.assertIs(io.physics,self.wire)
         self.assertIs(actual,devices)
 
+    def test_simulation_arm_lease_matches_real_independent_gripper_gate(self):
+        from unittest.mock import patch
+        from bindu_runtime.execution_node import ExecutionNode
+        from snowbot_hardware.position_sim import PositionSimulation
+        node=PositionSimulation.__new__(PositionSimulation)
+        node.commands_enabled=True;node.profile=self.profile
+        core=S(busy=True,fault='',cfg={'independent_trigger_control':True})
+        node.grippers=S(core=core);request=S(operation='acquire')
+        granted=S(ok=True,code='base_lease')
+        with patch.object(ExecutionNode,'lease',return_value=granted) as base:
+            self.assertIs(node.lease(request,S()),granted)
+            base.assert_called_once()
+            for fault,independent in (('FAULT',True),('',False)):
+                core.fault=fault;core.cfg['independent_trigger_control']=independent
+                reply=node.lease(request,S())
+                self.assertFalse(reply.ok)
+                self.assertEqual(reply.code,'GRIPPERS_BUSY_OR_FAULT')
+            self.assertEqual(base.call_count,1)
+
     def setUp(self):
         from bindu_runtime.simulation_devices import PhysicsPositionIO
         from bindu_execution.delegated_position import DelegatedPositionExecutor
