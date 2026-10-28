@@ -136,9 +136,9 @@ Snowbot 当前配方、模型、设备适配及 PICO 操作分别由独立工作
 
 目标流启动上限由[真实VR配方](../../../../../snowbot/src/snowbot_bringup/config/deployments/snowbot_vr_real.json)维护，逐轴限制由[真实位置profile](../../../../../snowbot/src/snowbot_bringup/config/robots/snowbot/snowbot_real_position.json)维护，发送时按关节取较小值。servo加载[目标流配方](../../../../../snowbot/tools/deployment/snowbot_vendor/position_session/target_stream.yaml)中的接收上限；现场覆盖以实际选定文件为准，接收端仍独立拒绝超限值。参数值只在配置中维护，已有部署覆盖不自动迁移；实体跟踪与停止待现场验证。
 
-目标轴序为左臂J1～J7、右臂J1～J7、腰J1～J2，rad。动态界逐轴取profile与发送端只读启动参数`trajectory_max_velocity`、`trajectory_max_acceleration`及执行侧急动度上限的较小值；参数默认值见实现，servo独立校验接收帽。配置20 ms执行tick／servo名义1 ms采样保持；submit也可触发执行tick，50 Hz不是发送硬限频，实际频率与抖动须现场记录。普通目标最多300 ms，新PAUSE独立固定2 s停止期限，详见[执行时间语义](../../control/bindu_execution/README.md)；沿途不续期。此新路径只支持`execution_mode=position`，与阻抗组合明确拒绝；既有可选阻抗入口的控制和暂停语义保持，其兼容性不属于本轮验证；含可选阻抗的准备器候选不应用目标流补丁，也不接受`target_stream`配置。真实腰臂配方为`session_v3`、`position`、`command_enabled=false`；servo默认仍`follower`／`unconfirmed`，必须显式成套选择新路径。版本、离线证据与现场未完成项见[Snowbot当前进度](../../../../../snowbot/当前进度.md)。
+目标轴序为左臂J1～J7、右臂J1～J7、腰J1～J2，rad。动态界逐轴取profile与发送端只读启动参数`trajectory_max_velocity`、`trajectory_max_acceleration`、`trajectory_max_jerk`的较小值；参数默认值见实现，servo独立校验接收帽，部署时须配对相同启动上限。配置20 ms执行tick／servo名义1 ms采样保持；submit也可触发执行tick，50 Hz不是发送硬限频，实际频率与抖动须现场记录。普通目标最多300 ms，新PAUSE独立固定2 s停止期限，详见[执行时间语义](../../control/bindu_execution/README.md)；沿途不续期。此新路径只支持`execution_mode=position`，与阻抗组合明确拒绝；既有可选阻抗入口的控制和暂停语义保持，其兼容性不属于本轮验证；含可选阻抗的准备器候选不应用目标流补丁，也不接受`target_stream`配置。真实腰臂配方为`session_v3`、`position`、`command_enabled=false`；servo默认仍`follower`／`unconfirmed`，必须显式成套选择新路径。版本、离线证据与现场未完成项见[Snowbot当前进度](../../../../../snowbot/当前进度.md)。
 
-真实`session_v3`配方的`arguments`可设置这两个速度／加速度参数，统一遥操与独立适配器launch均透传；只接受有限正值，其他协议／仿真配方显式设置时拒绝。servo已有同名只读启动参数，必须允许下发的逐轴有效值，超出接收帽仍拒收；不自动远程修改servo参数。同一会话内动态界不得改变。提高发送帽不会自动提高QP使用的profile速度，profile更低时仍受其限制；调参须成套选择启动值和逐轴profile，尤其不要借全局参数提高腰部等不打算调整的轴。急动度、参考超差保护、TTL和PAUSE期限保持。
+真实`session_v3`配方的`arguments`可设置上述速度、加速度和急动度参数，统一遥操与独立适配器launch均透传；只接受有限正值，其他协议／仿真配方显式设置时拒绝。servo已有同名只读启动参数，必须允许下发的逐轴有效值，超出接收帽仍拒收；不自动远程修改servo参数。同一会话内动态界不得改变。提高发送帽不会自动提高QP使用的profile速度，profile更低时仍受其限制；调参须成套选择启动值和逐轴profile，尤其不要借全局参数提高腰部等不打算调整的轴。参考超差保护、TTL和PAUSE期限保持。
 
 ### 配套配置与流程
 

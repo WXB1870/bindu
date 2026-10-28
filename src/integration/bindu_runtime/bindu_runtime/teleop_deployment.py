@@ -20,7 +20,8 @@ COMMON.update(('position_protocol','execution_mode'))
 COMMON.update(('position_contract','physics_config'))
 EXECUTION.add('gripper_config')
 EXECUTION.update(('position_protocol','execution_mode'))
-TARGET_STREAM_LIMIT_DEFAULTS = {'trajectory_max_velocity': .25, 'trajectory_max_acceleration': .5}
+TARGET_STREAM_LIMIT_DEFAULTS = {'trajectory_max_velocity': .25, 'trajectory_max_acceleration': .5,
+                              'trajectory_max_jerk': 162.}
 COMMON.update(TARGET_STREAM_LIMIT_DEFAULTS)
 EXECUTION.update(TARGET_STREAM_LIMIT_DEFAULTS)
 PATHS = {'profile', 'bimanual_config', 'robot_config', 'cert_file', 'key_file', 'output', 'pico_config', 'gripper_config', 'physics_config', 'base_config'}

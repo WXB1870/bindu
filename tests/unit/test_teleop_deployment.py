@@ -133,14 +133,16 @@ class ApplicationResourceTests(unittest.TestCase):
 class DeploymentTests(unittest.TestCase):
     def test_target_dynamic_limits_accept_numeric_recipe_and_reject_invalid_or_wrong_mode(self):
         recipe=json.loads((package_share("snowbot_bringup")/'config/deployments/snowbot_vr_real.json').read_text())
-        recipe['arguments'].update(trajectory_max_velocity=.4, trajectory_max_acceleration=.8)
+        recipe['arguments'].update(trajectory_max_velocity=.4, trajectory_max_acceleration=.8,
+                                   trajectory_max_jerk=259.2)
         with tempfile.TemporaryDirectory() as tmp:
             path=Path(tmp)/'deploy.json'
             path.write_text(json.dumps(recipe))
             _,args=load_deployment(path,SHARE)
             self.assertEqual(args['trajectory_max_velocity'],'0.4')
             self.assertEqual(args['trajectory_max_acceleration'],'0.8')
-            for key in ('trajectory_max_velocity','trajectory_max_acceleration'):
+            self.assertEqual(args['trajectory_max_jerk'],'259.2')
+            for key in ('trajectory_max_velocity','trajectory_max_acceleration','trajectory_max_jerk'):
                 for invalid in (0.,-1.,float('nan'),float('inf'),True,'bad',None,[],10**400):
                     bad=json.loads(json.dumps(recipe));bad['arguments'][key]=invalid
                     path.write_text(json.dumps(bad))

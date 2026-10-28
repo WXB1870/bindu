@@ -1168,13 +1168,16 @@ class TargetWireTests(unittest.TestCase):
         self.assertNotIn('trajectory_lead_ms', descriptors)
         self.assertNotIn('trajectory_fast_receipt', descriptors)
         self.assertIn('/bindu/position/servo_receipt', [call.args[1] for call in node.create_subscription.call_args_list])
-        self.assertEqual(created.trajectory_limits, dict(trajectory_max_velocity=.25, trajectory_max_acceleration=.5))
+        self.assertEqual(created.trajectory_limits, dict(trajectory_max_velocity=.25,
+            trajectory_max_acceleration=.5, trajectory_max_jerk=162.))
         for key in created.trajectory_limits:
             self.assertTrue(descriptors[key].read_only)
-        parameters.update(trajectory_max_velocity=.4, trajectory_max_acceleration=.8)
+        parameters.update(trajectory_max_velocity=.4, trajectory_max_acceleration=.8,
+                          trajectory_max_jerk=259.2)
         with patch.dict('sys.modules', modules):
             configured = PositionSessionDevices(node, self.rig.profile)
-            self.assertEqual(configured.trajectory_limits, dict(trajectory_max_velocity=.4, trajectory_max_acceleration=.8))
+            self.assertEqual(configured.trajectory_limits, dict(trajectory_max_velocity=.4,
+                trajectory_max_acceleration=.8, trajectory_max_jerk=259.2))
             for key in configured.trajectory_limits:
                 for invalid in (0., -1., float('nan'), float('inf'), True):
                     parameters[key] = invalid
@@ -1187,7 +1190,8 @@ class TargetWireTests(unittest.TestCase):
         capped = CONTROL_NAMES[0]
         self.d.io.profile = replace(self.rig.profile, max_speed=.6, max_acceleration=1.2,
             joint_dynamics={capped: dict(velocity=.18, acceleration=.3, jerk=100.)})
-        self.d.trajectory_limits = dict(trajectory_max_velocity=.4, trajectory_max_acceleration=.8)
+        self.d.trajectory_limits = dict(trajectory_max_velocity=.4, trajectory_max_acceleration=.8,
+                                       trajectory_max_jerk=259.2)
         self.d.new_session()
         first = self.send()
         pause = self.send(pause=True)
@@ -1208,16 +1212,20 @@ class TargetWireTests(unittest.TestCase):
         robot=json.loads(robot_path.read_text())
         self.d.io.profile=Profile.load(robot_path.parent/robot['profile'])
         self.d.trajectory_limits={key:float(args[key]) for key in
-                                 ('trajectory_max_velocity','trajectory_max_acceleration')}
+                                 ('trajectory_max_velocity','trajectory_max_acceleration','trajectory_max_jerk')}
+        servo_config=package_share('snowbot_bringup').parents[1]/'tools/deployment/snowbot_vendor/position_session/target_stream.yaml'
+        servo_limits={key.strip():float(value) for line in servo_config.read_text().splitlines()
+                      for key,sep,value in [line.partition(':')] if key.strip() in self.d.trajectory_limits}
+        self.assertEqual(servo_limits,self.d.trajectory_limits)
         tool=json.loads((robot_path.parent/robot['teleop']['tool']).read_text())
         self.assertIs(tool['rigid_reference_prediction'],True)
         self.assertEqual(args['command_enabled'],'false')
         for rigid,pause in ((False,False),(True,False),(True,True)):
             self.d.new_session()
             packet=self.send(pause=pause,rigid_reference=rigid)
-            self.assertEqual(list(packet.trajectory.max_velocity),[1.0]*14+[.375]*2)
-            self.assertEqual(list(packet.trajectory.max_acceleration),[4.5]*14+[2.25]*2)
-            self.assertEqual(list(packet.trajectory.max_jerk),[162.]*16)
+            self.assertEqual(list(packet.trajectory.max_velocity),[1.0]*14+[.6]*2)
+            self.assertEqual(list(packet.trajectory.max_acceleration),[4.5]*14+[3.6]*2)
+            self.assertEqual(list(packet.trajectory.max_jerk),[162.]*14+[259.2]*2)
             self.assertEqual(packet.trajectory.version,3 if rigid and not pause else 2)
             self.assertEqual(packet.meta.profile_hash,self.d.io.profile.digest)
             self.assertEqual(packet.meta.expires_at_ns-packet.meta.source_stamp_ns,

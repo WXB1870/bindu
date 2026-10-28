@@ -20,6 +20,10 @@ class Rig:
     def __init__(self, *, require_driver_ack=True, **changes):
         self.profile = Profile.load(CONFIG/'snowbot_real_position.json')
         self.config = json.loads((CONFIG/'snowbot_grippers_real.json').read_text())
+        # Historical residual/contact regressions use the original zero-based
+        # endpoints; site calibration is exercised explicitly below.
+        self.config['grippers']['left'].update(open=-.4,closed=0.)
+        self.config['grippers']['right'].update(open=.4,closed=0.,virtual=.02)
         self.config.update(calibrated=True, independent_trigger_control=False)
         self.config.update(changes)
         self.now, self.steady, self.idle = 10., 100., True
@@ -77,6 +81,37 @@ class Rig:
 
 
 class GripperTests(unittest.TestCase):
+    def test_site_commands_use_confirmed_nonzero_closed_positions(self):
+        config=json.loads((CONFIG/'snowbot_grippers_real.json').read_text())
+        expected={'left':(-.8,.26),'right':(.8,-.26)}
+        r=Rig(grippers=config['grippers'])
+        for side,(_,closed) in expected.items():r.q[JOINTS[side]]=closed
+        r.step(track=False);r.acquire();r.command('authorize_direct')
+        for operation,index in (('open',0),('close',1)):
+            for side,positions in expected.items():
+                r.command(operation,side)
+                self.assertEqual(r.sent[-1][:3],(side,positions[index],False))
+            r.step(20)
+            for side in SIDES:
+                state=r.core.snapshot(side)
+                self.assertTrue(state['position_reached'])
+                self.assertEqual(state['grasp_state'],'unknown')
+
+    def test_site_virtual_position_preserves_small_opening_and_nonzero_left_guard(self):
+        config=json.loads((CONFIG/'snowbot_grippers_real.json').read_text())
+        r=Rig(grippers=config['grippers']);right=r.config['grippers']['right']
+        self.assertAlmostEqual(right['virtual']-right['closed'],.02)
+        r.acquire(groups=(GROUPS['right'],))
+        with self.assertRaisesRegex(RuntimeError,'LEFT_NOT_CLOSED'):
+            r.command('authorize_grasp')
+        self.assertFalse(r.sent)
+        r.q[JOINTS['left']]=.26;r.step(track=False);r.command('authorize_grasp')
+        r.command('virtual','right')
+        self.assertEqual(r.sent[-1][:3],('right',-.24,False))
+        r.step(20)
+        self.assertTrue(r.core.snapshot('right')['position_reached'])
+        self.assertEqual(r.q[JOINTS['left']],.26)
+
     def test_site_opening_fits_deadline_with_actual_native_command_ramp(self):
         config=json.loads((CONFIG/'snowbot_grippers_real.json').read_text())
         r=Rig(require_driver_ack=False,grippers=config['grippers'])
