@@ -360,6 +360,24 @@ class ScenarioRuntimeTests(unittest.IsolatedAsyncioTestCase):
         node.position_ops.close_grippers.assert_awaited_once_with(intent,allow_command=False)
         node.ready_client.assert_not_called()
 
+    async def test_position_mode_preflight_refusal_stays_read_only_with_legacy_auto_close(self):
+        from types import SimpleNamespace as S
+        from unittest.mock import AsyncMock,Mock
+        for position_contract in (False,True):
+            for operation in ('confirm_tool','select_mode'):
+                with self.subTest(position_contract=position_contract,operation=operation):
+                    node=self.production('perform');node.position_contract=position_contract
+                    node.automatic_close_grippers=True;node.independent_grippers=False;node.unheld_test=False
+                    node.cancel_tool=AsyncMock();node.current=Mock();node.event=Mock();node.now=lambda:1.
+                    node.simulation=True;node.control=S(complete=Mock(),teleop_mode='independent_arms',source='pico',seq=1)
+                    node.confirm_tool=AsyncMock(side_effect=RuntimeError('BIMANUAL_GRASP_POSE'))
+                    intent=S(token=1,operation=operation,value='bimanual_tool')
+                    await node.perform(intent)
+                    result=node.control.complete.call_args
+                    self.assertFalse(result.args[1])
+                    self.assertEqual(result.args[2],'RuntimeError:BIMANUAL_GRASP_POSE')
+                    self.assertIs(result.kwargs['rejected'],position_contract)
+
     async def test_prepare_closes_after_arm_arrival_and_failure_cannot_report_success(self):
         from types import SimpleNamespace as S
         from unittest.mock import AsyncMock,Mock
