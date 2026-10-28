@@ -68,6 +68,22 @@ class LegacyDeploymentSelectionTests(unittest.TestCase):
 
 
 class ApplicationResourceTests(unittest.TestCase):
+    def test_position_simulation_keeps_its_calibrated_grasp_separate_from_real_operator_policy(self):
+        from bindu_contracts.resources import resource_file
+        share=package_share('snowbot_bringup')
+        deployment=json.loads((share/'config/deployments/snowbot_vr_sim.json').read_text())
+        robot_path=resource_file(deployment['arguments']['robot_config'])
+        robot=json.loads(robot_path.read_text())
+        tool=json.loads((robot_path.parent/robot['teleop']['tool']).read_text())
+        real=json.loads((robot_path.parent/'bimanual_snowbot_real.json').read_text())
+        self.assertEqual(tool['tool_grasp_confirmation'],'calibrated')
+        self.assertEqual(real['tool_grasp_confirmation'],'operator')
+        self.assertEqual({k for k in tool.keys()|real.keys() if tool.get(k)!=real.get(k)},
+                         {'grasp_reference_source','tool_grasp_confirmation'})
+        grippers=json.loads(resource_file(deployment['arguments']['gripper_config']).read_text())
+        self.assertIs(grippers['simulation_only'],True)
+        self.assertIs(grippers['independent_trigger_control'],True)
+
     def test_adapter_launch_selects_an_executable_from_its_owning_package(self):
         import ast
         from types import SimpleNamespace

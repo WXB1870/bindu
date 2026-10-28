@@ -65,8 +65,13 @@ def websocket_input(port, source, stop, errors):
                     timing=dict(version=1,seq=source['seq'],perf_ms=time.monotonic()*1000,
                         wall_ms=time.time()*1000,buffered_bytes=0,loop_max_ms=0,raf_max_ms=0,
                         xr_max_ms=0,long_task_max_ms=0,long_task_count=0,page_visibility='synthetic')
+                    head={} if source.get('raw_pair') is not None else dict(version=1,samples=[dict(
+                        seq=source['seq'],age_ms=0.,frame_time_ms=timing['perf_ms'],
+                        frame_id='fixture-local',tracking_id=source['head_tracking_id'],mode='immersive-vr',
+                        pose=[1.,0.,0.,0.,0.,1.,0.,0.,0.,0.,1.,0.,0.,0.,0.,1.],
+                        controllers={side:value[side] for side in ('left','right')})])
                     peer.send(packb(dict(etype='CONTROLLER_MOVE',key='motionControllers',value=value,
-                        bindu_timing=timing),use_bin_type=True))
+                        bindu_timing=timing,bindu_head=head),use_bin_type=True))
                     last_raw=source.get('raw_index')
                 for _ in range(4):
                     try:peer.recv(timeout=.001)
@@ -84,7 +89,7 @@ def scenario(out, mode, websocket=False, ordinary=False, physics=False, replay=N
     node.create_subscription(String,ns+'/teleop/state',lambda m:views.append(json.loads(m.data)),10)
     node.create_subscription(MotionCommand,ns+'/execution/accepted',accepted.append,100)
     node.create_subscription(GripperState,ns+'/gripper/state',lambda m:grippers.update({m.side:m}),10)
-    source=dict(buttons=[0,0],trigger=[0.,0.],grip=0.,grips=None,delta=0.,deltas=[0.,0.],stream=False,seq=0)
+    source=dict(buttons=[0,0],trigger=[0.,0.],grip=0.,grips=None,delta=0.,deltas=[0.,0.],stream=False,seq=0,head_tracking_id=token)
     counters=[ButtonCounters(),ButtonCounters()]
     vr=node.create_publisher(VRInput,ns+'/teleop/vr/raw',10)
     fixture=json.loads((CFG/'pico_snowbot_position_sim.json').read_text())
@@ -153,7 +158,9 @@ def scenario(out, mode, websocket=False, ordinary=False, physics=False, replay=N
                     mapping='pico_snowbot_v1',buttons=source['buttons'][i]))
                 vr.publish(VRInput(stamp=stamp(now),runtime_mode=mode,source_id=f.source_id,seq=f.seq,side=side,
                     pose=list(f.pose),grip=f.grip,trigger=f.trigger,valid=True,mapping=f.mapping,
-                    buttons=f.buttons,button_edges=list(f.button_edges)))
+                    buttons=f.buttons,button_edges=list(f.button_edges),
+                    head_pose=[1.,0.,0.,0.,0.,1.,0.,0.,0.,0.,1.,0.,0.,0.,0.,1.],
+                    head_stamp=stamp(now),head_age_s=0.,head_source_id=token,head_seq=source['seq']))
     node.create_timer(.01,publish)
     recipe=json.loads((package_share('snowbot_bringup')/f'config/deployments/snowbot_vr_{"sim" if mode=="simulation" else "real"}.json').read_text())
     recipe['arguments'].update(namespace=ns,vr_enabled=websocket,command_enabled=True)
@@ -222,11 +229,8 @@ def scenario(out, mode, websocket=False, ordinary=False, physics=False, replay=N
     def start_observer():
         nonlocal observer,observer_log
         observer_log=(out/(mode+'-observer.log')).open('w')
-        from ament_index_python.packages import get_package_share_directory
-        selected_robot=recipe['arguments']['robot_config']
-        observer_robot=(json.loads((out/'unified-session/session.json').read_text())['configs']['robot_config']['path']
-                        if physics else str(Path(get_package_share_directory('bindu_runtime'))/selected_robot[9:])
-                        if selected_robot.startswith('@runtime/') else selected_robot)
+        from bindu_runtime.teleop_deployment import load_deployment
+        observer_robot=load_deployment(path,package_share('bindu_runtime'))[1]['robot_config']
         observer=subprocess.Popen([sys.executable, '-m', 'tools.teleop.snowbot_live','--observe',
             '--namespace',ns,'--run-id',json.loads((out/'unified-session/session.json').read_text())['run_id'] if physics else views[-1]['run_id'],
             '--robot-config',observer_robot,
@@ -546,27 +550,23 @@ def scenario(out, mode, websocket=False, ordinary=False, physics=False, replay=N
             assert views[-1]['load_state']=='unknown'
             assert len(accepted)==before
         checks.append('optional A validates the path and measured arrival, returning standby without entering loading')
-        click(0,2);phase('load_check')
-        assert views[-1]['operator_guide']['step']=='support'
-        source['stream']=False;pump(.4)
-        assert views[-1]['phase']=='load_check' and views[-1]['idle_input_lost']
-        source['stream']=True;pump(.3);click(1,1);phase('loading')
-        source['trigger']=[1.,1.]
-        wait(lambda:views[-1]['gripper_modes']==['open','open'] and views[-1]['pending'] is None)
-        assert all(g.grasp_state=='unknown' for g in grippers.values())
-        source['trigger']=[0.,0.]
-        wait(lambda:views[-1]['gripper_modes']==['closed','closed'] and views[-1]['pending'] is None)
-        checks.append('Trigger open/close uses shared leased gripper services; grasp stays unknown')
-        click(1,1);phase('standby')
-        assert views[-1]['load_source']=='operator_load_confirmation'
-        pump(.3);assert views[-1]['phase']=='standby' and views[-1]['pending'] is None
-        checks.append('separate loading completes to standby without automatic follow; idle input gaps keep the step')
         before=len(accepted)
+        for side,index in (('left',0),('right',1)):
+            other='right' if side=='left' else 'left'
+            held=grippers[other].measured_position
+            source['trigger'][index]=1.
+            wait(lambda:views[-1]['gripper_modes'][index]=='open' and views[-1]['pending'] is None)
+            assert abs(grippers[other].measured_position-held)<(.003 if physics else 1e-9)
+            source['trigger'][index]=0.
+            phase('standby')
+        assert len(accepted)==before and all(g.grasp_state=='unknown' for g in grippers.values())
+        checks.append('independent Trigger open/close uses only the requested gripper; no arm command or grasp claim')
+        assert views[-1]['load_state']=='unknown'
         source['buttons'][1]=1
-        wait(lambda:views[-1]['reason']=='PREPARED' and views[-1]['pending'] is None)
+        wait(lambda:views[-1]['reason']=='PREPARED' and views[-1]['pending'] is None,40.)
         source['buttons'][1]=0;pump(.2)
-        assert views[-1]['load_state']=='held' and len(accepted)==before
-        checks.append('held-tool A ignores load/captured coupling; already-reached pose submits no motion or gripper commands')
+        assert len(accepted)==before
+        checks.append('A accepts unknown load at the reached preparation pose without motion or gripper commands')
         before=len(accepted);source['grip']=1.;phase('following');set_delta(.006)
         wait(lambda:len(accepted)>before+5)
         error_sample('rigid')
@@ -621,27 +621,20 @@ def scenario(out, mode, websocket=False, ordinary=False, physics=False, replay=N
         assert not states[-1].stop_failures
         checks.append('input loss cancels follow and releases ownership after stop')
         source.update(stream=True,grip=0.);pump(.4);click(1,1);phase('standby')
-        click(0,2);phase('load_check');click(1,1);phase('loading')
         source['trigger']=[1.,0.]
         wait(lambda:grippers['left'].state=='MOVING')
         source['stream']=False;phase('locked')
         wait(lambda:all(not g.lease_active and g.state not in ('MOVING','STOPPING') for g in grippers.values()))
         assert all(g.state!='FAULT' and g.grasp_state=='unknown' for g in grippers.values())
-        checks.append('input loss during gripper operation releases lease and confirms hold without closing')
+        checks.append('input loss during direct gripper operation releases lease and confirms hold without closing')
         source.update(stream=True,grip=0.,trigger=[0.,0.]);pump(.4)
         click(1,1);phase('standby')
+        # A fresh Trigger press/release explicitly closes the interrupted side.
+        source['trigger']=[1.,0.]
+        wait(lambda:views[-1]['gripper_modes'][0]=='open' and views[-1]['pending'] is None)
+        source['trigger']=[0.,0.];phase('standby')
         assert views[-1]['load_state']=='unknown'
-        assert views[-1]['pending'] is None
-        click(0,2);phase('load_check')
-        assert views[-1]['loading_goal']=='empty'
-        click(1,1);phase('loading')
-        source['trigger']=[1.,1.]
-        wait(lambda:views[-1]['gripper_modes']==['open','open'] and views[-1]['pending'] is None)
-        source['trigger']=[0.,0.]
-        wait(lambda:views[-1]['gripper_modes']==['closed','closed'] and views[-1]['pending'] is None)
-        click(1,1);phase('standby')
-        assert views[-1]['load_state']=='empty'
-        checks.append('interrupted unloading recovers to standby; a new request preserves intent but requires fresh support')
+        checks.append('gripper recovery requires a fresh intent; closing does not declare an empty or held tool')
         if websocket:
             baseline_delta=source['delta'];source['grip']=1.;phase('following')
             line_start=len(states)
@@ -668,7 +661,7 @@ def scenario(out, mode, websocket=False, ordinary=False, physics=False, replay=N
         attempts=[json.loads(e['code']) for e in events if e['state']=='PICO_PREPARE_CHECK']
         assert attempts and attempts[0]['accepted'] and all(attempts[0]['checks'].values()),attempts
         validations=[json.loads(e['code']) for e in events if e['state']=='PICO_PREPARE_VALIDATION']
-        assert any(v['load_state']=='held' and v['operation'] in ('prepare_path','prepare_recovery_path') and
+        assert any(v['load_state']=='unknown' and v['operation'] in ('prepare_path','prepare_recovery_path') and
                    not v['load_state_checked'] and not v['tool_present'] and not v['coupling_checked'] for v in validations)
         assert any(e['state']=='PICO_ENGAGE_CHECK' for e in events)
         if mode=='simulation':
