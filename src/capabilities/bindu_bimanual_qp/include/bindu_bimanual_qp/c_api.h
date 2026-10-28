@@ -84,17 +84,6 @@ int bq_posture_policy(void *handle, const double *reference,
 /* Optional ABI v1 extension: inset the reference velocity damper; physical
  * posture bounds and measured capture checks remain unchanged. */
 int bq_posture_reference_margin(void *handle, double margin);
-/* Additive ABI v1. Optional arm comfort bands for normalized shoulder-to-elbow
- * height (+Z) and outward direction (+Y left, -Y right) in torso axes. side=0/1.
- * Joint comfort arrays follow active-name order; bounds are soft bands inside
- * model/profile limits, weights may be zero. Both enable a second QP that
- * preserves the primary task velocity and all original hard constraints.
- * Set after each capture; bad configuration invalidates capture. */
-int bq_arm_comfort(void *handle, int side, const char *torso, const char *shoulder,
-                   const char *elbow, double max_height, double max_outward,
-                   double gain, double weight);
-int bq_joint_comfort(void *handle, const double *lower, const double *upper,
-                     const double *weights, int n, double gain);
 /* Additive ABI v1: local tool tracking point [x,y,z] metres. Default zero.
  * Changes only the tracking task/Jacobian; tool FK and grasp/CAD stay fixed.
  * Set after each capture. Supplied world linear feedforward is at this point. */

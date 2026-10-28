@@ -63,7 +63,6 @@ colcon test-result --test-result-base build/bindu_bimanual_qp --verbose
 | `bq_solve_tracking` | 跟踪误差反馈与工具速度前馈 |
 | `bq_posture_policy` | 自动腰臂协调的姿态偏好与边界 |
 | `bq_posture_reference_margin` | 为参考速度约束预留姿态边界余量 |
-| `bq_arm_comfort` / `bq_joint_comfort` | 肘部几何及关节舒适带；启用末端任务优先的第二层姿态优化 |
 | `bq_shared_motion_weight` | 为腰等共享组增加运动代价，优先使用手臂 |
 | `bq_coupled_locked_joints` | 仅在耦合求解中冻结指定关节速度 |
 
@@ -106,13 +105,9 @@ Python 调用入口为 [bindu_kinematics/bimanual.py](../bindu_kinematics/bindu_
 
 所有字段必须有限；权重、姿态增益与margin可为零，其余必须为正；两侧margin之和必须小于对应有效关节范围。已有配置对速度和闭合误差设有更严格值，以上不是硬件标定值。可选`shared_targets`为共享组全部关节名到目标位置的映射，须配合正的`shared_target_weight`；未配置时腰部仍参与工具跟踪。Python `set_shared_targets(None)`清除该独立姿态目标。
 
-`posture_policy.reference`支持`initial_capture`或覆盖全部活动关节的具名位置映射（rad），映射必须有限且位于profile／任务姿态边界内。固定映射不会把当前反馈补成零或改变捕获锚点，重接合后仍使用相同偏好。
+`posture_policy.reference`使用`initial_capture`：以接合时实测姿态作为既有软偏好，实测边界和目标参考边界仍独立检查。
 
-可选`posture_comfort`通过增量ABI v1接口设置，缺省不启用，旧库缺函数明确要求重建。它使用`torso_frame`、左右`shoulder_frames`及`elbow_frames`计算躯干坐标系中的单位肩肘向量：高度分量超出`max_height_ratio`、向外分量（左+Y／右-Y）超出`max_outward_ratio`时才施加有限软代价。`gain`为回归增益，`elbow_weight`为几何权重；`joint_bands`映射活动关节名到`[下界rad,上界rad,权重]`，带内不施加姿态代价，带外才偏向带边缘。带只能位于模型／profile范围内，不是新硬限位；缺失帧、退化肩肘几何、非法数值或名称拒绝捕获。
-
-任一舒适项权重为正时采用两层QP：先按原有限位、握持、反馈领先量与速度代价求可行末端运动，再固定第一层已实现的末端任务速度，优化肘、腕及既有姿态／共享关节目标；第二层保留相同硬约束和边界，任务等式复核容差为`1e-6`。第二层不收敛时保留已校验的第一层结果，不放宽保护；调用方原有墙钟超时覆盖两层求解。这保证的是本次微分任务优先，不能保证实体跟踪误差完全相同。
-
-Snowbot real候选关闭全关节固定回归（`posture_weight=0`），以非零准备腕角±0.35rad、与profile取交集作为初始腕部宽松带；肘部高度比例上界-0.25、向外比例上界0.75，几何／腕部权重0.01、增益0.3。腰部目标单独取现有非零准备腰角（增益0.1、权重0.05），不要求全身趋零。这些是模型级偏好候选，非实体舒适度标定。普通模式继续冻结腰及未接合臂，待命／松握不主动回位。物理对照的适用范围见[物理仿真与任务对照](../../../运行与验证.md#物理仿真与任务对照)；2026-10-28该候选未部署118，也未完成实体姿态验收。
+肘腕舒适带、固定准备姿态回归及末端任务优先的第二层姿态优化均列为**未实现项**，保留在`xavier/posture-optimization`开发分支；不属于118最后部署的`df2645a`，主线不启用这些候选实现或配置。
 
 可选软代价只惩罚作用带内朝模型／profile硬界的速度，距离同时参考求解状态和已接纳参考；向内退出不加此代价。每次捕获后通过`bq_limit_avoidance`设置，ABI v1布局不变，旧库缺接口须重建。启用需正宽度、非负权重且两侧作用带不重叠，通用默认关闭；Snowbot real配方启用`margin=0.15 rad、weight=0.05`。它不主动回退、不保证固定余量，原有硬限位、姿态包络、握持、碰撞和停止保护保持；`reference`模式沿用原实测保护。
 

@@ -2,7 +2,6 @@
 #include "bindu_bimanual_qp/c_api.h"
 
 #include <gtest/gtest.h>
-#include <Eigen/SVD>
 #include <pinocchio/spatial/explog.hpp>
 
 #include <algorithm>
@@ -83,73 +82,6 @@ protected:
 TEST_F(CoreTest, LeftAndRightFrameJacobiansMatchFiniteDifferences) {
   checkJacobian(robot_->leftJacobian(), [this]() { return robot_->leftPose(); });
   checkJacobian(robot_->rightJacobian(), [this]() { return robot_->rightPose(); });
-}
-
-TEST_F(CoreTest, TorsoRelativeElbowDirectionJacobianMatchesFiniteDifferences) {
-  const auto q0=robot_->positions();
-  const auto [u,j]=robot_->relativeDirection("waist_link","left_shoulder","left_link_4");
-  for (int i=0;i<robot_->variables();++i) {
-    auto q=q0;q[robot_->qIndex(robot_->activeJointNames()[i])]+=1e-7;robot_->update(q);
-    const auto perturbed=robot_->relativeDirection("waist_link","left_shoulder","left_link_4").first;
-    EXPECT_LT(((perturbed-u)/1e-7-j.col(i)).norm(),1e-5);
-  }
-  robot_->update(q0);
-  EXPECT_THROW(robot_->relativeDirection("waist_link","left_shoulder","left_shoulder"),std::invalid_argument);
-}
-
-TEST_F(CoreTest, ComfortImprovesRedundantJointWithoutChangingPrimaryTaskOrGrasp) {
-  datq::RobotModel robot(TEST_URDF_PATH,"left_ee","right_ee","tool_frame",left_names_,right_names_,{"waist_joint"});
-  auto q=robot.positions();
-  for (int i=1;i<robot.variables();++i) q[robot.qIndex(robot.activeJointNames()[i])]=.2*std::sin(i);
-  robot.update(q);
-  datq::RigidToolKinematics kin(robot);kin.capture();
-  datq::Config config;config.posture_weight=0.;
-  datq::QpController baseline(robot,kin,config,robot.activePositions(),1);
-  datq::QpController comfort(robot,kin,config,robot.activePositions(),1);
-  auto lower=robot.lowerLimits(),upper=robot.upperLimits();
-  Eigen::VectorXd weights=Eigen::VectorXd::Zero(robot.variables());
-  lower[0]=.1;upper[0]=.2;weights[0]=.1;
-  comfort.setJointComfort(lower,upper,weights,.3);
-  const auto a=baseline.solve(kin.toolPose(),.01,robot.activePositions());
-  const auto b=comfort.solve(kin.toolPose(),.01,robot.activePositions());
-  ASSERT_TRUE(a.ok) << a.reason;ASSERT_TRUE(b.ok) << b.reason;
-  // Independent closed form for one band objective on the exact task nullspace.
-  // This fixture can have very little useful waist redundancy near a singularity.
-  Eigen::MatrixXd task(12,robot.variables());
-  task.topRows(6)=kin.toolJacobian();task.bottomRows(6)=kin.relativeErrorJacobian();
-  Eigen::JacobiSVD<Eigen::MatrixXd> svd(task,Eigen::ComputeFullV);
-  svd.setThreshold(1e-9);
-  const Eigen::MatrixXd basis=svd.matrixV().rightCols(robot.variables()-svd.rank());
-  const Eigen::VectorXd direction=basis*basis.row(0).transpose();
-  const Eigen::VectorXd expected=.1*.03/(config.regularization+.1*direction[0])*direction;
-  EXPECT_GT(expected[0],0.);EXPECT_GT(b.velocity[0],0.);
-  EXPECT_LT((b.velocity-expected).norm(),1e-5);
-  EXPECT_LT((kin.toolJacobian()*(b.velocity-a.velocity)).norm(),2e-6);
-  EXPECT_LT((kin.relativeErrorJacobian()*b.velocity).norm(),2e-6);
-  EXPECT_LE(b.velocity.cwiseAbs().maxCoeff(),robot.velocityLimits().maxCoeff()+1e-9);
-  // Ordinary arms retain the zero-velocity waist constraint, even outside a comfort band.
-  comfort.independentArms();auto right=robot.rightPose();
-  const auto held=comfort.solve(robot.leftPose(),.01,robot.activePositions(),
-      Eigen::Matrix<double,6,1>::Zero(),nullptr,&right,1);
-  ASSERT_TRUE(held.ok) << held.reason;EXPECT_NEAR(held.velocity[0],0.,1e-9);
-  EXPECT_LT(held.velocity.tail(6).norm(),1e-8);
-}
-
-TEST_F(CoreTest, ArmComfortPreservesPrimaryTrackingAndValidatesGeometry) {
-  datq::Config config;config.posture_weight=0.;
-  datq::QpController baseline(*robot_,*kin_,config,robot_->activePositions());
-  datq::QpController comfort(*robot_,*kin_,config,robot_->activePositions());
-  comfort.setArmComfort(0,"waist_link","left_shoulder","left_link_4",-.25,.75,.3,.01);
-  auto target=kin_->toolPose();target.translation().x()+=.005;
-  const auto a=baseline.solve(target,.01,robot_->activePositions());
-  const auto b=comfort.solve(target,.01,robot_->activePositions());
-  ASSERT_TRUE(a.ok) << a.reason;ASSERT_TRUE(b.ok) << b.reason;
-  EXPECT_LT((kin_->toolJacobian()*(b.velocity-a.velocity)).norm(),2e-6);
-  EXPECT_LT((kin_->relativeErrorJacobian()*(b.velocity-a.velocity)).norm(),2e-6);
-  EXPECT_THROW(comfort.setArmComfort(2,"waist_link","left_shoulder","left_link_4",0.,1.,.3,.01),std::invalid_argument);
-  EXPECT_THROW(comfort.setArmComfort(0,"missing","left_shoulder","left_link_4",0.,1.,.3,.01),std::invalid_argument);
-  EXPECT_THROW(comfort.setJointComfort(robot_->lowerLimits(),robot_->upperLimits(),
-      Eigen::VectorXd::Constant(robot_->variables(),-1.),.3),std::invalid_argument);
 }
 
 TEST_F(CoreTest, IndependentTargetsHoldWaistAndInactiveArmWithoutClosure) {

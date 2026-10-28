@@ -125,7 +125,7 @@ servo在非实时后台从已采用名义轨迹的未来`q/v/a`快照调用`trac
 
 真机target_stream在明确开放写入后，通过正常租约／接管／PAUSE链路完成一次实测原位带电保持；就绪前不接收跟随租约，失败不自动再次使能。Squeeze只控制跟随。目标生产者断流时，执行端在原目标期限前60 ms请求PAUSE：300 ms上限对应源年龄240 ms，显式更短的TTL仍按原值提前制动，启动原位保持目标仍为200 ms。源时间不重置，重复tick／派生帧不续期；本地控制线程停滞时仍由底层watchdog处理，设备或控制故障时的带电状态取决于底层故障策略。
 
-首次／恢复接管保留一次接纳握手，避免op1在中层或DDS的latest缓存被普通目标覆盖；等待期间上层只保留最新目标，原接管期限不变。接纳后普通目标不逐段等待回执；PAUSE立即绕过该等待。接纳／拒绝通过`/bindu/position/servo_receipt`或周期状态观察，配置20 ms执行tick，submit也可触发发送，50 Hz不是硬限频。真实生效以servo采样身份与时刻判断，参考终点不表示真实到达；正常暂停、期限失效、撤权、Fault和STOP_UNCONFIRMED分别保留。目标配置周期及servo名义1 ms采样不变，本地准备预算和离线对比证据在[Snowbot运行说明](https://github.com/WXB1870/snowbot/blob/main/运行与验证.md#现场配置)。真实手柄到运动、调度尾峰及持载停止仍待现场验收。
+首次／恢复接管保留一次接纳握手，避免op1在中层或DDS的latest缓存被普通目标覆盖；等待期间上层只保留最新目标，原接管期限不变。接纳后普通目标不逐段等待回执；PAUSE立即绕过该等待。接纳／拒绝通过`/bindu/position/servo_receipt`或周期状态观察，配置20 ms执行tick，submit也可触发发送，50 Hz不是硬限频。真实生效以servo采样身份与时刻判断，参考终点不表示真实到达；正常暂停、期限失效、撤权、Fault和STOP_UNCONFIRMED分别保留。目标配置周期及servo名义1 ms采样不变，本地准备预算和离线对比证据在[Snowbot运行说明](https://github.com/WXB1870/snowbot/blob/main/运行与验证.md#恢复现场配置)。真实手柄到运动、调度尾峰及持载停止仍待现场验收。
 
 本机[时序对比工具](../../../tools/analysis/compare_session_latency.py)使用相同输入与动态限制比较冻结的旧方案和新目标流，仅覆盖相应本机软件／内存设备替身。ROS/DDS与硬件仍需单独验证。
 

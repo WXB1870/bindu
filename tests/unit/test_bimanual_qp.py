@@ -211,36 +211,6 @@ def propose(solver, feedback, target, dt=.01, reference=None):
 
 
 class AbiLoadingTests(unittest.TestCase):
-    def test_named_posture_reference_does_not_capture_or_clip_current_pose(self):
-        solver=object.__new__(BimanualQP);solver.handle=None
-        solver.names=('waist','elbow');solver.posture_reference=None
-        solver.posture_policy={'reference':{'elbow':-.45,'waist':0.},'position_bounds':{}}
-        solver.posture_lower=np.array([-.5,-1.]);solver.posture_upper=np.array([.5,1.])
-        solver.posture_reference_margin=.01;solver.measured_limit_tolerance=.02
-        received=[]
-        def apply(handle,reference,lower,upper,count):
-            received.append(np.ctypeslib.as_array(reference,shape=(count,)).copy())
-            return 1
-        solver.lib=S(bq_posture_policy=apply,bq_posture_reference_margin=Mock(return_value=1))
-        preferred=solver._apply_posture_policy({'waist':.3,'elbow':.7})
-        np.testing.assert_array_equal(preferred,[0.,-.45])
-        solver.posture_reference=preferred.copy()
-        np.testing.assert_array_equal(solver._apply_posture_policy({'waist':-.3,'elbow':-.8}),preferred)
-        for value in received:np.testing.assert_array_equal(value,preferred)
-        self.assertEqual(solver.lib.bq_posture_reference_margin.call_count,2)
-
-    def test_initial_capture_posture_reference_remains_supported(self):
-        solver=object.__new__(BimanualQP);solver.handle=None
-        solver.names=('joint',);solver.posture_reference=None
-        solver.posture_policy={'reference':'initial_capture','position_bounds':{}}
-        solver.posture_lower=np.array([-1.]);solver.posture_upper=np.array([1.])
-        solver.posture_reference_margin=0.;solver.measured_limit_tolerance=.02
-        solver.lib=S(bq_posture_policy=Mock(return_value=1))
-        np.testing.assert_array_equal(solver._apply_posture_policy({'joint':1.01}),[1.])
-        solver.lib.bq_posture_policy.return_value=0;solver._error=lambda:'outside envelope'
-        with self.assertRaisesRegex(ValueError,'POSTURE_POLICY:outside envelope'):
-            solver._apply_posture_policy({'joint':0.})
-
     def test_pointer_retains_temporary_array_without_cyclic_garbage(self):
         values=np.arange(4,dtype=np.float64)
         retained=weakref.ref(values)
@@ -1303,34 +1273,6 @@ class NativeBimanual(unittest.TestCase):
             cfg=dict(self.config,posture_policy={'reference':'initial_capture','position_bounds':bounds})
             with self.assertRaisesRegex(ValueError,'POSTURE'):
                 BimanualQP(cfg,self.profile)
-
-    def test_named_posture_reference_validates_layout_values_and_task_bounds(self):
-        preferred={n:0. for n in self.qp.names}
-        name=self.qp.names[0]
-        invalid=[{},dict(preferred,unknown=0.)]
-        invalid.extend(dict(preferred,**{name:v}) for v in (True,'0',float('nan'),float('inf'),1e6))
-        for reference in invalid:
-            with self.subTest(reference=reference),self.assertRaisesRegex(ValueError,'POSTURE_REFERENCE'):
-                BimanualQP(dict(self.config,posture_policy={
-                    'reference':reference,'position_bounds':{}}),self.profile)
-        with self.assertRaisesRegex(ValueError,'POSTURE_REFERENCE'):
-            BimanualQP(dict(self.config,posture_policy={
-                'reference':preferred,'position_bounds':{name:[.1,.2]}}),self.profile)
-
-    def test_comfort_policy_rejects_invalid_configuration_before_capture(self):
-        policy=dict(torso_frame='torso',shoulder_frames=['left','right'],
-            elbow_frames=['left_elbow','right_elbow'],max_height_ratio=-.25,
-            max_outward_ratio=.75,gain=.3,elbow_weight=.01,joint_bands={})
-        name=self.qp.names[0]
-        invalid=[{},dict(policy,gain=float('nan')),dict(policy,elbow_weight=-1.),
-            dict(policy,max_height_ratio=2.),dict(policy,max_outward_ratio=-.1),
-            dict(policy,shoulder_frames=['left']),dict(policy,torso_frame=''),
-            dict(policy,joint_bands={'unknown':[-.1,.1,.01]}),
-            dict(policy,joint_bands={name:[-.1,.1,True]}),
-            dict(policy,joint_bands={name:[-1e6,1e6,.01]})]
-        for value in invalid:
-            with self.subTest(policy=value),self.assertRaisesRegex(ValueError,'POSTURE_COMFORT'):
-                BimanualQP(dict(self.config,posture_comfort=value),self.profile)
 
     def test_profile_position_limits_are_used_inside_qp(self):
         tool = self.qp.capture(self.feedback)

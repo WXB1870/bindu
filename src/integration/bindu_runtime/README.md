@@ -76,11 +76,9 @@ ros2 topic echo /bindu_sim/execution/state --once
 
 ## x86 真机部署（已有适配底层）
 
-Snowbot的正式下载、底层与上层构建、现场配置和日常启动统一由[应用部署指南](https://github.com/WXB1870/snowbot/blob/main/运行与验证.md#新克隆的配对源码与构建)维护；已有安装使用[日常启动](https://github.com/WXB1870/snowbot/blob/main/运行与验证.md#日常启动)。本节只说明本仓库工具的职责。
+实机说明以118最后部署的兼容版`df2645a`为准，使用原单仓布局。其源码获取、编译、现场配置和日常启动由[Snowbot运行指南](https://github.com/WXB1870/snowbot/blob/main/运行与验证.md)维护；现有安装直接看[日常启动](https://github.com/WXB1870/snowbot/blob/main/运行与验证.md#日常启动)。
 
-`tools.deployment.x86_real`是当前Snowbot专用的x86部署工具，源码位置暂保留在Bindu。`prepare`固定应用源码、厂商安装与Python环境；`build`选择两仓所需包并增量构建；`start`加载部署环境和现场配方，并包含预检。独立`check`用于诊断，日常启动无须先重复执行。
-
-该工具识别Ubuntu 22.04／Humble／Python 3.10与Ubuntu 24.04／Jazzy／Python 3.12的x86环境；Orin／ARM64不适用。底层源码准备和现场操作由Snowbot维护，构建与设备启动分开。
+当前两仓维护源码中的`x86_real prepare --application-source ...`属于拆仓后的装配入口，与该已部署版的命令不同。文档不将当前main或开发分支自动视为118安装版本。姿态优化列为未实现项，保留在`xavier/posture-optimization`。
 
 ## Snowbot 应用与配置归属（2026-10-26）
 
