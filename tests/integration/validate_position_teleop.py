@@ -155,7 +155,7 @@ def scenario(out, mode, websocket=False, ordinary=False, physics=False, replay=N
                     pose=list(f.pose),grip=f.grip,trigger=f.trigger,valid=True,mapping=f.mapping,
                     buttons=f.buttons,button_edges=list(f.button_edges)))
     node.create_timer(.01,publish)
-    recipe=json.loads((ROOT/f'src/integration/bindu_runtime/config/deployments/snowbot_vr_{"sim" if mode=="simulation" else "real"}.json').read_text())
+    recipe=json.loads((package_share('snowbot_bringup')/f'config/deployments/snowbot_vr_{"sim" if mode=="simulation" else "real"}.json').read_text())
     recipe['arguments'].update(namespace=ns,vr_enabled=websocket,command_enabled=True)
     if websocket:
         with socket.socket() as probe:

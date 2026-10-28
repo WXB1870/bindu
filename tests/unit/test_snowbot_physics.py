@@ -257,6 +257,19 @@ class PositionPhysicsTests(unittest.TestCase):
 
 
 class PhysicsPositionStopTests(unittest.TestCase):
+    def test_external_simulation_factory_loads_shared_physics_io(self):
+        from unittest.mock import Mock, patch
+        from bindu_runtime.simulation_devices import PhysicsPositionIO
+        from snowbot_hardware.position_sim import position_devices
+        node=S(device_backend='external_simulation', now=lambda:10.,
+               declare_parameter=Mock(), get_parameter=lambda name:S(value=True))
+        devices={group:S(transport=self.wire) for group in ('left_arm','right_arm','waist')}
+        with patch('snowbot_hardware.position_sim.assemble_devices',return_value=(S(),devices)):
+            io, actual=position_devices(node,self.profile)
+        self.assertIsInstance(io,PhysicsPositionIO)
+        self.assertIs(io.physics,self.wire)
+        self.assertIs(actual,devices)
+
     def setUp(self):
         from bindu_runtime.simulation_devices import PhysicsPositionIO
         from bindu_execution.delegated_position import DelegatedPositionExecutor
