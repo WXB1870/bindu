@@ -327,7 +327,8 @@ python3 -m tests.integration.validate_bimanual --snowbot --axial-grasp --tool-po
 当前PICO／Snowbot位置链路统一使用`validate_position_teleop.py`，覆盖普通双臂与工具模式、准备／取消、独立夹爪、接合／重接及输入断流；WebSocket和PhysX沿同一入口显式选择。旧`validate_pico.py`的轨迹演示、短杆、刚握整段对照及旧虚握参数分支已退役，历史批次证据保留，不再作为当前运行命令。
 
 ```bash
-python3 -m tests unit pico
+# PICO应用检查从已构建的Snowbot仓库根目录执行。
+python3 -m unittest tests.unit.test_pico_control tests.unit.test_pico_loading tests.unit.test_pico_mapping tests.unit.test_pico_hud tests.unit.test_pico_grasp
 # 当前上层、QP、设备适配及安装契约的完整单元分组：
 python3 -m tests unit vr
 ROS_DOMAIN_ID=191 ROS_LOCALHOST_ONLY=1 python3 -m tests integration position \

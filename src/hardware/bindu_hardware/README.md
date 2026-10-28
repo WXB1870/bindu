@@ -202,6 +202,7 @@ bash tools/snowbot_teleop.sh gripper --config "$BINDU_TELEOP_WORKSPACE/site-writ
 
 ```bash
 python3 -m tests unit test_snowbot_gripper
+# 以下应用ROS检查从已构建的Snowbot仓库根目录执行。
 ROS_LOCALHOST_ONLY=1 ROS_DOMAIN_ID=226 python3 -m tests.integration.validate_snowbot_gripper \
   --output artifacts/gripper-wire-check
 ```
@@ -268,6 +269,7 @@ ros2 launch bindu_runtime snowbot_adapter.launch.py
 
 ```bash
 python3 -m tests unit test_snowbot_adapter
+# 以下应用ROS检查从已构建的Snowbot仓库根目录执行。
 ROS_DOMAIN_ID=191 ROS_LOCALHOST_ONLY=1 python3 -m tests.integration.validate_snowbot_adapter \
   --shutdown-check --output artifacts/snowbot-adapter-ros-check
 ```

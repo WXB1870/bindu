@@ -35,7 +35,7 @@ Bindu维护通用ROS 2框架、能力、执行契约与接口，代码允许按�
 | 目的 | 已有入口与前提 |
 |---|---|
 | 查看测试分组与模块 | `python3 -m tests --list`，只列清单，不导入测试或启动服务 |
-| 定向单元验证 | `python3 -m tests unit test_snowbot_pdo`；按改动替换为实际 `tests/unit/test_*.py` 模块名 |
+| 定向单元验证 | `python3 -m tests unit test_odometry`；按改动替换为实际 `tests/unit/test_*.py` 模块名；Snowbot应用检查从其仓库执行 |
 | 执行核心变更 | `python3 -m tests unit core`；仅在影响该组时运行，依赖见[分组测试](运行与验证.md#测试) |
 | 已配置x86部署的构建 | `python3 -m tools.deployment.x86_real build --workspace /绝对路径/部署目录`；环境、ABI与首次准备见[环境构建](运行与验证.md#环境准备与构建)及[运行装配](src/integration/bindu_runtime/README.md#x86-真机部署已有适配底层) |
 | Snowbot底层准备／构建 | 使用[位置会话准备器](../../snowbot/tools/deployment/prepare_position_session.py)及[现场运行文档](../../snowbot/运行与验证.md)，先确认选定源码与配套消息版本 |

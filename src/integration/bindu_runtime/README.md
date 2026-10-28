@@ -207,7 +207,7 @@ VR输入、PICO协调、双臂求解和执行进程入口在ROS初始化前默�
 
 - 环境切换：[统一仿真与真实模式选择](../../../运行与验证.md#框架运行与环境选择)。
 - 本体与装配检查：[本体配置](../../../tests/unit/test_robot_configuration.py)、[模式](../../../tests/unit/test_runtime_mode.py)、[遥操作装配](../../../tests/unit/test_teleop_deployment.py)。
-- ROS 检查：[示例任务](../../../tests/integration/validate_ros.py)、[环境一致性](../../../tests/integration/validate_runtime_mode.py)、[遥操作](../../../tests/integration/validate_teleop.py)、[底层适配](../../../tests/integration/validate_snowbot_adapter.py)。各脚本是否自行启动装配见其参数；[真机位置链合成验证](../../../tests/integration/validate_real_teleop.py)自带替身控制器，不接硬件。
+- ROS 检查：[示例任务](../../../tests/integration/validate_ros.py)、[环境一致性](../../../tests/integration/validate_runtime_mode.py)、[遥操作](../../../tests/integration/validate_teleop.py)。Snowbot的[底层适配](https://github.com/WXB1870/snowbot/blob/main/tests/integration/validate_snowbot_adapter.py)和[真机位置链合成验证](https://github.com/WXB1870/snowbot/blob/main/tests/integration/validate_real_teleop.py)已归应用仓库，后者自带替身控制器，不接硬件。
 
 ## 关联模块
 
