@@ -3,3 +3,5 @@ meshcat==0.3.2
 tornado==6.5.2
 u-msgpack-python==2.8.0
 pyngrok==8.1.2
+# Meshcat imports IPython even for a standalone browser viewer on Jazzy.
+ipython==9.17.1; python_version >= "3.11"
