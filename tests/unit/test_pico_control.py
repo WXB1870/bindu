@@ -369,7 +369,8 @@ class ScenarioRuntimeTests(unittest.IsolatedAsyncioTestCase):
                     node=self.production('perform');node.position_contract=position_contract
                     node.automatic_close_grippers=True;node.independent_grippers=False;node.unheld_test=False
                     node.cancel_tool=AsyncMock();node.current=Mock();node.event=Mock();node.now=lambda:1.
-                    node.simulation=True;node.control=S(complete=Mock(),teleop_mode='independent_arms',source='pico',seq=1)
+                    node.simulation=True;node.feedback=Mock(return_value=PicoFeedback(1.,True))
+                    node.control=S(complete=Mock(),update_feedback=Mock(),teleop_mode='independent_arms',source='pico',seq=1)
                     node.confirm_tool=AsyncMock(side_effect=RuntimeError('BIMANUAL_GRASP_POSE'))
                     intent=S(token=1,operation=operation,value='bimanual_tool')
                     await node.perform(intent)
@@ -377,6 +378,24 @@ class ScenarioRuntimeTests(unittest.IsolatedAsyncioTestCase):
                     self.assertFalse(result.args[1])
                     self.assertEqual(result.args[2],'RuntimeError:BIMANUAL_GRASP_POSE')
                     self.assertIs(result.kwargs['rejected'],position_contract)
+
+    async def test_read_only_refusal_rechecks_feedback_after_stop_barrier(self):
+        from unittest.mock import AsyncMock,Mock
+        for feedback,standby in ((PicoFeedback(1.,True),True),(PicoFeedback(1.,False),False),
+                (PicoFeedback(.5,True),False),(PicoFeedback(1.,True,healthy=False),False)):
+            with self.subTest(feedback=feedback):
+                r=Rig('unknown',guided=True,dual=True);r.click(1,1);intent=r.core.pending
+                node=self.production('perform');node.position_contract=True;node.automatic_close_grippers=True
+                node.independent_grippers=False;node.unheld_test=False;node.simulation=True;node.control=r.core
+                node.cancel_tool=AsyncMock();node.current=Mock();node.event=Mock();node.now=lambda:r.now
+                node.feedback=lambda:replace(feedback,stamp=r.now if feedback.stamp==1. else r.now-.5)
+                node.confirm_tool=AsyncMock(side_effect=RuntimeError('BIMANUAL_GRASP_POSE'))
+                # The stop coroutine completed after the timer cached its in-progress feedback.
+                r.core.feedback=replace(r.core.feedback,stopped=False)
+                await node.perform(intent)
+                self.assertEqual(r.core.phase,'standby' if standby else 'locked')
+                self.assertEqual(r.core.teleop_mode,'independent_arms')
+                self.assertIsNone(r.core.pending)
 
     async def test_prepare_closes_after_arm_arrival_and_failure_cannot_report_success(self):
         from types import SimpleNamespace as S
