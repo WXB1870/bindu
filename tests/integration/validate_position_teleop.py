@@ -332,7 +332,8 @@ def scenario(out, mode, websocket=False, ordinary=False, physics=False, replay=N
             before=len(accepted);load=views[-1]['load_state']
             def grippers_settled(modes):
                 return (views[-1]['gripper_modes']==modes and
-                        all(not g.lease_active and g.state not in ('MOVING','STOPPING') for g in grippers.values()))
+                        all(g.feedback_valid and abs(g.measured_velocity)<.01 and
+                            g.state not in ('MOVING','STOPPING','FAULT') for g in grippers.values()))
             source['trigger']=[1.,0.]
             wait(lambda:grippers_settled(['open','closed']))
             assert views[-1]['phase']=='standby' and views[-1]['independent_grippers']
