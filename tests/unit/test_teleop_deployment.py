@@ -220,10 +220,14 @@ class DeploymentTests(unittest.TestCase):
             context.launch_configurations['gripper_config']=str(package_share("snowbot_bringup")/f'config/robots/snowbot/snowbot_grippers_{other}.json')
             with self.assertRaisesRegex(ValueError,'GRIPPER_CONFIG_MODE_MISMATCH'):assemble(context)
 
-    def test_position_recipes_share_robot_and_reject_demo_shortcut(self):
+    def test_position_recipes_share_model_and_reject_demo_shortcut(self):
         _,sim=load_deployment(package_share("snowbot_bringup")/'config/deployments/snowbot_vr_sim.json',SHARE)
         _,real=load_deployment(package_share("snowbot_bringup")/'config/deployments/snowbot_vr_real.json',SHARE)
-        self.assertEqual(sim['robot_config'],real['robot_config'])
+        from bindu_runtime.robot_setup import RobotSetup
+        sim_robot,real_robot=(RobotSetup.load(recipe['robot_config']) for recipe in (sim,real))
+        self.assertEqual(sim_robot.urdf,real_robot.urdf)
+        self.assertEqual(sim_robot.display_urdf,real_robot.display_urdf)
+        self.assertEqual(sim_robot.profile_path,real_robot.profile_path)
         self.assertEqual(real['pico_enabled'],'true')
         self.assertEqual(real['command_enabled'],'false')
         recipe=json.loads((package_share("snowbot_bringup")/'config/deployments/snowbot_vr_sim.json').read_text())

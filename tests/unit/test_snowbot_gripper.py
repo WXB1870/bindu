@@ -1,5 +1,7 @@
 """Closed-loop gripper position/hold tests; no ROS, controller or hardware."""
 from bindu_contracts.resources import package_share
+from importlib.util import find_spec
+from snowbot_hardware.parameters import parameters_for
 from tests.support.paths import ROOT
 import copy
 import json
@@ -124,7 +126,7 @@ class GripperTests(unittest.TestCase):
         r=Rig(require_driver_ack=False,grippers=config['grippers'])
         for side in SIDES:r.q[JOINTS[side]]=config['grippers'][side]['closed']
         r.step(track=False)
-        path=package_share('snowbot_hardware')/'snowbot_hardware/gripper_node.py'
+        path=Path(find_spec('snowbot_hardware.gripper_node').origin)
         cls=next(n for n in ast.parse(path.read_text()).body if isinstance(n,ast.ClassDef))
         method=next(n for n in cls.body if getattr(n,'name','')=='send')
         ns=dict(time=S(monotonic=lambda:r.steady),JOINTS=JOINTS,native_command=native_command)
@@ -581,8 +583,8 @@ class IndependentInputHandoffTests(unittest.TestCase):
         # This handoff regression is independent of the site's endpoint calibration.
         r.config['grippers']['left'].update(open=-.4,closed=0.)
         r.config['grippers']['right'].update(open=.4,closed=0.,virtual=.02)
-        coordinator=package_share('snowbot_teleop')/'snowbot_teleop/node.py'
-        adapter=package_share('snowbot_hardware')/'snowbot_hardware/gripper_node.py'
+        coordinator=Path(find_spec('snowbot_teleop.node').origin)
+        adapter=Path(find_spec('snowbot_hardware.gripper_node').origin)
         ns=dict(json=json,time=S(monotonic=lambda:r.steady),copy=copy,VRFrame=VRFrame,
                 VRInput=lambda **kw:S(**kw),PICO_MAPPING='pico_snowbot_v1',seconds=lambda value:value,
                 GripperState=object,Lease=object,GripperControl=object,qos_profile_sensor_data=object())
@@ -687,7 +689,7 @@ class IndependentInputHandoffTests(unittest.TestCase):
 
 class NativeGripperTests(unittest.TestCase):
     def test_session_health_reports_exact_fault_without_querying_command_graph(self):
-        source=package_share('snowbot_hardware')/'snowbot_hardware/gripper_node.py'
+        source=Path(find_spec('snowbot_hardware.gripper_node').origin)
         cls=next(n for n in ast.parse(source.read_text()).body if isinstance(n,ast.ClassDef))
         method=next(n for n in cls.body if getattr(n,'name','')=='health')
         ns=dict(MASKS={'left':1<<7,'right':1<<15},SIDES=SIDES)
@@ -758,10 +760,10 @@ class DirectOperationTests(unittest.TestCase):
     """Run the real async coordinator and gripper core without ROS or hardware."""
     def test_automatic_close_uses_fixed_targets_and_releases_on_timeout(self):
         from unittest.mock import AsyncMock
-        source=package_share('snowbot_teleop')/'snowbot_teleop/position.py'
+        source=Path(find_spec('snowbot_teleop.position').origin)
         cls=next(n for n in ast.parse(source.read_text()).body if isinstance(n,ast.ClassDef))
         method=next(n for n in cls.body if getattr(n,'name','')=='move_grippers')
-        ns=dict(time=__import__('time'),SIDES=SIDES,GROUPS=GROUPS,Lease=S(Request=lambda **kw:S(**kw)),
+        ns=dict(parameters_for=parameters_for,time=__import__('time'),SIDES=SIDES,GROUPS=GROUPS,Lease=S(Request=lambda **kw:S(**kw)),
                 seconds=lambda v:v,target_position_tolerance=target_position_tolerance)
         exec(compile(ast.Module(body=[method],type_ignores=[]),str(source),'exec'),ns)
         for failed in (False,True):
@@ -786,16 +788,17 @@ class DirectOperationTests(unittest.TestCase):
 
     def test_close_gate_requires_fresh_stationary_endpoints_and_released_trigger(self):
         from unittest.mock import AsyncMock,Mock
-        source=package_share('snowbot_teleop')/'snowbot_teleop/position.py'
+        source=Path(find_spec('snowbot_teleop.position').origin)
         cls=next(n for n in ast.parse(source.read_text()).body if isinstance(n,ast.ClassDef))
         method=next(n for n in cls.body if getattr(n,'name','')=='close_grippers')
-        ns=dict(SIDES=SIDES,json=json,target_position_tolerance=target_position_tolerance)
+        ns=dict(parameters_for=parameters_for,SIDES=SIDES,json=json,target_position_tolerance=target_position_tolerance)
         exec(compile(ast.Module(body=[method],type_ignores=[]),str(source),'exec'),ns)
         for fault in ('none','moving','invalid','trigger','unclosed','failed_close'):
             with self.subTest(fault=fault):
                 state=S(state='IDLE',measured_position=.2,measured_velocity=0.)
                 node=S(current=Mock(),feedback=lambda:S(healthy=True,stopped=fault!='moving'),
-                    control=S(frames=[S(trigger=1. if fault=='trigger' else 0.)],reason=''),event=Mock())
+                    control=S(frames=[S(trigger=.25 if fault=='trigger' else 0.)],reason=''),event=Mock(),
+                    runtime_parameters={'pico':{'trigger_release_threshold':.2}})
                 def reading(_):
                     if fault=='invalid':raise RuntimeError('PICO_GRIPPER_FEEDBACK_OR_CALIBRATION_REQUIRED:left')
                     return state
@@ -814,10 +817,10 @@ class DirectOperationTests(unittest.TestCase):
 
     def test_coordinator_accepts_same_manual_accuracy_only_after_device_completion(self):
         from snowbot_teleop.control import PicoIntent
-        source=package_share('snowbot_teleop')/'snowbot_teleop/position.py'
+        source=Path(find_spec('snowbot_teleop.position').origin)
         cls=next(n for n in ast.parse(source.read_text()).body if isinstance(n,ast.ClassDef))
         method=next(n for n in cls.body if getattr(n,'name','')=='move_grippers')
-        ns=dict(time=__import__('time'),SIDES=SIDES,GROUPS=GROUPS,
+        ns=dict(parameters_for=parameters_for,time=__import__('time'),SIDES=SIDES,GROUPS=GROUPS,
                 Lease=S(Request=lambda **kw:S(**kw)),seconds=lambda v:v,
                 target_position_tolerance=target_position_tolerance)
         exec(compile(ast.Module(body=[method],type_ignores=[]),str(source),'exec'),ns)
@@ -838,10 +841,10 @@ class DirectOperationTests(unittest.TestCase):
 
     def test_stop_during_command_reply_keeps_exit_reason_and_releases(self):
         from snowbot_teleop.control import PicoIntent
-        source=package_share('snowbot_teleop')/'snowbot_teleop/position.py'
+        source=Path(find_spec('snowbot_teleop.position').origin)
         cls=next(n for n in ast.parse(source.read_text()).body if isinstance(n,ast.ClassDef))
         method=next(n for n in cls.body if getattr(n,'name','')=='move_grippers')
-        ns=dict(time=__import__('time'),SIDES=SIDES,GROUPS=GROUPS,
+        ns=dict(parameters_for=parameters_for,time=__import__('time'),SIDES=SIDES,GROUPS=GROUPS,
                 Lease=S(Request=lambda **kw:S(**kw)))
         exec(compile(ast.Module(body=[method],type_ignores=[]),str(source),'exec'),ns)
         intent=PicoIntent(1,'manual_grippers',('open',None))
@@ -868,7 +871,7 @@ class DirectOperationTests(unittest.TestCase):
 
     def test_uncalibrated_manual_entry_does_not_claim_tool_grasp(self):
         from snowbot_teleop.control import loading_guide
-        path=package_share('snowbot_teleop')/'snowbot_teleop/node.py'
+        path=Path(find_spec('snowbot_teleop.node').origin)
         cls=next(n for n in ast.parse(path.read_text()).body if isinstance(n,ast.ClassDef) and n.name=='PicoNode')
         method=next(n for n in cls.body if isinstance(n,ast.AsyncFunctionDef) and n.name=='confirm_tool')
         ns={};exec(compile(ast.Module(body=[method],type_ignores=[]),str(path),'exec'),ns)
@@ -900,10 +903,10 @@ class DirectOperationTests(unittest.TestCase):
         from snowbot_teleop.control import PicoIntent
         r=Rig(require_driver_ack=False,direct_position_tolerance=.003)
         r.q[JOINTS['right']]=.389334;r.step(track=False)
-        source=package_share('snowbot_teleop')/'snowbot_teleop/position.py'
+        source=Path(find_spec('snowbot_teleop.position').origin)
         cls=next(n for n in ast.parse(source.read_text()).body if isinstance(n,ast.ClassDef))
         method=next(n for n in cls.body if getattr(n,'name','')=='move_grippers')
-        ns=dict(time=S(monotonic=lambda:r.steady),SIDES=SIDES,GROUPS=GROUPS,json=json,
+        ns=dict(parameters_for=parameters_for,time=S(monotonic=lambda:r.steady),SIDES=SIDES,GROUPS=GROUPS,json=json,
                 Lease=S(Request=lambda **kw:S(**kw)),seconds=lambda value:value,
                 target_position_tolerance=target_position_tolerance)
         exec(compile(ast.Module(body=[method],type_ignores=[]),str(source),'exec'),ns)
@@ -1015,10 +1018,10 @@ class CoordinatorStopBarrierTests(unittest.TestCase):
         self.assertFalse(ops.stop_unconfirmed);self.assertFalse(ops.release_pending)
 
     def rig(self):
-        source=package_share('snowbot_teleop')/'snowbot_teleop/position.py'
+        source=Path(find_spec('snowbot_teleop.position').origin)
         cls=next(n for n in ast.parse(source.read_text()).body if isinstance(n,ast.ClassDef))
         clock=S(value=100.)
-        ns=dict(time=S(monotonic=lambda:clock.value),SIDES=SIDES,GROUPS=GROUPS,
+        ns=dict(parameters_for=parameters_for,time=S(monotonic=lambda:clock.value),SIDES=SIDES,GROUPS=GROUPS,
             Lease=S(Request=lambda **kw:S(**kw)),seconds=lambda v:v,math=__import__('math'))
         exec(compile(ast.Module(body=[cls],type_ignores=[]),str(source),'exec'),ns)
         ops=ns['PositionOperations'].__new__(ns['PositionOperations'])
