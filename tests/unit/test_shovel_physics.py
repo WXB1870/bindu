@@ -33,22 +33,21 @@ class ShovelPhysicsTests(unittest.TestCase):
                 'printf "%s\\n" "$@" > "$FAKE_ISAAC_ARGUMENTS"\n'
                 'printf "%s\\n" "${ROS_DISTRO-unset}" "${AMENT_PREFIX_PATH-unset}" "$PYTHONPATH" > "$FAKE_ISAAC_ENVIRONMENT"\n')
             launcher.chmod(0o755)
+            share=package_share('snowbot_bringup')
+            if (share/'snowbot_bringup').is_dir(): application=share
+            else:
+                import importlib.util
+                application=Path(importlib.util.find_spec('snowbot_bringup').origin).parent.parent
             env=dict(os.environ,ISAAC_SIM_PATH=str(sdk),BINDU_ISAAC_STATE=str(directory/'state'),
                 FAKE_ISAAC_ARGUMENTS=str(capture),FAKE_ISAAC_ENVIRONMENT=str(environment),
                 ROS_DISTRO='unexpected_real_environment',AMENT_PREFIX_PATH='/unexpected/install',
-                PYTHONPATH='/unexpected/python')
+                BINDU_PACKAGE_PATH=str(share),PYTHONPATH='/unexpected/python'+os.pathsep+str(application))
             subprocess.run(['bash',str(ROOT/'tools/run_shovel_physics.sh'),'--task-feedback',
                 'settings.json','--output','results'],env=env,check=True)
             arguments=capture.read_text().splitlines()
             self.assertEqual(arguments[:4],['--no-ros-env',str(ROOT/'tests/physics/validate_shovel_isaac.py'),
                 '--task-feedback-comparison','settings.json'])
             self.assertIn('--/isaac/startup/ros_bridge_extension=',arguments)
-            from bindu_contracts.resources import package_share
-            share=package_share('snowbot_bringup')
-            if (share/'snowbot_bringup').is_dir(): application=share
-            else:
-                import importlib.util
-                application=Path(importlib.util.find_spec('snowbot_bringup').origin).parent.parent
             self.assertEqual(environment.read_text().splitlines(),['unset','unset',str(application)+os.pathsep+str(ROOT)])
 
     def test_drive_calibration_preserves_defaults_and_urdf_effort_ceiling(self):
