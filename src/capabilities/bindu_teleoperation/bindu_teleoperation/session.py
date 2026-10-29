@@ -15,6 +15,10 @@ class TeleopSession:
         self.seq = -1
         self.generation = 0
         self.mode = 'idle'
+        self.grip_press = float(config.get('grip_press_threshold',.7))
+        self.grip_release = float(config.get('grip_release_threshold',.3))
+        if not 0 <= self.grip_release < self.grip_press <= 1:
+            raise ValueError('VR_GRIP_THRESHOLDS')
         self.released = False
         self.pressed_since = None
         self.anchor_input = self.anchor_robot = None
@@ -67,7 +71,7 @@ class TeleopSession:
             raise ValueError('VR_INPUT_UNORDERED')
         if type(frame.clutch_seq) is not int or frame.clutch_seq < self.clutch_seq:
             raise ValueError('VR_CLUTCH_UNORDERED')
-        if (frame.grip>=.3 and frame.clutch_seq==self.clutch_seq and
+        if (frame.grip>=self.grip_release and frame.clutch_seq==self.clutch_seq and
                 (self.mode=='follow' or self.pressed_since is not None) and
                 self.direction_reference=='headset_on_engage'):
             headset_pose(frame,self.cfg,now)  # Direction was locked at the squeeze edge.
@@ -81,14 +85,14 @@ class TeleopSession:
             self.anchor_pending = False
         self.clutch_seq = frame.clutch_seq
         self.source, self.seq, self.frame = frame.source_id, frame.seq, frame
-        if frame.grip < .3:
+        if frame.grip < self.grip_release:
             self.released, self.pressed_since = True, None
             if self.mode != 'idle':
                 self.generation += 1
                 self.mode = 'idle'
                 self.anchor_input = self.anchor_robot = None
                 self.anchor_pending = False
-        elif frame.grip > .7 and self.released:
+        elif frame.grip > self.grip_press and self.released:
             if self.pressed_since is None:
                 self.mapping_yaw=engagement_yaw(frame,self.cfg,now)
                 self.heading_input=dict(source_id=frame.head_source_id,seq=frame.head_seq,

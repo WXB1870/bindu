@@ -39,6 +39,11 @@ class VRInputNode(RuntimeNode):
         for key, value in defaults.items():
             self.declare_parameter(key, value, descriptor=ParameterDescriptor(read_only=key=='mapping'))
         cfg = {key: self.get_parameter(key).value for key in defaults}
+        for key, default in (('trigger_press_threshold',.7),('trigger_release_threshold',.3),('grip_release_threshold',.3)):
+            self.declare_parameter(key, default, descriptor=ParameterDescriptor(read_only=True))
+            cfg[key] = self.get_parameter(key).value
+        if not 0 <= cfg['trigger_release_threshold'] < cfg['trigger_press_threshold'] <= 1 or not 0 <= cfg['grip_release_threshold'] < 1:
+            raise ValueError('VR_INPUT_THRESHOLDS')
         self.declare_parameter('input_timing_enabled',False,descriptor=ParameterDescriptor(read_only=True))
         cfg['input_timing_enabled']=self.get_parameter('input_timing_enabled').value
         if type(cfg['input_timing_enabled']) is not bool:raise ValueError('VR_INPUT_TIMING_CONFIG')

@@ -6,10 +6,13 @@ from .vr.mapping import pose_matrix
 
 class ModeSelection:
     def __init__(self, profile, initial_side, now, input_age=.25, feedback_age=.2, left_orientation=False, tool_config=None,
-                 require_recording=True, enabled_modes=('single_arm','bimanual_tool')):
+                 require_recording=True, enabled_modes=('single_arm','bimanual_tool'), grip_release_threshold=.3, pair_max_skew_s=.02):
         if initial_side not in ('left','right'):
             raise ValueError('INVALID_SIDE')
         self.profile = profile
+        if not 0 <= grip_release_threshold < 1 or not math.isfinite(pair_max_skew_s) or pair_max_skew_s <= 0:
+            raise ValueError('VR_INPUT_THRESHOLDS')
+        self.grip_release_threshold, self.pair_max_skew_s = grip_release_threshold, pair_max_skew_s
         self.left_orientation = left_orientation
         self.tool_config = tool_config
         if type(require_recording) is not bool or not enabled_modes or set(enabled_modes)-{'single_arm','bimanual_tool','independent_arms'}:
@@ -70,13 +73,13 @@ class ModeSelection:
                     type(frame.clutch_seq) is not int or frame.clutch_seq < 0 or
                     not all(math.isfinite(v) and 0 <= v <= 1 for v in (frame.grip, frame.trigger)) or
                     frame.stamp <= self.changed_at or not 0 <= now-frame.stamp <= self.input_age or
-                    frame.grip >= .3):
+                    frame.grip >= self.grip_release_threshold):
                 return 'VR_RELEASE_REQUIRED'
             selected.append(frame)
         if len(selected) == 2:
             if (selected[0].source_id != selected[1].source_id or
                     selected[0].seq != selected[1].seq or
-                    abs(selected[0].stamp-selected[1].stamp) > .02):
+                    abs(selected[0].stamp-selected[1].stamp) > self.pair_max_skew_s):
                 return 'VR_PAIR_MISMATCH'
             try:
                 if mode=='independent_arms':

@@ -124,7 +124,10 @@ class HeadsetSamples:
 
 class ButtonCounters:
     """Cumulative edges survive pose queue coalescing; never infer a release on loss."""
-    def __init__(self):
+    def __init__(self, press_threshold=.7, release_threshold=.3):
+        if not 0 <= release_threshold < press_threshold <= 1:
+            raise ValueError('VR_TRIGGER_THRESHOLDS')
+        self.press_threshold, self.release_threshold = press_threshold, release_threshold
         self.previous = [False]*4
         self.counts = [0]*8
 
@@ -133,8 +136,8 @@ class ButtonCounters:
             return frame
         values = [bool(frame.buttons & (1 << i)) for i in range(3)]
         pressed = self.previous[3]
-        if frame.trigger > .7: pressed = True
-        elif frame.trigger < .3: pressed = False
+        if frame.trigger > self.press_threshold: pressed = True
+        elif frame.trigger < self.release_threshold: pressed = False
         values.append(pressed)
         for i,value in enumerate(values):
             if value != self.previous[i]:
@@ -301,7 +304,7 @@ def _serve(config, output, feedback, health):
         clutch_seq = {'left': 0, 'right': 0}
         previous_grip = {'left': 0., 'right': 0.}
         stop_latched = False
-        counters = {side: ButtonCounters() for side in ('left','right')}
+        counters = {side: ButtonCounters(config.get('trigger_press_threshold',.7), config.get('trigger_release_threshold',.3)) for side in ('left','right')}
         headset = HeadsetSamples()
         latest_display = None
         display_received = float('-inf')
@@ -346,7 +349,7 @@ def _serve(config, output, feedback, health):
                 clutch_seq = {'left': 0, 'right': 0}
                 previous_grip = {'left': 0., 'right': 0.}
                 stop_latched = False
-                counters = {side: ButtonCounters() for side in ('left','right')}
+                counters = {side: ButtonCounters(config.get('trigger_press_threshold',.7), config.get('trigger_release_threshold',.3)) for side in ('left','right')}
                 last_event=None
                 headset=HeadsetSamples()
             if owner is not session:
@@ -381,7 +384,7 @@ def _serve(config, output, feedback, health):
             for frame in frames:
                 side = frame.side
                 if frame.valid:
-                    if frame.grip < .3 and previous_grip[side] >= .3:
+                    if frame.grip < config.get('grip_release_threshold',.3) and previous_grip[side] >= config.get('grip_release_threshold',.3):
                         clutch_seq[side] += 1
                     previous_grip[side] = frame.grip
                 item = counters[side].update(frame)

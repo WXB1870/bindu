@@ -9,6 +9,9 @@ from .vr.mapping import relative_target, pose_matrix, engagement_yaw, headset_po
 class IndependentArmsSession:
     def __init__(self, config, generation, selected_at, **_):
         self.cfg=config;self.generation=generation;self.selected_at=selected_at
+        self.pair_max_skew_s=float(config.get('pair_max_skew_s',.02))
+        if not math.isfinite(self.pair_max_skew_s) or self.pair_max_skew_s<=0:
+            raise ValueError('VR_PAIR_MAX_SKEW')
         self.identity=uuid.uuid4().hex
         self.hands=[TeleopSession(dict(config,side=side,mapping_mode='robot_base'),())
                     for side in ('left','right')]
@@ -34,7 +37,7 @@ class IndependentArmsSession:
                 not 0<=now-f.stamp<=self.cfg['input_max_age'] or
                 not all(math.isfinite(v) and 0<=v<=1 for v in (f.grip,f.trigger))
                 for f,side in zip(frames,('left','right'))) or left.source_id!=right.source_id or
-                left.seq!=right.seq or abs(left.stamp-right.stamp)>.02 or
+                left.seq!=right.seq or abs(left.stamp-right.stamp)>self.pair_max_skew_s or
                 min(left.stamp,right.stamp)<=self.selected_at):
             raise ValueError('VR_PAIR_INVALID')
         for frame in frames:pose_matrix(frame.pose)
@@ -42,10 +45,10 @@ class IndependentArmsSession:
         if left.seq<=self.seq:return False
         for hand,frame in zip(self.hands,frames):
             if hand.direction_reference=='headset_on_engage':
-                if frame.grip>.7 and (hand.released or frame.clutch_seq!=hand.clutch_seq) and (
+                if frame.grip>hand.grip_press and (hand.released or frame.clutch_seq!=hand.clutch_seq) and (
                         hand.pressed_since is None or frame.clutch_seq!=hand.clutch_seq):
                     engagement_yaw(frame,self.cfg,now)
-                elif (frame.grip>=.3 and frame.clutch_seq==hand.clutch_seq and
+                elif (frame.grip>=hand.grip_release and frame.clutch_seq==hand.clutch_seq and
                         (hand.mode=='follow' or hand.pressed_since is not None)):
                     headset_pose(frame,self.cfg,now)
         previous=self.active_mask;mask=0;changed=False

@@ -138,6 +138,8 @@ class ApplicationResourceTests(unittest.TestCase):
             snapshot=configuration_snapshot(path,SHARE)
             self.assertEqual(snapshot['arguments']['command_enabled'],'false')
             self.assertEqual(snapshot['sources']['profile']['values']['name'],'snowbot_real_position')
+            self.assertEqual(snapshot['sources']['parameters_config']['values']['schema_version'],1)
+            self.assertEqual(snapshot['sources']['parameters_config']['values']['pico']['prepare_command_ttl_s'],.25)
             self.assertNotIn('private fixture',json.dumps(snapshot))
             self.assertEqual(snapshot['sha256'],configuration_snapshot(path,SHARE)['sha256'])
             recipe['arguments']['namespace']='different_site';path.write_text(json.dumps(recipe))

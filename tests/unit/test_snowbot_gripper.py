@@ -17,7 +17,7 @@ CONFIG = package_share('snowbot_bringup')/'config/robots/snowbot'
 
 
 class Rig:
-    def __init__(self, *, require_driver_ack=True, **changes):
+    def __init__(self, *, require_driver_ack=True, runtime_parameters=None, **changes):
         self.profile = Profile.load(CONFIG/'snowbot_real_position.json')
         self.config = json.loads((CONFIG/'snowbot_grippers_real.json').read_text())
         # Historical residual/contact regressions use the original zero-based
@@ -35,7 +35,7 @@ class Rig:
         self.sent, self.goals = [], {}
         self.core = GripperController(self.profile, self.config, self.send, lambda:self.health,
             lambda:self.now, lambda:self.idle, enabled=True, steady=lambda:self.steady,
-            require_driver_ack=require_driver_ack)
+            require_driver_ack=require_driver_ack,runtime_parameters=runtime_parameters)
         self.observe()
         self.client_sequence = 0
 
@@ -81,6 +81,13 @@ class Rig:
 
 
 class GripperTests(unittest.TestCase):
+    def test_selected_runtime_lease_budget_is_enforced(self):
+        from snowbot_hardware.parameters import load_parameters
+        parameters=load_parameters();parameters['gripper']['lease_ttl_s']=.12
+        r=Rig(runtime_parameters=parameters);r.acquire()
+        r.step(4);self.assertTrue(r.core.lease_id)
+        r.step(3);self.assertFalse(r.core.lease_id)
+
     def test_site_commands_use_confirmed_nonzero_closed_positions(self):
         config=json.loads((CONFIG/'snowbot_grippers_real.json').read_text())
         expected={'left':(-.8,.26),'right':(.8,-.26)}

@@ -35,6 +35,13 @@ class BimanualToolNode(RuntimeNode):
         self.declare_parameter('tool_config',str(share/'config/robots/g1/bimanual_g1_sim.json'))
         self.declare_parameter('model_root',str(Path(get_package_share_directory('bindu_description'))/'urdf'))
         self.cfg=json.loads(Path(self.get_parameter('tool_config').value).read_text())
+        for key, default in (('grip_press_threshold',.7),('grip_release_threshold',.3),('trigger_release_threshold',.3)):
+            self.cfg[key] = self.declare_parameter(key, self.cfg.get(key, default), descriptor=ParameterDescriptor(read_only=True)).value
+        self.cfg['pair_max_skew_s'] = self.declare_parameter('pair_max_skew_s',self.cfg.get('pair_max_skew_s',.02),descriptor=ParameterDescriptor(read_only=True)).value
+        if not math.isfinite(self.cfg['pair_max_skew_s']) or self.cfg['pair_max_skew_s'] <= 0:
+            raise ValueError('VR_PAIR_MAX_SKEW')
+        if not 0 <= self.cfg['grip_release_threshold'] < self.cfg['grip_press_threshold'] <= 1 or not 0 <= self.cfg['trigger_release_threshold'] < 1:
+            raise ValueError('VR_INPUT_THRESHOLDS')
         self.declare_parameter('position_contract',False)
         position_contract=self.get_parameter('position_contract').value
         self.declare_parameter('execution_mode','position',descriptor=ParameterDescriptor(read_only=True))
@@ -175,7 +182,7 @@ class BimanualToolNode(RuntimeNode):
             edge_changed=bool(previous and previous.source_id==msg.source_id and
                 len(edges)==len(previous.button_edges)==8 and edges!=previous.button_edges)
             blocked=not self.simulation and (msg.mapping!='pico_snowbot_v1' or msg.init or
-                not independent_grippers and msg.trigger>=.3 or msg.virtual_grip and not self.axial_position_ready() or bool(msg.buttons) or len(edges) not in (0,8) or
+                not independent_grippers and msg.trigger>=self.cfg.get('trigger_release_threshold',.3) or msg.virtual_grip and not self.axial_position_ready() or bool(msg.buttons) or len(edges) not in (0,8) or
                 edge_changed or bool(self.busy and previous and previous.stop))
             self.frames[msg.side]=VRFrame(msg.source_id,msg.seq,seconds(msg.stamp),msg.side,
                 tuple(msg.pose),msg.grip,0. if independent_grippers else msg.trigger,msg.init,msg.stop or blocked,msg.valid,msg.clutch_seq,

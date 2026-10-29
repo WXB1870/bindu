@@ -84,6 +84,9 @@ class BimanualSession:
             self.control_point_in_tool=(points[0]+points[1])/2
             config=dict(config,two_hand_rod=True,rod_axis_in_tool=(axis/spacing).tolist())
         self.cfg = config
+        self.pair_max_skew_s = float(config.get('pair_max_skew_s',.02))
+        if not math.isfinite(self.pair_max_skew_s) or self.pair_max_skew_s <= 0:
+            raise ValueError('VR_PAIR_MAX_SKEW')
         self.direction_reference=direction_reference(config)
         self.mapping_yaw=config.get('operator_yaw_rad',0.)
         self.heading_input=None
@@ -99,6 +102,10 @@ class BimanualSession:
         self.source = None
         self.seq = -1
         self.mode = 'idle'
+        self.grip_press = float(config.get('grip_press_threshold', .7))
+        self.grip_release = float(config.get('grip_release_threshold', .3))
+        if not 0 <= self.grip_release < self.grip_press <= 1:
+            raise ValueError('VR_GRIP_THRESHOLDS')
         self.released = False
         self.pressed_since = None
         self.anchor_input = self.anchor_tool = None
@@ -218,7 +225,7 @@ class BimanualSession:
                 not all(math.isfinite(v) and 0 <= v <= 1 for v in (f.grip,f.trigger))
                 for f in frames) or left.source_id != right.source_id or
                 left.side != 'left' or right.side != 'right' or
-                left.seq != right.seq or abs(left.stamp-right.stamp) > .02):
+                left.seq != right.seq or abs(left.stamp-right.stamp) > self.pair_max_skew_s):
             raise ValueError('VR_PAIR_INVALID')
         if self.source is not None and self.source != left.source_id:
             raise ValueError('VR_CONNECTION_CHANGED')
@@ -237,8 +244,8 @@ class BimanualSession:
                 any(value < previous for value, previous in zip(clutch_seq, self.clutch_seq))):
             raise ValueError('VR_CLUTCH_UNORDERED')
         if self.direction_reference=='headset_on_engage' and (self.mode=='follow' and
-                min(left.grip,right.grip)>=.3 and clutch_seq==self.clutch_seq or
-                min(left.grip,right.grip)>.7 and self.released):
+                min(left.grip,right.grip)>=self.grip_release and clutch_seq==self.clutch_seq or
+                min(left.grip,right.grip)>self.grip_press and self.released):
             headset_pose(left,self.cfg,now)
             headset_pose(right,self.cfg,now)
             if (left.head_seq!=right.head_seq or left.head_stamp!=right.head_stamp or
@@ -248,7 +255,7 @@ class BimanualSession:
         # proposal must not consume a release counter or discard the anchor.
         if self.cfg.get('two_hand_rod'):
             hands=(robot_pose(left.pose),robot_pose(right.pose))
-            engaged=self.anchor_tool is not None and min(left.grip,right.grip)>=.3 and clutch_seq==self.clutch_seq
+            engaged=self.anchor_tool is not None and min(left.grip,right.grip)>=self.grip_release and clutch_seq==self.clutch_seq
             pose,rolls=self.paired_rod_pose(hands,self.rod_anchor_hands if engaged else None,
                 self.rod_anchor_basis if engaged else None,self.rod_roll)
             self.current_hands,self.rod_roll=hands,rolls
@@ -280,7 +287,7 @@ class BimanualSession:
             elif right.trigger < self.release:
                 self.trigger_armed = True
                 desired = 'rigid'
-            elif right.trigger > self.press and self.trigger_armed and min(left.grip,right.grip) > .7:
+            elif right.trigger > self.press and self.trigger_armed and min(left.grip,right.grip) > self.grip_press:
                 desired = 'right_axial'
         if desired != self.grasp_mode:
             self.grasp_mode = desired
@@ -289,12 +296,12 @@ class BimanualSession:
         self.raw_input=self.current_input=pose
         self.source,self.seq,self.stamp=left.source_id,left.seq,max(left.stamp,right.stamp)
         self.input_stamps = (left.stamp, right.stamp)
-        if min(left.grip,right.grip) < .3:
+        if min(left.grip,right.grip) < self.grip_release:
             self.released=True
             self.pressed_since=None
             self.mode='idle'
             self.anchor_input=self.anchor_tool=self.target=None
-        elif min(left.grip,right.grip) > .7 and self.released:
+        elif min(left.grip,right.grip) > self.grip_press and self.released:
             if self.pressed_since is None:
                 self.mapping_yaw=engagement_yaw(left,self.cfg,now)
                 self.heading_input=dict(source_id=left.head_source_id,seq=left.head_seq,
