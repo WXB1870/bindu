@@ -163,6 +163,30 @@ class ReplayPayloadTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,'SOURCE_AMBIGUOUS'):dataset(root,101.)
 
 
+    def test_missing_capture_requires_explicit_reanchor_and_recorded_source_binding(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            with (root/'vr-raw.jsonl').open('w') as output:
+                for source in ('headset','other'):
+                    for side in ('left','right'):
+                        output.write(json.dumps(dict(data=packet(2,side,100.1,source)))+'\n')
+            (root/'vr-health.jsonl').write_text('')
+            capture=dict(input_seq=1,input_stamp=100.,input_source_id='headset:coordinator')
+            (root/'runtime-events.jsonl').write_text(json.dumps(dict(data=dict(stamp=100.,
+                state='BIMANUAL_CAPTURED',code=json.dumps(capture))))+'\n')
+            bindings={'headset:coordinator':'headset'}
+            with self.assertRaisesRegex(ValueError,'CAPTURE_INPUT_MISSING'):
+                dataset(root,101.,source_bindings=bindings)
+            with self.assertRaisesRegex(ValueError,'CAPTURE_INPUT_MISSING'):
+                dataset(root,101.,reanchor_missing_capture=True)
+            segments,_=dataset(root,101.,source_bindings=bindings,reanchor_missing_capture=True)
+            segment=segments[0]
+            self.assertTrue(segment['capture_input_missing'])
+            self.assertEqual(segment['capture']['input_seq'],1)
+            self.assertEqual(segment['replay_baseline_input_seq'],2)
+            self.assertEqual(segment['pairs'][0][0]['source_id'],'headset')
+
+
 class CaptureCliTests(unittest.TestCase):
     def test_replay_cli_reports_a_failed_segment_with_nonzero_exit_status(self):
         from tests.replay import replay_vr
