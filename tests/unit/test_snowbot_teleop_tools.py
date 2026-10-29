@@ -103,20 +103,20 @@ class TeleopToolsTests(unittest.TestCase):
     def test_failed_preflight_never_starts_launch(self):
         with patch.object(helper, 'preflight', side_effect=ValueError('ABI mismatch')), \
                 patch.object(helper.os, 'execvp') as execute:
-            self.assertEqual(helper.main(['start']), 2)
+            self.assertEqual(helper.main(['start','--config','unused-site.json']), 2)
             execute.assert_not_called()
 
     def test_running_instance_blocks_start_without_killing_it(self):
         with patch.object(helper, 'preflight', return_value=({}, None)), \
                 patch.object(helper, 'ensure_stopped', side_effect=ValueError('existing execution')), \
                 patch.object(helper.os, 'execvp') as execute:
-            self.assertEqual(helper.main(['start']), 2)
+            self.assertEqual(helper.main(['start','--config','unused-site.json']), 2)
             execute.assert_not_called()
 
     def test_status_duration_is_bounded_before_ros_import(self):
         for seconds in ('0', '-1', '31', 'nan', 'inf'):
             with self.subTest(seconds=seconds), patch.object(helper, 'preflight') as check:
-                self.assertEqual(helper.main(['status', '--seconds', seconds]), 2)
+                self.assertEqual(helper.main(['status','--config','unused-site.json','--seconds',seconds]), 2)
                 check.assert_not_called()
 
     def test_observed_feedback_rejects_simulation_staleness_future_and_stop_failure(self):
@@ -139,8 +139,9 @@ class TeleopToolsTests(unittest.TestCase):
         result = subprocess.run(['bash', wrapper, 'check', '--help'], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         import os
-        env = dict(os.environ, ROS_DISTRO='jazzy', BINDU_ROS_DISTRO='humble')
-        result = subprocess.run(['bash', wrapper, 'start'], env=env, capture_output=True, text=True)
+        with tempfile.TemporaryDirectory() as directory:
+            env = dict(os.environ, ROS_DISTRO='jazzy', BINDU_ROS_DISTRO='humble',BINDU_TELEOP_WORKSPACE=directory)
+            result = subprocess.run(['bash', wrapper, 'start'], env=env, capture_output=True, text=True)
         self.assertEqual(result.returncode, 2)
         self.assertIn('不一致', result.stderr)
 
