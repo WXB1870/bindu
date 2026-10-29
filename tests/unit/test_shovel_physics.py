@@ -43,7 +43,13 @@ class ShovelPhysicsTests(unittest.TestCase):
             self.assertEqual(arguments[:4],['--no-ros-env',str(ROOT/'tests/physics/validate_shovel_isaac.py'),
                 '--task-feedback-comparison','settings.json'])
             self.assertIn('--/isaac/startup/ros_bridge_extension=',arguments)
-            self.assertEqual(environment.read_text().splitlines(),['unset','unset',str(ROOT)])
+            from bindu_contracts.resources import package_share
+            share=package_share('snowbot_bringup')
+            if (share/'snowbot_bringup').is_dir(): application=share
+            else:
+                import importlib.util
+                application=Path(importlib.util.find_spec('snowbot_bringup').origin).parent.parent
+            self.assertEqual(environment.read_text().splitlines(),['unset','unset',str(application)+os.pathsep+str(ROOT)])
 
     def test_drive_calibration_preserves_defaults_and_urdf_effort_ceiling(self):
         names = ['arm', 'waist']; limits = {n:dict(effort='80') for n in names}

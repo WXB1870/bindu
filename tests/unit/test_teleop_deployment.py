@@ -68,6 +68,25 @@ class LegacyDeploymentSelectionTests(unittest.TestCase):
 
 
 class ApplicationResourceTests(unittest.TestCase):
+    def test_generic_nodes_import_without_snowbot_or_repository_tools(self):
+        import importlib.util,os,subprocess,sys
+        if importlib.util.find_spec('rclpy') is None:
+            self.skipTest('ROS environment required for node imports')
+        code='''
+import importlib.abc,sys
+class BlockApplications(importlib.abc.MetaPathFinder):
+    def find_spec(self,fullname,path=None,target=None):
+        if fullname.split('.')[0] in ('snowbot_hardware','snowbot_teleop','snowbot_bringup','tools'):
+            raise ModuleNotFoundError('unexpected application/source import: '+fullname)
+sys.meta_path.insert(0,BlockApplications())
+from bindu_runtime.bimanual_tool_node import BimanualToolNode
+from bindu_runtime.simulation_devices import SimulationDevices,PhysicsJoints,PhysicsBase
+'''
+        with tempfile.TemporaryDirectory() as directory:
+            result=subprocess.run([sys.executable,'-c',code],cwd=directory,
+                env=dict(os.environ,PYTHONPATH=os.pathsep.join(sys.path)),capture_output=True,text=True)
+        self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+
     def test_position_simulation_keeps_its_calibrated_grasp_separate_from_real_operator_policy(self):
         from bindu_contracts.resources import resource_file
         share=package_share('snowbot_bringup')

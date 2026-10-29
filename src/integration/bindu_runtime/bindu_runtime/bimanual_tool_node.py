@@ -15,7 +15,6 @@ from bindu_contracts.teleoperation import VRFrame, ToolPoseFrame, reference_trac
 from bindu_teleoperation.bimanual_session import BimanualSession, ToolPoseSession, AcceptedReference, ToolPause
 from bindu_teleoperation.independent_session import IndependentArmsSession
 from bindu_kinematics.bimanual_worker import BimanualWorker
-from snowbot_hardware.gripper import validate_config, JOINTS
 from bindu_interfaces.action import TeleopSession as TeleopAction
 from bindu_interfaces.msg import VRInput, ExecutionState, RecorderHealth, MotionCommand, TeleopModeState, ToolPoseInput
 from bindu_interfaces.srv import Lease, SubmitMotion, ControlExecution
@@ -27,7 +26,7 @@ WORKER_POLL_PERIOD = .005
 
 
 class BimanualToolNode(RuntimeNode):
-    def __init__(self):
+    def __init__(self, *, gripper_config_loader=None):
         super().__init__('teleop_tool',allow_hardware=True,default_mode='simulation')
         self.declare_parameter('require_recording',True,descriptor=ParameterDescriptor(read_only=True))
         self.require_recording=self.get_parameter('require_recording').value
@@ -56,7 +55,12 @@ class BimanualToolNode(RuntimeNode):
                                           trajectory_reference=self.trajectory_reference)
         self.declare_parameter('gripper_config','',descriptor=ParameterDescriptor(read_only=True))
         gripper_path=self.get_parameter('gripper_config').value
-        self.gripper_cfg=validate_config(json.loads(Path(gripper_path).read_text()),self.profile) if position_contract and gripper_path else None
+        self.gripper_cfg=None
+        self.gripper_joints={}
+        if position_contract and gripper_path:
+            if gripper_config_loader is None:
+                raise ValueError('BIMANUAL_GRIPPER_ADAPTER_REQUIRED')
+            self.gripper_cfg,self.gripper_joints=gripper_config_loader(json.loads(Path(gripper_path).read_text()),self.profile)
         self.independent_enabled=position_contract
         self.cfg['independent_arms_enabled']=position_contract
         if (self.cfg.get('simulation_only') is not (self.simulation and not position_contract) or
@@ -168,7 +172,7 @@ class BimanualToolNode(RuntimeNode):
         q=dict(zip(s.joints.name,s.joints.position));v=dict(zip(s.joints.name,s.joints.velocity))
         return all(n in q and n in v and math.isfinite(q[n]) and math.isfinite(v[n]) and
             abs(q[n]-cfg['grippers'][side]['virtual' if side=='right' else 'closed'])<=cfg['position_tolerance'] and
-            abs(v[n])<=cfg['velocity_tolerance'] for side,n in JOINTS.items())
+            abs(v[n])<=cfg['velocity_tolerance'] for side,n in self.gripper_joints.items())
 
     def on_frame(self,msg):
         if self.matches_mode(msg) and msg.side in ('left','right'):
@@ -747,7 +751,7 @@ class BimanualToolNode(RuntimeNode):
                             # No servo trajectory exists before the first accepted
                             # target; use the authenticated hold/goal guard once.
                             if self.trajectory_reference and not trajectory_bootstrap:
-                                from snowbot_hardware.position_session import sampled_nominal_reference
+                                from bindu_runtime.stop_evidence import sampled_nominal_reference
                                 executed,_=sampled_nominal_reference(s,self.names,lease.epoch,self.now(),
                                     min(.1,self.cfg['feedback_max_age']))
                             reference_lead,budgets=reference_tracking_budget(work_reference,
@@ -924,7 +928,7 @@ class BimanualToolNode(RuntimeNode):
                             'will_reject':gap>reference.max_sample_gap}),goal.request.task_id)
                     execution_sample=None
                     if operation=='solve' and self.trajectory_reference and not trajectory_bootstrap:
-                        from snowbot_hardware.position_session import sampled_nominal_reference
+                        from bindu_runtime.stop_evidence import sampled_nominal_reference
                         if trajectory_reference_deadline is None:
                             trajectory_reference_deadline=time.monotonic()+reference.max_sample_gap
                         sample=sampled_nominal_reference(s,self.names,lease.epoch,sampled_at,
