@@ -984,6 +984,26 @@ class TargetWireTests(unittest.TestCase):
         self.d.check_ready = PositionSessionDevices.check_ready.__get__(self.d)
         self.rig.io.check_ready = self.d.check_ready
 
+    def test_configured_braking_lead_keeps_original_source_deadline(self):
+        self.production_readiness()
+        self.d.trajectory_limits['target_stream_brake_lead_s'] = .1
+        motion = self.source_motion()
+        engine = self.rig.engine
+        engine.submit(motion, self.rig.now); engine.tick(self.rig.now)
+        first = self.d.publishers['arms'].publish.call_args.args[0]
+        self.d.receive_receipt(self.receipt(first))
+        for _ in range(59):  # 295 ms, before the configured 300 ms boundary.
+            self.update_target_feedback(); engine.tick(self.rig.now)
+            self.d.brake_before_source_expiry(engine)
+            self.assertIsNone(engine.stopping)
+        self.update_target_feedback()
+        self.d.brake_before_source_expiry(engine)
+        pause = self.d.publishers['arms'].publish.call_args.args[0]
+        self.assertEqual(round((self.rig.now-motion.stamp)*1e9), 300_000_000)
+        self.assertEqual(pause.meta.operation, 2)
+        self.assertEqual(first.meta.expires_at_ns, round(motion.stamp*1e9)+400_000_000)
+        self.assertEqual(pause.meta.expires_at_ns-pause.meta.source_stamp_ns, 2_000_000_000)
+
     def test_longer_source_ttl_brakes_at_280ms_with_dispatch_reserve(self):
         self.production_readiness()
         motion = self.source_motion()

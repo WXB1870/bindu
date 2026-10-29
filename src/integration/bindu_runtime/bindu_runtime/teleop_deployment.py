@@ -21,14 +21,14 @@ COMMON.update(('position_contract','physics_config'))
 EXECUTION.add('gripper_config')
 EXECUTION.update(('position_protocol','execution_mode'))
 TARGET_STREAM_LIMIT_DEFAULTS = {'trajectory_max_velocity': .25, 'trajectory_max_acceleration': .5,
-                              'trajectory_max_jerk': 162.}
+                              'trajectory_max_jerk': 162., 'target_stream_brake_lead_s': .12}
 COMMON.update(TARGET_STREAM_LIMIT_DEFAULTS)
 EXECUTION.update(TARGET_STREAM_LIMIT_DEFAULTS)
 PATHS = {'profile', 'bimanual_config', 'robot_config', 'cert_file', 'key_file', 'output', 'pico_config', 'gripper_config', 'physics_config', 'base_config'}
 
 
 def target_stream_limits(values):
-    """Startup ceilings, paired with servo parameters; profile limits still apply."""
+    """Startup dynamic ceilings and braking lead; profile limits still apply."""
     result = {}
     for key, default in TARGET_STREAM_LIMIT_DEFAULTS.items():
         raw = values.get(key, default)
@@ -38,6 +38,9 @@ def target_stream_limits(values):
             value = float('nan')
         if not math.isfinite(value) or value <= 0:
             raise ValueError('SNOWBOT_TARGET_DYNAMIC_LIMIT:'+key)
+        if key == 'target_stream_brake_lead_s' and (
+                value >= .4 or not 0 < round(value*1e9) < 400_000_000):
+            raise ValueError('SNOWBOT_TARGET_BRAKE_LEAD')
         result[key] = value
     return result
 

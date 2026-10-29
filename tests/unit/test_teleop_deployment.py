@@ -88,18 +88,23 @@ class ApplicationResourceTests(unittest.TestCase):
         import ast
         from types import SimpleNamespace
         from bindu_contracts.runtime_mode import resolve_mode
+        from bindu_runtime.teleop_deployment import TARGET_STREAM_LIMIT_DEFAULTS, target_stream_limits
         source=package_share('snowbot_bringup')/'launch/snowbot_adapter.launch.py'
         definition=next(n for n in ast.parse(source.read_text()).body if isinstance(n,ast.FunctionDef) and n.name=='assemble')
         class Configuration:
             def __init__(self,name,default=''):self.name,self.default=name,default
             def perform(self,context):return context.get(self.name,self.default)
         namespace=dict(Path=Path,LaunchConfiguration=Configuration,resolve_mode=resolve_mode,
+                       TARGET_STREAM_LIMIT_DEFAULTS=TARGET_STREAM_LIMIT_DEFAULTS,target_stream_limits=target_stream_limits,
                        get_package_share_directory=lambda name:str(package_share(name)),Node=lambda **values:values)
         exec(compile(ast.Module(body=[definition],type_ignores=[]),str(source),'exec'),namespace)
         for mode,package,executable in (('real','snowbot_hardware','snowbot_adapter'),
                                         ('simulation','bindu_runtime','execution')):
             actions=namespace['assemble'](dict(runtime_mode=mode,command_enabled='false'))
             self.assertEqual((actions[0]['package'],actions[0]['executable']),(package,executable))
+        actions=namespace['assemble'](dict(runtime_mode='real',position_protocol='session_v3',
+                                          target_stream_brake_lead_s='0.10'))
+        self.assertEqual(actions[0]['parameters'][0]['target_stream_brake_lead_s'],.1)
 
     def test_selected_source_is_explicit_and_rejects_ambiguous_packages(self):
         import os
@@ -147,6 +152,26 @@ class ApplicationResourceTests(unittest.TestCase):
 
 
 class DeploymentTests(unittest.TestCase):
+    def test_target_brake_lead_recipe_is_numeric_bounded_and_target_stream_only(self):
+        recipe=json.loads((package_share("snowbot_bringup")/'config/deployments/snowbot_vr_real.json').read_text())
+        with tempfile.TemporaryDirectory() as tmp:
+            path=Path(tmp)/'deploy.json'
+            for lead in (.12, .1, '0.08'):
+                recipe['arguments']['target_stream_brake_lead_s']=lead
+                path.write_text(json.dumps(recipe))
+                _,args=load_deployment(path,SHARE)
+                self.assertEqual(float(args['target_stream_brake_lead_s']),float(lead))
+            for lead in (0., -1., .4, 1., 1e308, 1e-12, float('nan'), float('inf'), True, 'bad'):
+                recipe['arguments']['target_stream_brake_lead_s']=lead
+                path.write_text(json.dumps(recipe))
+                with self.subTest(lead=lead),self.assertRaises(ValueError):
+                    load_deployment(path,SHARE)
+            recipe['arguments']['target_stream_brake_lead_s']=.12
+            recipe['arguments']['position_protocol']='session_v1'
+            path.write_text(json.dumps(recipe))
+            with self.assertRaisesRegex(ValueError,'TARGET_LIMITS_REQUIRE_TARGET_STREAM'):
+                load_deployment(path,SHARE)
+
     def test_target_dynamic_limits_accept_numeric_recipe_and_reject_invalid_or_wrong_mode(self):
         recipe=json.loads((package_share("snowbot_bringup")/'config/deployments/snowbot_vr_real.json').read_text())
         recipe['arguments'].update(trajectory_max_velocity=.4, trajectory_max_acceleration=.8,
