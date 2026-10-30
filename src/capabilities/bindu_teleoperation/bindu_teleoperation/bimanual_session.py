@@ -3,6 +3,7 @@ import math
 import uuid
 from dataclasses import dataclass
 import numpy as np
+from bindu_contracts.teleoperation import tool_grasp_mode
 from .vr.mapping import robot_pose, relative_target, pose_matrix, direction_reference, engagement_yaw, headset_pose
 from .vr.one_euro import rotation_log, rotation_exp, configured_pose_filter
 
@@ -117,7 +118,8 @@ class BimanualSession:
         self.input_stamps = None
         self.target = None
         self.clutch_seq = None
-        self.grasp_mode = 'rigid'
+        self.grasp_mode = tool_grasp_mode(config)
+        self.continuous_axial = self.grasp_mode == 'right_axial'
         self.grasp_generation = 0
         self.axial = config.get('right_axial_grasp')
         self.trigger_armed = False
@@ -281,7 +283,7 @@ class BimanualSession:
                 not self.continuation.issued_at <= now <= self.continuation.expires_at):
             self.continuation = None
         desired = self.grasp_mode
-        if self.axial is not None:
+        if self.axial is not None and not self.continuous_axial:
             if right.mapping == 'pico_snowbot_v1':
                 desired = 'right_axial' if right.virtual_grip else 'rigid'
             elif right.trigger < self.release:
@@ -373,7 +375,8 @@ class ToolPoseSession:
         self.source = None
         self.seq, self.stamp = -1, 0.
         self.mode = 'idle'
-        self.grasp_mode, self.grasp_generation = 'rigid', 0
+        self.grasp_mode, self.grasp_generation = tool_grasp_mode(config), 0
+        self.continuous_axial = self.grasp_mode == 'right_axial'
         self.axial = config.get('right_axial_grasp')
         self.anchor_input = self.anchor_tool = self.target = self.current_input = None
 
@@ -397,7 +400,7 @@ class ToolPoseSession:
                 not np.allclose(rotation.T @ rotation, np.eye(3), atol=1e-6) or
                 np.linalg.det(rotation) < .999999):
             raise ValueError('TOOL_POSE_INVALID')
-        desired = 'rigid' if frame.tight else 'right_axial'
+        desired = 'right_axial' if self.continuous_axial or not frame.tight else 'rigid'
         if desired == 'right_axial' and self.axial is None:
             raise ValueError('TOOL_AXIAL_UNCONFIGURED')
         if desired != self.grasp_mode:

@@ -11,6 +11,19 @@ from bindu_kinematics.bimanual_worker import BimanualWorker
 
 
 class WorkerReceiptTests(unittest.TestCase):
+    def test_continuous_axial_does_not_request_six_dimensional_prediction(self):
+        from bindu_contracts.teleoperation import tool_grasp_mode
+        source=Path(__file__).resolve().parents[2]/'src/integration/bindu_runtime/bindu_runtime/bimanual_tool_node.py'
+        keyword=next(n for n in ast.walk(ast.parse(source.read_text()))
+                     if isinstance(n,ast.keyword) and n.arg=='rigid_reference')
+        expression=compile(ast.Expression(body=keyword.value),str(source),'eval')
+        for source,expected in (('measured_rigid',True),('measured_axial',False)):
+            cfg=dict(grasp_reference_source=source,right_axial_grasp={},rigid_reference_prediction=True)
+            value=eval(expression,dict(self=SimpleNamespace(trajectory_reference=True,cfg=cfg),
+                mode=SimpleNamespace(mode='bimanual_tool'),
+                session=SimpleNamespace(grasp_mode=tool_grasp_mode(cfg))))
+            self.assertIs(value,expected)
+
     def test_executed_sample_belongs_only_to_its_solve_and_is_cleared_on_failure(self):
         from bindu_kinematics.bimanual_worker import _run
         requests,results=queue.Queue(),queue.Queue();observed=[]
@@ -224,18 +237,21 @@ class WorkerReceiptTests(unittest.TestCase):
         method=next(n for n in node.body if getattr(n,'name','')=='preflight')
         namespace={'seconds':lambda stamp:stamp}
         exec(compile(ast.Module(body=[method],type_ignores=[]),str(source),'exec'),namespace)
-        for mode,operation in (('bimanual_tool','preflight_capture'),('independent_arms','independent_capture')):
-            with self.subTest(mode=mode):
+        for mode,operation,source,grasp in (
+                ('bimanual_tool','preflight_capture','measured_rigid','rigid'),
+                ('bimanual_tool','preflight_capture','measured_axial','right_axial'),
+                ('independent_arms','independent_capture','measured_axial','rigid')):
+            with self.subTest(mode=mode,source=source):
                 owner=SimpleNamespace(worker=SimpleNamespace(ready=True,busy=False,submit=Mock(return_value=True)),
                     worker_error='',busy=False,simulation=False,profile=SimpleNamespace(digest='profile'),
                     state=SimpleNamespace(profile_hash='profile',simulated=False,feedback_stamp=10.,
                         joints=SimpleNamespace(name=['joint'],position=[.8])),
-                    now=lambda:10.01,cfg={'feedback_max_age':.2},axial_position_ready=lambda:False,
+                    now=lambda:10.01,cfg={'feedback_max_age':.2,'grasp_reference_source':source},axial_position_ready=lambda:False,
                     preflight_mode='',preflight_grasp='',preflight_status='',preflight_token=0)
                 reply=namespace['preflight'](owner,SimpleNamespace(),mode)
                 self.assertFalse(reply.success)
                 self.assertEqual(reply.message,'BIMANUAL_PREFLIGHT_PENDING')
-                owner.worker.submit.assert_called_once_with(operation,-1,{'joint':.8},grasp_mode='rigid')
+                owner.worker.submit.assert_called_once_with(operation,-1,{'joint':.8},grasp_mode=grasp)
 
     def test_dead_process_or_fatal_cannot_advertise_ready_or_accept_work(self):
         for cause in ('exit', 'fatal'):

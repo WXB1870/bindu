@@ -245,7 +245,8 @@ class BimanualToolNode(RuntimeNode):
                 s.simulated != self.simulation or not 0<=self.now()-seconds(s.feedback_stamp)<=self.cfg['feedback_max_age']):
             reason='BIMANUAL_PREFLIGHT_FEEDBACK'
         if not reason:
-            grasp='right_axial' if mode=='bimanual_tool' and self.axial_position_ready() else 'rigid'
+            grasp='right_axial' if mode=='bimanual_tool' and (
+                self.cfg.get('grasp_reference_source')=='measured_axial' or self.axial_position_ready()) else 'rigid'
             if self.preflight_mode!=mode or self.preflight_grasp!=grasp:
                 if self.worker.busy:
                     reply.success,reply.message=False,'BIMANUAL_PREFLIGHT_PENDING';return reply

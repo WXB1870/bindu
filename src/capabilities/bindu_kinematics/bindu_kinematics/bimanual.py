@@ -5,7 +5,7 @@ import time
 from pathlib import Path
 import numpy as np
 from ament_index_python.packages import get_package_prefix
-from bindu_contracts.teleoperation import reference_tracking_budget
+from bindu_contracts.teleoperation import reference_tracking_budget, tool_grasp_mode
 
 
 ABI_VERSION = 1
@@ -40,6 +40,7 @@ class BimanualQP:
         self.cfg = config
         self.captured = False
         self.execution_reference = None  # Per-request servo sample, supplied only by the runtime worker.
+        # Original held sample, also retained for measured axial point/axis checks.
         self.rigid_grasp_q = self.rigid_grasp_reference = None
         # Explicit empty-hand test declaration; never relax the native relative
         # task, joint/trajectory limits, tracking budget or collision checks.
@@ -68,6 +69,7 @@ class BimanualQP:
             raise ValueError('BIMANUAL_GEOMETRY_BACKTRACKING_CONFIG')
         self.grasp_reference = None
         self.handle = None
+        tool_grasp_mode(config)
         locked = config.get('coupled_locked_joints', [])
         if (not isinstance(locked, list) or
                 any(not isinstance(n, str) or not n or ',' in n for n in locked) or
@@ -259,8 +261,6 @@ class BimanualQP:
                 self.right_grip = right_tool @ self.tool_grip
             self.expected_relative = None
             self.measured_rigid_grasp=config.get('grasp_reference_source','configured')=='measured_rigid'
-            if config.get('grasp_reference_source','configured') not in ('configured','measured_rigid'):
-                raise ValueError('BIMANUAL_GRASP_REFERENCE_SOURCE')
             if 'right_to_tool' in config:
                 right_tool = self._transform(config['right_to_tool'])
                 self.expected_relative = self.tool @ np.linalg.inv(right_tool)
@@ -340,11 +340,16 @@ class BimanualQP:
             raise ValueError('BIMANUAL_TOOL_TRANSFORM')
         return transform
 
-    def capture(self, feedback, grasp_mode='rigid', *, reference=None, commit_grasp=True):
+    def capture(self, feedback, grasp_mode=None, *, reference=None, commit_grasp=True):
         self.captured = False
         self.target_sample = None
         if not self.handle:
             raise ValueError('BIMANUAL_CLOSED')
+        measured_axial=self.cfg.get('grasp_reference_source')=='measured_axial'
+        if grasp_mode is None:
+            grasp_mode=tool_grasp_mode(self.cfg)
+        if measured_axial and grasp_mode!='right_axial':
+            raise ValueError('BIMANUAL_MEASURED_GRASP_REQUIRES_AXIAL')
         if grasp_mode not in ('rigid', 'right_axial') or grasp_mode == 'right_axial' and self.axial is None:
             raise ValueError('BIMANUAL_GRASP_MODE')
         if (self.measured_rigid_grasp or self.measured_grasp_policy=='unheld_test') and grasp_mode!='rigid':
@@ -363,10 +368,10 @@ class BimanualQP:
             self._check_measured_limits(positions)
             anchor_q=q.copy()
             anchor_q[[self.model_names.index(n) for n in self.names]]=reference
-        # Input/tool origins may be renewed on every clutch, but a held rigid
+        # Input/tool origins may be renewed on every clutch, but a held
         # grasp must survive preflight and new Action sessions in this worker.
         # Retain it even after a rejected capture; retrying cannot bless drift.
-        retained = self.rigid_grasp_q is not None and grasp_mode == 'rigid'
+        retained = self.rigid_grasp_q is not None and (grasp_mode == 'rigid' or measured_axial)
         if retained and reference is None:
             self._check_measured_limits(positions)
         measured = np.empty((4,4), dtype=np.float64)
@@ -379,10 +384,13 @@ class BimanualQP:
         if retained:
             error = np.linalg.inv(self.rigid_grasp_reference) @ measured
             angle = math.acos(float(np.clip((np.trace(error[:3,:3])-1.)/2., -1., 1.)))
-            if (np.linalg.norm(error[:3,3]) > self.grasp_position_tolerance or
+            distance_error=np.linalg.norm(error[:3,3])
+            if measured_axial:
+                distance_error,angle=self._axial_grip_error(measured,self.rigid_grasp_reference)
+            if (distance_error > self.grasp_position_tolerance or
                     angle > self.grasp_rotation_tolerance):
                 raise ValueError('BIMANUAL_GRASP_POSE')
-        if (self.expected_relative is not None and not self.measured_rigid_grasp and
+        if (self.expected_relative is not None and not (self.measured_rigid_grasp or measured_axial) and
                 self.measured_grasp_policy!='unheld_test'):
             error = np.linalg.inv(self.expected_relative) @ measured
             angle = math.acos(float(np.clip((np.trace(error[:3,:3])-1.)/2., -1., 1.)))
@@ -398,6 +406,11 @@ class BimanualQP:
                     angle > self.grasp_rotation_tolerance):
                 raise ValueError('BIMANUAL_GRASP_POSE')
         if grasp_mode == 'right_axial':
+            if measured_axial:
+                # Keep the first measured grip point and axis in the left-held
+                # tool frame; reclutch may change only the unconstrained roll.
+                grasp=self.rigid_grasp_reference if retained else measured
+                self.tool_grip=np.linalg.inv(self.tool) @ grasp @ self.right_grip
             ok = self.lib.bq_capture_axial(self.handle, self._ptr(q), self.nq, self._ptr(self.tool),
                 self._ptr(self.right_grip), self._ptr(self.tool_grip), c.byref(self.native_config))
         else:
@@ -419,7 +432,7 @@ class BimanualQP:
             if not fn(self.handle,self._ptr(self.tracking_point)):
                 raise ValueError('BIMANUAL_TRACKING_POINT:'+self._error())
         posture_reference = self._apply_posture_policy(feedback)
-        if self.measured_rigid_grasp and self.collision_check is not None:
+        if (self.measured_rigid_grasp or measured_axial) and self.collision_check is not None:
             # Freeze the actual right grip at capture, rather than moving the
             # contact exemption with later feedback. Width and all gates stay fixed.
             recipe=self.cfg['demo']
@@ -446,7 +459,7 @@ class BimanualQP:
         # A readiness query validates any held grasp, but cannot establish or
         # replace one. Only actual capture starts/changes the hold scope.
         if commit_grasp:
-            if (grasp_mode == 'rigid' and self.measured_grasp_policy == 'enforce' and
+            if ((grasp_mode == 'rigid' or measured_axial) and self.measured_grasp_policy == 'enforce' and
                     self.expected_relative is not None):
                 if not retained:
                     self.rigid_grasp_q = q.copy()
@@ -500,7 +513,15 @@ class BimanualQP:
         else:
             checker(samples)
 
+    def _axial_grip_error(self, relative, reference):
+        actual=relative @ self.right_grip
+        expected=reference @ self.right_grip
+        angle=math.acos(float(np.clip(actual[:3,2] @ expected[:3,2],-1.,1.)))
+        return np.linalg.norm(actual[:3,3]-expected[:3,3]),angle
+
     def _grip_error(self, relative):
+        if self.cfg.get('grasp_reference_source')=='measured_axial':
+            return self._axial_grip_error(relative,self.grasp_reference)
         error=np.linalg.inv(self.grasp_reference) @ relative
         angle=math.acos(float(np.clip((np.trace(error[:3,:3])-1.)/2.,-1.,1.)))
         if self.measured_rigid_grasp:
@@ -551,12 +572,12 @@ class BimanualQP:
         return limited,accepted_scale
 
     def check_loaded_prepare(self, feedback, targets):
-        """Validate a proposed joint path with the tool and captured rigid grasp.
+        """Validate a proposed joint path with the tool and captured grasp.
 
         This is a discrete rejection guard, not a planner. A joint-space path
         that breaks the measured two-hand geometry is rejected before motion.
         """
-        self.capture(feedback,'rigid')
+        self.capture(feedback)
         reference=np.linalg.inv(self.grasp_reference)
         before=self._q(feedback)
         after=self._q({n:targets.get(n,feedback[n]) for n in self.model_names})
@@ -573,7 +594,10 @@ class BimanualQP:
                 raise ValueError('PREPARE_TOOL_FK')
             error=reference @ relative
             angle=math.acos(float(np.clip((np.trace(error[:3,:3])-1.)/2.,-1.,1.)))
-            if (np.linalg.norm(error[:3,3])>self.grasp_position_tolerance or
+            distance=np.linalg.norm(error[:3,3])
+            if self.grasp_mode=='right_axial':
+                distance,angle=self._grip_error(relative)
+            if (distance>self.grasp_position_tolerance or
                     angle>self.grasp_rotation_tolerance):
                 raise ValueError('PREPARE_TOOL_COUPLING: joint path changes the captured two-hand grasp')
             samples.append(dict(t=float(fraction),q=dict(zip(self.model_names,q)),tool=tool))
