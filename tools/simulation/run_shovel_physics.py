@@ -187,6 +187,9 @@ def simulate(app, args, motion, cfg):
         for step in range(count+1):
             if not app.is_running():
                 raise RuntimeError('SIMULATION_INTERRUPTED')
+            controls = getattr(args, '_replay_panel', None)
+            if controls is not None:
+                started += controls.checkpoint(app, world)
             elapsed = step*dt
             control_t = round(max(0., elapsed-settle),9)
             t = round(control_t-warmup,9)
@@ -473,6 +476,133 @@ def capture_paused(app, world, output):
         raise RuntimeError('VIEWPORT_CAPTURE_FAILED')
 
 
+class ReplayInterrupt(Exception):
+    """A local GUI replay/reset request, not a controller failure."""
+
+
+class ReplayPanel:
+    def __init__(self, args, motion):
+        import omni.ui as ui
+        self.motions = [('Flip' if 'flip' in str(args.motion) else 'Sweep', args.motion)]
+        self.motions += [(name, Path(path).resolve()) for name, path in args.replay_motion]
+        self.request = None
+        self.active = False
+        self.paused = True
+        speeds = (1, 2, 4, 8)
+        initial = motion.get('presentation', {}).get('speed', 1)
+        self.window = ui.Window('Shovel Replay', width=310, height=190)
+        self.window.position_x = 1040
+        self.window.position_y = 100
+        with self.window.frame:
+            with ui.VStack(spacing=8):
+                with ui.HStack(height=28):
+                    ui.Label('Motion', width=65)
+                    self.motion = ui.ComboBox(0, *(name for name, _ in self.motions))
+                with ui.HStack(height=28):
+                    ui.Label('Speed', width=65)
+                    self.speed = ui.ComboBox(speeds.index(initial) if initial in speeds else 0, '1x', '2x', '4x', '8x')
+                with ui.HStack(height=32, spacing=6):
+                    ui.Button('Play / Replay', clicked_fn=self.play)
+                    ui.Button('Pause / Resume', clicked_fn=self.pause)
+                ui.Button('Reset', height=28, clicked_fn=lambda: self.start(True))
+                self.status = ui.Label('Ready')
+        self.request = (*self.selection(), not args.replay_start)
+
+    def selection(self):
+        return (self.motion.model.get_item_value_model().as_int,
+                (1, 2, 4, 8)[self.speed.model.get_item_value_model().as_int])
+
+    def start(self, paused=False):
+        self.request = (*self.selection(), paused)
+
+    def play(self):
+        if self.active and self.paused and self.selection() == self.current:
+            self.paused = False
+            self.status.text = 'Playing'
+        else:
+            self.start()
+
+    def pause(self):
+        if self.active:
+            self.paused = not self.paused
+            self.status.text = 'Paused' if self.paused else 'Playing'
+
+    def checkpoint(self, app, world):
+        if self.request is not None:
+            raise ReplayInterrupt()
+        started = time.monotonic()
+        if self.paused:
+            world.pause()
+            while app.is_running() and self.paused and self.request is None:
+                app.update()
+                time.sleep(.01)
+            if self.request is not None:
+                raise ReplayInterrupt()
+            world.play()
+        return time.monotonic()-started
+
+
+def replay_controls(app, args, motion, cfg):
+    from isaacsim.core.api import World
+    from isaacsim.core.utils.stage import create_new_stage
+    panel = ReplayPanel(args, motion)
+    args._replay_panel = panel
+    root = args.output
+    sequence = 0
+    world = None
+    while app.is_running():
+        if panel.request is None:
+            app.update()
+            time.sleep(.01)
+            continue
+        selected, speed, paused = panel.request
+        panel.request = None
+        panel.current = (selected, speed)
+        panel.paused, panel.active = paused, True
+        panel.status.text = 'Ready' if paused else 'Playing'
+        try:
+            if world is not None:
+                world.stop()
+                world.clear()
+                World.clear_instance()
+                create_new_stage()
+                app.update()
+            source = panel.motions[selected][1]
+            original = load_motion(source)
+            previous = original.get('presentation', {}).get('speed', 1)
+            sequence += 1
+            run = root / f'replay-{sequence:04d}'
+            run.mkdir()
+            for sample in original['samples']:
+                sample['t'] *= previous/speed
+            original['duration_s'] *= previous/speed
+            original['presentation'] = dict(speed=speed, source_motion=str(source),
+                source_sha256=digest(source), purpose='Isaac native GUI reference replay')
+            args.motion = run/'motion.json'
+            args.motion.write_text(json.dumps(original)+'\n')
+            args.output = run/'output'
+            args.output.mkdir()
+            current_motion = load_motion(args.motion)
+            world = simulate(app, args, current_motion, json.loads(json.dumps(cfg)))
+            world.pause()
+            panel.active = False
+            panel.status.text = 'Completed'
+            print('REPLAY_COMPLETED', panel.motions[selected][0], speed, flush=True)
+        except ReplayInterrupt:
+            world = World.instance()
+            if world is not None:
+                world.pause()
+            print('REPLAY_RESET_REQUESTED', flush=True)
+        except Exception as exc:
+            world = World.instance()
+            if world is not None:
+                world.pause()
+            panel.active = False
+            panel.status.text = 'Replay error - see terminal'
+            traceback.print_exc()
+            (args.output/'failure.json').write_text(json.dumps({'error':str(exc)})+'\n')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('motion', type=Path)
@@ -488,12 +618,19 @@ def main():
     parser.add_argument('--cancel-at', type=float, help='Request a latched shared-executor stop')
     parser.add_argument('--wrench-stop-at', type=float, help='Freeze virtual force sensor packets and timestamps')
     parser.add_argument('--keep-open', action='store_true', help='Keep the completed GUI scene paused for inspection')
+    parser.add_argument('--replay-controls', action='store_true', help='Isaac built-in replay controls; GUI reference mode only')
+    parser.add_argument('--replay-motion', action='append', nargs=2, default=[], metavar=('NAME','PATH'))
+    parser.add_argument('--replay-start', action='store_true', help='Start the first native GUI replay immediately')
     parser.add_argument('--record-video', action='store_true', help='Embed no overlays: record the live viewport at simulation-time intervals')
     parser.add_argument('--video-fps', type=int, default=20, help='Recording rate; must divide the physics step grid (default 20)')
     parser.add_argument('--grasp-test', choices=('hold','release'), help='Static contact diagnostic; release opens both jaws at t=1 s')
     parser.add_argument('--grasp-model', choices=('contact','proxy'), help='Explicit contact model or legacy spring comparison')
     # Kit portable arguments are supplied by an isolated SDK launcher.
     args, kit_args = parser.parse_known_args()
+    if args.replay_start and not args.replay_controls:
+        parser.error('--replay-start requires --replay-controls')
+    if args.replay_controls and (not args.gui or args.closed_loop or args.record_video or args.grasp_test):
+        parser.error('--replay-controls requires GUI reference mode without recording or grasp diagnostics')
     if args.record_video and not args.gui:
         parser.error('--record-video requires --gui')
     if not 1 <= args.video_fps <= 60:
@@ -559,6 +696,10 @@ def main():
         # Record runtime's own version, never infer from the launcher's name.
         from isaacsim.core.version import get_version
         args.isaac_version = list(get_version())
+        if args.replay_controls:
+            replay_controls(app, args, motion, cfg)
+            app.close()
+            return
         world = simulate(app, args, motion, cfg)
         if args.gui:
             capture_paused(app, world, args.output)
