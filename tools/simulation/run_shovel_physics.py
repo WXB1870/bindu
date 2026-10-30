@@ -753,7 +753,7 @@ class ReplayPanel:
                     ui.Button('Pause / Resume', clicked_fn=self.pause)
                 ui.Button('Reset', height=28, clicked_fn=lambda: self.start(True))
                 self.status = ui.Label('Ready')
-        self.request = (*self.selection(), True)
+        self.request = (*self.selection(), not args.replay_start)
 
     def selection(self):
         return (self.motion.model.get_item_value_model().as_int,
@@ -867,12 +867,15 @@ def main():
     parser.add_argument('--keep-open', action='store_true', help='Keep the completed GUI scene paused for inspection')
     parser.add_argument('--replay-controls', action='store_true', help='Isaac built-in replay controls; GUI reference mode only')
     parser.add_argument('--replay-motion', action='append', nargs=2, default=[], metavar=('NAME','PATH'))
+    parser.add_argument('--replay-start', action='store_true', help='Start the first native GUI replay immediately')
     parser.add_argument('--record-video', action='store_true', help='Embed no overlays: record the live viewport at simulation-time intervals')
     parser.add_argument('--video-fps', type=int, default=20, help='Recording rate; must divide the physics step grid (default 20)')
     parser.add_argument('--grasp-test', choices=('hold','release'), help='Static contact diagnostic; release opens both jaws at t=1 s')
     parser.add_argument('--grasp-model', choices=('contact','proxy'), help='Explicit contact model or legacy spring comparison')
     # Kit portable arguments are supplied by an isolated SDK launcher.
     args, kit_args = parser.parse_known_args()
+    if args.replay_start and not args.replay_controls:
+        parser.error('--replay-start requires --replay-controls')
     if args.replay_controls and (not args.gui or args.closed_loop or args.record_video or args.grasp_test):
         parser.error('--replay-controls requires GUI reference mode without recording or grasp diagnostics')
     if args.record_video and not args.gui:
