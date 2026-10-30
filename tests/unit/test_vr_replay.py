@@ -162,29 +162,6 @@ class ReplayPayloadTests(unittest.TestCase):
             del capture['input_source_id'];event()
             with self.assertRaisesRegex(ValueError,'SOURCE_AMBIGUOUS'):dataset(root,101.)
 
-    def test_sampled_capture_uses_recorded_projection_identity_without_filling_frames(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root=Path(directory)
-            rows=[dict(data=packet(seq,side,100.+seq*.02)) for seq in (2,4) for side in ('left','right')]
-            (root/'vr-raw.jsonl').write_text(''.join(json.dumps(row)+'\n' for row in rows))
-            (root/'vr-health.jsonl').write_text('')
-            capture=dict(input_seq=1,input_stamp=100.,input_source_id='headset:coordinator')
-            event=dict(stamp=100.,state='BIMANUAL_CAPTURED',code=json.dumps(capture))
-            (root/'runtime-events.jsonl').write_text(json.dumps(dict(data=event))+'\n')
-            projection=dict(stamp=99.,source_id='headset:coordinator',vr_source_id='headset',coordinator_id='coordinator')
-            (root/'teleop-state.jsonl').write_text(json.dumps(dict(data=projection))+'\n')
-            with self.assertRaisesRegex(ValueError,'CAPTURE_INPUT_MISSING'):dataset(root,101.)
-            segments,_=dataset(root,101.,input_seq=1,allow_sampled_capture=True)
-            self.assertEqual([p[0]['seq'] for p in segments[0]['pairs']],[2,4])
-            self.assertFalse(segments[0]['capture_input']['exact'])
-            self.assertAlmostEqual(segments[0]['capture_input']['delay_s'],.04)
-            self.assertEqual(segments[0]['capture']['input_source_id'],'headset:coordinator')
-            self.assertEqual(dataset(root,101.,input_seq=9,allow_sampled_capture=True)[0],[])
-            projection['coordinator_id']='unrelated'
-            (root/'teleop-state.jsonl').write_text(json.dumps(dict(data=projection))+'\n')
-            with self.assertRaisesRegex(ValueError,'CAPTURE_INPUT_MISSING'):
-                dataset(root,101.,allow_sampled_capture=True)
-
 
 class CaptureCliTests(unittest.TestCase):
     def test_replay_cli_reports_a_failed_segment_with_nonzero_exit_status(self):

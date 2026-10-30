@@ -89,7 +89,7 @@ def input_audit(folder, *, require_full=False):
         upstream_complete=False,scope='receiver coalescing/DDS loss cannot be excluded; no gap filling')
 
 
-def dataset(folder,until,*,input_seq=None,allow_sampled_capture=False):
+def dataset(folder,until):
     pairs={}
     for d in records(folder/'vr-raw.jsonl'):
         if seconds(d['stamp'])<=until:pairs.setdefault((d['source_id'],d['seq']),{})[d['side']]=d
@@ -109,35 +109,14 @@ def dataset(folder,until,*,input_seq=None,allow_sampled_capture=False):
             segments.append(current)
         elif e['state']=='BIMANUAL_ENDED' and current:
             current['end']=seconds(e['stamp']);current['recorded_end']=c['code'];current=None
-    if input_seq is not None:
-        segments=[s for s in segments if s['capture']['input_seq']==input_seq]
-    projections={}
-    if (folder/'teleop-state.jsonl').is_file():
-        for d in records(folder/'teleop-state.jsonl'):
-            raw,projected,coordinator=(d.get(k) for k in ('vr_source_id','source_id','coordinator_id'))
-            if raw and coordinator and projected==raw+':'+coordinator and seconds(d['stamp'])<=until:
-                projections.setdefault(projected,set()).add(raw)
     for segment in segments:
         c=segment['capture'];seq=c['input_seq']
-        source=c.get('input_source_id')
-        if source in projections:
-            if len(projections[source])!=1:raise ValueError('CAPTURE_SOURCE_AMBIGUOUS')
-            source=next(iter(projections[source]))
         candidates=[k for k in pairs if k[1]==seq and
-                    (not source or k[0]==source) and
+                    (not c.get('input_source_id') or k[0]==c['input_source_id']) and
                     abs(seconds(pairs[k][0]['stamp'])-c['input_stamp'])<=.05]
-        missing=not candidates
-        if missing and allow_sampled_capture:
-            # The capture event keeps the real mapping anchor. Start with the
-            # first surviving raw pair, exposing its delay; never invent a frame.
-            candidates=[k for k in pairs if k[1]>seq and k[0]==source and
-                        c['input_stamp']<=seconds(pairs[k][0]['stamp'])<=segment['end']]
-            if candidates:candidates=[min(candidates,key=lambda k:seconds(pairs[k][0]['stamp']))]
         if not candidates:raise ValueError('CAPTURE_INPUT_MISSING')
         if len(candidates)!=1:raise ValueError('CAPTURE_SOURCE_AMBIGUOUS')
         key=candidates[0]
-        segment['capture_input']=dict(exact=not missing,raw_source_id=key[0],first_raw_seq=key[1],
-            delay_s=seconds(pairs[key][0]['stamp'])-c['input_stamp'])
         segment['pairs']=[pairs[k] for k in sorted(pairs,key=lambda k:seconds(pairs[k][0]['stamp']))
             if k[0]==key[0] and k[1]>=seq and seconds(pairs[k][0]['stamp'])<=segment['end']]
     return segments,clocks
@@ -151,10 +130,8 @@ def replay(segment,clocks,cfg,profile,clock):
     from bindu_teleoperation.bimanual_session import BimanualSession
     from bindu_teleoperation.independent_session import IndependentArmsSession
     c=segment['capture'];ind=c['grasp_mode'].startswith('independent:')
-    grasp_mode='right_axial' if not ind and cfg.get('grasp_reference_source')=='measured_axial' else c['grasp_mode']
     qp=BimanualQP(cfg,profile)
-    result=dict(input_seq=c['input_seq'],mode=grasp_mode,recorded_mode=c['grasp_mode'],
-                capture_input=segment.get('capture_input'),recorded_end=segment.get('recorded_end'),
+    result=dict(input_seq=c['input_seq'],mode=c['grasp_mode'],recorded_end=segment.get('recorded_end'),
                 frames=0,limited=0,held=0,max_solve_ms=0.,failure=None,limits=Counter())
     errors=[];free_errors=[];samples=[]
     try:
@@ -171,16 +148,16 @@ def replay(segment,clocks,cfg,profile,clock):
             units='model joint position units',
             travel={n:0. for n in qp.names},max_from_capture={n:0. for n in qp.names})
         session=(IndependentArmsSession if ind else BimanualSession)(cfg,1,-10.)
-        first=segment['pairs'][0];t0=c['input_stamp']
-        client0=clocks.get((first[0]['source_id'],c['input_seq']))
+        first=segment['pairs'][0];t0=seconds(first[0]['stamp'])
+        client0=clocks.get((first[0]['source_id'],first[0]['seq']))
         if clock=='client' and client0 is None:raise ValueError('CLIENT_CLOCK_MISSING')
         # Restore a stationary released/pressed baseline before the logged
         # capture. These three setup frames do not count as replayed motion.
         for at,seq,released in ((1.,0,True),(1.02,1,False),(2.1,2,False)):
             pair=[replace(frame(d,at),seq=seq,grip=0. if released else d['grip'],
-                          virtual_grip=grasp_mode=='right_axial') for d in first]
+                          virtual_grip=c['grasp_mode']=='right_axial') for d in first]
             session.ingest(*pair,at)
-        home=qp.capture_independent(captured) if ind else qp.capture(captured,grasp_mode)
+        home=qp.capture_independent(captured) if ind else qp.capture(captured,c['grasp_mode'])
         session.capture(home)
         yaw=c.get('latched_operator_yaw_rad')
         if yaw is not None:
@@ -231,11 +208,11 @@ def replay(segment,clocks,cfg,profile,clock):
             key=(pair[0]['source_id'],pair[0]['seq'])
             if clock=='client' and key not in clocks:raise ValueError('CLIENT_CLOCK_MISSING')
             now=2.1+(clocks[key]-client0 if clock=='client' else seconds(pair[0]['stamp'])-t0)
-            if pair[0]['seq']==c['input_seq']:continue  # Only the exact capture frame is the restored baseline.
+            if index==0:continue  # The recorded capture frame is the restored baseline.
             if now<previous:raise ValueError('REPLAY_CLOCK_REVERSED')
             gap=now-previous
             if gap>cfg['input_max_age']:raise ValueError('RECORDED_INPUT_TIMEOUT')
-            frames=[replace(frame(d,now),virtual_grip=grasp_mode=='right_axial') for d in pair]
+            frames=[replace(frame(d,now),virtual_grip=c['grasp_mode']=='right_axial') for d in pair]
             if any(f.stop for f in frames):
                 result['ended_by']='RECORDED_OPERATOR_STOP';break
             session.ingest(*frames,now)
@@ -285,7 +262,7 @@ def replay(segment,clocks,cfg,profile,clock):
     # Retain accepted-motion evidence even when the recorded input ends in a
     # timeout. The original failure remains visible alongside these metrics.
     if not ind and samples:
-        result['coupling']=coupling_metrics(samples,cfg,[dict(t=0.,mode=grasp_mode)])
+        result['coupling']=coupling_metrics(samples,cfg,[dict(t=0.,mode=c['grasp_mode'])])
     for key,values in (('tracking',errors),('unlimited_tracking',free_errors)):
         if values:
             a=np.asarray(values)
@@ -302,23 +279,19 @@ def main():
                    help='received preserves source reception gaps; client is a separate jitter-removal experiment')
     p.add_argument('--require-full-inputs',action='store_true',help='Reject sampled, unclosed or lossy observer captures')
     p.add_argument('--inspect-inputs',action='store_true',help='Audit input only, without ROS or QP dependencies')
-    p.add_argument('--input-seq',type=int,help='Select a recorded capture sequence')
-    p.add_argument('--allow-sampled-capture',action='store_true',help='Use a logged capture anchor with the next surviving raw pair; expose missing capture input')
     p.add_argument('--runs',type=int,default=1)
     p.add_argument('--config',type=Path);p.add_argument('--profile',type=Path)
     p.add_argument('--until',type=float,help='Freeze input/event time at this UNIX timestamp')
     args=p.parse_args();until=args.until if args.until is not None else time.time()
     if args.runs<1 or not math.isfinite(until):p.error('runs must be positive and until must be finite')
     audit=input_audit(args.log,require_full=args.require_full_inputs)
-    if args.allow_sampled_capture and audit['mode']!='legacy_sampled_or_unknown':
-        p.error('--allow-sampled-capture is only for explicitly labelled legacy captures')
     if args.inspect_inputs:
         args.output.parent.mkdir(parents=True,exist_ok=True)
         args.output.write_text(json.dumps(audit,ensure_ascii=False,indent=2)+'\n')
         print(json.dumps(audit,ensure_ascii=False));return
     from ament_index_python.packages import get_package_prefix
     from bindu_runtime.robot_setup import RobotSetup
-    segments,clocks=dataset(args.log,until,input_seq=args.input_seq,allow_sampled_capture=args.allow_sampled_capture)
+    segments,clocks=dataset(args.log,until)
     if not segments:raise ValueError('REPLAY_NO_CAPTURED_SEGMENTS')
     dataset_hash=hashlib.sha256(json.dumps(dict(segments=segments,
         clocks=sorted((source,seq,at) for (source,seq),at in clocks.items()) if args.clock=='client' else []),
@@ -339,8 +312,6 @@ def main():
     args.output.write_text(json.dumps(dict(schema=1,source=str(args.log),until=until,clock=args.clock,dataset_sha256=dataset_hash,
         input_audit=audit,replay_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
         source_poses='recorded, unsmoothed; capture anchors restored',
-        sampled_capture_setup=('logged mapped anchor; missing raw hand anchors initialized from the first surviving pair'
-                               if args.allow_sampled_capture else None),
         scope='mapping/QP/synchronized kinematic IO only; no ROS or hardware outputs',
         config=cfg,profile=dict(max_speed=profile.max_speed,joint_dynamics=profile.joint_dynamics),
         results=results),ensure_ascii=False,indent=2)+'\n')
