@@ -78,8 +78,11 @@ class ApplicationResourceTests(unittest.TestCase):
         real=json.loads((robot_path.parent/'bimanual_snowbot_real.json').read_text())
         self.assertEqual(tool['tool_grasp_confirmation'],'calibrated')
         self.assertEqual(real['tool_grasp_confirmation'],'operator')
+        for config in (tool,real):
+            self.assertEqual(config['grasp_reference_source'],'measured_axial')
+            self.assertIs(config['rigid_reference_prediction'],False)
         self.assertEqual({k for k in tool.keys()|real.keys() if tool.get(k)!=real.get(k)},
-                         {'grasp_reference_source','tool_grasp_confirmation'})
+                         {'tool_grasp_confirmation'})
         grippers=json.loads(resource_file(deployment['arguments']['gripper_config']).read_text())
         self.assertIs(grippers['simulation_only'],True)
         self.assertFalse(grippers.get('independent_trigger_control',False))

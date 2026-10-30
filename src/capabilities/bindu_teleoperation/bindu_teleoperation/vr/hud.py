@@ -15,14 +15,15 @@ def hud_spec(view):
     confirmed = view.get('stop_confirmed') is True
     applied = view.get('grasp_applied')
     # Older observers cannot prove the applied grasp from a requested value.
-    grip = '右手虚握' if applied == 'right_axial' else '刚握' if applied == 'rigid' else '握持待确认'
+    axial_label='右手轴向释放' if view.get('capabilities',{}).get('continuous_axial_grasp') else '右手虚握'
+    grip = axial_label if applied == 'right_axial' else '刚握' if applied == 'rigid' else '握持待确认'
     spec = dict(state='paused', status='待命', grip=grip, tone='warning',
                 title='', detail='', action='Y 停止', context='模式待确认',mode_hint='等待有效控制状态')
     independent=view.get('teleop_mode')=='independent_arms'
     if independent:spec.update(context='普通双臂',mode_hint='左右手柄各控一臂',grip='逐臂离合')
     elif view.get('teleop_mode')=='bimanual_tool':
         spec.update(context='扫雪耦合',mode_hint='双手柄共同控制工具')
-        if view.get('tool_grasp_confirmation')=='operator':spec['grip']='人工确认 · 刚握'
+        if view.get('tool_grasp_confirmation')=='operator':spec['grip']='人工确认 · '+grip
         if view.get('tool_variant')=='short_rod':spec.update(context='短棍耦合',mode_hint='双手柄共同控制短棍')
     if mode in ('DISPLAY_STALE','DISPLAY_WAITING'):
         spec.update(context='模式待确认',mode_hint='等待有效控制状态')

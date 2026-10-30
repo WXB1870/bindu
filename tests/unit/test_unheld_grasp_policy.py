@@ -106,6 +106,91 @@ class GraspReferenceLifetimeTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'BIMANUAL_MEASURED_POSITION_LIMIT'):
             s.capture({'joint':4.01},commit_grasp=False)
 
+    def axial_solver(self):
+        s=self.solver();s.measured_rigid_grasp=False
+        s.cfg['grasp_reference_source']='measured_axial'
+        s.cfg['right_axial_grasp']={}
+        s.axial={};s.right_grip=np.eye(4);s.right_grip[0,3]=.1
+        s.tool_grip=s.right_grip.copy()
+        s.lib.bq_capture_axial=Mock(return_value=1)
+        # Rotate about the grip point, not the flange origin.
+        def relative(handle,q,n,out):
+            angle=q[0];out[:]=np.eye(4)
+            out[:2,:2]=[[math.cos(angle),-math.sin(angle)],
+                         [math.sin(angle),math.cos(angle)]]
+            out[:3,3]=s.right_grip[:3,3]-out[:3,:3] @ s.right_grip[:3,3]
+            return 1
+        s.lib.bq_relative_pose=relative
+        return s
+
+    def test_axial_reclutch_keeps_original_grip_but_allows_large_roll(self):
+        s=self.axial_solver()
+        s.capture({'joint':0.},'right_axial',commit_grasp=False)
+        self.assertIsNone(s.rigid_grasp_reference)
+        s.capture({'joint':.1},'right_axial')
+        self.assertIsNotNone(s.rigid_grasp_reference)
+        original=s.rigid_grasp_reference.copy();grip=s.tool_grip.copy()
+        for roll in (1.,3.1,-3.1):
+            s.capture_independent({'joint':roll},preserve_rigid_grasp=True)
+            for commit in (False,True):
+                s.capture({'joint':roll},'right_axial',commit_grasp=commit)
+                np.testing.assert_array_equal(s.grasp_reference,original)
+                np.testing.assert_allclose(s.tool_grip,grip,atol=1e-12)
+                np.testing.assert_allclose(s._grip_error(s.grasp_reference),(0.,0.),atol=1e-7)
+        s.lib.bq_capture.assert_not_called()
+        s.capture_independent({'joint':0.})
+        self.assertIsNone(s.rigid_grasp_reference)
+
+    def test_axial_default_capture_cannot_be_changed_back_to_rigid(self):
+        s=self.axial_solver();s.capture({'joint':0.})
+        self.assertEqual(s.grasp_mode,'right_axial')
+        with self.assertRaisesRegex(ValueError,'REQUIRES_AXIAL'):
+            s.capture({'joint':0.},'rigid')
+        s.lib.bq_capture.assert_not_called()
+
+    def test_axial_recapture_rejects_sliding_tilt_and_reversed_axis_without_rebasing(self):
+        for axis,amount in ((0,.011),(2,.011),('tilt',.021),('tilt',math.pi)):
+            with self.subTest(axis=axis,amount=amount):
+                s=self.axial_solver();s.capture({'joint':0.},'right_axial')
+                original=s.rigid_grasp_reference.copy()
+                bad=original.copy()
+                if axis=='tilt':
+                    bad[:3,:3]=[[1,0,0],[0,math.cos(amount),-math.sin(amount)],
+                                          [0,math.sin(amount),math.cos(amount)]]
+                else:bad[axis,3]+=amount
+                s.lib.bq_relative_pose=lambda handle,q,n,out:(out.__setitem__(slice(None),bad) or 1)
+                for commit in (False,True,False):
+                    with self.assertRaisesRegex(ValueError,'BIMANUAL_GRASP_POSE'):
+                        s.capture({'joint':0.},'right_axial',commit_grasp=commit)
+                    self.assertFalse(s.captured)
+                    np.testing.assert_array_equal(s.rigid_grasp_reference,original)
+
+    def test_axial_path_checks_allow_roll_but_reject_grip_translation(self):
+        s=self.axial_solver();s.capture({'joint':0.},'right_axial')
+        s.check_path=QP.check_path.__get__(s);s.collision_step=.01
+        s.collision_check=Mock()
+        s.check_path({'joint':0.},np.array([.3]))
+        s.collision_check.assert_called_once()
+        native=s.lib.bq_relative_pose
+        def slide(handle,q,n,out):
+            native(handle,q,n,out);out[2,3]+=.1*q[0];return 1
+        s.lib.bq_relative_pose=slide
+        with self.assertRaisesRegex(ValueError,'GRASP_CLOSURE'):
+            s.check_path({'joint':0.},np.array([.3]))
+        self.assertEqual(s.collision_check.call_count,1)
+
+    def test_loaded_path_uses_axial_closure_instead_of_flange_pose(self):
+        s=self.axial_solver();s.cfg['demo']={'check_grasp_contacts':True}
+        s.collision_step=.01;s.collision_check=Mock(return_value={})
+        result=s.check_loaded_prepare({'joint':0.},{'joint':.3})
+        self.assertTrue(result['coupling_checked'])
+        native=s.lib.bq_relative_pose
+        def slide(handle,q,n,out):
+            native(handle,q,n,out);out[2,3]+=.1*q[0];return 1
+        s.lib.bq_relative_pose=slide
+        with self.assertRaisesRegex(ValueError,'PREPARE_TOOL_COUPLING'):
+            s.check_loaded_prepare({'joint':0.},{'joint':.3})
+
 
 class ShaftContactBandTests(unittest.TestCase):
     ends = (-.44, .1)
@@ -203,12 +288,37 @@ class UnheldGraspPolicyTests(unittest.TestCase):
         return s.solve({'joint':0.} if feedback is None else feedback,np.eye(4),
             reference=[0.] if reference is None else reference,dt=.01,**kw)
 
+    def test_axial_solve_allows_roll_but_checks_measured_slide_and_tilt(self):
+        for failure in (None,'slide','tilt'):
+            with self.subTest(failure=failure):
+                s=self.solver(angle=2.4);s.grasp_mode='right_axial'
+                s.cfg['grasp_reference_source']='measured_axial'
+                s.measured_rigid_grasp=False;s.axial={}
+                s.tool=s.tool_grip=s.right_grip=np.eye(4)
+                if failure is not None:
+                    relative=np.eye(4)
+                    if failure=='slide':relative[2,3]=.011
+                    else:
+                        angle=.021
+                        relative[:3,:3]=[[1,0,0],[0,math.cos(angle),-math.sin(angle)],
+                                                   [0,math.sin(angle),math.cos(angle)]]
+                    def measured(handle,q,n,out):out[:]=relative;return 1
+                    s.lib.bq_relative_pose=measured
+                    with self.assertRaisesRegex(ValueError,'BIMANUAL_MEASURED_GRASP_ERROR'):
+                        self.solve(s)
+                    s.lib.bq_solve_tracking.assert_not_called()
+                else:
+                    out,_=self.solve(s)
+                    np.testing.assert_allclose(out,[.001])
+
     def test_unheld_capture_uses_actual_relative_pose_without_nominal_grasp_gate(self):
         for policy in ('enforce','unheld_test'):
             s=self.solver(policy,.04,.05);s.handle=object();s.axial=None
             s.cfg.update(flange_distance_range=[0.,1.],left_to_tool=np.eye(4).ravel().tolist())
             s.tool=np.eye(4);s.measured_rigid_grasp=False;s.native_config=NS['NativeConfig']()
             s.tracking_point=np.zeros(3);s.posture_reference=None;s.collision_check=None
+            s.rigid_grasp_q=s.rigid_grasp_reference=None
+            s.limit_avoidance=(0.,0.);s.coupled_locked_joints=()
             s.lib.bq_capture=Mock(return_value=1);s.lib.bq_destroy=Mock();s._apply_shared_motion_weight=Mock()
             s.check_path=Mock();s.set_shared_targets=Mock()
             if policy=='enforce':

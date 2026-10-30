@@ -219,6 +219,28 @@ class BimanualSessionTests(unittest.TestCase):
         return BimanualSession(dict(input_max_age=.25, engage_seconds=.2,
             position_scale=1., operator_yaw_rad=0., right_axial_grasp={}), 2, 10.)
 
+    def test_measured_axial_stays_released_across_buttons_and_reclutch(self):
+        cfg=dict(self.session().cfg,grasp_reference_source='measured_axial')
+        for mapping in ('v34','pico_snowbot_v1'):
+            session=BimanualSession(cfg,2,10.)
+            self.assertEqual(session.grasp_mode,'right_axial')
+            for seq,grip,trigger,virtual in ((1,0.,0.,False),(2,1.,1.,True),
+                    (3,1.,0.,False),(4,0.,0.,False),(5,1.,0.,False)):
+                when=10.+seq*.1
+                session.ingest(*self.pair(seq,when,grip=grip,trigger=trigger,
+                                         mapping=mapping,virtual_grip=virtual),when)
+                self.assertEqual(session.grasp_mode,'right_axial')
+                self.assertEqual(session.grasp_generation,0)
+
+    def test_measured_axial_requires_geometry_and_cannot_relax_empty_hand_test(self):
+        from bindu_contracts.teleoperation import tool_grasp_mode
+        for cfg,error in (({'grasp_reference_source':'measured_axial'},'AXIAL_GEOMETRY_REQUIRED'),
+                ({'grasp_reference_source':'measured_axial','right_axial_grasp':{},
+                  'measured_grasp_policy':'unheld_test'},'REQUIRES_HELD_GRASP'),
+                ({'grasp_reference_source':'unknown'},'GRASP_REFERENCE_SOURCE')):
+            with self.subTest(cfg=cfg),self.assertRaisesRegex(ValueError,error):
+                tool_grasp_mode(cfg)
+
     def test_invalid_pair_metadata_is_rejected(self):
         for change in ({'seq': -1}, {'seq': True}, {'seq': 1.5},
                        {'clutch_seq': True}, {'clutch_seq': -1}, {'side': 'left'}):
@@ -739,6 +761,16 @@ class ToolPoseInputTests(unittest.TestCase):
     def frame(self, seq=1, stamp=.1, tight=True):
         pose=np.eye(4);pose[0,3]=.3
         return ToolPoseFrame('source',seq,stamp,'base',tuple(pose.ravel()),tight)
+
+    def test_continuous_axial_keeps_full_tool_pose_and_ignores_roll_lock_request(self):
+        session=ToolPoseSession(dict(self.cfg,grasp_reference_source='measured_axial'),1,0.)
+        for seq,tight in enumerate((True,False,True),1):
+            when=seq*.1
+            session.ingest(self.frame(seq,when,tight),when)
+            session.capture(np.eye(4))
+            self.assertEqual(session.grasp_mode,'right_axial')
+            self.assertEqual(session.grasp_generation,0)
+            np.testing.assert_array_equal(session.target,np.array(self.frame().pose).reshape(4,4))
 
     def test_absolute_target_survives_grasp_stop_and_recapture(self):
         s=self.session;s.ingest(self.frame(),.1)

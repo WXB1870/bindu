@@ -8,6 +8,20 @@ from typing import Tuple, Protocol
 import math
 
 
+def tool_grasp_mode(config):
+    """Select a continuous measured axial grasp without changing gripper opening."""
+    source=config.get('grasp_reference_source','configured')
+    if source not in ('configured','measured_rigid','measured_axial'):
+        raise ValueError('BIMANUAL_GRASP_REFERENCE_SOURCE')
+    if source=='measured_axial':
+        if config.get('right_axial_grasp') is None:
+            raise ValueError('BIMANUAL_AXIAL_GEOMETRY_REQUIRED')
+        if config.get('measured_grasp_policy','enforce')!='enforce':
+            raise ValueError('BIMANUAL_MEASURED_AXIAL_REQUIRES_HELD_GRASP')
+        return 'right_axial'
+    return 'rigid'
+
+
 def reference_tracking_budget(reference, measured, limit, *, executed=None, reserve_fraction=.8):
     """Separate a target update from its executor-owned moving reference.
 
