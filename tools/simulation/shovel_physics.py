@@ -15,10 +15,18 @@ from scipy.spatial.transform import Rotation
 
 class ActuatorResponse:
     """Optional empirical position-drive response; measured feedback stays PhysX-owned."""
-    def __init__(self, settings, initial):
+    def __init__(self, settings, initial, dynamics=None):
         if not isinstance(settings,dict) or set(settings)-set(initial):
             raise ValueError('PHYSICS_RESPONSE_JOINTS')
         self.settings=settings;self.time=0.;self.values=dict(initial)
+        self.dynamics={} if dynamics is None else dynamics
+        if not isinstance(self.dynamics,dict) or set(self.dynamics)-set(initial):
+            raise ValueError('PHYSICS_RESPONSE_DYNAMICS')
+        for name,entry in self.dynamics.items():
+            if (set(entry)!={'velocity','acceleration'} or
+                    any(not np.isfinite(v) or v<=0 for v in entry.values())):
+                raise ValueError('PHYSICS_RESPONSE_DYNAMICS:'+name)
+        self.velocities=dict.fromkeys(initial,0.)
         self.targets=dict(initial);self.history={n:deque() for n in settings}
         for name,entry in settings.items():
             if not isinstance(entry,dict) or set(entry)!={'time_constant_s','delay_s'}:
@@ -29,15 +37,25 @@ class ActuatorResponse:
     def step(self, dt, positions, velocities):
         if not np.isfinite(dt) or dt<=0:raise ValueError('PHYSICS_RESPONSE_DT')
         self.time+=dt;out=dict(positions);speed=dict(velocities)
-        for name,entry in self.settings.items():
-            pending=self.history[name]
-            pending.append((self.time+entry['delay_s'],positions[name]))
-            while pending and pending[0][0]<=self.time+1e-12:
-                self.targets[name]=pending.popleft()[1]
+        for name in self.settings.keys()|self.dynamics.keys():
+            entry=self.settings.get(name,{'time_constant_s':0.,'delay_s':0.})
+            if name in self.settings:
+                pending=self.history[name]
+                pending.append((self.time+entry['delay_s'],positions[name]))
+                while pending and pending[0][0]<=self.time+1e-12:
+                    self.targets[name]=pending.popleft()[1]
+            else:self.targets[name]=positions[name]
             before=self.values[name];tau=entry['time_constant_s']
             alpha=1. if tau==0 else -np.expm1(-dt/tau)
-            self.values[name]=before+alpha*(self.targets[name]-before)
+            change=alpha*(self.targets[name]-before)
+            if name in self.dynamics:
+                limits=self.dynamics[name];amax=limits['acceleration'];vmax=limits['velocity']
+                desired=np.sign(change)*min(abs(change)/dt,vmax,np.sqrt(2*amax*abs(change)))
+                speed_change=np.clip(desired-self.velocities[name],-amax*dt,amax*dt)
+                change=float(np.clip(self.velocities[name]+speed_change,-vmax,vmax))*dt
+            self.values[name]=before+change
             out[name]=self.values[name];speed[name]=(out[name]-before)/dt
+            self.velocities[name]=speed[name]
         return out,speed
 
 

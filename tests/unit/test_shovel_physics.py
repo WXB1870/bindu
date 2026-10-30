@@ -22,6 +22,16 @@ from tools.simulation.shovel_control import GripLoadObserver, ControlClient
 
 
 class ShovelPhysicsTests(unittest.TestCase):
+    def test_actuator_reference_obeys_profile_velocity_and_acceleration_on_reversals(self):
+        response=ActuatorResponse({}, {'joint':0.}, {'joint':{'velocity':.6,'acceleration':3.6}})
+        before_q=before_v=0.
+        for target in ([1.]*80+[-1.]*160+[0.]*160):
+            q,v=response.step(.004,{'joint':target},{'joint':0.})
+            self.assertLessEqual(abs(v['joint']),.6+1e-10)
+            self.assertLessEqual(abs(v['joint']-before_v)/.004,3.6+1e-8)
+            self.assertAlmostEqual(q['joint']-before_q,v['joint']*.004)
+            before_q,before_v=q['joint'],v['joint']
+
     def test_optional_actuator_response_preserves_default_and_matches_delayed_step(self):
         initial={'waist':0.,'arm':2.};target={'waist':1.,'arm':3.};velocity={'waist':.4,'arm':.5}
         self.assertEqual(ActuatorResponse({},initial).step(.01,target,velocity),(target,velocity))
