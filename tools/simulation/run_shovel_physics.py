@@ -738,6 +738,8 @@ class ReplayPanel:
         speeds = (1, 2, 4, 8)
         initial = motion.get('presentation', {}).get('speed', 1)
         self.window = ui.Window('Shovel Replay', width=310, height=190)
+        self.window.position_x = 1040
+        self.window.position_y = 100
         with self.window.frame:
             with ui.VStack(spacing=8):
                 with ui.HStack(height=28):
