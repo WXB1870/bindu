@@ -9,7 +9,7 @@ from types import SimpleNamespace as S
 import unittest
 from unittest.mock import Mock, patch
 import numpy as np
-from bindu_kinematics.tool_geometry import _shaft_contact_span
+from bindu_kinematics.tool_geometry import _shaft_contact_span, coupling_metrics
 
 SOURCE=Path(__file__).resolve().parents[2]/'src/capabilities/bindu_kinematics/bindu_kinematics/bimanual.py'
 TREE=ast.parse(SOURCE.read_text())
@@ -190,6 +190,26 @@ class GraspReferenceLifetimeTests(unittest.TestCase):
         s.lib.bq_relative_pose=slide
         with self.assertRaisesRegex(ValueError,'PREPARE_TOOL_COUPLING'):
             s.check_loaded_prepare({'joint':0.},{'joint':.3})
+
+    def test_axial_metrics_compare_captured_point_and_axis_instead_of_nominal_mount(self):
+        s=self.axial_solver()
+        cfg=dict(grasp_reference_source='measured_axial',left_to_tool=np.eye(4),right_to_tool=np.eye(4),
+            left_frame='left',right_frame='right',grasp_rotation_tolerance_rad=.02,
+            right_axial_grasp=dict(axis_in_tool=[0,0,1],grip_in_right_flange_m=[.1,0,0]),
+            demo={'acceptance':{'max_grip_error_m':.01}})
+        reference=np.eye(4);reference[0,3]=.03
+        angle=.1;reference[:3,:3]=[[1,0,0],[0,math.cos(angle),-math.sin(angle)],
+                                                   [0,math.sin(angle),math.cos(angle)]]
+        twist=np.empty((4,4));s.lib.bq_relative_pose(None,[2.4],1,twist)
+        rotated=reference @ twist
+        samples=[dict(t=0.,flanges={'left':np.eye(4),'right':reference}),
+                 dict(t=1.,flanges={'left':np.eye(4),'right':rotated})]
+        with patch.dict('sys.modules',{'bindu_kinematics.bimanual':S(BimanualQP=QP)}):
+            result=coupling_metrics(samples,cfg,[dict(t=0.,mode='right_axial')])
+            self.assertTrue(result['passed'])
+            self.assertLess(result['modes']['right_axial']['max_grip_position_m'],1e-12)
+            cfg['grasp_reference_source']='configured'
+            self.assertFalse(coupling_metrics(samples,cfg,[dict(t=0.,mode='right_axial')])['passed'])
 
 
 class ShaftContactBandTests(unittest.TestCase):
