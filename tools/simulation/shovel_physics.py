@@ -7,9 +7,38 @@ Wood density changes mass/inertia; this model does not simulate wood flexure.
 import hashlib
 import json
 from pathlib import Path
+from collections import deque
 
 import numpy as np
 from scipy.spatial.transform import Rotation
+
+
+class ActuatorResponse:
+    """Optional empirical position-drive response; measured feedback stays PhysX-owned."""
+    def __init__(self, settings, initial):
+        if not isinstance(settings,dict) or set(settings)-set(initial):
+            raise ValueError('PHYSICS_RESPONSE_JOINTS')
+        self.settings=settings;self.time=0.;self.values=dict(initial)
+        self.targets=dict(initial);self.history={n:deque() for n in settings}
+        for name,entry in settings.items():
+            if not isinstance(entry,dict) or set(entry)!={'time_constant_s','delay_s'}:
+                raise ValueError('PHYSICS_RESPONSE_FIELDS:'+name)
+            if any(type(v) not in (float,int) or not np.isfinite(v) or not 0<=v<=2 for v in entry.values()):
+                raise ValueError('PHYSICS_RESPONSE_RANGE:'+name)
+
+    def step(self, dt, positions, velocities):
+        if not np.isfinite(dt) or dt<=0:raise ValueError('PHYSICS_RESPONSE_DT')
+        self.time+=dt;out=dict(positions);speed=dict(velocities)
+        for name,entry in self.settings.items():
+            pending=self.history[name]
+            pending.append((self.time+entry['delay_s'],positions[name]))
+            while pending and pending[0][0]<=self.time+1e-12:
+                self.targets[name]=pending.popleft()[1]
+            before=self.values[name];tau=entry['time_constant_s']
+            alpha=1. if tau==0 else -np.expm1(-dt/tau)
+            self.values[name]=before+alpha*(self.targets[name]-before)
+            out[name]=self.values[name];speed[name]=(out[name]-before)/dt
+        return out,speed
 
 
 def skew(v):
