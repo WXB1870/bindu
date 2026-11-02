@@ -146,7 +146,7 @@ Snowbot 当前配方、模型、设备适配及 PICO 操作分别由独立工作
 
 VR输入、PICO协调、双臂求解和执行进程入口在ROS初始化前默认设置`RMW_FASTRTPS_PUBLICATION_MODE=ASYNCHRONOUS`，保留现场显式覆盖，避免Fast DDS默认同步发送占住输入／控制回调。输入采样时间、QoS及原时效／停止契约保持；该传输设置不证明现场网络或调度停顿已经消失。
 
-真机配方增加`snowbot_grippers_real.json`，默认`calibrated=false`禁止夹爪写入；位置闭环及授权Trigger操作见[真实夹爪接口](../../hardware/bindu_hardware/README.md#snowbot真实夹爪位置闭环)。夹爪服务由同一execution节点提供，原四节点范围不变。底层需配套`bindu_gripper_control`保护入口，实体持物／虚握不由位置到位推断。
+真机配方选择`grippers.json`的`modes.real`分支，标定状态与直接操作许可分别由`calibrated`和`allow_uncalibrated_direct`维护；位置闭环及授权Trigger操作见[真实夹爪接口](../../hardware/bindu_hardware/README.md#snowbot真实夹爪位置闭环)。夹爪服务由同一execution节点提供，原四节点范围不变。底层需配套`bindu_gripper_control`保护入口，实体持物／虚握不由位置到位推断。
 
 | 配置 | 作用 |
 |---|---|
@@ -154,7 +154,7 @@ VR输入、PICO协调、双臂求解和执行进程入口在ROS初始化前默�
 | [robot_snowbot_real.json](../../../../../snowbot/src/snowbot_bringup/config/robots/snowbot/robot_snowbot_real.json) | 真机模型／profile／工具索引，不包含单臂配置或模拟初始姿态 |
 | [snowbot_real_position.json](../../../../../snowbot/src/snowbot_bringup/config/robots/snowbot/snowbot_real_position.json) | 真实位置运行限制；头部第2轴取源接口与CAD交集±0.79 rad，其余沿用源接口，仍需现场核实 |
 | [bimanual_snowbot_real.json](../../../../../snowbot/src/snowbot_bringup/config/robots/snowbot/bimanual_snowbot_real.json) | 真机位置链的名义工具安装／CAD几何／QP与时效参数；不包含演示轨迹，安装尺寸和地面需标定 |
-| [snowbot_grippers_real.json](../../../../../snowbot/src/snowbot_bringup/config/robots/snowbot/snowbot_grippers_real.json) | 独立夹爪位置闭环、超时与开合参数；默认未标定，拒绝写入 |
+| [grippers.json](../../../../../snowbot/src/snowbot_bringup/config/robots/snowbot/grippers.json) | 共享夹爪位置闭环、超时与开合参数；`modes`分别维护实机和仿真差异 |
 | [snowbot_base.json](../../../../../snowbot/src/snowbot_bringup/config/robots/snowbot/snowbot_base.json) | 可选PICO两轴`cmd_vel`端口、摇杆限速、反馈与停止条件；设备独立超时未确认，默认底盘只读 |
 | [snowbot_shovel_sim.json](../../../../../snowbot/src/snowbot_bringup/config/examples/snowbot/snowbot_shovel_sim.json) | 当前扫雪仿真的资源组、限位、动态限制与腰臂同步执行 |
 | [snowbot_sim.json](../../../../../snowbot/src/snowbot_bringup/config/examples/snowbot/snowbot_sim.json) | 旧Snowbot模拟入口的执行基线，供兼容入口及回归使用 |

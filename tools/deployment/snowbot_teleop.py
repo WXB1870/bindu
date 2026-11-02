@@ -96,7 +96,8 @@ def preflight(path):
     report = check_runtime(args, robot)
     if args.get('gripper_config'):
         from snowbot_hardware.gripper import validate_config
-        grippers = validate_config(json.loads(Path(args['gripper_config']).read_text()), robot.profile)
+        from snowbot_hardware.parameters import load_mode_config
+        grippers = validate_config(load_mode_config(args['gripper_config'],args['runtime_mode']), robot.profile)
         if not grippers['calibrated']:
             print('夹爪配置未现场标定：状态可读，夹爪写入将拒绝。')
     if args.get('cert_file'):
@@ -191,8 +192,9 @@ def operate_gripper(args, robot, options):
     from rclpy.signals import SignalHandlerOptions
     from bindu_interfaces.msg import GripperState
     from bindu_interfaces.srv import Lease, GripperControl
-    cfg = json.loads(Path(args['gripper_config']).read_text())
-    config_hash = hashlib.sha256(Path(args['gripper_config']).read_bytes()).hexdigest()
+    from snowbot_hardware.parameters import load_mode_config, mode_config_digest
+    cfg = load_mode_config(args['gripper_config'],args['runtime_mode'])
+    config_hash = mode_config_digest(cfg,args['runtime_mode'])
     if args['command_enabled'] != 'true' or not cfg['calibrated']:
         raise ValueError('夹爪操作需要允许写入且已现场标定的配置')
     if options.operation == 'authorize_loading' and not options.vr_source_id:

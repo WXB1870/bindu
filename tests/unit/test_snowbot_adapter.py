@@ -1,4 +1,5 @@
 """Position interface and delegated stop semantics; never touches hardware."""
+from snowbot_hardware.parameters import load_mode_config
 from bindu_contracts.resources import package_share
 from tests.support.paths import ROOT
 import copy
@@ -847,7 +848,7 @@ class SnowbotRosBindingTests(unittest.TestCase):
         devices.session, devices.command_sequence = 123, 0
         devices.array_type = lambda data:S(data=data)
         binding.devices = devices
-        binding.core = S(cfg=json.loads((package_share("snowbot_bringup")/'config/robots/snowbot/snowbot_grippers_real.json').read_text()))
+        binding.core = S(cfg=load_mode_config(package_share('snowbot_bringup')/'config/robots/snowbot/grippers.json','real'))
         binding.publishers = {side:Mock() for side in ('left', 'right')}
         binding.send('right', .02, False, 999)
         self.assertEqual(binding.publishers['right'].publish.call_args.args[0].data,
@@ -868,7 +869,7 @@ class SnowbotRosBindingTests(unittest.TestCase):
         devices.node.get_publishers_info_by_topic.return_value=[S(node_namespace='/',node_name='servo_node')]
         devices.io=SnowbotIO(profile, Mock(), lambda:10.)
         devices.grippers=SnowbotGrippers.__new__(SnowbotGrippers)
-        cfg=json.loads((package_share("snowbot_bringup")/'config/robots/snowbot/snowbot_grippers_real.json').read_text())
+        cfg=load_mode_config(package_share('snowbot_bringup')/'config/robots/snowbot/grippers.json','real')
         devices.grippers.core=GripperController(profile,cfg,Mock(),Mock(),lambda:10.,lambda:True,
                                                require_driver_ack=False)
         native=S(header=S(stamp=S(sec=10,nanosec=0)),

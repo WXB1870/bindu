@@ -1,4 +1,5 @@
 """Closed-loop gripper position/hold tests; no ROS, controller or hardware."""
+from snowbot_hardware.parameters import load_mode_config
 from bindu_contracts.resources import package_share
 from importlib.util import find_spec
 from snowbot_hardware.parameters import parameters_for
@@ -21,7 +22,7 @@ CONFIG = package_share('snowbot_bringup')/'config/robots/snowbot'
 class Rig:
     def __init__(self, *, require_driver_ack=True, runtime_parameters=None, **changes):
         self.profile = Profile.load(CONFIG/'snowbot_real_position.json')
-        self.config = json.loads((CONFIG/'snowbot_grippers_real.json').read_text())
+        self.config = load_mode_config(CONFIG/'grippers.json','real')
         # Historical residual/contact regressions use the original zero-based
         # endpoints; site calibration is exercised explicitly below.
         self.config['grippers']['left'].update(open=-.4,closed=0.)
@@ -91,7 +92,7 @@ class GripperTests(unittest.TestCase):
         r.step(3);self.assertFalse(r.core.lease_id)
 
     def test_site_commands_use_confirmed_nonzero_closed_positions(self):
-        config=json.loads((CONFIG/'snowbot_grippers_real.json').read_text())
+        config=load_mode_config(CONFIG/'grippers.json','real')
         expected={'left':(-.8,.26),'right':(.8,-.26)}
         r=Rig(grippers=config['grippers'])
         for side,(_,closed) in expected.items():r.q[JOINTS[side]]=closed
@@ -107,7 +108,7 @@ class GripperTests(unittest.TestCase):
                 self.assertEqual(state['grasp_state'],'unknown')
 
     def test_site_virtual_position_preserves_small_opening_and_nonzero_left_guard(self):
-        config=json.loads((CONFIG/'snowbot_grippers_real.json').read_text())
+        config=load_mode_config(CONFIG/'grippers.json','real')
         r=Rig(grippers=config['grippers']);right=r.config['grippers']['right']
         self.assertAlmostEqual(right['virtual']-right['closed'],.02)
         r.acquire(groups=(GROUPS['right'],))
@@ -122,7 +123,7 @@ class GripperTests(unittest.TestCase):
         self.assertEqual(r.q[JOINTS['left']],.26)
 
     def test_site_opening_fits_deadline_with_actual_native_command_ramp(self):
-        config=json.loads((CONFIG/'snowbot_grippers_real.json').read_text())
+        config=load_mode_config(CONFIG/'grippers.json','real')
         r=Rig(require_driver_ack=False,grippers=config['grippers'])
         for side in SIDES:r.q[JOINTS[side]]=config['grippers'][side]['closed']
         r.step(track=False)
@@ -648,7 +649,7 @@ class IndependentInputHandoffTests(unittest.TestCase):
         self.assertTrue(all(hold for _,_,hold,_ in r.sent[before:]))
 
     def test_coupled_mode_uses_same_enlarged_site_endpoints(self):
-        config=json.loads((CONFIG/'snowbot_grippers_real.json').read_text())
+        config=load_mode_config(CONFIG/'grippers.json','real')
         for phase in ('engaging','following','tool_standby'):
             with self.subTest(phase=phase):
                 r,node,pair,outputs,_=self.rig(mode='bimanual_tool',phase=phase)

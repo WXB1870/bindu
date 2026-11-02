@@ -152,7 +152,7 @@ ros2 launch bindu_runtime g1_sim.launch.py recording_mode:=normal namespace:=/bi
 
 ### Snowbot真实夹爪位置闭环
 
-夹爪复用现有Snowbot执行节点，默认配方引用[`snowbot_grippers_real.json`](../../../../../snowbot/src/snowbot_bringup/config/robots/snowbot/snowbot_grippers_real.json)，不新增电机控制进程。该接口确认的是位置到位和保持；`grasp_state=unknown`明确表示没有实体夹持／夹紧力／虚握证明。统一PICO位置入口不再以实体装夹状态阻止切模式或接管，杆件碰撞模型随耦合模式选择，详见[工具操作契约](../../../动作执行契约.md#61-snowbot-工具操作与握持切换)。独立Trigger请求在申请租约前被拒绝时，也会保留对应侧`code`并记录`GRIPPER_REQUEST_REJECTED`，不再静默显示`NO_COMMAND`；拒绝不自动重试，须新输入。
+夹爪复用现有Snowbot执行节点，默认配方引用[`grippers.json`](../../../../../snowbot/src/snowbot_bringup/config/robots/snowbot/grippers.json)，不新增电机控制进程。该接口确认的是位置到位和保持；`grasp_state=unknown`明确表示没有实体夹持／夹紧力／虚握证明。统一PICO位置入口不再以实体装夹状态阻止切模式或接管，杆件碰撞模型随耦合模式选择，详见[工具操作契约](../../../动作执行契约.md#61-snowbot-工具操作与握持切换)。独立Trigger请求在申请租约前被拒绝时，也会保留对应侧`code`并记录`GRIPPER_REQUEST_REJECTED`，不再静默显示`NO_COMMAND`；拒绝不自动重试，须新输入。
 
 | 接口（默认前缀`/bindu_snowbot`） | 用途 |
 |---|---|
@@ -162,7 +162,7 @@ ros2 launch bindu_runtime g1_sim.launch.py recording_mode:=normal namespace:=/bi
 
 只有臂会话已停止且释放租约、反馈与PDO健康、受保护接收方及发布者唯一、配置已标定时才允许取得夹爪控制权。夹爪租约、停止中或停止故障会拒绝新的手臂接管。装卸授权下，持物或状态不明开爪仍要求支撑；任意`position`操作在持物时也要求支撑。PICO停稳、双侧松握后的显式扳机操作使用独立`authorize_direct`，仅允许标定的`open`／`close`，不接受任意位置／虚握；空载、支撑和夹持状态依据各自的确认条件处理。未操作侧不发送目标，停止撤销授权并保持实测开度。实体标定、握持与防滑效果仍待现场验收，行为边界见[工具操作契约](../../../动作执行契约.md#61-snowbot-工具操作与握持切换)。
 
-**位置虚握。** 位置参数统一在现场`site.json`的`arguments.gripper_config`选定文件维护，源码模板见[Snowbot夹爪配置](https://github.com/WXB1870/snowbot/blob/main/src/snowbot_bringup/config/robots/snowbot/snowbot_grippers_real.json)。右爪`virtual`为虚握位、`closed`为闭合位，单位rad；虚握须位于开闭端点之间，并与两端各相隔超过两倍位置容差。本节不复制具体端点与速度值，修改后须核对实际加载的配置与标定状态。普通模式不使用X换握；扫雪跟随中按住X先停稳并释放臂租约，确认左爪闭合停稳，检查右爪完整路径，再仅租用右爪执行虚握位，等底层接纳、实测到位和最终保持后按轴向释放模型捕获当前基准。释放X按同流程回闭合位，再以当前实际转角恢复刚握。切换期间不推进工具目标，双侧握和输入仍有效才恢复跟随；松握、Y或断流保持当前开度，不自动夹紧。这里只确认位置模式，`grasp_state=unknown`与`physical_gripper_confirmed=null`保持，实体承托、可转动及防滑效果由现场验证。
+**位置虚握。** 位置参数统一在现场`site.json`的`arguments.gripper_config`选定文件维护，源码模板见[Snowbot夹爪配置](https://github.com/WXB1870/snowbot/blob/main/src/snowbot_bringup/config/robots/snowbot/grippers.json)。右爪`virtual`为虚握位、`closed`为闭合位，单位rad；虚握须位于开闭端点之间，并与两端各相隔超过两倍位置容差。本节不复制具体端点与速度值，修改后须核对实际加载的配置与标定状态。普通模式不使用X换握；扫雪跟随中按住X先停稳并释放臂租约，确认左爪闭合停稳，检查右爪完整路径，再仅租用右爪执行虚握位，等底层接纳、实测到位和最终保持后按轴向释放模型捕获当前基准。释放X按同流程回闭合位，再以当前实际转角恢复刚握。切换期间不推进工具目标，双侧握和输入仍有效才恢复跟随；松握、Y或断流保持当前开度，不自动夹紧。这里只确认位置模式，`grasp_state=unknown`与`physical_gripper_confirmed=null`保持，实体承托、可转动及防滑效果由现场验证。
 
 **118原生协议。** 当前发送到`<vendor>/gripper/left_cmd`和`right_cmd`，格式为`[position, velocity, torque, kp, kd]`；位置操作的速度参考和前馈力矩为0。位置会话链路在发送层按配置`max_speed`限制目标增量，单次推进时间最多计一个控制周期，发送间隔过长不补发大步；保持请求直接使用实测保持点。理想目标推进时间按`abs(open-closed)/max_speed`估算，以实际选定配置为准。该参数限制上层目标增量，协议速度参考与实体速度限幅需分别核对；旧非位置会话通道不使用此目标增量限制。实测位置、速度、电流复用`RetInformation`左右第8项；`*_cmd_sensor`是命令入口，不作为状态源。原生消息缺少命令序号和保持回执，到位及停止确认使用发送后推进的实测反馈与稳定区间；本地序号仅用于请求关联。
 

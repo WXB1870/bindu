@@ -1,4 +1,5 @@
 """Native integration gate; skips when the optional QP package is not installed."""
+from snowbot_hardware.parameters import load_mode_config
 from bindu_contracts.resources import package_share
 from tests.support.paths import ROOT
 import json
@@ -176,7 +177,7 @@ class InitialCollisionRecoveryTests(unittest.TestCase):
         from bindu_kinematics.tool_geometry import make_collision_checker
         base=package_share('snowbot_bringup')/'config/robots/snowbot'
         config=json.loads((base/'bimanual_snowbot_real.json').read_text())
-        pico=json.loads((base/'pico_snowbot_position_sim.json').read_text())
+        pico=load_mode_config(base/'teleop.json','simulation')
         feedback=json.loads((ROOT/'tests/config/teleoperation/snowbot_prepare_collision.json').read_text())['feedback']
         description=package_share('snowbot_description')/'urdf'
         recipe=dict(config['demo']);recipe['left_grip_in_tool_m']=(np.linalg.inv(np.array(config['left_to_tool']).reshape(4,4)) @ np.r_[recipe['grip_offset_m'],1.])[:3].tolist()
