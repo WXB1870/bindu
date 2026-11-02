@@ -767,7 +767,7 @@ TEST_F(CoreTest, DualAxialToolAndClosureJacobiansMatchFiniteDifferences) {
   const pinocchio::SE3 left_world(left_rotation,pl), right_world(right_rotation,pr);
   const auto lg=robot_->leftPose().actInv(left_world), rg=robot_->rightPose().actInv(right_world);
   const auto tl=home.actInv(left_world), tr=home.actInv(right_world);
-  kin_->captureDualAxial(mount,lg,tl,rg,tr);
+  ASSERT_NO_THROW(kin_->captureDualAxial(mount,lg,tl,rg,tr));
   ASSERT_EQ(kin_->constraintRows(),4);
   EXPECT_LT(kin_->relativeError().norm(),1e-12);
   EXPECT_TRUE(kin_->toolPose().isApprox(home,1e-10));
@@ -790,7 +790,7 @@ TEST_F(CoreTest, DualAxialToolAndClosureJacobiansMatchFiniteDifferences) {
   auto rolled_lg=lg,rolled_tl=tl,rolled_rg=rg,rolled_tr=tr;
   const auto roll=pinocchio::exp3(Eigen::Vector3d(0,0,1.7));
   for (auto p : {&rolled_lg,&rolled_tl,&rolled_rg,&rolled_tr})p->rotation()=p->rotation()*roll;
-  kin_->captureDualAxial(mount,rolled_lg,rolled_tl,rolled_rg,rolled_tr);
+  ASSERT_NO_THROW(kin_->captureDualAxial(mount,rolled_lg,rolled_tl,rolled_rg,rolled_tr));
   EXPECT_TRUE(kin_->toolPose().isApprox(pose,1e-10));
   EXPECT_NEAR(kin_->relativeError().norm(),error.norm(),1e-10);
   auto parallel=tr;parallel.rotation()=tl.rotation();
