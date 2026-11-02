@@ -184,13 +184,69 @@ void RigidToolKinematics::captureAxial(const pinocchio::SE3 &left_to_tool,
   axial_ = true;
 }
 
+void RigidToolKinematics::captureDualAxial(const pinocchio::SE3 &left_to_tool,
+    const pinocchio::SE3 &left_to_grip, const pinocchio::SE3 &tool_to_left_grip,
+    const pinocchio::SE3 &right_to_grip, const pinocchio::SE3 &tool_to_right_grip) {
+  reset();
+  for (const auto &p : {left_to_tool,left_to_grip,tool_to_left_grip,right_to_grip,tool_to_right_grip})
+    if (!p.translation().allFinite() || !p.rotation().allFinite() ||
+        !p.rotation().isUnitary(1e-5) || p.rotation().determinant()<.999)
+      throw std::invalid_argument("invalid dual support transform");
+  const Eigen::Vector3d a=tool_to_right_grip.rotation().col(2);
+  const Eigen::Vector3d b=tool_to_left_grip.rotation().col(2);
+  const Eigen::Vector3d delta=tool_to_right_grip.translation()-tool_to_left_grip.translation();
+  const double length=-delta.dot(a), lateral=delta.dot(b);
+  if (std::abs(a.dot(b))>1e-6 || length<.01 ||
+      (delta+length*a-lateral*b).norm()>1e-6 ||
+      !left_to_grip.isApprox(left_to_tool*tool_to_left_grip,1e-6))
+    throw std::invalid_argument("invalid dual support geometry");
+  capture(left_to_tool);
+  left_to_grip_=left_to_grip; tool_to_left_grip_=tool_to_left_grip;
+  right_to_grip_=right_to_grip; tool_to_grip_=tool_to_right_grip;
+  grip_basis_.col(0)=a; grip_basis_.col(1)=b; grip_basis_.col(2)=a.cross(b);
+  grip_length_=length; grip_lateral_=lateral;
+  dual_axial_=true;
+}
+
 pinocchio::SE3 RigidToolKinematics::toolPose() const {
   if (!captured_) throw std::logic_error("grasp not captured");
+  if (dual_axial_) {
+    const auto left=robot_.leftPose()*left_to_grip_;
+    const Eigen::Vector3d a=(robot_.rightPose()*right_to_grip_).rotation().col(2);
+    const Eigen::Vector3d b=left.rotation().col(2);
+    if (std::abs(a.dot(b))>.95) throw std::runtime_error("dual support axes degenerate");
+    const Eigen::Vector3d c=a.cross(b).normalized();
+    Eigen::Matrix3d basis; basis.col(0)=a; basis.col(1)=c.cross(a); basis.col(2)=c;
+    const Eigen::Matrix3d rotation=basis*grip_basis_.transpose();
+    return pinocchio::SE3(rotation,left.translation()-rotation*tool_to_left_grip_.translation());
+  }
   return robot_.leftPose() * left_to_tool_;
 }
 
 Eigen::MatrixXd RigidToolKinematics::toolJacobian() const {
   if (!captured_) throw std::logic_error("grasp not captured");
+  if (dual_axial_) {
+    const auto left=robot_.leftPose()*left_to_grip_;
+    const Eigen::Vector3d a=(robot_.rightPose()*right_to_grip_).rotation().col(2);
+    const Eigen::Vector3d b=left.rotation().col(2), u=a.cross(b);
+    if (u.norm()<.3) throw std::runtime_error("dual support axes degenerate");
+    const Eigen::Vector3d c=u.normalized(), bp=c.cross(a);
+    const Eigen::MatrixXd jl=robot_.leftJacobian(), jr=robot_.rightJacobian();
+    const Eigen::MatrixXd wl=robot_.leftPose().rotation()*jl.bottomRows<3>();
+    const Eigen::MatrixXd wr=robot_.rightPose().rotation()*jr.bottomRows<3>();
+    const Eigen::MatrixXd da=-pinocchio::skew(a)*wr, db=-pinocchio::skew(b)*wl;
+    const Eigen::MatrixXd dc=(Eigen::Matrix3d::Identity()-c*c.transpose())/u.norm()*
+        (-pinocchio::skew(b)*da+pinocchio::skew(a)*db);
+    const Eigen::MatrixXd dbp=-pinocchio::skew(a)*dc+pinocchio::skew(c)*da;
+    const Eigen::MatrixXd angular=.5*(pinocchio::skew(a)*da+pinocchio::skew(bp)*dbp+pinocchio::skew(c)*dc);
+    const auto tool=toolPose();
+    Eigen::MatrixXd jac(6,robot_.variables());
+    jac.topRows<3>()=tool.rotation().transpose()*(robot_.leftPose().rotation()*
+        (jl.topRows<3>()-pinocchio::skew(left_to_grip_.translation())*jl.bottomRows<3>())+
+        pinocchio::skew(tool.rotation()*tool_to_left_grip_.translation())*angular);
+    jac.bottomRows<3>()=tool.rotation().transpose()*angular;
+    return jac;
+  }
   return left_to_tool_.inverse().toActionMatrix() * robot_.leftJacobian();
 }
 
@@ -200,6 +256,15 @@ pinocchio::SE3 RigidToolKinematics::relativePose() const {
 
 Eigen::VectorXd RigidToolKinematics::relativeError() const {
   if (!captured_) throw std::logic_error("grasp not captured");
+  if (dual_axial_) {
+    const auto relative=(robot_.leftPose()*left_to_grip_).actInv(robot_.rightPose()*right_to_grip_);
+    const Eigen::Vector3d axis=relative.rotation().col(2);
+    if (std::abs(axis.z())>.95) throw std::runtime_error("dual support axes degenerate");
+    Eigen::VectorXd error(4);
+    error.head<3>()=relative.translation()+grip_length_*axis-grip_lateral_*Eigen::Vector3d::UnitZ();
+    error[3]=axis.z();
+    return error;
+  }
   if (!axial_) return pinocchio::log6(relative_ref_.actInv(relativePose())).toVector();
   const auto grip = toolPose().actInv(robot_.rightPose() * right_to_grip_);
   const Eigen::Vector3d axis = grip.rotation().col(2);
@@ -214,6 +279,18 @@ Eigen::VectorXd RigidToolKinematics::relativeError() const {
 
 Eigen::MatrixXd RigidToolKinematics::relativeErrorJacobian() const {
   if (!captured_) throw std::logic_error("grasp not captured");
+  if (dual_axial_) {
+    const auto relative=(robot_.leftPose()*left_to_grip_).actInv(robot_.rightPose()*right_to_grip_);
+    const Eigen::Vector3d axis=relative.rotation().col(2);
+    const Eigen::MatrixXd jl=left_to_grip_.inverse().toActionMatrix()*robot_.leftJacobian();
+    const Eigen::MatrixXd jr=right_to_grip_.inverse().toActionMatrix()*robot_.rightJacobian();
+    const Eigen::MatrixXd da=-pinocchio::skew(axis)*(relative.rotation()*jr.bottomRows<3>()-jl.bottomRows<3>());
+    Eigen::MatrixXd jac(4,robot_.variables());
+    jac.topRows<3>()=relative.rotation()*jr.topRows<3>()-jl.topRows<3>()+
+        pinocchio::skew(relative.translation())*jl.bottomRows<3>()+grip_length_*da;
+    jac.row(3)=da.row(2);
+    return jac;
+  }
   if (axial_) {
     const auto relative = toolPose().actInv(robot_.rightPose());
     const Eigen::Vector3d point = relative.act(right_to_grip_.translation());

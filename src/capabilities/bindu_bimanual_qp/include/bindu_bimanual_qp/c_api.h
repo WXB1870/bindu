@@ -57,6 +57,12 @@ int bq_capture(void *handle, const double *q, int nq, const double *left_to_tool
 int bq_capture_axial(void *handle, const double *q, int nq, const double *left_to_tool,
                      const double *right_to_grip, const double *tool_to_grip,
                      const bq_config *config);
+/* Additive ABI v1: two perpendicular revolute grips, four closure constraints.
+ * Grip-frame +Z is each released axis. No gripper/actuator commands are sent. */
+int bq_capture_dual_axial(void *handle, const double *q, int nq, const double *left_to_tool,
+                        const double *left_to_grip, const double *tool_to_left_grip,
+                        const double *right_to_grip, const double *tool_to_right_grip,
+                        const bq_config *config);
 /* NULL,0 clears the optional shared-joint posture objective. */
 int bq_shared_targets(void *handle, const double *targets, int n);
 /* Additive ABI v1: nonnegative extra squared-velocity cost for the shared

@@ -68,6 +68,10 @@ class BimanualQP:
         if type(self.geometry_step_backtracking) is not bool:
             raise ValueError('BIMANUAL_GEOMETRY_BACKTRACKING_CONFIG')
         self.grasp_reference = None
+        self.left_axial = config.get('left_axial_grasp')
+        if self.left_axial is not None and (config.get('simulation_only') is not True or
+                config.get('grasp_reference_source','configured')!='configured'):
+            raise ValueError('BIMANUAL_DUAL_AXIAL_REQUIRES_CONFIGURED_SIMULATION')
         self.handle = None
         tool_grasp_mode(config)
         locked = config.get('coupled_locked_joints', [])
@@ -259,6 +263,25 @@ class BimanualQP:
                 self.tool_grip[:3,:3] = np.column_stack((transverse,np.cross(axis,transverse),axis))
                 self.tool_grip[:3,3] = (np.linalg.inv(right_tool) @ np.r_[point,1.])[:3]
                 self.right_grip = right_tool @ self.tool_grip
+            if self.left_axial is not None:
+                if self.axial is None:
+                    raise ValueError('BIMANUAL_DUAL_AXIAL_REQUIRES_RIGHT_AXIAL')
+                try:fn=lib.bq_capture_dual_axial
+                except AttributeError as exc:
+                    raise ValueError('BIMANUAL_DUAL_AXIAL_ABI_MISSING: rebuild bindu_bimanual_qp') from exc
+                fn.argtypes,fn.restype=[p,array,i,array,array,array,array,array,c.POINTER(NativeConfig)],i
+                axis=np.asarray(self.left_axial['axis_in_tool'],dtype=float)
+                point=np.asarray(self.left_axial['grip_in_left_flange_m'],dtype=float)
+                if (axis.shape!=(3,) or point.shape!=(3,) or not np.isfinite(np.r_[axis,point]).all() or
+                        not np.isclose(np.linalg.norm(axis),1.,atol=1e-8) or
+                        abs(axis @ self.tool_grip[:3,2])>1e-6):
+                    raise ValueError('BIMANUAL_DUAL_AXIAL_GEOMETRY')
+                helper=np.eye(3)[np.argmin(abs(axis))]
+                transverse=np.cross(helper,axis);transverse/=np.linalg.norm(transverse)
+                self.left_tool_grip=np.eye(4)
+                self.left_tool_grip[:3,:3]=np.column_stack((transverse,np.cross(axis,transverse),axis))
+                self.left_tool_grip[:3,3]=(np.linalg.inv(self.tool) @ np.r_[point,1.])[:3]
+                self.left_grip=self.tool @ self.left_tool_grip
             self.expected_relative = None
             self.measured_rigid_grasp=config.get('grasp_reference_source','configured')=='measured_rigid'
             if 'right_to_tool' in config:
@@ -352,6 +375,8 @@ class BimanualQP:
             raise ValueError('BIMANUAL_MEASURED_GRASP_REQUIRES_AXIAL')
         if grasp_mode not in ('rigid', 'right_axial') or grasp_mode == 'right_axial' and self.axial is None:
             raise ValueError('BIMANUAL_GRASP_MODE')
+        if self.left_axial is not None and grasp_mode!='right_axial':
+            raise ValueError('BIMANUAL_DUAL_AXIAL_REQUIRES_RIGHT_AXIAL')
         if (self.measured_rigid_grasp or self.measured_grasp_policy=='unheld_test') and grasp_mode!='rigid':
             raise ValueError('BIMANUAL_MEASURED_GRASP_REQUIRES_RIGID')
         q = self._q(feedback)
@@ -402,6 +427,8 @@ class BimanualQP:
                 grip = np.linalg.inv(self.tool) @ measured @ self.right_grip
                 distance_error = np.linalg.norm(grip[:3,3]-self.tool_grip[:3,3])
                 angle = math.acos(float(np.clip(grip[:3,2] @ self.tool_grip[:3,2], -1., 1.)))
+            if self.left_axial is not None:
+                distance_error,angle=self._dual_grip_error(measured)
             if (distance_error > self.grasp_position_tolerance or
                     angle > self.grasp_rotation_tolerance):
                 raise ValueError('BIMANUAL_GRASP_POSE')
@@ -411,8 +438,13 @@ class BimanualQP:
                 # tool frame; reclutch may change only the unconstrained roll.
                 grasp=self.rigid_grasp_reference if retained else measured
                 self.tool_grip=np.linalg.inv(self.tool) @ grasp @ self.right_grip
-            ok = self.lib.bq_capture_axial(self.handle, self._ptr(q), self.nq, self._ptr(self.tool),
-                self._ptr(self.right_grip), self._ptr(self.tool_grip), c.byref(self.native_config))
+            if self.left_axial is not None:
+                ok=self.lib.bq_capture_dual_axial(self.handle,self._ptr(q),self.nq,self._ptr(self.tool),
+                    self._ptr(self.left_grip),self._ptr(self.left_tool_grip),
+                    self._ptr(self.right_grip),self._ptr(self.tool_grip),c.byref(self.native_config))
+            else:
+                ok = self.lib.bq_capture_axial(self.handle, self._ptr(q), self.nq, self._ptr(self.tool),
+                    self._ptr(self.right_grip), self._ptr(self.tool_grip), c.byref(self.native_config))
         else:
             # Rebuild the native objective from the original grasp sample.
             # FK below still uses today's confirmed hold for the tool origin.
@@ -520,6 +552,8 @@ class BimanualQP:
         return np.linalg.norm(actual[:3,3]-expected[:3,3]),angle
 
     def _grip_error(self, relative):
+        if getattr(self,'left_axial',None) is not None:
+            return self._dual_grip_error(relative)
         if self.cfg.get('grasp_reference_source')=='measured_axial':
             return self._axial_grip_error(relative,self.grasp_reference)
         error=np.linalg.inv(self.grasp_reference) @ relative
@@ -534,11 +568,23 @@ class BimanualQP:
                 angle=math.acos(float(np.clip(actual[:3,2] @ self.tool_grip[:3,2],-1.,1.)))
         return distance,angle
 
+    def _dual_grip_error(self, relative):
+        actual=relative @ self.right_grip
+        a=actual[:3,2];b=self.left_grip[:3,2]
+        cosine=float(a @ b)
+        if abs(cosine)>.95:raise ValueError('BIMANUAL_DUAL_AXIAL_AXES_DEGENERATE')
+        c=np.cross(a,b);c/=np.linalg.norm(c)
+        basis=np.column_stack((a,np.cross(c,a),c))
+        at=self.tool_grip[:3,2];bt=self.left_tool_grip[:3,2]
+        rotation=basis @ np.column_stack((at,bt,np.cross(at,bt))).T
+        predicted=self.left_grip[:3,3]+rotation @ (self.tool_grip[:3,3]-self.left_tool_grip[:3,3])
+        return float(np.linalg.norm(actual[:3,3]-predicted)),math.asin(abs(cosine))
+
     def checked_geometry_step(self, feedback, reference, candidate, *, deadline=None, independent=False):
         """Bound only a rejected candidate; never skip measured/path validation."""
         from .tool_geometry import GeometryBudgetExceeded
         check=self.check_independent_path if independent else self.check_path
-        failures=('GRASP_PENETRATION:','GRASP_CLOSURE:','SELF_COLLISION:','PAN_CLEARANCE:','SHAFT_CLEARANCE:','BIN_CLEARANCE:')
+        failures=('GRASP_PENETRATION:','GRASP_CLOSURE:','SELF_COLLISION:','PAN_CLEARANCE:','SHAFT_CLEARANCE:','HANDLE_CLEARANCE:','BIN_CLEARANCE:')
         if not self.geometry_step_backtracking:
             check(feedback,candidate,reference)
             return candidate,1.
@@ -866,9 +912,12 @@ class BimanualQP:
                 angle = math.acos(float(np.clip((np.trace(error[:3,:3])-1.)/2.,-1.,1.)))
                 distance = np.linalg.norm(error[:3,3])
             else:
-                actual = np.linalg.inv(self.tool) @ relative @ self.right_grip
-                distance = np.linalg.norm(actual[:3,3]-self.tool_grip[:3,3])
-                angle = math.acos(float(np.clip(actual[:3,2] @ self.tool_grip[:3,2],-1.,1.)))
+                if self.left_axial is not None:
+                    distance,angle=self._dual_grip_error(relative)
+                else:
+                    actual = np.linalg.inv(self.tool) @ relative @ self.right_grip
+                    distance = np.linalg.norm(actual[:3,3]-self.tool_grip[:3,3])
+                    angle = math.acos(float(np.clip(actual[:3,2] @ self.tool_grip[:3,2],-1.,1.)))
             if (self.measured_grasp_policy == 'enforce' and
                     math.hypot(distance,angle) > self.cfg['max_relative_error']):
                 self._reject_constraint('BIMANUAL_MEASURED_GRASP_ERROR',

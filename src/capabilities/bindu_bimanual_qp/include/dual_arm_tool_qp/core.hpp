@@ -105,8 +105,15 @@ public:
   void captureAxial(const pinocchio::SE3 &left_to_tool,
                     const pinocchio::SE3 &right_to_grip,
                     const pinocchio::SE3 &tool_to_grip);
-  int constraintRows() const { return axial_ ? 5 : 6; }
-  void reset() { captured_ = false; axial_ = false; }
+  // Two revolute supports, with perpendicular grip-frame +Z axes. The grip
+  // line lies in their plane; tool pose uses both axes, never left roll alone.
+  void captureDualAxial(const pinocchio::SE3 &left_to_tool,
+                        const pinocchio::SE3 &left_to_grip,
+                        const pinocchio::SE3 &tool_to_left_grip,
+                        const pinocchio::SE3 &right_to_grip,
+                        const pinocchio::SE3 &tool_to_right_grip);
+  int constraintRows() const { return dual_axial_ ? 4 : axial_ ? 5 : 6; }
+  void reset() { captured_ = false; axial_ = dual_axial_ = false; }
   bool captured() const { return captured_; }
   pinocchio::SE3 toolPose() const;
   Eigen::MatrixXd toolJacobian() const;
@@ -120,6 +127,11 @@ private:
   RobotModel &robot_;
   bool captured_{false};
   bool axial_{false};
+  bool dual_axial_{false};
+  pinocchio::SE3 left_to_grip_{pinocchio::SE3::Identity()};
+  pinocchio::SE3 tool_to_left_grip_{pinocchio::SE3::Identity()};
+  Eigen::Matrix3d grip_basis_{Eigen::Matrix3d::Identity()};
+  double grip_length_{0.}, grip_lateral_{0.};
   pinocchio::SE3 right_to_grip_{pinocchio::SE3::Identity()};
   pinocchio::SE3 tool_to_grip_{pinocchio::SE3::Identity()};
   pinocchio::SE3 left_to_tool_{pinocchio::SE3::Identity()};

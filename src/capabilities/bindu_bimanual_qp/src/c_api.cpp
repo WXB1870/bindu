@@ -200,6 +200,23 @@ int bq_capture_axial(void *ptr, const double *q, int n, const double *tool,
     } catch (...) { h.kin->reset(); throw; }
   });
 }
+int bq_capture_dual_axial(void *ptr, const double *q, int n, const double *tool,
+    const double *left_grip, const double *tool_left_grip,
+    const double *right_grip, const double *tool_right_grip, const bq_config *config) {
+  return checked(ptr,[&](Handle &h) {
+    h.qp.reset(); h.kin->reset();
+    if (!config || config->abi_version!=BQ_ABI_VERSION || config->struct_size!=sizeof(bq_config))
+      throw std::invalid_argument("QP config ABI mismatch");
+    Config native; copyConfig(native,*config); update(h,q,n);
+    try {
+      h.kin->captureDualAxial(pose(tool),pose(left_grip),pose(tool_left_grip),pose(right_grip),pose(tool_right_grip));
+      if (h.kin->relativeError().norm()>native.max_relative_error)
+        throw std::invalid_argument("dual support mismatch");
+      h.qp=std::make_unique<QpController>(*h.robot,*h.kin,native,h.robot->activePositions(),h.shared_count);
+      h.qp->setMeasuredLimitTolerance(h.measured_limit_tolerance);
+    } catch (...) { h.kin->reset(); throw; }
+  });
+}
 int bq_shared_targets(void *ptr, const double *targets, int n) {
   return checked(ptr, [&](Handle &h) {
     if (!h.qp) throw std::invalid_argument("solver not captured");

@@ -11,6 +11,30 @@ class GeometryBudgetExceeded(TimeoutError):
     """A candidate search ran out of time; not proof of safe geometry."""
 
 
+def d_handle_parts(recipe):
+    """Use the model's actual D-frame cylinders for CAD and physics."""
+    if not recipe.get('d_handle_urdf'):return []
+    import xml.etree.ElementTree as ET
+    from scipy.spatial.transform import Rotation
+    parts=[]
+    for collision in ET.parse(recipe['d_handle_urdf']).findall('./link/collision'):
+        name=collision.get('name','')
+        if not name.startswith('d_handle_'):continue
+        cylinder=collision.find('geometry/cylinder');origin=collision.find('origin')
+        if cylinder is None or origin is None:raise ValueError('INVALID_D_HANDLE_MODEL')
+        center=np.fromstring(origin.get('xyz',''),sep=' ')
+        angles=np.fromstring(origin.get('rpy',''),sep=' ')
+        radius=float(cylinder.get('radius'));length=float(cylinder.get('length'))
+        if (center.shape!=(3,) or angles.shape!=(3,) or
+                not np.isfinite(np.r_[center,angles,radius,length]).all() or min(radius,length)<=0):
+            raise ValueError('INVALID_D_HANDLE_MODEL')
+        parts.append(dict(name=name,kind='cylinder',radius=radius,length=length,
+            center=center,rotation=Rotation.from_euler('xyz',angles).as_matrix()))
+    if not parts or sum(p['name']=='d_handle_crossbar' for p in parts)!=1:
+        raise ValueError('INVALID_D_HANDLE_MODEL')
+    return parts
+
+
 def _shaft_contact_span(ends, center, half_length, endpoint_tolerance_m=0.):
     """Clip an allowed contact band to the rod without growing its geometry."""
     try:
@@ -343,6 +367,26 @@ def make_collision_checker(urdf, recipe, conservative_convex=False, *, tool_pres
     transverse /= np.linalg.norm(transverse)
     rotation = np.column_stack((transverse, np.cross(shaft_axis, transverse), shaft_axis))
     contacts = recipe['shaft_contacts']
+    handle_parts=d_handle_parts(recipe)
+    handle_models=[(part,fcl.Cylinder(part['radius'],part['length'])) for part in handle_parts]
+    handle_rotations={}
+    handle_queries=[]
+    for part in handle_parts:
+        full=(fcl.Cylinder(part['radius'],part['length']),part['center'])
+        for body_index,name in enumerate(names):
+            spans=[(-part['length']/2,part['length']/2)]
+            band=recipe.get('handle_contacts',{}).get(name)
+            if band is not None and part['name']=='d_handle_crossbar':
+                lo,hi=_shaft_contact_span(spans[0],band['center_m'],band['half_length_m'])
+                spans=[(spans[0][0],lo),(hi,spans[0][1])]
+            for lo,hi in spans:
+                if hi-lo<1e-12:continue
+                if len(spans)==1:shape,center=full
+                else:
+                    shape=fcl.Cylinder(part['radius'],hi-lo)
+                    center=part['center']+part['rotation'][:,2]*(lo+hi)/2
+                handle_rotations[id(shape)]=part['rotation']
+                handle_queries.append((body_index,shape,center))
     contact_endpoint_tolerance = recipe.get('shaft_contact_endpoint_tolerance_m', 0.)
     if not set(contacts).issubset(names):
         raise ValueError('UNKNOWN_SHAFT_CONTACT_LINK')
@@ -377,9 +421,15 @@ def make_collision_checker(urdf, recipe, conservative_convex=False, *, tool_pres
                 segments[name].append(segment_cache[key])
         tool_parts = ([('PAN', pan, np.asarray(recipe['pan_center_m']))] if has_pan else []) + [
             ('SHAFT', shape, center) for shape, center in segment_cache.values()]
+        handle_ids={}
+        for _,shape,center in handle_queries:
+            if id(shape) not in handle_ids:
+                handle_ids[id(shape)]=len(tool_parts)
+                tool_parts.append(('HANDLE',shape,center))
         tool_ids = {id(shape): i for i, (_, shape, _) in enumerate(tool_parts)}
         body_queries = [(i, j) for i, name in enumerate(names)
                         for j in ([0] if has_pan else [])+[tool_ids[id(shape)] for shape, _ in segments[name]]]
+        body_queries += [(i,handle_ids[id(shape)]) for i,shape,_ in handle_queries]
         body_indices, part_indices = np.array(body_queries).T
         return tool_parts, body_queries, body_indices, part_indices
     pan = fcl.Box(*recipe['pan_size_m'])
@@ -511,6 +561,11 @@ def make_collision_checker(urdf, recipe, conservative_convex=False, *, tool_pres
             radial_height = radius*np.sqrt(max(0.,1.-axis_z*axis_z))
             shaft_heights = (shaft_points @ tool[:3,:3].T + tool[:3,3])[:,2] - radial_height
             tool_clearance=float(min(corners[:,2].min() if has_pan else float('inf'),shaft_heights.min())-ground_z)
+            for part in handle_parts:
+                rz=float((tool[:3,:3] @ part['rotation'][:,2])[2])
+                height=float((tool[:3,:3] @ part['center']+tool[:3,3])[2])
+                bottom=height-abs(rz)*part['length']/2-part['radius']*np.sqrt(max(0.,1-rz*rz))
+                tool_clearance=min(tool_clearance,bottom-ground_z)
             if tool_present:
                 ground_minimum=min(ground_minimum,tool_clearance)
                 ground_warnings+=int(tool_clearance<floor_clearance and ground_policy!='disabled')
@@ -522,7 +577,7 @@ def make_collision_checker(urdf, recipe, conservative_convex=False, *, tool_pres
                        world_bounds(shape,place.rotation,place.translation))
                       for name,shape,place in zip(names,query_shapes,geometry_data.oMg)]
             parts = [(part, shape, pan_pose if part == 'PAN' else fcl.Transform3s(
-                        tool[:3, :3] @ rotation, tool[:3, 3]+tool[:3, :3] @ center))
+                        tool[:3, :3] @ handle_rotations.get(id(shape),rotation), tool[:3, 3]+tool[:3, :3] @ center))
                      for part, shape, center in tool_parts]
             part_bounds = [world_bounds(shape, pose.getRotation(), pose.getTranslation())
                            for _, shape, pose in parts]
@@ -578,6 +633,9 @@ def make_collision_checker(urdf, recipe, conservative_convex=False, *, tool_pres
             shaft_pose = fcl.Transform3s(tool[:3,:3] @ rotation,tool[:3,3]+tool[:3,:3] @ shaft_center)
             scene_parts = bodies + ([('PAN',pan,pan_pose,part_bounds[0])] if has_pan else []) + [
                 ('SHAFT',full_shaft,shaft_pose,world_bounds(full_shaft,shaft_pose.getRotation(),shaft_pose.getTranslation()))]
+            for part,shape in handle_models:
+                placement=fcl.Transform3s(tool[:3,:3] @ part['rotation'],tool[:3,3]+tool[:3,:3] @ part['center'])
+                scene_parts.append(('HANDLE',shape,placement,world_bounds(shape,placement.getRotation(),placement.getTranslation())))
             if not tool_present: scene_parts = bodies
             if bin_parts:
                 scene_centers, scene_halves = np.asarray([part[3] for part in scene_parts]).transpose(1, 0, 2)

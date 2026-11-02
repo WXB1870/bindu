@@ -754,3 +754,46 @@ TEST_F(CoreTest, AxialRollIsFreeButSlipTiltAndReversedAxisAreNot) {
   EXPECT_EQ(kin_->constraintRows(),6);
   EXPECT_LT(kin_->relativeError().norm(),1e-12);
 }
+
+TEST_F(CoreTest, DualAxialToolAndClosureJacobiansMatchFiniteDifferences) {
+  const auto mount=kin_->leftToTool();
+  const auto home=kin_->toolPose();
+  const Eigen::Vector3d pl=robot_->leftPose().translation(), pr=robot_->rightPose().translation();
+  const Eigen::Vector3d a=(pl-pr).normalized();
+  const Eigen::Vector3d b=a.cross(Eigen::Vector3d::UnitX()).normalized();
+  Eigen::Matrix3d right_rotation, left_rotation;
+  right_rotation.col(0)=b; right_rotation.col(1)=a.cross(b); right_rotation.col(2)=a;
+  left_rotation.col(0)=a; left_rotation.col(1)=b.cross(a); left_rotation.col(2)=b;
+  const pinocchio::SE3 left_world(left_rotation,pl), right_world(right_rotation,pr);
+  const auto lg=robot_->leftPose().actInv(left_world), rg=robot_->rightPose().actInv(right_world);
+  const auto tl=home.actInv(left_world), tr=home.actInv(right_world);
+  kin_->captureDualAxial(mount,lg,tl,rg,tr);
+  ASSERT_EQ(kin_->constraintRows(),4);
+  EXPECT_LT(kin_->relativeError().norm(),1e-12);
+  EXPECT_TRUE(kin_->toolPose().isApprox(home,1e-10));
+  auto q=robot_->positions(); q[robot_->qIndex("left_joint_2")]+=.03;
+  q[robot_->qIndex("right_joint_4")]-=.04; robot_->update(q);
+  const auto pose=kin_->toolPose(); const auto error=kin_->relativeError();
+  const auto jt=kin_->toolJacobian(), jc=kin_->relativeErrorJacobian();
+  for (int i=0;i<robot_->variables();++i) {
+    auto perturbed=q;perturbed[robot_->qIndex(robot_->activeJointNames()[i])]+=1e-7;
+    robot_->update(perturbed);
+    EXPECT_LT((pinocchio::log6(pose.actInv(kin_->toolPose())).toVector()/1e-7-jt.col(i)).norm(),1e-5);
+    EXPECT_LT(((kin_->relativeError()-error)/1e-7-jc.col(i)).norm(),1e-5);
+  }
+  robot_->update(q);
+  datq::Config cfg;cfg.max_relative_error=.3;
+  datq::QpController controller(*robot_,*kin_,cfg,robot_->activePositions());
+  const auto result=controller.solve(pose,.01,robot_->activePositions());
+  ASSERT_TRUE(result.ok)<<result.reason;
+  EXPECT_LT((jc*result.velocity+result.relative_gain_scale*cfg.relative_gain*error).norm(),1e-3);
+  auto rolled_lg=lg,rolled_tl=tl,rolled_rg=rg,rolled_tr=tr;
+  const auto roll=pinocchio::exp3(Eigen::Vector3d(0,0,1.7));
+  for (auto p : {&rolled_lg,&rolled_tl,&rolled_rg,&rolled_tr})p->rotation()=p->rotation()*roll;
+  kin_->captureDualAxial(mount,rolled_lg,rolled_tl,rolled_rg,rolled_tr);
+  EXPECT_TRUE(kin_->toolPose().isApprox(pose,1e-10));
+  EXPECT_NEAR(kin_->relativeError().norm(),error.norm(),1e-10);
+  auto parallel=tr;parallel.rotation()=tl.rotation();
+  EXPECT_THROW(kin_->captureDualAxial(mount,lg,tl,rg,parallel),std::invalid_argument);
+  EXPECT_FALSE(kin_->captured());
+}
