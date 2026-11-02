@@ -137,7 +137,7 @@ def load_deployment(path, share):
             if value.startswith('package://'):
                 value = str(resource_file(value))
             else:
-                if value.startswith('@runtime/config/robots/snowbot/'):
+                if value.startswith(('@runtime/config/robots/snowbot/', '@runtime/config/examples/snowbot/')):
                     # Legacy site recipes retain their spelling, with one maintained source.
                     value = str(resource_file('package://snowbot_bringup/'+value[9:]))
                     resolved = Path(value)

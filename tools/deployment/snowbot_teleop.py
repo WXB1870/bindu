@@ -17,7 +17,7 @@ import uuid
 from tools import ROOT
 SHARE = ROOT/'src/integration/bindu_runtime'
 def recipe_path():
-    return package_share('snowbot_bringup')/'config/deployments/snowbot_real_teleop.json'
+    return package_share('snowbot_bringup')/'config/examples/snowbot/snowbot_real_teleop.json'
 
 
 def namespace(value):

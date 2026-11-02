@@ -128,10 +128,10 @@ def main():
     right=['right_joint_'+str(k) for k in range(1,7)]
     physics_model=None
     if args.snowbot:
-        profile=package_share('snowbot_bringup')/'config/robots/snowbot/snowbot_sim.json'
-        config=package_share('snowbot_bringup')/'config/robots/snowbot/bimanual_snowbot_sim.json'
+        profile=package_share('snowbot_bringup')/'config/examples/snowbot/snowbot_sim.json'
+        config=package_share('snowbot_bringup')/'config/examples/snowbot/bimanual_snowbot_sim.json'
         if args.axial_grasp:
-            config=package_share('snowbot_bringup')/'config/robots/snowbot/bimanual_snowbot_shovel.json'
+            config=package_share('snowbot_bringup')/'config/examples/snowbot/bimanual_snowbot_shovel.json'
             profile=config.parent/json.loads(config.read_text())['demo']['profile']
         if args.expect_geometry_rejection:
             invalid=json.loads(config.read_text())
@@ -209,7 +209,7 @@ def main():
                             '-p','model_root:='+str((package_share('snowbot_description')/'urdf')
                                                     if physics_model or args.snowbot else fixture.parent)])
         if args.snowbot:
-            start('teleop',['-p','teleop_config:='+str(package_share('snowbot_bringup')/'config/robots/snowbot/teleop_snowbot_left.json'),
+            start('teleop',['-p','teleop_config:='+str(package_share('snowbot_bringup')/'config/examples/snowbot/teleop_snowbot_left.json'),
                             '-p','model_root:='+str(package_share('snowbot_description')/'urdf'),
                             '-p','require_mode_selection:=true'])
         if args.tool_display:

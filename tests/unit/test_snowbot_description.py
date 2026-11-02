@@ -30,7 +30,7 @@ class SnowbotDescription(unittest.TestCase):
         self.assertFalse(reduced.findall('.//mesh'))
         self.assertEqual(len(display.findall('.//mesh')),len(full.findall('.//mesh')))
         moving={j.get('name') for j in reduced.findall('joint') if j.get('type')!='fixed'}
-        profile=Profile.load(package_share("snowbot_bringup")/'config/robots/snowbot/snowbot_sim.json')
+        profile=Profile.load(package_share("snowbot_bringup")/'config/examples/snowbot/snowbot_sim.json')
         self.assertEqual(moving,{n for names in profile.groups.values() for n in names})
         self.assertEqual(profile.groups['waist'],['body_joint_1','body_joint_2'])
         self.assertEqual(len(profile.groups['left_arm']),7)
@@ -65,9 +65,11 @@ class SnowbotDescription(unittest.TestCase):
 
     def test_profiles_never_exceed_updated_model(self):
         model=ET.parse(DESCRIPTION/'urdf/snowbot_control.urdf').getroot()
-        for name in ('snowbot_sim.json','snowbot_shovel_sim.json',
-                     'snowbot_real_position.json','snowbot_vendor_position.json'):
-            profile=Profile.load(CONFIG/'robots/snowbot'/name)
+        for name in ('examples/snowbot/snowbot_sim.json','examples/snowbot/snowbot_shovel_sim.json',
+                     'robots/snowbot/snowbot_real_position.json','examples/snowbot/snowbot_vendor_position.json'):
+            profile=Profile.load(CONFIG/name)
+            model=ET.parse(DESCRIPTION/'urdf'/('snowbot_control_real.urdf' if
+                name=='robots/snowbot/snowbot_real_position.json' else 'snowbot_control.urdf')).getroot()
             for joint,(lo,hi) in profile.limits.items():
                 limit=model.find(f"joint[@name='{joint}']/limit")
                 self.assertGreaterEqual(lo,float(limit.get('lower')),(name,joint))
@@ -78,12 +80,15 @@ class SnowbotDescription(unittest.TestCase):
     def test_real_and_simulation_selection_load_updated_models_without_ros(self):
         from bindu_runtime.robot_setup import RobotSetup
         packages={'bindu_description':DESCRIPTION,'bindu_runtime':CONFIG.parent}
-        for filename in ('robot_snowbot.json','robot_snowbot_real.json'):
-            selection=RobotSetup.load(CONFIG/'robots/snowbot'/filename,packages)
-            self.assertEqual(selection.urdf,DESCRIPTION/'urdf/snowbot_control.urdf')
+        for filename,model in (('examples/snowbot/robot_snowbot.json','snowbot_control.urdf'),
+                               ('robots/snowbot/robot_snowbot_real.json','snowbot_control_real.urdf')):
+            selection=RobotSetup.load(CONFIG/filename,packages)
+            self.assertEqual(selection.urdf,DESCRIPTION/'urdf'/model)
             self.assertEqual(selection.display_urdf,DESCRIPTION/'urdf/snowbot_display.urdf')
-            self.assertLessEqual(selection.profile.limits['arm_r_joint_6'][1],1.274)
-            self.assertLessEqual(selection.profile.limits['arm_r_joint_7'][1],1.449)
+            model_root=ET.parse(selection.urdf).getroot()
+            for joint in ('arm_r_joint_6','arm_r_joint_7'):
+                upper=float(model_root.find(f"joint[@name='{joint}']/limit").get('upper'))
+                self.assertLessEqual(selection.profile.limits[joint][1],upper)
 
     def test_mesh_reuse_regeneration_reproduces_checked_in_variants(self):
         from tools.models.prepare_snowbot_description import apply_joint_source,write_variants

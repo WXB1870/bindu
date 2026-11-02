@@ -66,9 +66,9 @@ class ImpedanceSelectionTests(unittest.TestCase):
         from snowbot_hardware.protocol import GROUPS
         cfg = apply_execution_tracking(self.config, 'impedance', real=True, position_contract=True)
         cfg['urdf'] = str(package_share("snowbot_description")/'urdf/snowbot_control.urdf')
-        profile = Profile.load(package_share("snowbot_bringup")/'config/robots/snowbot/snowbot_vendor_position.json')
+        profile = Profile.load(package_share("snowbot_bringup")/'config/examples/snowbot/snowbot_vendor_position.json')
         solver = BimanualQP(cfg, profile);self.addCleanup(solver.close)
-        q = json.loads((package_share("snowbot_bringup")/'config/robots/snowbot/bimanual_snowbot_shovel.json').read_text())['demo']['initial_positions_rad']
+        q = json.loads((package_share("snowbot_bringup")/'config/examples/snowbot/bimanual_snowbot_shovel.json').read_text())['demo']['initial_positions_rad']
         target = solver.capture(q).copy();target[0,3] += .001
         output, _ = solver.solve(q, target, reference=[q[n] for n in solver.names], dt=.01, target_stamp=10.)
         self.assertEqual(solver.tracking_feedback, 'reference')

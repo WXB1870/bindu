@@ -1374,9 +1374,9 @@ class NativeBimanual(unittest.TestCase):
                 solver.close()
 
     def test_snowbot_cad_waist_and_seven_axis_arm_layout(self):
-        config=json.loads((package_share("snowbot_bringup")/'config/robots/snowbot/bimanual_snowbot_sim.json').read_text())
+        config=json.loads((package_share("snowbot_bringup")/'config/examples/snowbot/bimanual_snowbot_sim.json').read_text())
         config['urdf']=str(package_share("snowbot_description")/'urdf/snowbot_control.urdf')
-        profile=Profile.load(package_share("snowbot_bringup")/'config/robots/snowbot/snowbot_sim.json')
+        profile=Profile.load(package_share("snowbot_bringup")/'config/examples/snowbot/snowbot_sim.json')
         solver=BimanualQP(config,profile)
         try:
             self.assertEqual(solver.names[:2],('body_joint_1','body_joint_2'))
@@ -1402,9 +1402,9 @@ class NativeBimanual(unittest.TestCase):
             solver.close()
 
     def test_shovel_grasp_checks_orientation_and_invalidates_failed_capture(self):
-        config=json.loads((package_share("snowbot_bringup")/'config/robots/snowbot/bimanual_snowbot_shovel.json').read_text())
+        config=json.loads((package_share("snowbot_bringup")/'config/examples/snowbot/bimanual_snowbot_shovel.json').read_text())
         config['urdf']=str(package_share("snowbot_description")/'urdf/snowbot_control.urdf')
-        profile=Profile.load(package_share("snowbot_bringup")/'config/robots/snowbot/snowbot_sim.json')
+        profile=Profile.load(package_share("snowbot_bringup")/'config/examples/snowbot/snowbot_sim.json')
         solver=BimanualQP(config,profile)
         self.addCleanup(solver.close)
         ready=dict(config['demo']['initial_positions_rad'])
@@ -1425,9 +1425,9 @@ class NativeBimanual(unittest.TestCase):
         self.assertLess(metrics[1],1e-6)
 
     def test_shovel_grasp_rejects_inconsistent_second_attachment(self):
-        config=json.loads((package_share("snowbot_bringup")/'config/robots/snowbot/bimanual_snowbot_shovel.json').read_text())
+        config=json.loads((package_share("snowbot_bringup")/'config/examples/snowbot/bimanual_snowbot_shovel.json').read_text())
         config['urdf']=str(package_share("snowbot_description")/'urdf/snowbot_control.urdf')
-        profile=Profile.load(package_share("snowbot_bringup")/'config/robots/snowbot/snowbot_sim.json')
+        profile=Profile.load(package_share("snowbot_bringup")/'config/examples/snowbot/snowbot_sim.json')
         attachment=np.array(config['right_to_tool']).reshape(4,4)
         attachment[0,3]+=.02
         config['right_to_tool']=attachment.ravel().tolist()
@@ -1504,9 +1504,9 @@ class AxialShovelTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'REQUIRES_RIGID'):solver.capture(q,'right_axial')
 
     def setUp(self):
-        self.cfg=json.loads((package_share("snowbot_bringup")/'config/robots/snowbot/bimanual_snowbot_shovel.json').read_text())
+        self.cfg=json.loads((package_share("snowbot_bringup")/'config/examples/snowbot/bimanual_snowbot_shovel.json').read_text())
         self.cfg['urdf']=str(package_share("snowbot_description")/'urdf/snowbot_control.urdf')
-        self.profile=Profile.load(package_share("snowbot_bringup")/'config/robots/snowbot/snowbot_sim.json')
+        self.profile=Profile.load(package_share("snowbot_bringup")/'config/examples/snowbot/snowbot_sim.json')
         self.qp=BimanualQP(self.cfg,self.profile)
         self.addCleanup(self.qp.close)
         self.ready=self.cfg['demo']['initial_positions_rad']
