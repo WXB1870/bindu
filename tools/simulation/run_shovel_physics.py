@@ -104,6 +104,10 @@ def simulate(app, args, motion, cfg):
     mounts = [np.array(source_config[side+'_to_tool']).reshape(4, 4)[:3, :3] for side in ('left', 'right')]
     recipe = motion['recipe']
     contact_grasp = cfg.get('grasp_model', 'proxy') == 'contact'
+    left_axial=source_config.get('left_axial_grasp')
+    if left_axial is not None and contact_grasp:
+        raise ValueError('DUAL_AXIAL_PHYSICS_REQUIRES_PROXY_GRASP')
+    left_axis=None if left_axial is None else np.asarray(left_axial['axis_in_tool'],dtype=float)
     cfg['shaft_axis_in_tool'] = np.array(recipe['shaft_axis_in_tool'])
     tool_offsets = [np.array(recipe[side+'_grip_in_tool_m']) for side in ('left', 'right')]
     hand_offsets = [np.array(recipe.get(side+'_grip_offset_m', recipe['grip_offset_m']))
@@ -250,11 +254,14 @@ def simulate(app, args, motion, cfg):
                 for side in range(2):
                     f, tau, point, _ = grip_wrench(hands[side], transforms[2], velocities[side], velocities[2],
                         coms[side], coms[2], hand_offsets[side], tool_offsets[side], mounts[side], cfg,
-                        axial=side == 1 and mode == 'right_axial')
+                        axial=(side == 1 or left_axis is not None) and mode == 'right_axial',
+                        released_axis_in_tool=left_axis if side == 0 else None)
                     forces.append(f); torques.append(tau); points.append(point)
             shaft_world = transforms[2][:3,:3] @ cfg['shaft_axis_in_tool']
             decomposition = internal_wrench(forces, torques, points, coms[2],
-                released_axis=shaft_world if mode=='right_axial' and not contact_grasp else None)
+                released_axis=shaft_world if mode=='right_axial' and not contact_grasp else None,
+                released_left_axis=transforms[2][:3,:3] @ left_axis
+                    if left_axis is not None and mode=='right_axial' else None)
             if args.wrench_stop_at is None or t < args.wrench_stop_at:
                 sensor_readings = {}
                 for i,side in enumerate(('left','right')):

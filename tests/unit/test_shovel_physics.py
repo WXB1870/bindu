@@ -199,6 +199,21 @@ class ShovelPhysicsTests(unittest.TestCase):
             np.testing.assert_allclose(w[:,:3].sum(axis=0),0.,atol=1e-12)
             np.testing.assert_allclose(w[:,3:].sum(axis=0)+np.cross(points-com,w[:,:3]).sum(axis=0),0.,atol=1e-12)
 
+    def test_d_handle_releases_its_own_axis_and_both_internal_couples(self):
+        hand=np.eye(4);hand[:3,:3]=Rotation.from_rotvec([0.,1.2,0.]).as_matrix()
+        _,torque,_,_=grip_wrench(hand,np.eye(4),np.array([0.,0.,0.,0.,2.,0.]),np.zeros(6),
+            np.zeros(3),np.zeros(3),np.zeros(3),np.zeros(3),np.eye(3),self.cfg,
+            axial=True,released_axis_in_tool=np.array([0.,1.,0.]))
+        np.testing.assert_allclose(torque,0.,atol=1e-12)
+        points=np.array([[0.,0.,.34],[0.,0.,0.]])
+        forces=np.array([[1.,2.,3.],[-4.,5.,-6.]])
+        moments=np.array([[1.,0.,2.],[3.,4.,0.]])
+        w=internal_wrench(forces,moments,points,np.zeros(3),released_axis=np.array([0.,0.,1.]),
+            released_left_axis=np.array([0.,1.,0.]))['wrenches']
+        self.assertAlmostEqual(w[0,4],0.);self.assertAlmostEqual(w[1,5],0.)
+        np.testing.assert_allclose(w[:,:3].sum(axis=0),0.,atol=1e-12)
+        np.testing.assert_allclose(w[:,3:].sum(axis=0)+np.cross(points,w[:,:3]).sum(axis=0),0.,atol=1e-12)
+
     def test_one_mm_spring_deflection_produces_twenty_newtons(self):
         hand, tool = np.eye(4), np.eye(4)
         hand[0,3] = .001

@@ -49,7 +49,7 @@ def load_motion(path):
 
 
 def grip_wrench(hand, tool, hand_velocity, tool_velocity, hand_com, tool_com,
-                hand_offset, tool_offset, rotation_mount, cfg, axial=False):
+                hand_offset, tool_offset, rotation_mount, cfg, axial=False, released_axis_in_tool=None):
     """Finite 6D spring; axial right grip transmits zero shaft-axis couple.
 
     Equal and opposite wrenches act at the same midpoint to conserve total
@@ -64,7 +64,10 @@ def grip_wrench(hand, tool, hand_velocity, tool_velocity, hand_com, tool_com,
     force = cfg['grip_translation_stiffness_n_m']*(hp-tp)+cfg['grip_translation_damping_ns_m']*(hv-tv)
     desired = hand[:3, :3] @ rotation_mount
     if axial:
-        a, b = tool[:3, :3] @ cfg['shaft_axis_in_tool'], hand[:3, :3] @ rotation_mount @ cfg['shaft_axis_in_tool']
+        axis=np.asarray(cfg['shaft_axis_in_tool'] if released_axis_in_tool is None else released_axis_in_tool,dtype=float)
+        if axis.shape!=(3,) or not np.isfinite(axis).all() or not np.isclose(np.linalg.norm(axis),1.):
+            raise ValueError('INVALID_RELEASED_AXIS')
+        a, b = tool[:3, :3] @ axis, hand[:3, :3] @ rotation_mount @ axis
         cross = np.cross(a, b)
         norm = np.linalg.norm(cross)
         if norm < 1e-12 and np.dot(a, b) < 0:
@@ -79,7 +82,7 @@ def grip_wrench(hand, tool, hand_velocity, tool_velocity, hand_com, tool_com,
     return force, torque, point, np.linalg.norm(hp-tp)
 
 
-def internal_wrench(forces, moments, points, com, released_axis=None):
+def internal_wrench(forces, moments, points, com, released_axis=None, released_left_axis=None):
     """Nullspace of grasp map with moment divided by measured grip spacing.
 
     The full minimum-norm decomposition depends on this length convention.
@@ -96,16 +99,21 @@ def internal_wrench(forces, moments, points, com, released_axis=None):
     grasp = np.hstack(blocks)
     scaled = np.concatenate([np.r_[f, m/length] for f, m in zip(forces, moments)])
     external = grasp @ scaled
-    basis = np.eye(12)
-    if released_axis is not None:
-        axis = np.asarray(released_axis,dtype=float)
-        if axis.shape != (3,) or not np.isfinite(axis).all() or not np.isclose(np.linalg.norm(axis),1.):
-            raise ValueError('INVALID_RELEASED_AXIS')
-        if abs(moments[1] @ axis) > 1e-8:
-            raise ValueError('RELEASED_AXIS_COUPLE')
-        transverse = np.cross(axis,np.eye(3)[np.argmin(abs(axis))]);transverse/=np.linalg.norm(transverse)
-        basis = np.zeros((12,11));basis[:9,:9]=np.eye(9)
-        basis[9:,9:] = np.column_stack((transverse,np.cross(axis,transverse)))
+    axes=(released_left_axis,released_axis)
+    basis=np.zeros((12,12-sum(axis is not None for axis in axes)))
+    column=0
+    for side,axis in enumerate(axes):
+        if axis is None:
+            basis[side*6:side*6+6,column:column+6]=np.eye(6);column+=6
+        else:
+            axis=np.asarray(axis,dtype=float)
+            if axis.shape!=(3,) or not np.isfinite(axis).all() or not np.isclose(np.linalg.norm(axis),1.):
+                raise ValueError('INVALID_RELEASED_AXIS')
+            if abs(moments[side] @ axis)>1e-8:raise ValueError('RELEASED_AXIS_COUPLE')
+            transverse=np.cross(axis,np.eye(3)[np.argmin(abs(axis))]);transverse/=np.linalg.norm(transverse)
+            basis[side*6:side*6+3,column:column+3]=np.eye(3)
+            basis[side*6+3:side*6+6,column+3:column+5]=np.column_stack((transverse,np.cross(axis,transverse)))
+            column+=5
     constrained = grasp @ basis
     coordinates = basis.T @ scaled
     internal = basis @ (coordinates-constrained.T @ np.linalg.solve(constrained @ constrained.T,external))

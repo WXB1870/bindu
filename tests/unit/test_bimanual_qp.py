@@ -19,6 +19,39 @@ from types import SimpleNamespace as S
 from bindu_kinematics.bimanual_worker import BimanualWorker
 
 
+class DualAxialGripTests(unittest.TestCase):
+    def test_requires_configured_simulation_before_loading_native_code(self):
+        for cfg in ({'left_axial_grasp':{}},
+                    {'left_axial_grasp':{},'simulation_only':True,'grasp_reference_source':'measured_axial'}):
+            with self.assertRaisesRegex(ValueError,'DUAL_AXIAL_REQUIRES_CONFIGURED_SIMULATION'):
+                BimanualQP(cfg,None)
+
+    def test_both_rolls_are_free_but_slip_tilt_and_parallel_axes_are_rejected(self):
+        from scipy.spatial.transform import Rotation
+        def pose(rotation=None,point=(0.,0.,0.)):
+            t=np.eye(4);t[:3,3]=point
+            if rotation is not None:t[:3,:3]=rotation
+            return t
+        qp=object.__new__(BimanualQP)
+        qp.left_grip=pose(point=(.119,0.,0.));qp.right_grip=qp.left_grip.copy()
+        qp.left_tool_grip=pose(Rotation.from_rotvec([-np.pi/2,0,0]).as_matrix(),(0,0,1.2))
+        qp.tool_grip=pose(point=(0,0,.86))
+        mount=qp.left_grip @ np.linalg.inv(qp.left_tool_grip)
+        relative=mount @ qp.tool_grip @ np.linalg.inv(qp.right_grip)
+        for left_roll,right_roll in ((0.,0.),(1.4,-2.),(-2.3,.7)):
+            rz=lambda angle:pose(Rotation.from_rotvec([0,0,angle]).as_matrix())
+            left=qp.left_grip @ rz(left_roll) @ np.linalg.inv(qp.left_grip)
+            right=relative @ qp.right_grip @ rz(right_roll) @ np.linalg.inv(qp.right_grip)
+            distance,angle=qp._dual_grip_error(np.linalg.inv(left) @ right)
+            self.assertLess(distance,1e-12);self.assertLess(angle,1e-12)
+        slipped=relative.copy();slipped[:3,3]+=mount[:3,2]*.02
+        self.assertAlmostEqual(qp._dual_grip_error(slipped)[0],.02)
+        tilted=relative @ qp.right_grip @ pose(Rotation.from_rotvec([.1,0,0]).as_matrix()) @ np.linalg.inv(qp.right_grip)
+        self.assertAlmostEqual(qp._dual_grip_error(tilted)[1],.1)
+        parallel=relative @ qp.right_grip @ pose(Rotation.from_rotvec([np.pi/2,0,0]).as_matrix()) @ np.linalg.inv(qp.right_grip)
+        with self.assertRaisesRegex(ValueError,'AXES_DEGENERATE'):qp._dual_grip_error(parallel)
+
+
 class TrackingFeedbackConfigTests(unittest.TestCase):
     def test_unknown_feedback_source_is_rejected_before_loading_native_code(self):
         for source in ('actual', '', None, True, []):
