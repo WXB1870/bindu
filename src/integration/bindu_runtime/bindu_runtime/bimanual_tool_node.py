@@ -26,7 +26,7 @@ WORKER_POLL_PERIOD = .005
 
 
 class BimanualToolNode(RuntimeNode):
-    def __init__(self, *, gripper_config_loader=None):
+    def __init__(self, *, gripper_config_loader=None, tool_config_loader=None):
         super().__init__('teleop_tool',allow_hardware=True,default_mode='simulation')
         self.declare_parameter('require_recording',True,descriptor=ParameterDescriptor(read_only=True))
         self.require_recording=self.get_parameter('require_recording').value
@@ -34,6 +34,8 @@ class BimanualToolNode(RuntimeNode):
         self.declare_parameter('tool_config',str(share/'config/robots/g1/bimanual_g1_sim.json'))
         self.declare_parameter('model_root',str(Path(get_package_share_directory('bindu_description'))/'urdf'))
         self.cfg=json.loads(Path(self.get_parameter('tool_config').value).read_text())
+        if tool_config_loader is not None:
+            self.cfg = tool_config_loader(self, self.cfg)
         for key, default in (('grip_press_threshold',.7),('grip_release_threshold',.3),('trigger_release_threshold',.3)):
             self.cfg[key] = self.declare_parameter(key, self.cfg.get(key, default), descriptor=ParameterDescriptor(read_only=True)).value
         self.cfg['pair_max_skew_s'] = self.declare_parameter('pair_max_skew_s',self.cfg.get('pair_max_skew_s',.02),descriptor=ParameterDescriptor(read_only=True)).value

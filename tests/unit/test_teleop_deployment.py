@@ -124,9 +124,44 @@ from bindu_runtime.simulation_devices import SimulationDevices,PhysicsJoints,Phy
                                         ('simulation','bindu_runtime','execution')):
             actions=namespace['assemble'](dict(runtime_mode=mode,command_enabled='false'))
             self.assertEqual((actions[0]['package'],actions[0]['executable']),(package,executable))
-        actions=namespace['assemble'](dict(runtime_mode='real',position_protocol='session_v3',
-                                          target_stream_brake_lead_s='0.10'))
-        self.assertEqual(actions[0]['parameters'][0]['target_stream_brake_lead_s'],.1)
+        with tempfile.TemporaryDirectory() as tmp:
+            parameters=Path(tmp)/'parameters.json'
+            parameters.write_text(json.dumps({'execution':{'target_stream_brake_lead_s':.1}}))
+            actions=namespace['assemble'](dict(runtime_mode='real',position_protocol='session_v3',
+                                              parameters_config=str(parameters)))
+            self.assertEqual(actions[0]['parameters'][0]['target_stream_brake_lead_s'],.1)
+
+    def test_shared_timing_is_forwarded_to_all_position_nodes_before_launch(self):
+        import ast
+        from bindu_runtime.robot_setup import RobotSetup
+        from bindu_contracts.runtime_mode import resolve_mode
+        from bindu_runtime.teleop_deployment import TARGET_STREAM_LIMIT_DEFAULTS, target_stream_limits
+        source=package_share('snowbot_bringup')/'snowbot_bringup/assembly.py'
+        definition=next(n for n in ast.parse(source.read_text()).body if getattr(n,'name','')=='assemble')
+        class Configuration:
+            def __init__(self,name,default=''):self.name,self.default=name,default
+            def perform(self,context):return context.get(self.name,self.default)
+        namespace=dict(Path=Path,json=json,RobotSetup=RobotSetup,resolve_mode=resolve_mode,
+            LaunchConfiguration=Configuration,TARGET_STREAM_LIMIT_DEFAULTS=TARGET_STREAM_LIMIT_DEFAULTS,
+            target_stream_limits=target_stream_limits,get_package_share_directory=lambda name:str(package_share(name)),
+            Node=lambda **values:values,LogInfo=lambda **values:values,IfCondition=lambda value:value,
+            ParameterValue=lambda value,**kw:value)
+        exec(compile(ast.Module(body=[definition],type_ignores=[]),str(source),'exec'),namespace)
+        recipe=package_share('snowbot_bringup')/'config/deployments/snowbot_vr_real.json'
+        _,context=load_deployment(recipe,SHARE)
+        with tempfile.TemporaryDirectory() as tmp:
+            parameters=Path(tmp)/'parameters.json'
+            parameters.write_text(json.dumps({'execution':{'target_stream_brake_lead_s':.04},
+                                              'pico':{'prepare_command_period_s':.2}}))
+            context['parameters_config']=str(parameters)
+            actions=namespace['assemble'](context)
+            nodes={item['executable']:item['parameters'][0] for item in actions if 'executable' in item}
+            for name in ('teleop_tool','pico_control','snowbot_adapter'):
+                self.assertEqual(nodes[name]['parameters_config'],str(parameters))
+            self.assertEqual(nodes['snowbot_adapter']['target_stream_brake_lead_s'],.04)
+            context['target_stream_brake_lead_s']='.12'
+            with self.assertRaisesRegex(ValueError,'SNOWBOT_BRAKE_LEAD_MOVED'):
+                namespace['assemble'](context)
 
     def test_selected_source_is_explicit_and_rejects_ambiguous_packages(self):
         import os
