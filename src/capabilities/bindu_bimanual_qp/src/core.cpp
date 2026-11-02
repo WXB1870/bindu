@@ -200,7 +200,7 @@ void RigidToolKinematics::captureDualAxial(const pinocchio::SE3 &left_to_tool,
   if (length<.01) throw std::invalid_argument("invalid dual support spacing");
   if ((delta+length*a-lateral*b).norm()>1e-6)
     throw std::invalid_argument("dual support grip line outside axis plane");
-  if (!left_to_grip.isApprox(left_to_tool*tool_to_left_grip,1e-6))
+  if (pinocchio::log6(left_to_grip.actInv(left_to_tool*tool_to_left_grip)).toVector().norm()>1e-6)
     throw std::invalid_argument("dual support left mount mismatch");
   capture(left_to_tool);
   left_to_grip_=left_to_grip; tool_to_left_grip_=tool_to_left_grip;
