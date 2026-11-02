@@ -91,17 +91,17 @@ from bindu_runtime.simulation_devices import SimulationDevices,PhysicsJoints,Phy
         from bindu_contracts.resources import resource_file
         share=package_share('snowbot_bringup')
         deployment=json.loads((share/'config/deployments/snowbot_vr_sim.json').read_text())
+        real_deployment=json.loads((share/'config/deployments/snowbot_vr_real.json').read_text())
+        self.assertEqual(deployment['arguments']['robot_config'],real_deployment['arguments']['robot_config'])
         robot_path=resource_file(deployment['arguments']['robot_config'])
         robot=json.loads(robot_path.read_text())
         tool=json.loads((robot_path.parent/robot['teleop']['tool']).read_text())
-        real=json.loads((robot_path.parent/'bimanual_snowbot_real.json').read_text())
-        self.assertEqual(tool['tool_grasp_confirmation'],'calibrated')
-        self.assertEqual(real['tool_grasp_confirmation'],'operator')
-        for config in (tool,real):
-            self.assertEqual(config['grasp_reference_source'],'measured_axial')
-            self.assertIs(config['rigid_reference_prediction'],False)
-        self.assertEqual({k for k in tool.keys()|real.keys() if tool.get(k)!=real.get(k)},
-                         {'tool_grasp_confirmation'})
+        self.assertNotIn('tool_grasp_confirmation',tool)
+        self.assertEqual(tool['grasp_reference_source'],'measured_axial')
+        self.assertIs(tool['rigid_reference_prediction'],False)
+        for recipe,expected in ((deployment,'calibrated'),(real_deployment,'operator')):
+            pico=json.loads(resource_file(recipe['arguments']['pico_config']).read_text())
+            self.assertEqual(pico['tool_grasp_confirmation'],expected)
         grippers=json.loads(resource_file(deployment['arguments']['gripper_config']).read_text())
         self.assertIs(grippers['simulation_only'],True)
         self.assertFalse(grippers.get('independent_trigger_control',False))
@@ -305,8 +305,8 @@ class DeploymentTests(unittest.TestCase):
 
     def test_legacy_schema_still_loads_without_a_duplicate_deployment_file(self):
         recipe={'schema_version':1,'robot_launch':'snowbot_sim.launch.py','arguments':{
-            'profile':'@runtime/config/robots/snowbot/snowbot_shovel_sim.json',
-            'bimanual_config':'@runtime/config/robots/snowbot/bimanual_snowbot_shovel.json'}}
+            'profile':'@runtime/config/examples/snowbot/snowbot_shovel_sim.json',
+            'bimanual_config':'@runtime/config/examples/snowbot/bimanual_snowbot_shovel.json'}}
         with tempfile.TemporaryDirectory() as tmp:
             path=Path(tmp)/'legacy.json';path.write_text(json.dumps(recipe))
             launch,args=load_deployment(path,SHARE)
@@ -316,7 +316,7 @@ class DeploymentTests(unittest.TestCase):
         self.assertTrue(Path(args['bimanual_config']).is_file())
 
     def test_pico_recipe_is_explicit_simulation_and_not_default(self):
-        launch,args=load_deployment(package_share("snowbot_bringup")/'config/deployments/teleop_pico_snowbot_sim.json',SHARE)
+        launch,args=load_deployment(package_share("snowbot_bringup")/'config/examples/snowbot/teleop_pico_snowbot_sim.json',SHARE)
         self.assertEqual(launch,'robot_teleop.launch.py')
         self.assertEqual(args['runtime_mode'],'simulation')
         self.assertEqual(args['pico_enabled'],'true')
@@ -325,7 +325,7 @@ class DeploymentTests(unittest.TestCase):
         self.assertNotIn('pico_enabled',default)
 
     def test_pico_rejects_wrong_source_and_external_actuator_backend(self):
-        recipe=json.loads((package_share("snowbot_bringup")/'config/deployments/teleop_pico_snowbot_sim.json').read_text())
+        recipe=json.loads((package_share("snowbot_bringup")/'config/examples/snowbot/teleop_pico_snowbot_sim.json').read_text())
         for key,value in [('tool_input_source','tool_pose'),('device_backend','external_simulation')]:
             changed=json.loads(json.dumps(recipe));changed['arguments'][key]=value
             with tempfile.TemporaryDirectory() as tmp:
@@ -333,7 +333,7 @@ class DeploymentTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError,'PICO_REQUIRES'):load_deployment(path,SHARE)
 
     def test_demo_is_explicit_and_rejects_external_or_missing_pico(self):
-        recipe=json.loads((package_share("snowbot_bringup")/'config/deployments/teleop_pico_snowbot_sim.json').read_text())
+        recipe=json.loads((package_share("snowbot_bringup")/'config/examples/snowbot/teleop_pico_snowbot_sim.json').read_text())
         recipe['arguments']['pico_simulation_demo']=True
         with tempfile.TemporaryDirectory() as tmp:
             path=Path(tmp)/'demo.json';path.write_text(json.dumps(recipe))

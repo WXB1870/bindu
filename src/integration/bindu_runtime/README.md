@@ -122,10 +122,10 @@ Snowbot 当前配方、模型、设备适配及 PICO 操作分别由独立工作
 | 目的 | 当前入口 | 反馈与验证范围 |
 |---|---|---|
 | 工具位姿输入、模式切换与暂停／恢复 | [teleop_only.launch.py](launch/teleop_only.launch.py)，默认加载 [teleop_robot_deployment.json](config/deployments/teleop_robot_deployment.json) | ROS 运动学模拟；默认 `tool_pose` 输入，现场 VR 待接入 |
-| PICO按键与操作状态机 | 同一launch，选择[teleop_pico_snowbot_sim.json](../../../../../snowbot/src/snowbot_bringup/config/deployments/teleop_pico_snowbot_sim.json) | 成对VR相对映射、准备／装卸与模拟开合；仅运动学后端，实体夹持及真实恢复未接入 |
+| PICO按键与操作状态机 | 同一launch，选择[teleop_pico_snowbot_sim.json](../../../../../snowbot/src/snowbot_bringup/config/examples/snowbot/teleop_pico_snowbot_sim.json) | 成对VR相对映射、准备／装卸与模拟开合；仅运动学后端，实体夹持及真实恢复未接入 |
 | 整段双臂协调、CAD几何与实时回放 | [run_shovel_physics.sh](../../../tools/run_shovel_physics.sh)，使用 `--kinematic ... --gui` | 日常运动学检查；生产QP／执行器生成输入，Isaac 6.2核对关节和法兰并回放，无承载／接触验收 |
 | 短时重力、夹爪接触与载荷 | 同一入口，使用 `--closed-loop` | 默认contact，有限力矩J8与CAD接触；私有IPC复用求解／会话／执行核心；旧弹簧观测须显式选proxy，不启动ROS节点 |
-| Snowbot 真机最小遥操作 | 同一launch，选择[snowbot_real_teleop.json](../../../../../snowbot/src/snowbot_bringup/config/deployments/snowbot_real_teleop.json) | VR接收、模式、双臂QP、位置适配共4节点；不启动记录、单臂、显示和任务模块，默认只读；[操作边界](#snowbot-真机最小遥操作) |
+| Snowbot 真机最小遥操作 | 同一launch，选择[snowbot_real_teleop.json](../../../../../snowbot/src/snowbot_bringup/config/examples/snowbot/snowbot_real_teleop.json) | VR接收、模式、双臂QP、位置适配共4节点；不启动记录、单臂、显示和任务模块，默认只读；[操作边界](#snowbot-真机最小遥操作) |
 | Snowbot 底层位置接口联调 | [snowbot_adapter.launch.py](launch/snowbot_adapter.launch.py) | 独立位置入口，默认真实模式且只读；不包含遥操作节点 |
 
 `runtime.launch.py` 的默认 [runtime_deployment.json](config/deployments/runtime_deployment.json) 选择位置适配入口的仿真模式。运行扫雪工具会话从 `teleop_only.launch.py` 进入；部署时选择完整的`snowbot_vr_real.json`或底层联调配方`snowbot_real_teleop.json`，不能只切换`runtime_mode`。
@@ -150,19 +150,19 @@ VR输入、PICO协调、双臂求解和执行进程入口在ROS初始化前默�
 
 | 配置 | 作用 |
 |---|---|
-| [robot_snowbot.json](../../../../../snowbot/src/snowbot_bringup/config/robots/snowbot/robot_snowbot.json) | 本体装配索引：绑定模型、执行profile、单臂与工具配置，当前选仿真 |
+| [robot_snowbot.json](../../../../../snowbot/src/snowbot_bringup/config/examples/snowbot/robot_snowbot.json) | 本体装配索引：绑定模型、执行profile、单臂与工具配置，当前选仿真 |
 | [robot_snowbot_real.json](../../../../../snowbot/src/snowbot_bringup/config/robots/snowbot/robot_snowbot_real.json) | 真机模型／profile／工具索引，不包含单臂配置或模拟初始姿态 |
 | [snowbot_real_position.json](../../../../../snowbot/src/snowbot_bringup/config/robots/snowbot/snowbot_real_position.json) | 真实位置运行限制；头部第2轴取源接口与CAD交集±0.79 rad，其余沿用源接口，仍需现场核实 |
 | [bimanual_snowbot_real.json](../../../../../snowbot/src/snowbot_bringup/config/robots/snowbot/bimanual_snowbot_real.json) | 真机位置链的名义工具安装／CAD几何／QP与时效参数；不包含演示轨迹，安装尺寸和地面需标定 |
 | [snowbot_grippers_real.json](../../../../../snowbot/src/snowbot_bringup/config/robots/snowbot/snowbot_grippers_real.json) | 独立夹爪位置闭环、超时与开合参数；默认未标定，拒绝写入 |
 | [snowbot_base.json](../../../../../snowbot/src/snowbot_bringup/config/robots/snowbot/snowbot_base.json) | 可选PICO两轴`cmd_vel`端口、摇杆限速、反馈与停止条件；设备独立超时未确认，默认底盘只读 |
-| [snowbot_shovel_sim.json](../../../../../snowbot/src/snowbot_bringup/config/robots/snowbot/snowbot_shovel_sim.json) | 当前扫雪仿真的资源组、限位、动态限制与腰臂同步执行 |
-| [snowbot_sim.json](../../../../../snowbot/src/snowbot_bringup/config/robots/snowbot/snowbot_sim.json) | 旧Snowbot模拟入口的执行基线，供兼容入口及回归使用 |
-| [snowbot_vendor_position.json](../../../../../snowbot/src/snowbot_bringup/config/robots/snowbot/snowbot_vendor_position.json) | 真实位置接口的20轴资源与限制；适配器默认只读，独立夹爪接口需另配已标定配置，真机未验收 |
-| [teleop_snowbot_left.json](../../../../../snowbot/src/snowbot_bringup/config/robots/snowbot/teleop_snowbot_left.json)／[right](../../../../../snowbot/src/snowbot_bringup/config/robots/snowbot/teleop_snowbot_right.json) | 左／右单臂的相对映射、IK与时效参数，当前仅仿真 |
-| [bimanual_snowbot_shovel.json](../../../../../snowbot/src/snowbot_bringup/config/robots/snowbot/bimanual_snowbot_shovel.json) | 工具安装、握持约束、姿态策略、几何与输入时效 |
-| [bimanual_snowbot_sim.json](../../../../../snowbot/src/snowbot_bringup/config/robots/snowbot/bimanual_snowbot_sim.json) | 早期双臂共同工具的简单模拟案例，供兼容入口及回归使用 |
-| [pico_snowbot_sim.json](../../../../../snowbot/src/snowbot_bringup/config/robots/snowbot/pico_snowbot_sim.json) | PICO准备与模拟第8轴开合／虚握参数，不能用于实机 |
+| [snowbot_shovel_sim.json](../../../../../snowbot/src/snowbot_bringup/config/examples/snowbot/snowbot_shovel_sim.json) | 当前扫雪仿真的资源组、限位、动态限制与腰臂同步执行 |
+| [snowbot_sim.json](../../../../../snowbot/src/snowbot_bringup/config/examples/snowbot/snowbot_sim.json) | 旧Snowbot模拟入口的执行基线，供兼容入口及回归使用 |
+| [snowbot_vendor_position.json](../../../../../snowbot/src/snowbot_bringup/config/examples/snowbot/snowbot_vendor_position.json) | 真实位置接口的20轴资源与限制；适配器默认只读，独立夹爪接口需另配已标定配置，真机未验收 |
+| [teleop_snowbot_left.json](../../../../../snowbot/src/snowbot_bringup/config/examples/snowbot/teleop_snowbot_left.json)／[right](../../../../../snowbot/src/snowbot_bringup/config/examples/snowbot/teleop_snowbot_right.json) | 左／右单臂的相对映射、IK与时效参数，当前仅仿真 |
+| [bimanual_snowbot_shovel.json](../../../../../snowbot/src/snowbot_bringup/config/examples/snowbot/bimanual_snowbot_shovel.json) | 工具安装、握持约束、姿态策略、几何与输入时效 |
+| [bimanual_snowbot_sim.json](../../../../../snowbot/src/snowbot_bringup/config/examples/snowbot/bimanual_snowbot_sim.json) | 早期双臂共同工具的简单模拟案例，供兼容入口及回归使用 |
+| [pico_snowbot_sim.json](../../../../../snowbot/src/snowbot_bringup/config/examples/snowbot/pico_snowbot_sim.json) | PICO准备与模拟第8轴开合／虚握参数，不能用于实机 |
 | [snowbot_shovel_physics.json](../../../../../snowbot/src/snowbot_bringup/config/robots/snowbot/snowbot_shovel_physics.json) | 空铲木质质量、接触夹持、Fabric与GUI刷新；保留显式proxy对照参数 |
 
 基础构建和启动命令见本文[编译与运行](#编译与运行)，系统依赖见[环境准备](../../../运行与验证.md#环境准备与构建)。普通工具装配需有效握姿和新鲜反馈，再显式选择`bimanual_tool`并启动`teleop/tool_session`；[专用装配与暂停](../../capabilities/bindu_teleoperation/README.md#遥操作专用装配与暂停)维护完整步骤。默认零位不是准备姿态，测试夹具仅由专用模拟入口显式初始化。
@@ -195,9 +195,9 @@ VR输入、PICO协调、双臂求解和执行进程入口在ROS初始化前默�
 | 用途 | 启动文件 | 配置示例 |
 |---|---|---|
 | 环境选择与运行装配 | [runtime.launch.py](launch/runtime.launch.py) | [runtime_deployment.json](config/deployments/runtime_deployment.json) |
-| 本体与遥操作模式选择 | [robot_teleop.launch.py](launch/robot_teleop.launch.py) | [robot_snowbot.json](../../../../../snowbot/src/snowbot_bringup/config/robots/snowbot/robot_snowbot.json) |
-| 旧 Snowbot 模拟入口兼容 | [snowbot_sim.launch.py](launch/snowbot_sim.launch.py) | [snowbot_shovel_sim.json](../../../../../snowbot/src/snowbot_bringup/config/robots/snowbot/snowbot_shovel_sim.json) 与 [bimanual_snowbot_shovel.json](../../../../../snowbot/src/snowbot_bringup/config/robots/snowbot/bimanual_snowbot_shovel.json) 须配套选择 |
-| Snowbot 底层适配 | [snowbot_adapter.launch.py](launch/snowbot_adapter.launch.py) | [snowbot_vendor_position.json](../../../../../snowbot/src/snowbot_bringup/config/robots/snowbot/snowbot_vendor_position.json) |
+| 本体与遥操作模式选择 | [robot_teleop.launch.py](launch/robot_teleop.launch.py) | [robot_snowbot.json](../../../../../snowbot/src/snowbot_bringup/config/examples/snowbot/robot_snowbot.json) |
+| 旧 Snowbot 模拟入口兼容 | [snowbot_sim.launch.py](launch/snowbot_sim.launch.py) | [snowbot_shovel_sim.json](../../../../../snowbot/src/snowbot_bringup/config/examples/snowbot/snowbot_shovel_sim.json) 与 [bimanual_snowbot_shovel.json](../../../../../snowbot/src/snowbot_bringup/config/examples/snowbot/bimanual_snowbot_shovel.json) 须配套选择 |
+| Snowbot 底层适配 | [snowbot_adapter.launch.py](launch/snowbot_adapter.launch.py) | [snowbot_vendor_position.json](../../../../../snowbot/src/snowbot_bringup/config/examples/snowbot/snowbot_vendor_position.json) |
 | 导航物理场景 | [navigation_physics.launch.py](launch/navigation_physics.launch.py) | [navigation_room.json](config/navigation/navigation_room.json) |
 | 三维建图／地图定位 | [lio.launch.py](launch/lio.launch.py) / [localization.launch.py](launch/localization.launch.py) | [navigation_lio.yaml](config/navigation/navigation_lio.yaml) / [navigation_localization.yaml](config/navigation/navigation_localization.yaml) |
 
@@ -316,13 +316,13 @@ bash tools/snowbot_teleop.sh status --config "$BINDU_TELEOP_WORKSPACE/site-inter
 
 ### 旧四节点配方与操作接口
 
-选择[snowbot_real_teleop.json](../../../../../snowbot/src/snowbot_bringup/config/deployments/snowbot_real_teleop.json)，装配仅有`execution`（`snowbot_adapter`）、`teleop_mode`、`teleop_tool`、`vr_input`四个ROS节点，QP子进程由工具节点管理。位置控制覆盖双臂各J1～J7及两轴腰部；头／第8轴作为实测上下文。不启动记录器、单臂、描述／显示、导航、任务、感知或VLA；ROS必要诊断仍保留。包安装依赖尚未裁剪。
+选择[snowbot_real_teleop.json](../../../../../snowbot/src/snowbot_bringup/config/examples/snowbot/snowbot_real_teleop.json)，装配仅有`execution`（`snowbot_adapter`）、`teleop_mode`、`teleop_tool`、`vr_input`四个ROS节点，QP子进程由工具节点管理。位置控制覆盖双臂各J1～J7及两轴腰部；头／第8轴作为实测上下文。不启动记录器、单臂、描述／显示、导航、任务、感知或VLA；ROS必要诊断仍保留。包安装依赖尚未裁剪。
 
 先加载匹配的ROS、底层`snowbot_ctl_msgs`和Bindu工作区，运动学依赖按[环境准备](../../../运行与验证.md#环境准备与构建)配置。此命令启动上层只读装配，不启动底层设备：
 
 ```bash
 ros2 launch bindu_runtime teleop_only.launch.py \
-  config:=$(ros2 pkg prefix --share snowbot_bringup)/config/deployments/snowbot_real_teleop.json
+  config:=$(ros2 pkg prefix --share snowbot_bringup)/config/examples/snowbot/snowbot_real_teleop.json
 ros2 topic echo /bindu_snowbot/execution/state
 ros2 topic echo /bindu_snowbot/teleop/mode_state
 ```
@@ -368,7 +368,7 @@ ros2 launch bindu_runtime teleop_only.launch.py config:=/absolute/path/deploymen
 | `src/hardware/bindu_hardware/bindu_hardware/` | `position_mapping.py` 双向位置转换，不负责设备通信 |
 | `tests/` | `test_robot_configuration.py` 检查自由度组合、配置拒绝及协议映射 |
 
-本体配置结构参考 `src/integration/bindu_runtime/config/robots/snowbot/robot_snowbot.json`：
+本体配置结构参考 `src/integration/bindu_runtime/config/examples/snowbot/robot_snowbot.json`：
 
 - `model`：控制URDF、显示URDF和基座frame；机械尺寸、转轴和机械限位来自模型。
 - `profile`：具名执行组与运行限制；每个关节只能属于一个执行组。工具配置通过组列表定义共享身体及左右臂的关节，自由度由列表计算。

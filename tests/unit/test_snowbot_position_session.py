@@ -266,7 +266,7 @@ class PauseHandoffTests(unittest.TestCase):
         from bindu_execution.delegated_position import DelegatedPositionExecutor
         from snowbot_hardware.position_session import PositionSessionDevices, PositionSessionIO
         self.now, self.steady, self.sample = 10., 1., 0
-        self.profile = Profile.load(package_share("snowbot_bringup")/'config/robots/snowbot/snowbot_vendor_position.json')
+        self.profile = Profile.load(package_share("snowbot_bringup")/'config/examples/snowbot/snowbot_vendor_position.json')
         self.profile = replace(self.profile, stop_timeout=.05)
         self.q = dict.fromkeys(self.profile.limits, 0.)
         self.q['arm_l_joint_2'], self.q['arm_r_joint_2'] = .2, -.2
@@ -568,12 +568,12 @@ class RealResourceTests(unittest.TestCase):
         self.assertEqual(tuple(cfg['resource_groups']), ('waist','left_arm','right_arm'))
         self.assertEqual(cfg['shared_motion_weight'], .1)
         cfg['urdf'] = str(package_share("snowbot_description")/'urdf/snowbot_control.urdf')
-        profile = Profile.load(base/'snowbot_vendor_position.json')
+        profile = Profile.load(package_share('snowbot_bringup')/'config/examples/snowbot/snowbot_vendor_position.json')
         solver = BimanualQP(cfg, profile); self.addCleanup(solver.close)
         self.assertEqual(solver.names, (*GROUPS['waist'], *GROUPS['left_arm'], *GROUPS['right_arm']))
         self.assertEqual(len(solver.model_names), 20)
         # Existing synthetic grasp fixture is measured input to this offline test.
-        q = json.loads((base/'bimanual_snowbot_shovel.json').read_text())['demo']['initial_positions_rad']
+        q = json.loads((package_share('snowbot_bringup')/'config/examples/snowbot/bimanual_snowbot_shovel.json').read_text())['demo']['initial_positions_rad']
         tool = solver.capture(q)
         target=tool.copy();target[0,3]+=.001
         output, _ = solver.solve(q, target, reference=[q[n] for n in solver.names], dt=.01, target_stamp=10.)

@@ -84,7 +84,7 @@ class TimingSummaries(unittest.TestCase):
                     if value not in ('true','false'):raise ValueError(value)
                     return value=='true'
                 return self.type(value)
-        config=package_share('snowbot_bringup')/'config/robots/snowbot'
+        config=package_share('snowbot_bringup')/'config/examples/snowbot'
         robot=S(robot_id='snowbot',single_arm={},
                 tool_config=config/'bimanual_snowbot_sim.json',base_frame='base_link',
                 active_joints=(),context_joints=(),profile_path=Path('profile'),

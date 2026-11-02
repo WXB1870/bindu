@@ -303,8 +303,8 @@ class PrepareLimitReferenceTests(unittest.TestCase):
     def test_both_real_recipes_add_one_degree_to_the_existing_all_axis_reserve(self):
         import json,math
         from pathlib import Path
-        root=package_share('snowbot_bringup')/'config/robots/snowbot'
-        for name in ('bimanual_snowbot_real.json','bimanual_snowbot_shovel.json'):
+        root=package_share('snowbot_bringup')/'config'
+        for name in ('robots/snowbot/bimanual_snowbot_real.json','examples/snowbot/bimanual_snowbot_shovel.json'):
             cfg=json.loads((root/name).read_text())
             self.assertAlmostEqual(cfg['posture_reference_margin_rad'],.01+math.radians(1.))
             self.assertEqual(cfg['posture_policy']['reference'],'initial_capture')

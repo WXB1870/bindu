@@ -163,7 +163,7 @@ def plot_comparison(result, output):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--config', type=Path,
-                        default=package_share("snowbot_bringup")/'config/robots/snowbot/bimanual_snowbot_shovel.json')
+                        default=package_share("snowbot_bringup")/'config/examples/snowbot/bimanual_snowbot_shovel.json')
     parser.add_argument('--description', type=Path, default=package_share('snowbot_description')/'urdf')
     parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args()

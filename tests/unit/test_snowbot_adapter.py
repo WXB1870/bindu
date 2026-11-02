@@ -23,7 +23,7 @@ CONFIG = package_share('snowbot_bringup')/'config'
 
 class SnowbotAdapterTests(unittest.TestCase):
     def setUp(self):
-        self.profile = Profile.load(package_share("snowbot_bringup")/'config/robots/snowbot/snowbot_vendor_position.json')
+        self.profile = Profile.load(package_share("snowbot_bringup")/'config/examples/snowbot/snowbot_vendor_position.json')
         self.now = 10.
         self.sent = []
         self.io = SnowbotIO(self.profile, lambda g, q: self.sent.append((set(g), dict(q))),
@@ -59,9 +59,9 @@ class SnowbotAdapterTests(unittest.TestCase):
         self.assertEqual(self.profile.limits['arm_l_joint_3'], [-2.61, .58])
         self.assertEqual(self.profile.limits['arm_r_joint_3'], [-.58, 2.61])
         self.assertEqual(self.profile.limits['head_joint_1'], [-.791, .791])
-        old = Profile.load(package_share("snowbot_bringup")/'config/robots/snowbot/snowbot_shovel_sim.json')
+        old = Profile.load(package_share("snowbot_bringup")/'config/examples/snowbot/snowbot_shovel_sim.json')
         self.assertEqual(old.limits['body_joint_2'], [-.79, 1.83])
-        for filename in ('robots/snowbot/snowbot_shovel_sim.json', 'simulation/wheel_sim.json'):
+        for filename in ('examples/snowbot/snowbot_shovel_sim.json', 'simulation/wheel_sim.json'):
             with self.assertRaisesRegex(ValueError, 'PROFILE_REQUIRED'):
                 SnowbotIO(Profile.load(CONFIG/filename), None, lambda: self.now)
 
@@ -812,7 +812,7 @@ class SnowbotRosBindingTests(unittest.TestCase):
         from snowbot_hardware.position_session import PositionSessionDevices, PositionSessionIO
         from snowbot_hardware.session import SourceEnvelope
         from snowbot_hardware.session import CONTROL_GROUPS
-        profile=Profile.load(package_share("snowbot_bringup")/'config/robots/snowbot/snowbot_vendor_position.json')
+        profile=Profile.load(package_share("snowbot_bringup")/'config/examples/snowbot/snowbot_vendor_position.json')
         devices=PositionSessionDevices.__new__(PositionSessionDevices)
         devices.node=S(now=lambda:10.)
         devices.health=S(reference_mode=0)

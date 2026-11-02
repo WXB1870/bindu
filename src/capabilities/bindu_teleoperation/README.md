@@ -245,7 +245,7 @@ PICO实体布局参考[官方OpenXR定义](https://github.com/Pico-Developer/PIC
 
 ### 程序接入
 
-[PicoControl](../../../../../snowbot/src/snowbot_teleop/snowbot_teleop/control.py)维护操作状态与代次；[PicoNode](../../../../../snowbot/src/snowbot_teleop/snowbot_teleop/node.py)串接模式／工具Action和执行租约。[专用配置](../../../../../snowbot/src/snowbot_bringup/config/deployments/teleop_pico_snowbot_sim.json)显式启用`pico_enabled=true`、`tool_input_source=vr`；[第8轴参数](../../../../../snowbot/src/snowbot_bringup/config/robots/snowbot/pico_snowbot_sim.json)仅作模拟代理。状态面板、人工持物声明和验证命令统一见运行流程。
+[PicoControl](../../../../../snowbot/src/snowbot_teleop/snowbot_teleop/control.py)维护操作状态与代次；[PicoNode](../../../../../snowbot/src/snowbot_teleop/snowbot_teleop/node.py)串接模式／工具Action和执行租约。[专用配置](../../../../../snowbot/src/snowbot_bringup/config/examples/snowbot/teleop_pico_snowbot_sim.json)显式启用`pico_enabled=true`、`tool_input_source=vr`；[第8轴参数](../../../../../snowbot/src/snowbot_bringup/config/examples/snowbot/pico_snowbot_sim.json)仅作模拟代理。状态面板、人工持物声明和验证命令统一见运行流程。
 
 ## 源码导航
 

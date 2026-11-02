@@ -20,7 +20,7 @@ from bindu_kinematics.tool_geometry import tracking_acceptance, coupling_metrics
 class ShovelGeometryTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.config_path = package_share("snowbot_bringup")/'config/robots/snowbot/bimanual_snowbot_shovel.json'
+        cls.config_path = package_share("snowbot_bringup")/'config/examples/snowbot/bimanual_snowbot_shovel.json'
         cls.config = json.loads(cls.config_path.read_text())
         cls.urdf = package_share("snowbot_description")/'urdf/snowbot_display.urdf'
         cls.recipe = copy.deepcopy(cls.config['demo'])
