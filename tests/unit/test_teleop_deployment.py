@@ -100,9 +100,10 @@ from bindu_runtime.simulation_devices import SimulationDevices,PhysicsJoints,Phy
         self.assertEqual(tool['grasp_reference_source'],'measured_axial')
         self.assertIs(tool['rigid_reference_prediction'],False)
         for recipe,expected in ((deployment,'calibrated'),(real_deployment,'operator')):
-            pico=json.loads(resource_file(recipe['arguments']['pico_config']).read_text())
+            from snowbot_hardware.parameters import load_mode_config
+            pico=load_mode_config(resource_file(recipe['arguments']['pico_config']),recipe['arguments']['runtime_mode'])
             self.assertEqual(pico['tool_grasp_confirmation'],expected)
-        grippers=json.loads(resource_file(deployment['arguments']['gripper_config']).read_text())
+        grippers=load_mode_config(resource_file(deployment['arguments']['gripper_config']),'simulation')
         self.assertIs(grippers['simulation_only'],True)
         self.assertFalse(grippers.get('independent_trigger_control',False))
 
