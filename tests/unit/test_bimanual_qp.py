@@ -431,6 +431,34 @@ class AbiLoadingTests(unittest.TestCase):
 
 
 class CandidateGeometryBacktracking(unittest.TestCase):
+    def test_ground_candidate_stops_at_contact_without_admitting_penetration(self):
+        qp=object.__new__(BimanualQP);qp.geometry_step_backtracking=True
+        checked=[]
+        def check(feedback,*path):
+            heights=[feedback['height'],*(float(q[0]) for q in path)]
+            checked.append(heights)
+            if min(heights)<0.:
+                raise ValueError('TOOL_BELOW_GROUND t=0.0')
+        qp.check_path=check
+        result,scale=qp.checked_geometry_step({'height':.002},np.array([.002]),np.array([-.002]))
+        np.testing.assert_allclose(result,[0.],atol=1e-12)
+        self.assertEqual(scale,.5)
+        self.assertTrue(all(h>=0. for h in checked[-1]))
+        qp.geometry_step_backtracking=False
+        with self.assertRaisesRegex(ValueError,'TOOL_BELOW_GROUND'):
+            qp.checked_geometry_step({'height':.002},np.array([.002]),np.array([-.002]))
+
+    def test_ground_violation_in_measured_or_reference_state_still_fails(self):
+        qp=object.__new__(BimanualQP);qp.geometry_step_backtracking=True
+        def check(feedback,*path):
+            if min(feedback['height'],*(float(q[0]) for q in path))<0.:
+                raise ValueError('TOOL_BELOW_GROUND t=0.0')
+        qp.check_path=check
+        for actual,reference in ((-.001,.002),(.002,-.001)):
+            with self.subTest(actual=actual,reference=reference),self.assertRaisesRegex(ValueError,'TOOL_BELOW_GROUND'):
+                qp.checked_geometry_step({'height':actual},np.array([reference]),np.array([.004]))
+        self.assertIsNone(qp._geometry_deadline)
+
     def test_reference_validation_is_budgeted_and_always_clears_deadline(self):
         from bindu_kinematics.tool_geometry import GeometryBudgetExceeded
         qp=object.__new__(BimanualQP);qp.geometry_step_backtracking=True

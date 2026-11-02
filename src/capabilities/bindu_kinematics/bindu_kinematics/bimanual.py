@@ -584,7 +584,7 @@ class BimanualQP:
         """Bound only a rejected candidate; never skip measured/path validation."""
         from .tool_geometry import GeometryBudgetExceeded
         check=self.check_independent_path if independent else self.check_path
-        failures=('GRASP_PENETRATION:','GRASP_CLOSURE:','SELF_COLLISION:','PAN_CLEARANCE:','SHAFT_CLEARANCE:','HANDLE_CLEARANCE:','BIN_CLEARANCE:')
+        failures=('GRASP_PENETRATION:','GRASP_CLOSURE:','SELF_COLLISION:','PAN_CLEARANCE:','SHAFT_CLEARANCE:','HANDLE_CLEARANCE:','BIN_CLEARANCE:','TOOL_BELOW_GROUND')
         if not self.geometry_step_backtracking:
             check(feedback,candidate,reference)
             return candidate,1.

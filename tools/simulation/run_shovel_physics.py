@@ -495,7 +495,7 @@ class ReplayPanel:
         self.request = None
         self.active = False
         self.paused = True
-        speeds = (1, 2, 4, 8)
+        speeds = self.speeds = tuple(motion.get('presentation', {}).get('allowed_speeds', (1, 2, 4, 8)))
         initial = motion.get('presentation', {}).get('speed', 1)
         self.window = ui.Window('Shovel Replay', width=310, height=190)
         self.window.position_x = 1040
@@ -507,7 +507,7 @@ class ReplayPanel:
                     self.motion = ui.ComboBox(0, *(name for name, _ in self.motions))
                 with ui.HStack(height=28):
                     ui.Label('Speed', width=65)
-                    self.speed = ui.ComboBox(speeds.index(initial) if initial in speeds else 0, '1x', '2x', '4x', '8x')
+                    self.speed = ui.ComboBox(speeds.index(initial) if initial in speeds else 0, *(f'{s}x' for s in speeds))
                 with ui.HStack(height=32, spacing=6):
                     ui.Button('Play / Replay', clicked_fn=self.play)
                     ui.Button('Pause / Resume', clicked_fn=self.pause)
@@ -517,7 +517,7 @@ class ReplayPanel:
 
     def selection(self):
         return (self.motion.model.get_item_value_model().as_int,
-                (1, 2, 4, 8)[self.speed.model.get_item_value_model().as_int])
+                self.speeds[self.speed.model.get_item_value_model().as_int])
 
     def start(self, paused=False):
         self.request = (*self.selection(), paused)
@@ -583,6 +583,11 @@ def replay_controls(app, args, motion, cfg):
             for sample in original['samples']:
                 sample['t'] *= previous/speed
             original['duration_s'] *= previous/speed
+            dense_path = source.parent/'joint_plan.npz'
+            if dense_path.is_file():
+                with np.load(dense_path) as dense:
+                    np.savez_compressed(run/'joint_plan.npz', names=dense['names'],
+                        executed=dense['executed'], dt=float(dense['dt'])*previous/speed)
             original['presentation'] = dict(speed=speed, source_motion=str(source),
                 source_sha256=digest(source), purpose='Isaac native GUI reference replay')
             args.motion = run/'motion.json'
