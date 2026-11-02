@@ -487,6 +487,7 @@ def make_collision_checker(urdf, recipe, conservative_convex=False, *, tool_pres
         failures, worst = [], None
         exact_queries, bounded_queries = 0, 0
         minimum = float('inf')
+        right_grip_minimum,right_grip_worst=float('inf'),None
         grasp_minimum = float('inf')
         support_heights = {}
         ground_minimum,ground_warnings=float('inf'),0
@@ -592,9 +593,12 @@ def make_collision_checker(urdf, recipe, conservative_convex=False, *, tool_pres
                 grasp_query = check_grasp_contacts and name in contacts and parts[part_index][0] == 'SHAFT'
                 limit = -grasp_penetration if grasp_query else clearance_limit
                 current_minimum = grasp_minimum if grasp_query else minimum
+                right_grip_query=(not grasp_query and parts[part_index][0]=='SHAFT' and
+                    contacts.get(name,{}).get('grip')=='right')
                 # AABB separation cannot bound penetration depth: an overlapping
                 # grasp pair must still run the inner-cylinder intersection test.
                 threshold=(0. if grasp_query else limit) if fast else max(limit,current_minimum)
+                if not fast and right_grip_query:threshold=max(threshold,right_grip_minimum)
                 if lower_bound >= threshold:
                     bounded_queries += 1
                     continue
@@ -618,6 +622,9 @@ def make_collision_checker(urdf, recipe, conservative_convex=False, *, tool_pres
                     distance = float(fcl.distance(shape, pose, body_shape, body_pose, distance_request, result))
                 if not np.isfinite(distance):
                     raise ValueError('NONFINITE_COLLISION_DISTANCE')
+                if right_grip_query and distance<right_grip_minimum:
+                    right_grip_minimum=distance
+                    right_grip_worst={'part':part,'link':name,'t':sample['t']}
                 if grasp_query:
                     grasp_minimum = min(grasp_minimum, distance)
                 elif distance < minimum:
@@ -683,6 +690,8 @@ def make_collision_checker(urdf, recipe, conservative_convex=False, *, tool_pres
                 'ground_policy':ground_policy,'ground_warning_samples':ground_warnings,
                 'min_tool_ground_clearance_m':ground_minimum if tool_present else None,
                 'min_tool_robot_clearance_m': minimum, 'closest_tool_robot_pair': worst,
+                'min_right_grip_shaft_clearance_m':right_grip_minimum if np.isfinite(right_grip_minimum) else None,
+                'closest_right_grip_shaft_pair':right_grip_worst,
                 'exact_distance_queries': exact_queries, 'aabb_bounded_queries': bounded_queries,
                 'min_bin_clearance_m': bin_minimum if bin_parts else None, 'closest_bin_pair': bin_worst,
                 'source_sha256': asset_hashes, 'violations': len(failures), 'failures': failures}
