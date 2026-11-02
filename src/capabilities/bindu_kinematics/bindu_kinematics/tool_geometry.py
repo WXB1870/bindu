@@ -357,7 +357,8 @@ def make_collision_checker(urdf, recipe, conservative_convex=False, *, tool_pres
     if not np.isfinite(floor_clearance) or floor_clearance < 0:
         raise ValueError('INVALID_GROUND_CLEARANCE')
     support_tolerance = float(ground['support_tolerance_m'])
-    if (not np.isfinite(np.r_[shaft_axis, ends, radius, clearance_limit, ground_z, support_tolerance,
+    shaft_reference=np.asarray(recipe.get('shaft_reference_in_tool_m',recipe['left_grip_in_tool_m']),dtype=float)
+    if (shaft_reference.shape!=(3,) or not np.isfinite(np.r_[shaft_reference,shaft_axis, ends, radius, clearance_limit, ground_z, support_tolerance,
                               recipe['pan_size_m'], recipe['pan_center_m']]).all() or
             not np.isclose(np.linalg.norm(shaft_axis), 1.) or ends.shape != (2,) or ends[1] <= ends[0] or
             radius <= 0 or min(recipe['pan_size_m']) <= 0 or clearance_limit <= 0 or support_tolerance <= 0):
@@ -417,7 +418,7 @@ def make_collision_checker(urdf, recipe, conservative_convex=False, *, tool_pres
                 if key not in segment_cache:
                     query_radius = radius-grasp_penetration if check_grasp_contacts and name in contact_bands else radius
                     segment_cache[key] = (fcl.Cylinder(query_radius, b-a) if name in contact_bands or geometry_kind=='rod' else fcl.Capsule(radius, b-a),
-                        np.array(recipe['left_grip_in_tool_m'])+shaft_axis*(a+b)/2)
+                        shaft_reference+shaft_axis*(a+b)/2)
                 segments[name].append(segment_cache[key])
         tool_parts = ([('PAN', pan, np.asarray(recipe['pan_center_m']))] if has_pan else []) + [
             ('SHAFT', shape, center) for shape, center in segment_cache.values()]
@@ -439,7 +440,7 @@ def make_collision_checker(urdf, recipe, conservative_convex=False, *, tool_pres
     if not np.isfinite(bin_limit) or bin_limit <= 0:
         raise ValueError('INVALID_BIN_CLEARANCE')
     full_shaft = (fcl.Cylinder if geometry_kind=='rod' else fcl.Capsule)(radius, ends[1]-ends[0])
-    shaft_center = np.array(recipe['left_grip_in_tool_m'])+shaft_axis*sum(ends)/2
+    shaft_center = shaft_reference+shaft_axis*sum(ends)/2
     # AABB distance is a conservative lower bound. Skip an exact mesh query
     # only when it cannot violate the gate or reduce the recorded global minimum.
     bounds = {}
@@ -454,7 +455,7 @@ def make_collision_checker(urdf, recipe, conservative_convex=False, *, tool_pres
     # Share shaft pieces and query layout until the next measured grasp capture.
     tool_parts, body_queries, body_indices, part_indices = shaft_queries(contacts)
     corners_local = pan_corners(recipe)
-    shaft_points = np.array(recipe['left_grip_in_tool_m']) + ends[:, None]*shaft_axis
+    shaft_points = shaft_reference + ends[:, None]*shaft_axis
     bin_bounds = [world_bounds(box, pose.getRotation(), pose.getTranslation())
                   for _, box, pose in bin_parts]
 

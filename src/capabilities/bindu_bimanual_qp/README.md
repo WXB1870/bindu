@@ -86,6 +86,8 @@ Python 调用入口为 [bindu_kinematics/bimanual.py](../bindu_kinematics/bindu_
 
 ### 双臂QP参数与ABI
 
+离线仿真可选 `left_axial_grasp`（`axis_in_tool`、`grip_in_left_flange_m`），与已有 `right_axial_grasp` 一起启用双轴握持：左手沿 D 型横把轴自由转动，右手沿杆轴自由转动，两轴须垂直，握点连线须位于两轴张成的平面。`bq_capture_dual_axial` 保留四维闭合约束，工具姿态和雅可比由双握点及两条轴共同确定，工具目标仍为完整六维。Python 仅允许 `simulation_only=true` 且 `grasp_reference_source=configured`，通过 `right_axial` 捕获及 `tight=false` 的已有离线输入使用；其他接合模式拒绝。该入口未接入 VR 左手释放按键或实机配方。位置、轴向、反馈、轨迹和 CAD 检查继续执行；物理代理仅去掉对应轴的直接力偶，D 框碰撞和质量由 `demo.d_handle_urdf` 的同一 URDF 提供。横把偏置可用 `demo.shaft_reference_in_tool_m` 独立指定杆轴定位点，缺省仍取左握点；CAD 与物理共用该值。
+
 `grasp_reference_source`缺省为`configured`；`measured_rigid`保留首次实测的六维刚握关系，`measured_axial`则持续选择已有`right_axial`五维约束。后者以配置的右夹持点／轴在首次正式捕获时的实测位置与方向为基准，固定在左手所持工具系中：保持握点三维位置及轴向两个自由度，仅释放绕轴相对转角，不释放沿杆滑动。预检不建立基准；后续预检、重接、新Action及失败重试均保留原握点／轴向，只有正式独立臂接管结束该范围。工具目标仍为完整六维，原握点容差、实测／参考路径、CAD、限位、时效及停止保护保留；`unheld_test`不能选择此模式。右爪实体可绕轴转且不滑动、左爪能承担轴向扭矩由操作者确认，软件不因此推断夹稳。夹爪开度与弱姿态／限位偏好沿用已有配置。
 
 持续轴向模式下，VR的虚握位／扳机及工具位姿输入的`tight`不再切回刚握。Snowbot统一位置实机与仿真配方选择此模式，X不触发换握；六维`rigid_reference_prediction`关闭，复用已有轴向执行路径，不新增五维servo预测协议。路径准入仍为有限采样检查，不是连续闭链或实体内力保证；配方变更需要配套Python代码，原生`bq_capture_axial`与ABI v1不变。

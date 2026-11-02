@@ -149,6 +149,16 @@ class ShovelPhysicsTests(unittest.TestCase):
         self.assertAlmostEqual(mass,650*np.pi*.018**2*.54)
         self.assertGreater(np.linalg.eigvalsh(inertia).min(),0.)
 
+    def test_crossbar_offset_keeps_the_shaft_on_its_own_reference(self):
+        baseline=wooden_parts(self.recipe,self.cfg['material'])[0]
+        recipe=copy.deepcopy(self.recipe)
+        recipe['shaft_reference_in_tool_m']=list(recipe['left_grip_in_tool_m'])
+        recipe['left_grip_in_tool_m']=list(np.array(recipe['left_grip_in_tool_m'])+[0.,.03,0.])
+        shifted=wooden_parts(recipe,self.cfg['material'])[0]
+        np.testing.assert_allclose(shifted['center'],baseline['center'])
+        np.testing.assert_allclose(shifted['inertia'],baseline['inertia'])
+        self.assertEqual(shifted['mass'],baseline['mass'])
+
     def test_parallel_axis_matches_two_point_masses(self):
         parts = [dict(mass=2., center=np.array([x, 0., 0.]), inertia=np.eye(3)*.1) for x in (-1., 1.)]
         mass, com, inertia = compound_mass(parts)
