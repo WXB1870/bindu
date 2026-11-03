@@ -204,8 +204,16 @@ def apply_execution_tracking(config, mode='position', *, real, position_contract
             raise ValueError('IMPEDANCE_REFERENCE_LIMITS_CONFIG')
         selected.update(limits)
         hard = selected.get('max_reference_error', .15)
-        lead = selected.get('max_target_lead_error', hard)
+        inherit_lead = 'max_reference_error' in limits and 'max_target_lead_error' not in limits
+        lead = (config.get('max_target_lead_error',config.get('max_reference_error',.15))
+                if inherit_lead else selected.get('max_target_lead_error',hard))
         if (any(isinstance(v,bool) or not isinstance(v,(int,float)) or
-                not math.isfinite(v) or v<=0 for v in (hard,lead)) or lead>hard):
+                not math.isfinite(v) or v<=0 for v in (hard,lead))):
+            raise ValueError('IMPEDANCE_REFERENCE_LIMITS_CONFIG')
+        if inherit_lead:
+            # A wider compliance envelope must not increase normal target advance.
+            lead=min(lead,hard)
+            selected['max_target_lead_error']=lead
+        if lead>hard:
             raise ValueError('IMPEDANCE_REFERENCE_LIMITS_CONFIG')
     return selected

@@ -135,7 +135,7 @@ Python封装的`tracking_feedback`显式选择跟踪误差来源，适用于持�
 
 名义参考已到目标、实际机器人仍因受力偏移时，应保留实际偏差；到达状态依据实测反馈判定；名义FK和QP结果用于运动求解。按该分层正确接通后，实际运动的反馈闭环由下层阻抗执行承担；六维力反馈按后端能力接入与标定，名义模式本身不新增力传感器反馈通路。
 
-名义模式保留实测关节／姿态限位、参考偏差、握持、路径碰撞和超时保护，以及整组参考领先量限制；允许的柔顺偏移仍受这些门槛约束，不自动放宽或重新捕获。现有纯位置配方保留缺省`measured`；显式`execution_mode=impedance`的运行装配选择`reference`，适配器核对servo模式及同次PDO力样本。可在同一工具配置的`impedance_reference_limits`对象中显式覆写`max_reference_error`和`max_target_lead_error`，只作用于阻抗装配，不修改位置配方或自动放宽默认值；servo独立的`impedance_following_error_rad`默认仍为0.25 rad，双方须配对。可选后端补丁、标定与停止边界见[Snowbot接入说明](../../../../../snowbot/位置遥操作修改目标.md#可选阻抗执行接入)；名义模式与本机回归均不代替现场验收。
+名义模式保留实测关节／姿态限位、参考偏差、握持、路径碰撞和超时保护，以及整组参考领先量限制；允许的柔顺偏移仍受这些门槛约束，不自动放宽或重新捕获。未显式选择的旧位置入口保留`measured`；显式`execution_mode=impedance`的运行装配选择`reference`，适配器核对servo模式及同次PDO力样本。可在同一工具配置的`impedance_reference_limits`对象中显式覆写`max_reference_error`和`max_target_lead_error`，只作用于阻抗装配，不修改位置配方或自动放宽默认值。仅覆写硬上限时，推进预算沿用覆写前配置（若硬上限更小则同步收紧）；扩大推进预算必须显式覆写`max_target_lead_error`；servo独立的`impedance_following_error_rad`默认仍为0.25 rad，双方须配对。可选后端补丁、标定与停止边界见[Snowbot接入说明](../../../../../snowbot/位置遥操作修改目标.md#可选阻抗执行接入)；名义模式与本机回归均不代替现场验收。
 
 超时诊断为`BIMANUAL_QP_TIMEOUT:native|validation:wall_us=…:cpu_us=…:native_us=…:qp_us=…:geometry_us=…`：`native`检查覆盖输入准备至原生返回，`validation`检查覆盖后续复核、输出与前馈样本准备。`last_timing`保留同一阶段的墙钟、当前线程CPU及分段时间；墙钟明显高于线程CPU提示等待／调度，同线程GC则也消耗CPU，仍须结合GC或线程探针确认。超时使捕获失效，迟到候选不会返回成功或推进前馈样本；检查是调用返回后的拒绝门槛，不能抢占正在执行的原生函数，父进程另以worker期限处理卡住的子进程。
 

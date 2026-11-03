@@ -96,6 +96,19 @@ class ImpedanceSelectionTests(unittest.TestCase):
             with self.subTest(lead=lead), self.assertRaisesRegex(ValueError,'TARGET_LEAD_LIMIT_CONFIG'):
                 reference_tracking_budget((0.,),(0.,),.22,executed=(0.,),target_limit=lead)
 
+    def test_changing_only_compliance_limit_preserves_or_tightens_original_advance(self):
+        for hard,expected in ((.22,.15),(.1,.1)):
+            config=dict(self.config,impedance_reference_limits={'max_reference_error':hard})
+            selected=apply_execution_tracking(config,'impedance',real=True,
+                                               position_contract=True,trajectory_reference=True)
+            lead=selected.get('max_target_lead_error',selected['max_reference_error'])
+            self.assertEqual(lead,expected)
+        config=dict(self.config,max_target_lead_error=.08,
+                    impedance_reference_limits={'max_reference_error':.22})
+        selected=apply_execution_tracking(config,'impedance',real=True,position_contract=True,
+                                           trajectory_reference=True)
+        self.assertEqual(selected['max_target_lead_error'],.08)
+
     def test_real_sixteen_axis_nominal_config_runs_native_qp(self):
         from bindu_contracts.profile import Profile
         from bindu_kinematics.bimanual import BimanualQP
