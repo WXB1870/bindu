@@ -301,5 +301,50 @@ class ShovelPhysicsTests(unittest.TestCase):
                             client.poll(1.001)
 
 
+
+class MeshPanPhysicsTests(unittest.TestCase):
+    def test_closed_mesh_mass_inertia_and_conservative_envelope(self):
+        import struct
+        size=np.array([.04,.06,.01]);rho=650.
+        vertices=np.array([(x,y,z) for x in (-size[0]/2,size[0]/2)
+                          for y,z in ((-size[1]/2,-size[2]/2),(size[1]/2,-size[2]/2),
+                                      (size[1]/2,size[2]/2),(-size[1]/2,size[2]/2))])
+        quads=[(3,2,1,0),(4,5,6,7),(0,1,5,4),(1,2,6,5),(2,3,7,6),(3,0,4,7)]
+        faces=[tri for a,b,c,d in quads for tri in ((a,b,c),(a,c,d))]
+        def stl(faces):
+            data=bytearray(b'analytic box'.ljust(80,b' '))+struct.pack('<I',len(faces))
+            for face in faces:
+                a,b,c=vertices[list(face)];normal=np.cross(b-a,c-a);normal/=np.linalg.norm(normal)
+                data+=struct.pack('<12fH',*normal,*a,*b,*c,0)
+            return data
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);mesh=root/'box.stl';mesh.write_bytes(stl(faces))
+            urdf=root/'tool.urdf'
+            xml=('<robot name="test"><link name="tool">'
+                 '<collision name="d_handle_crossbar"><origin xyz="0 0 1.2" rpy="0 0 0"/>'
+                 '<geometry><cylinder radius=".018" length=".22"/></geometry></collision>'
+                 '<collision name="pan_test"><origin xyz=".12 .01 .0175" rpy="0 0 .3"/>'
+                 '<geometry><mesh filename="box.stl"/></geometry></collision></link></robot>')
+            urdf.write_text(xml)
+            recipe=dict(shaft_radius_m=.018,shaft_axis_in_tool=[0.,0.,1.],
+                        shaft_from_left_grip_m=[-1.2,-.2],left_grip_in_tool_m=[0.,0.,1.2],
+                        pan_size_m=[.28,.45,.055],pan_center_m=[.12,0.,.0175],
+                        d_handle_urdf=str(urdf),pan_from_urdf=True)
+            material=dict(density_kg_m3=rho,tray_wall_m=.008)
+            part=next(p for p in wooden_parts(recipe,material) if p['name']=='pan_test')
+            mass=rho*np.prod(size);rotation=Rotation.from_euler('z',.3).as_matrix()
+            inertia=mass/12*np.diag([size[1]**2+size[2]**2,size[0]**2+size[2]**2,size[0]**2+size[1]**2])
+            self.assertAlmostEqual(part['mass'],mass,places=8)
+            np.testing.assert_allclose(part['center'],[.12,.01,.0175],atol=1e-8)
+            np.testing.assert_allclose(part['inertia'],rotation@inertia@rotation.T,rtol=1e-6,atol=1e-12)
+            mesh.write_bytes(stl(faces[:-1]))
+            with self.assertRaisesRegex(ValueError,'PAN_MESH_NOT_CLOSED_OR_ORIENTED'):
+                wooden_parts(recipe,material)
+            mesh.write_bytes(stl(faces));urdf.write_text(xml.replace('.12 .01 .0175','.12 .01 .09'))
+            with self.assertRaisesRegex(ValueError,'PAN_MESH_OUTSIDE_COLLISION_ENVELOPE'):
+                wooden_parts(recipe,material)
+            with self.assertRaisesRegex(ValueError,'INVALID_PAN_GEOMETRY_SOURCE'):
+                wooden_parts(dict(recipe,pan_from_urdf=1),material)
+
 if __name__ == '__main__':
     unittest.main()
