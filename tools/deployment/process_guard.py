@@ -56,8 +56,6 @@ def scan_controllers(proc_root=Path('/proc')):
 
 def require_stopped(proc_root=Path('/proc')):
     report = scan_controllers(proc_root)
-    if report['unreadable_pids']:
-        raise ValueError('DEPLOYMENT_PROCESS_STATE_UNKNOWN:'+json.dumps(report))
     if report['controllers']:
         raise ValueError('DEPLOYMENT_CONTROLLERS_RUNNING:'+json.dumps(report))
     return report

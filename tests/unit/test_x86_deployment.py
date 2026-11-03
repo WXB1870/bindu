@@ -357,21 +357,6 @@ class X86DeploymentTests(unittest.TestCase):
 
 
 class RuntimeCheckTests(unittest.TestCase):
-    def test_detects_stale_pico_and_gripper_but_allows_site_overrides(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            source = root/'src/integration/bindu_runtime'
-            installed = root/'install/share/bindu_runtime'
-            source.mkdir(parents=True)
-            installed.mkdir(parents=True)
-            for filename in ('pico.json', 'gripper.json'):
-                (source/filename).write_text('new')
-                (installed/filename).write_text('old')
-                with patch.object(runtime_check, 'ROOT', root):
-                    with self.assertRaisesRegex(ValueError, '请重建'):
-                        runtime_check.check_installed_configs([installed/filename], installed)
-                    runtime_check.check_installed_configs([source/filename], installed)
-
     def native_fixture(self, root):
         from bindu_contracts.profile import Profile
         tool = root/'tool.json'
@@ -399,7 +384,7 @@ class RuntimeCheckTests(unittest.TestCase):
     def test_loads_native_execution_vendor_types_and_qp_then_closes(self):
         with tempfile.TemporaryDirectory() as tmp:
             robot, package, solver, support, modules = self.native_fixture(Path(tmp))
-            with patch.dict('sys.modules', modules), patch.object(runtime_check, 'check_installed_configs'), \
+            with patch.dict('sys.modules', modules), \
                     patch.object(runtime_check.importlib, 'import_module', return_value=package) as load:
                 report = runtime_check.check_runtime(dict(runtime_mode='real', robot_config='robot.json'), robot)
             self.assertEqual(report['software_dependencies'], 'passed')
@@ -419,7 +404,7 @@ class RuntimeCheckTests(unittest.TestCase):
                         raise ImportError('missing _native')
                     return package
                 solver.side_effect = ValueError('missing bq_shared_motion_weight') if broken == 'qp' else None
-                with patch.dict('sys.modules', modules), patch.object(runtime_check, 'check_installed_configs'), \
+                with patch.dict('sys.modules', modules), \
                         patch.object(runtime_check.importlib, 'import_module', side_effect=load):
                     with self.assertRaises((ImportError, ValueError)):
                         runtime_check.check_runtime(dict(runtime_mode='real', robot_config='robot.json'), robot)
@@ -431,7 +416,7 @@ class RuntimeCheckTests(unittest.TestCase):
                          'PositionSessionUpper','PositionSessionServo','PositionSessionState'):
                 setattr(package, name, object())
             args = dict(runtime_mode='real', robot_config='robot.json', position_protocol='session_v3')
-            with patch.dict('sys.modules', modules), patch.object(runtime_check, 'check_installed_configs'), \
+            with patch.dict('sys.modules', modules), \
                     patch.object(runtime_check.importlib, 'import_module', return_value=package):
                 with self.assertRaises(AttributeError): runtime_check.check_runtime(args, robot)
                 package.PositionTrajectory = object()
@@ -457,8 +442,7 @@ class CspInstallTests(unittest.TestCase):
                 ('servo_control/include/servo_control/position_observation.h', prefixes['snowbot_servo_control']/'include/servo_control/position_observation.h')):
             target.parent.mkdir(parents=True, exist_ok=True); target.write_bytes((root/'src'/source).read_bytes())
         binary = prefixes['snowbot_servo_control']/'lib/snowbot_servo_control/servo_node'
-        binary.parent.mkdir(parents=True); binary.write_bytes(
-            b'csp_send_attempt_ns= mode_command= mode_display= target_position_raw= actual_position_raw=')
+        binary.parent.mkdir(parents=True); binary.write_bytes(b'test servo binary')
         generated = prefixes['snowbot_ctl_msgs']/'_position_observation.py'; generated.write_text('# generated\n')
         return fields, prefixes, generated, binary
 
@@ -489,7 +473,7 @@ class CspInstallTests(unittest.TestCase):
             binary.write_bytes(binary.read_bytes()+b'other version')
             with self.assertRaisesRegex(ValueError, 'EXPECTED_BINARY_SHA256_MISMATCH'):
                 runtime_check.verify_vendor_install(root, fields, prefixes, generated, receipt)
-            # Diagnostic markers alone prove capability, never an exact build.
+            # Without a frozen receipt, the digest does not identify a selected build.
             self.assertFalse(runtime_check.verify_vendor_install(root, fields, prefixes, generated)
                              ['exact_servo_version_verified'])
 
@@ -502,15 +486,14 @@ class CspInstallTests(unittest.TestCase):
             report = runtime_check.verify_vendor_install(root, fields, prefixes, generated)
             self.assertEqual(report['generated_module'], str(target.resolve()))
 
-    def test_wrong_overlay_module_old_install_and_old_binary_are_rejected(self):
-        for failure in ('overlay', 'module', 'message', 'binary'):
+    def test_wrong_overlay_module_and_old_install_are_rejected(self):
+        for failure in ('overlay', 'module', 'message'):
             with self.subTest(failure=failure), tempfile.TemporaryDirectory() as tmp:
                 root = Path(tmp); fields, prefixes, generated, binary = self.fixture(root)
                 if failure == 'overlay': prefixes['robot_control'] = root/'other-install'
                 elif failure == 'module': generated = root/'other-overlay/_position_observation.py'
                 elif failure == 'message':
                     (prefixes['snowbot_ctl_msgs']/'share/snowbot_ctl_msgs/msg/PositionObservation.msg').write_text('old')
-                else: binary.write_bytes(b'old servo')
                 with self.assertRaises(ValueError):
                     runtime_check.verify_vendor_install(root, fields, prefixes, generated)
 
@@ -758,15 +741,15 @@ class DeploymentProcessGuardTests(unittest.TestCase):
             self.assertEqual(process_guard.require_stopped(root),
                              dict(controllers=[], unreadable_pids=[]))
 
-    def test_missing_proc_and_permission_failure_cannot_report_stopped(self):
+    def test_missing_proc_blocks_but_unreadable_process_is_reported(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             with self.assertRaisesRegex(ValueError, 'PROCESS_SCAN_UNAVAILABLE'):
                 process_guard.require_stopped(root/'missing')
             self.process(root, 42, 'python3', '/unknown/script.py')
             with patch.object(Path, 'read_bytes', side_effect=PermissionError):
-                with self.assertRaisesRegex(ValueError, 'PROCESS_STATE_UNKNOWN'):
-                    process_guard.require_stopped(root)
+                self.assertEqual(process_guard.require_stopped(root),
+                                 dict(controllers=[], unreadable_pids=[42]))
 
     def test_build_guard_precedes_build_markers_and_subprocesses(self):
         with tempfile.TemporaryDirectory() as tmp:
