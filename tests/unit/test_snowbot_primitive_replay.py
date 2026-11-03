@@ -190,5 +190,78 @@ class PrimitiveReplayTests(unittest.TestCase):
             self.assertNotEqual(kinematic_digest(p), digest)
 
 
+class PrimitiveTransitionTests(unittest.TestCase):
+    def fixture(self, root):
+        import gzip
+        nodes = {name: [v]*16 for name,v in [('Push:start',0.),('Push:end',.01),
+                 ('SideScoop:start',.02),('Flip:start',.03),('Dump:end',.04)]}
+        definitions = [('Push','Push:start','Push:end'),('PushReverse','Push:end','Push:start'),
+            ('BridgeForward','Push:start','SideScoop:start'),('BridgeReverse','SideScoop:start','Push:start'),
+            ('ScoopPrefix','SideScoop:start','Flip:start'),('ScoopPrefixReverse','Flip:start','SideScoop:start'),
+            ('Flip','Flip:start','Dump:end'),('FlipReverse','Dump:end','Flip:start'),
+            ('SideScoop','SideScoop:start','Dump:end')]
+        m = dict(schema_version=1,validation_passed=True,transition_validation_passed=True,
+            backend_ready=True,tool_id='g099-curved',kinematic_sha256='kin',waist_lead_s=.02,
+            home_node='SideScoop:start',nodes=nodes,actions={},transfers={},edges=[])
+        for name,a,b in definitions:
+            x=dict(schema_version=1,mode='joint_target',runtime_mode='real',joint_names=list(NAMES),
+                   resource_groups=list(GROUPS),period_s=.02,valid_for_s=.25,start_q_rad=nodes[a],
+                   samples=[dict(t=0.,q=nodes[a]),dict(t=.02,q=nodes[b])])
+            payload=gzip.compress(json.dumps(x).encode(),mtime=0)
+            file=root/(name+'.json.gz');file.write_bytes(payload)
+            item=dict(targets=file.name,sha256=hashlib.sha256(payload).hexdigest(),start_node=a,end_node=b)
+            m['actions' if name in ('Push','SideScoop','Flip') else 'transfers'][name]=item
+            if name!='SideScoop':m['edges'].append({'from':a,'to':b,'segment':name})
+        file=root/'manifest.json';file.write_text(json.dumps(m));return file,m
+
+    def test_all_nine_successors_and_a_home_have_continuous_certified_joins(self):
+        from snowbot_bringup.teleop.snowbot_primitive_replay import plan_from_current
+        with tempfile.TemporaryDirectory() as d:
+            path,m=self.fixture(Path(d))
+            for source in ('Push','SideScoop','Flip'):
+                current=dict(zip(NAMES,m['nodes'][m['actions'][source]['end_node']]))
+                for action in ('Push','SideScoop','Flip','Home'):
+                    with self.subTest(source=source,action=action):
+                        p=plan_from_current(path,action,current)
+                        self.assertEqual(p.points[0],tuple(current[n] for n in NAMES))
+                        end=m['nodes'][m['home_node'] if action=='Home' else m['actions'][action]['end_node']]
+                        self.assertEqual(p.points[-1],tuple(end))
+                        self.assertEqual(p.sample(p.duration),tuple(end))
+                        t=0.
+                        for a,b in zip(p.segments,p.segments[1:]):
+                            t+=a.duration
+                            self.assertEqual(p.sample(t+1.),a.points[-1])
+                            self.assertEqual(a.points[-1],b.points[0])
+                            t+=p.hold_s
+                        self.assertTrue(run_replay(p,FakePort(p))['completed'])
+
+    def test_unknown_start_and_broken_grasp_edge_are_rejected_before_execution(self):
+        from snowbot_bringup.teleop.snowbot_primitive_replay import plan_from_current
+        with tempfile.TemporaryDirectory() as d:
+            path,m=self.fixture(Path(d))
+            with self.assertRaisesRegex(RuntimeError,'UNKNOWN_START'):
+                plan_from_current(path,'Push',dict.fromkeys(NAMES,.8))
+            m['nodes']['Flip:start'][2]+=.01;path.write_text(json.dumps(m))
+            with self.assertRaisesRegex(ValueError,'TRANSITION_ENDPOINT'):
+                plan_from_current(path,'Push',dict.fromkeys(NAMES,0.))
+
+    def test_released_spins_pass_but_forbidden_grip_separation_stops(self):
+        import numpy as np
+        from snowbot_bringup.teleop.snowbot_primitive_replay import AxialGraspGuard
+        guard=AxialGraspGuard.__new__(AxialGraspGuard);guard.np=np
+        guard.spec=dict(left_frame='l',right_frame='r',left_grip_in_flange_m=[0,0,0],
+            right_grip_in_flange_m=[0,0,0],left_axis_in_flange=[0,1,0],right_axis_in_flange=[0,0,1],
+            shaft_separation_m=-.42,bar_separation_m=.015,max_position_error_m=.01,max_axis_error_rad=.05)
+        a=.7;b=-1.2
+        L=np.eye(4);R=np.eye(4)
+        L[:3,:3]=[[np.cos(a),0,np.sin(a)],[0,1,0],[-np.sin(a),0,np.cos(a)]]
+        R[:3,:3]=[[np.cos(b),-np.sin(b),0],[np.sin(b),np.cos(b),0],[0,0,1]]
+        R[:3,3]=[0,.015,-.42]
+        guard.model=S(frames=lambda *args:{'l':L,'r':R})
+        self.assertAlmostEqual(guard.check(dict.fromkeys(NAMES,0.))[0],0.)
+        R[0,3]=.02
+        with self.assertRaisesRegex(RuntimeError,'GRASP_ERROR'):
+            guard.check(dict.fromkeys(NAMES,0.))
+
 if __name__ == '__main__':
     unittest.main()
