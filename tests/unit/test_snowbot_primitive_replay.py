@@ -362,5 +362,67 @@ class ImpedancePrimitiveReplayTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError,'TRACKING_ERROR'):
             run_replay(p,CompliantPort(p))
 
+
+    def test_steady_compliance_uses_nominal_start_and_arrival(self):
+        class Port(FakePort):
+            offset=.2
+            def check(self,owned):
+                q,v=super().check(owned)
+                for n in NAMES[2:]:q[n]+=self.offset
+                return q,v
+            def nominal_reference(self):return dict(zip(NAMES,self.plan.sample(self.now)))
+        p=Replay((0.,.02,.04),((0.,)*16,(.001,)*16,(.002,)*16),NAMES,'t','k',1.)
+        limits=dict.fromkeys(NAMES,.15);limits.update(dict.fromkeys(NAMES[2:],.25))
+        port=Port(p);result=run_replay(p,port,joint_follow_limits=limits,execution_mode='impedance')
+        self.assertTrue(result['completed'] and result['nominal_arrival_confirmed'] and result['stop_confirmed'])
+        self.assertFalse(result['measured_arrival_confirmed'])
+        self.assertTrue(all(q==p.sample(t) for t,_,q in port.sent))
+        port=Port(p);port.offset=.3
+        with self.assertRaisesRegex(RuntimeError,'TRACKING_ERROR'):
+            run_replay(p,port,joint_follow_limits=limits,execution_mode='impedance')
+        self.assertFalse(port.sent)
+
+    def test_loss_of_nominal_reference_cancels_and_confirms_stop(self):
+        class Port(FakePort):
+            def nominal_reference(self):
+                if self.now>=self.plan.duration:raise RuntimeError('NOMINAL_REFERENCE_STALE')
+                return dict(zip(NAMES,self.plan.sample(self.now)))
+        p=Replay((0.,.02),((0.,)*16,(.001,)*16),NAMES,'t','k',1.)
+        port=Port(p)
+        with self.assertRaisesRegex(RuntimeError,'NOMINAL_REFERENCE_STALE'):
+            run_replay(p,port,execution_mode='impedance')
+        self.assertTrue(port.released)
+
+    def test_held_and_sampled_reference_authentication_and_freshness(self):
+        import ast,math
+        import snowbot_bringup.teleop.snowbot_primitive_replay as module
+        from bindu_runtime.stop_evidence import sampled_nominal_reference
+        tree=ast.parse(Path(module.__file__).read_text())
+        operation=next(n for n in tree.body if getattr(n,'name','')=='execute')
+        cls=next(n for n in operation.body if isinstance(n,ast.ClassDef) and n.name=='Port')
+        state=S(lease_active=False,lease_epoch=4,revision=7)
+        held=dict(instance_id='exec',profile_hash='hash',lease_id='',epoch=4,revision=7,
+                  stamp=100.,boot_id=55,session=2,sequence=3,positions=dict.fromkeys(NAMES,0.))
+        future=S(done=lambda:True,result=lambda:S(success=True,message=json.dumps(held)))
+        ns=dict(latest={'state':(state,0.)},NAMES=NAMES,math=math,json=json,
+                robot=S(profile=S(digest='hash',limits=dict.fromkeys(NAMES,(-1,1)))),
+                tool_config={'feedback_max_age':.2},Trigger=S(Request=lambda:None),
+                holds=S(service_is_ready=lambda:True,call_async=lambda req:future),
+                wait=lambda predicate,timeout:self.assertTrue(predicate()),
+                sampled_nominal_reference=sampled_nominal_reference)
+        exec(compile(ast.Module(body=[cls],type_ignores=[]),str(module.__file__),'exec'),ns)
+        port=ns['Port']();port.instance='exec';port.boot=55;port.ros=lambda:100.
+        self.assertEqual(port.nominal_reference(),held['positions'])
+        held['boot_id']=99
+        with self.assertRaisesRegex(RuntimeError,'HELD_REFERENCE_IDENTITY'):port.nominal_reference()
+        held['boot_id']=55;held['positions']=dict.fromkeys(NAMES,.1)
+        with self.assertRaisesRegex(RuntimeError,'HELD_REFERENCE_CHANGED'):port.nominal_reference()
+        port.lease=S(lease_id='lease',epoch=5);port.commanded=True
+        state.lease_active=True;state.lease_epoch=5
+        state.reference=S(header=S(stamp=S(sec=100,nanosec=0)),name=list(NAMES),position=[.1]*16)
+        self.assertEqual(port.nominal_reference(),dict.fromkeys(NAMES,.1))
+        state.reference.header.stamp.sec=99
+        with self.assertRaisesRegex(RuntimeError,'REFERENCE_UNAVAILABLE'):port.nominal_reference()
+
 if __name__ == '__main__':
     unittest.main()
