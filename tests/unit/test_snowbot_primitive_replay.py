@@ -409,8 +409,9 @@ class PrepareGripperTests(unittest.TestCase):
         from unittest.mock import Mock,patch
         from snowbot_bringup.teleop.snowbot_primitive_replay import confirm_prepare_grippers
         port=Mock()
+        expected=iter((0,1))
         def enter(message):
-            self.assertEqual(port.grippers.call_count,1 if '已到位' in message else 0)
+            self.assertEqual(port.grippers.call_count,next(expected))
             return ''
         with patch('builtins.input',side_effect=enter):
             confirm_prepare_grippers(port,'open')
