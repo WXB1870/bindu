@@ -68,8 +68,7 @@ class SnowbotDescription(unittest.TestCase):
         for name in ('examples/snowbot/snowbot_sim.json','examples/snowbot/snowbot_shovel_sim.json',
                      'robots/snowbot/snowbot_real_position.json','examples/snowbot/snowbot_vendor_position.json'):
             profile=Profile.load(CONFIG/name)
-            model=ET.parse(DESCRIPTION/'urdf'/('snowbot_control_real.urdf' if
-                name=='robots/snowbot/snowbot_real_position.json' else 'snowbot_control.urdf')).getroot()
+            model=ET.parse(DESCRIPTION/'urdf/snowbot_control.urdf').getroot()
             for joint,(lo,hi) in profile.limits.items():
                 limit=model.find(f"joint[@name='{joint}']/limit")
                 self.assertGreaterEqual(lo,float(limit.get('lower')),(name,joint))
@@ -81,7 +80,7 @@ class SnowbotDescription(unittest.TestCase):
         from bindu_runtime.robot_setup import RobotSetup
         packages={'bindu_description':DESCRIPTION,'bindu_runtime':CONFIG.parent}
         for filename,model in (('examples/snowbot/robot_snowbot.json','snowbot_control.urdf'),
-                               ('robots/snowbot/robot_snowbot_real.json','snowbot_control_real.urdf')):
+                               ('robots/snowbot/robot_snowbot_real.json','snowbot_control.urdf')):
             selection=RobotSetup.load(CONFIG/filename,packages)
             self.assertEqual(selection.urdf,DESCRIPTION/'urdf'/model)
             self.assertEqual(selection.display_urdf,DESCRIPTION/'urdf/snowbot_display.urdf')
