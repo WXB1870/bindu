@@ -697,6 +697,24 @@ class PositionSessionPreflightTests(unittest.TestCase):
                     self.assertIn('SNOWBOT_ENDPOINT_TYPE_HASH_UNAVAILABLE:'+topic, self.inspect())
             peer.topic_type_hash = self.local_hash
 
+    def test_humble_without_hash_api_keeps_route_and_qos_checks(self):
+        self.local_readers()
+        for graph in (self.writers, self.readers):
+            for infos in graph.values():
+                for info in infos:
+                    del info.topic_type_hash
+        self.assertEqual(self.inspect(), [])
+        topic = '/bindu/position/command'
+        self.readers[topic][0].qos_profile = 'best_effort'
+        self.assertIn('SNOWBOT_ENDPOINT_QOS_INCOMPATIBLE:'+topic, self.inspect())
+        self.readers[topic][0].qos_profile = 'reliable'
+        original_node = self.readers[topic][0].node_name
+        self.readers[topic][0].node_name = 'unexpected_receiver'
+        self.assertIn('SNOWBOT_SESSION_ROUTE_UNVERIFIED:'+topic, self.inspect())
+        self.readers[topic][0].node_name = original_node
+        self.readers[topic][0].topic_type_hash = self.local_hash
+        self.assertIn('SNOWBOT_ENDPOINT_TYPE_HASH_UNAVAILABLE:'+topic, self.inspect())
+
     def test_relay_qos_uses_its_receiver_and_not_the_passive_reader(self):
         self.local_readers()
         topic = '/bindu/position/upper'
