@@ -11,7 +11,7 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
 from rclpy.task import Future
 from std_srvs.srv import Trigger, SetBool
 from rcl_interfaces.msg import ParameterDescriptor
-from bindu_contracts.teleoperation import VRFrame, ToolPoseFrame, reference_tracking_budget
+from bindu_contracts.teleoperation import VRFrame, ToolPoseFrame, reference_tracking_budget, joint_reference_limits
 from bindu_teleoperation.bimanual_session import BimanualSession, ToolPoseSession, AcceptedReference, ToolPause
 from bindu_teleoperation.independent_session import IndependentArmsSession
 from bindu_kinematics.bimanual_worker import BimanualWorker
@@ -749,6 +749,7 @@ class BimanualToolNode(RuntimeNode):
                             limit=float(self.cfg.get('max_reference_error',.15))
                             if not math.isfinite(limit) or limit<=0:
                                 raise RuntimeError('BIMANUAL_REFERENCE_LIMIT_CONFIG')
+                            hard_limits=joint_reference_limits(self.names,limit,self.cfg.get('joint_reference_error_limits',{}))
                             leads=[abs(q-measured[n]) for n,q in zip(self.names,positions)]
                             executed=None
                             # No servo trajectory exists before the first accepted
@@ -758,7 +759,7 @@ class BimanualToolNode(RuntimeNode):
                                 executed,_=sampled_nominal_reference(s,self.names,lease.epoch,self.now(),
                                     min(.1,self.cfg['feedback_max_age']))
                             reference_lead,budgets=reference_tracking_budget(work_reference,
-                                tuple(measured[n] for n in self.names),limit,executed=executed,
+                                tuple(measured[n] for n in self.names),max(hard_limits),executed=executed,
                                 target_limit=self.cfg.get('max_target_lead_error',limit))
                             admission=dict(feedback_stamp=seconds(s.feedback_stamp),
                                 feedback={n:measured[n] for n in self.names},
@@ -767,8 +768,10 @@ class BimanualToolNode(RuntimeNode):
                                 target_lead_rad=max(abs(q-measured[n]) for n,q in zip(self.names,work_reference)),
                                 candidate_budget_rad=list(budgets),
                                 worst_candidate_joint=self.names[max(range(len(leads)),key=leads.__getitem__)],
-                                reserve_rad=.8*self.cfg.get('max_target_lead_error',limit),hard_limit_rad=limit)
-                            if reference_lead>limit:
+                                reserve_rad=.8*self.cfg.get('max_target_lead_error',limit),hard_limit_rad=max(hard_limits),
+                                joint_hard_limits_rad=dict(zip(self.names,hard_limits)))
+                            tracking=work_reference if executed is None else executed
+                            if any(abs(q-measured[n])>bound for n,q,bound in zip(self.names,tracking,hard_limits)):
                                 kind,value='error','BIMANUAL_REFERENCE_TRACKING_ERROR'
                             elif any(lead>budget+1e-9 for lead,budget in zip(leads,budgets)):
                                 kind,value='error','BIMANUAL_RESULT_FEEDBACK_CHANGED'

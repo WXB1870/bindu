@@ -140,6 +140,19 @@ class ExecutedReferenceTrackingTests(unittest.TestCase):
         self.assertAlmostEqual(out[0],.18)
         self.assertEqual(metrics[2],0.)
 
+    def test_named_arm_bound_keeps_waist_guard_and_candidate_budget(self):
+        qp=self.solver(.21,0.,(.20,),.22)
+        qp.joint_reference_error_limits={'r':.25}
+        out,_=qp.solve_independent({'r':0.},np.array([np.eye(4),np.eye(4)]),
+                                  active_mask=2,reference=(.21,),dt=.1)
+        self.assertAlmostEqual(out[0],.21)  # Existing displacement cannot grow.
+        qp=self.solver(.21,0.,(.251,),.21);qp.joint_reference_error_limits={'r':.25}
+        with self.assertRaisesRegex(ValueError,'REFERENCE_TRACKING_ERROR'):
+            qp.solve_independent({'r':0.},np.array([np.eye(4),np.eye(4)]),active_mask=2,reference=(.21,),dt=.1)
+        # A shared/waist joint without an override still fails at the original .15.
+        with self.assertRaisesRegex(ValueError,'REFERENCE_TRACKING_ERROR'):
+            self.solve(.15,0.,(.151,),.15)
+
     def test_invalid_executed_reference_is_not_ignored(self):
         for executed in ((),(float('nan'),),(0.,0.)):
             with self.subTest(executed=executed),self.assertRaisesRegex(ValueError,'REFERENCE_LAYOUT'):

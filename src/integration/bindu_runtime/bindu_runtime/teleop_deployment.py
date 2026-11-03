@@ -200,7 +200,7 @@ def apply_execution_tracking(config, mode='position', *, real, position_contract
         mode == 'position' and config.get('tracking_feedback') in ('measured_task','measured_shared') else 'reference')}
     if mode == 'impedance':
         limits = config.get('impedance_reference_limits', {})
-        if not isinstance(limits, dict) or set(limits)-{'max_reference_error','max_target_lead_error'}:
+        if not isinstance(limits, dict) or set(limits)-{'max_reference_error','max_target_lead_error','joint_reference_error_limits'}:
             raise ValueError('IMPEDANCE_REFERENCE_LIMITS_CONFIG')
         selected.update(limits)
         hard = selected.get('max_reference_error', .15)
@@ -215,5 +215,10 @@ def apply_execution_tracking(config, mode='position', *, real, position_contract
             lead=min(lead,hard)
             selected['max_target_lead_error']=lead
         if lead>hard:
+            raise ValueError('IMPEDANCE_REFERENCE_LIMITS_CONFIG')
+        overrides=selected.get('joint_reference_error_limits',{})
+        if (not isinstance(overrides,dict) or any(not isinstance(n,str) or not n or
+                isinstance(v,bool) or not isinstance(v,(int,float)) or
+                not math.isfinite(v) or v<lead for n,v in overrides.items())):
             raise ValueError('IMPEDANCE_REFERENCE_LIMITS_CONFIG')
     return selected

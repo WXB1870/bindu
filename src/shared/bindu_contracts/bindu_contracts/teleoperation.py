@@ -22,8 +22,20 @@ def tool_grasp_mode(config):
     return 'rigid'
 
 
+def joint_reference_limits(names, default, overrides=None):
+    """Resolve named hard tracking bounds; unspecified joints retain the default."""
+    overrides = {} if overrides is None else overrides
+    if (isinstance(default,bool) or not isinstance(default,(int,float)) or
+            not math.isfinite(default) or default<=0 or not isinstance(overrides,dict) or
+            set(overrides)-set(names) or any(isinstance(v,bool) or
+                not isinstance(v,(int,float)) or not math.isfinite(v) or v<=0
+                for v in overrides.values())):
+        raise ValueError('BIMANUAL_REFERENCE_LIMIT_CONFIG')
+    return tuple(overrides.get(name,default) for name in names)
+
+
 def reference_tracking_budget(reference, measured, limit, *, executed=None, reserve_fraction=.8,
-                              target_limit=None):
+                              target_limit=None, joint_limits=None):
     """Separate a target update from its executor-owned moving reference.
 
     Only an authenticated, fresh executor sample may be supplied as executed.
@@ -47,6 +59,13 @@ def reference_tracking_budget(reference, measured, limit, *, executed=None, rese
                 reference if executed is None else executed) for q in row)):
         raise ValueError('BIMANUAL_REFERENCE_LAYOUT')
     tracking=reference if executed is None else executed
+    if joint_limits is not None:
+        if (len(joint_limits)!=len(reference) or any(isinstance(v,bool) or
+                not isinstance(v,(int,float)) or not math.isfinite(v) or
+                not target_limit<=v<=limit for v in joint_limits)):
+            raise ValueError('BIMANUAL_REFERENCE_LIMIT_CONFIG')
+        if any(abs(q-m)>bound for q,m,bound in zip(tracking,measured,joint_limits)):
+            raise ValueError('BIMANUAL_REFERENCE_TRACKING_ERROR')
     error=max(abs(q-m) for q,m in zip(tracking,measured))
     budgets=tuple(max(reserve_fraction*target_limit,abs(q-m)) if executed is not None else reserve_fraction*target_limit
                   for q,m in zip(reference,measured))

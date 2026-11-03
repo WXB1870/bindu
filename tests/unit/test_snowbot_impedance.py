@@ -15,6 +15,7 @@ class ImpedanceSelectionTests(unittest.TestCase):
     def setUp(self):
         self.config = json.loads((package_share("snowbot_bringup")/'config/robots/snowbot/bimanual_snowbot_real.json').read_text())
         self.config.pop('tracking_feedback',None)  # Legacy callers without an explicit selection.
+        self.config.pop('impedance_reference_limits',None)
 
     def test_legacy_position_tracking_is_unchanged_without_explicit_selection(self):
         _, args = load_deployment(package_share("snowbot_bringup")/'config/deployments/snowbot_vr_real.json', SHARE)
@@ -109,11 +110,37 @@ class ImpedanceSelectionTests(unittest.TestCase):
                                            trajectory_reference=True)
         self.assertEqual(selected['max_target_lead_error'],.08)
 
+    def test_real_impedance_only_widens_arm_bounds_and_retains_waist_and_advance(self):
+        from bindu_contracts.teleoperation import joint_reference_limits, reference_tracking_budget
+        raw=json.loads((package_share('snowbot_bringup')/'config/robots/snowbot/bimanual_snowbot_real.json').read_text())
+        selected=apply_execution_tracking(raw,'impedance',real=True,position_contract=True)
+        arms=[f'arm_{s}_joint_{j}' for s in ('l','r') for j in range(1,8)]
+        self.assertEqual(selected['joint_reference_error_limits'],dict.fromkeys(arms,.25))
+        self.assertEqual(selected['max_reference_error'],raw['max_reference_error'])
+        self.assertEqual(selected.get('max_target_lead_error',selected['max_reference_error']),.15)
+        self.assertNotIn('joint_reference_error_limits',apply_execution_tracking(raw,real=True,position_contract=True))
+        names=('body_joint_1','arm_r_joint_3','body_joint_2','arm_l_joint_7')
+        limits=joint_reference_limits(names,.15,{n:.25 for n in names if n in arms})
+        reference=(0.,.21,0.,.02);measured=(0.,)*4
+        error,budget=reference_tracking_budget(reference,measured,max(limits),executed=reference,
+            target_limit=.15,joint_limits=limits)
+        self.assertEqual(error,.21)
+        self.assertEqual(budget,(.12,.21,.12,.12))
+        for axis,value in ((0,.151),(2,.151),(1,.251),(3,.251)):
+            displaced=list(reference);displaced[axis]=value
+            with self.subTest(axis=axis),self.assertRaisesRegex(ValueError,'REFERENCE_TRACKING_ERROR'):
+                reference_tracking_budget(reference,measured,max(limits),executed=displaced,
+                    target_limit=.15,joint_limits=limits)
+        for overrides in ({'unknown_joint':.25},{'body_joint_1':True},{'body_joint_1':float('nan')}):
+            with self.subTest(overrides=overrides),self.assertRaisesRegex(ValueError,'REFERENCE_LIMIT_CONFIG'):
+                joint_reference_limits(names,.15,overrides)
+
     def test_real_sixteen_axis_nominal_config_runs_native_qp(self):
         from bindu_contracts.profile import Profile
         from bindu_kinematics.bimanual import BimanualQP
         from snowbot_hardware.protocol import GROUPS
-        cfg = apply_execution_tracking(self.config, 'impedance', real=True, position_contract=True)
+        raw=json.loads((package_share('snowbot_bringup')/'config/robots/snowbot/bimanual_snowbot_real.json').read_text())
+        cfg = apply_execution_tracking(raw, 'impedance', real=True, position_contract=True)
         cfg['urdf'] = str(package_share("snowbot_description")/'urdf/snowbot_control.urdf')
         profile = Profile.load(package_share("snowbot_bringup")/'config/examples/snowbot/snowbot_vendor_position.json')
         solver = BimanualQP(cfg, profile);self.addCleanup(solver.close)
