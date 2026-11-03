@@ -317,5 +317,50 @@ class EmptyPrepareTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'REFERENCE_MARGIN_ENTRY'):
             plan.validate_profile(profile)
 
+class ImpedancePrimitiveReplayTests(unittest.TestCase):
+    def test_applied_mode_and_fresh_impedance_sensors_are_required(self):
+        from snowbot_bringup.teleop.snowbot_primitive_replay import checked_execution_mode
+        p=S(execution_mode=1,header=S(stamp=S(sec=100,nanosec=0)),
+            sensor_valid_mask=3,valid_mask=0xfffff,wrench=[0.]*12,sensor_age=[.001,.002])
+        checked_execution_mode(p,'impedance',100.)
+        with self.assertRaisesRegex(RuntimeError,'EXECUTION_MODE_MISMATCH'):
+            checked_execution_mode(p,'position',100.)
+        for changes in ({'sensor_valid_mask':1},{'valid_mask':0xffff},{'sensor_age':[.001,.021]},
+                        {'wrench':[float('nan')]+[0.]*11}):
+            bad=S(**{**vars(p),**changes})
+            with self.assertRaisesRegex(RuntimeError,'IMPEDANCE_SENSOR_INVALID'):
+                checked_execution_mode(bad,'impedance',100.)
+        p.execution_mode=0
+        checked_execution_mode(p,'position',100.)
+        with self.assertRaisesRegex(RuntimeError,'EXECUTION_MODE_MISMATCH'):
+            checked_execution_mode(p,'impedance',100.)
+
+    def test_impedance_uses_existing_named_tracking_limits_and_explicit_cap(self):
+        from snowbot_bringup.teleop.snowbot_primitive_replay import replay_follow_limits
+        cfg=dict(reference_kinematics=True,max_reference_error=.15,
+            impedance_reference_limits={'joint_reference_error_limits':{
+                n:.25 for n in NAMES if n.startswith('arm_')}})
+        self.assertEqual(set(replay_follow_limits(cfg,'position').values()),{.1})
+        limits=replay_follow_limits(cfg,'impedance')
+        self.assertEqual(limits['body_joint_1'],.15)
+        self.assertEqual(limits['arm_l_joint_1'],.25)
+        self.assertEqual(set(replay_follow_limits(cfg,'impedance',.05).values()),{.05})
+
+    def test_compliant_displacement_never_moves_the_nominal_target(self):
+        class CompliantPort(FakePort):
+            def check(self,owned):
+                q,v=super().check(owned)
+                if owned and self.sent and self.now<.04:
+                    for n in NAMES[2:]:q[n]+=.2
+                return q,v
+        p=Replay((0.,.02,.04),((0.,)*16,(.001,)*16,(.002,)*16),
+                 NAMES,'tool','kin',1.)
+        port=CompliantPort(p)
+        limits=dict.fromkeys(NAMES,.15);limits.update(dict.fromkeys(NAMES[2:],.25))
+        self.assertTrue(run_replay(p,port,joint_follow_limits=limits)['completed'])
+        self.assertTrue(all(q==p.sample(t) for t,_,q in port.sent))
+        with self.assertRaisesRegex(RuntimeError,'TRACKING_ERROR'):
+            run_replay(p,CompliantPort(p))
+
 if __name__ == '__main__':
     unittest.main()
