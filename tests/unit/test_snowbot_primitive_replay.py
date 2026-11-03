@@ -411,7 +411,7 @@ class ImpedancePrimitiveReplayTests(unittest.TestCase):
                 wait=lambda predicate,timeout:self.assertTrue(predicate()),
                 sampled_nominal_reference=sampled_nominal_reference)
         exec(compile(ast.Module(body=[cls],type_ignores=[]),str(module.__file__),'exec'),ns)
-        port=ns['Port']();port.instance='exec';port.boot=55;port.ros=lambda:100.
+        port=ns['Port']();port.instance='exec';port.boot=55;port.ros=lambda:100.;port.steady=lambda:0.
         self.assertEqual(port.nominal_reference(),held['positions'])
         held['boot_id']=99
         with self.assertRaisesRegex(RuntimeError,'HELD_REFERENCE_IDENTITY'):port.nominal_reference()
@@ -423,6 +423,17 @@ class ImpedancePrimitiveReplayTests(unittest.TestCase):
         self.assertEqual(port.nominal_reference(),dict.fromkeys(NAMES,.1))
         state.reference.header.stamp.sec=99
         with self.assertRaisesRegex(RuntimeError,'REFERENCE_UNAVAILABLE'):port.nominal_reference()
+
+
+    def test_short_nominal_hold_waits_for_first_servo_sample_without_stalling_targets(self):
+        class Port(FakePort):
+            def nominal_reference(self):
+                return None if self.sent and self.now<.08 else dict(zip(NAMES,self.plan.sample(self.now)))
+        p=Replay((0.,.02),((0.,)*16,(0.,)*16),NAMES,'t','k',1.)
+        port=Port(p);result=run_replay(p,port,execution_mode='impedance')
+        self.assertTrue(result['completed'] and result['nominal_arrival_confirmed'])
+        self.assertGreaterEqual(port.now,.28)
+        self.assertTrue(all(abs(b[0]-a[0]-.02)<1e-8 for a,b in zip(port.sent,port.sent[1:])))
 
 if __name__ == '__main__':
     unittest.main()
