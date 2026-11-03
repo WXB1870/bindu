@@ -306,9 +306,8 @@ class EmptyPrepareTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         from bindu_runtime.robot_setup import RobotSetup
-        import snowbot_bringup.teleop.snowbot_primitive_replay as module
-        root=Path(module.__file__).resolve().parents[4]
-        cls.robot=RobotSetup.load(root/'src/snowbot_bringup/config/robots/snowbot/robot_snowbot_real.json')
+        from bindu_contracts.resources import package_share
+        cls.robot=RobotSetup.load(package_share('snowbot_bringup')/'config/robots/snowbot/robot_snowbot_real.json')
         cls.library=cls.robot.tool_config.parent/'primitive-library/manifest.json'
 
     def measured(self):
@@ -346,6 +345,55 @@ class EmptyPrepareTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'MEASUREMENT_REQUIRED:head_joint_1'):
             plan_prepare(self.library,self.robot,measured)
 
+    def test_small_measured_limit_excursion_uses_confirmed_inward_reference(self):
+        from unittest.mock import Mock,patch
+        from snowbot_bringup.teleop.snowbot_primitive_replay import plan_prepare
+        joint='arm_r_joint_2'
+        for excursion in (9.587379463482648e-5, .03490658503988659):
+            with self.subTest(excursion=excursion):
+                measured=self.measured();measured[joint]=excursion
+                original=dict(measured);reference=dict.fromkeys(NAMES,0.)
+                checker=Mock()
+                with patch('bindu_kinematics.tool_geometry.make_collision_checker',return_value=checker):
+                    plan=plan_prepare(self.library,self.robot,measured,reference=reference if excursion>.001 else None)
+                self.assertEqual(measured,original)
+                self.assertEqual(plan.measured_start,tuple(measured[n] for n in NAMES))
+                self.assertEqual(plan.points[0],tuple(reference[n] for n in NAMES))
+                samples=checker.call_args.args[0]
+                self.assertEqual(samples[0]['q'][joint],excursion)
+                self.assertTrue(all(self.robot.profile.limits[n][0]<=q<=self.robot.profile.limits[n][1]
+                                    for row in plan.points for n,q in zip(NAMES,row)))
+                self.assertTrue(all(a[joint]>=b[joint] for a,b in
+                    zip((x['q'] for x in samples),(x['q'] for x in samples[1:]))))
+                port=FakePort(plan);check=port.check
+                port.nominal_reference=lambda:dict(zip(NAMES,plan.sample(port.now)))
+                def compliant(owned):
+                    q,v=check(owned);q[joint]+=excursion
+                    return q,v
+                port.check=compliant
+                result=run_replay(plan,port,start_tolerance=.001,execution_mode='impedance')
+                self.assertTrue(result['completed'] and result['stop_confirmed'])
+                self.assertTrue(all(self.robot.profile.limits[joint][0]<=q[NAMES.index(joint)]<=0.
+                                    for _,_,q in port.sent))
+
+    def test_limit_recovery_rejects_larger_excursion_or_unconfirmed_reference(self):
+        from unittest.mock import Mock,patch
+        from snowbot_bringup.teleop.snowbot_primitive_replay import plan_prepare
+        measured=self.measured();measured['arm_r_joint_2']=.03490658503988659+1e-6
+        with self.assertRaisesRegex(ValueError,'PREPARE_START_JOINT_LIMIT:arm_r_joint_2'):
+            plan_prepare(self.library,self.robot,measured,reference=dict.fromkeys(NAMES,0.))
+        measured['arm_r_joint_2']=.01
+        with self.assertRaisesRegex(ValueError,'PREPARE_HELD_REFERENCE_REQUIRED'):
+            plan_prepare(self.library,self.robot,measured)
+        reference=dict.fromkeys(NAMES,0.);reference['arm_r_joint_2']=.001
+        with self.assertRaisesRegex(ValueError,'PREPARE_LIMIT_RECOVERY_BOUND:arm_r_joint_2'):
+            plan_prepare(self.library,self.robot,measured,reference=reference)
+        reference['arm_r_joint_2']=0.
+        with patch('bindu_kinematics.tool_geometry.make_collision_checker',
+                   return_value=Mock(side_effect=ValueError('SELF_COLLISION'))):
+            with self.assertRaisesRegex(ValueError,'SELF_COLLISION'):
+                plan_prepare(self.library,self.robot,measured,reference=reference)
+
     def test_boundary_entry_cannot_move_outward_or_drop_reference_margin(self):
         profile=S(groups=dict(zip(GROUPS,(list(NAMES[:2]),list(NAMES[2:9]),list(NAMES[9:])))),
                   limits=dict.fromkeys(NAMES,(0.,1.)),speed=lambda n:1.)
@@ -355,6 +403,35 @@ class EmptyPrepareTests(unittest.TestCase):
                     reference_margin_rad=.03,empty_prepare=True)
         with self.assertRaisesRegex(ValueError,'REFERENCE_MARGIN_ENTRY'):
             plan.validate_profile(profile)
+
+class PrepareGripperTests(unittest.TestCase):
+    def test_each_enter_precedes_the_corresponding_gripper_command(self):
+        from unittest.mock import Mock,patch
+        from snowbot_bringup.teleop.snowbot_primitive_replay import confirm_prepare_grippers
+        port=Mock()
+        def enter(message):
+            self.assertEqual(port.grippers.call_count,1 if '已到位' in message else 0)
+            return ''
+        with patch('builtins.input',side_effect=enter):
+            confirm_prepare_grippers(port,'open')
+            confirm_prepare_grippers(port,'close')
+        self.assertEqual([c.args for c in port.grippers.call_args_list],[('open',),('close',)])
+        port.reset_mock()
+        with patch('builtins.input',side_effect=KeyboardInterrupt):
+            with self.assertRaises(KeyboardInterrupt):confirm_prepare_grippers(port,'open')
+        port.grippers.assert_not_called()
+
+    def test_actions_require_measured_closed_and_stationary_grippers(self):
+        from snowbot_bringup.teleop.snowbot_primitive_replay import require_gripper_endpoint
+        cfg=dict(position_tolerance=.003,direct_position_tolerance=.03,velocity_tolerance=.01,
+                 grippers=dict(left=dict(open=-.8,closed=.26),right=dict(open=.8,closed=-.26)))
+        q={'arm_l_joint_8':.26,'arm_r_joint_8':-.24};v=dict.fromkeys(q,0.)
+        require_gripper_endpoint(q,v,cfg,'close')
+        q['arm_l_joint_8']=-.8
+        with self.assertRaisesRegex(RuntimeError,'GRIPPER_NOT_CLOSE:left'):require_gripper_endpoint(q,v,cfg,'close')
+        q['arm_l_joint_8']=.26;v['arm_r_joint_8']=.02
+        with self.assertRaisesRegex(RuntimeError,'GRIPPER_NOT_CLOSE:right'):require_gripper_endpoint(q,v,cfg,'close')
+
 
 class ImpedancePrimitiveReplayTests(unittest.TestCase):
     def test_applied_mode_and_fresh_impedance_sensors_are_required(self):
