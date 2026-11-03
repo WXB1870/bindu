@@ -263,5 +263,59 @@ class PrimitiveTransitionTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError,'GRASP_ERROR'):
             guard.check(dict.fromkeys(NAMES,0.))
 
+class EmptyPrepareTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        from bindu_runtime.robot_setup import RobotSetup
+        import snowbot_bringup.teleop.snowbot_primitive_replay as module
+        root=Path(module.__file__).resolve().parents[4]
+        cls.robot=RobotSetup.load(root/'src/snowbot_bringup/config/robots/snowbot/robot_snowbot_real.json')
+        cls.library=cls.robot.tool_config.parent/'primitive-library/manifest.json'
+
+    def measured(self):
+        return dict.fromkeys((n for group in self.robot.profile.groups.values() for n in group),0.)
+
+    def test_empty_entry_reaches_side_ready_and_retains_reference_margin(self):
+        from dataclasses import replace
+        from unittest.mock import Mock,patch
+        from snowbot_bringup.teleop.snowbot_primitive_replay import plan_prepare
+        checker=Mock()
+        with patch('bindu_kinematics.tool_geometry.make_collision_checker',return_value=checker) as factory:
+            plan=plan_prepare(self.library,self.robot,self.measured())
+        self.assertEqual(plan.points[0],(0.,)*16)
+        expected=load_replay(self.library,'SideScoop').points[0]
+        self.assertLess(max(abs(a-b) for a,b in zip(expected,plan.points[-1])),1e-12)
+        self.assertEqual(plan.reference_margin_rad,.027453292519943294)
+        self.assertTrue(plan.empty_prepare)
+        self.assertGreaterEqual(plan.duration,30.)
+        self.assertFalse(factory.call_args.kwargs['tool_present'])
+        self.assertGreater(len(checker.call_args.args[0]),600)
+        plan.validate_profile(self.robot.profile)
+        with self.assertRaisesRegex(ValueError,'POSITION_LIMIT'):
+            replace(plan,empty_prepare=False).validate_profile(self.robot.profile)
+        result=run_replay(plan,FakePort(plan),start_tolerance=.001)
+        self.assertTrue(result['completed'] and result['stop_confirmed'])
+
+    def test_collision_or_missing_measured_context_prevents_preparation(self):
+        from unittest.mock import Mock,patch
+        from snowbot_bringup.teleop.snowbot_primitive_replay import plan_prepare
+        with patch('bindu_kinematics.tool_geometry.make_collision_checker',
+                   return_value=Mock(side_effect=ValueError('SELF_COLLISION'))):
+            with self.assertRaisesRegex(ValueError,'SELF_COLLISION'):
+                plan_prepare(self.library,self.robot,self.measured())
+        measured=self.measured();measured.pop('head_joint_1')
+        with self.assertRaisesRegex(ValueError,'MEASUREMENT_REQUIRED:head_joint_1'):
+            plan_prepare(self.library,self.robot,measured)
+
+    def test_boundary_entry_cannot_move_outward_or_drop_reference_margin(self):
+        profile=S(groups=dict(zip(GROUPS,(list(NAMES[:2]),list(NAMES[2:9]),list(NAMES[9:])))),
+                  limits=dict.fromkeys(NAMES,(0.,1.)),speed=lambda n:1.)
+        points=[[.1]*16 for _ in range(3)]
+        points[0][2]=.01;points[1][2]=.005
+        plan=Replay((0.,1.,2.),tuple(map(tuple,points)),NAMES,'tool','kin',1.,
+                    reference_margin_rad=.03,empty_prepare=True)
+        with self.assertRaisesRegex(ValueError,'REFERENCE_MARGIN_ENTRY'):
+            plan.validate_profile(profile)
+
 if __name__ == '__main__':
     unittest.main()
