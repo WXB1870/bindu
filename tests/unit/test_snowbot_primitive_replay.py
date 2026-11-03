@@ -263,6 +263,45 @@ class PrimitiveTransitionTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError,'GRASP_ERROR'):
             guard.check(dict.fromkeys(NAMES,0.))
 
+class InteractiveReplayTests(unittest.TestCase):
+    def test_numbered_menu_executes_three_actions_with_separate_logs(self):
+        from contextlib import redirect_stdout
+        from io import StringIO
+        from unittest.mock import patch
+        import snowbot_bringup.teleop.snowbot_primitive_replay as module
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            library,_=PrimitiveTransitionTests().fixture(root)
+            with patch('builtins.input',side_effect=['invalid','1','2','3','q']), \
+                    patch.object(module,'execute') as execute,redirect_stdout(StringIO()):
+                module.main(['--library',str(library),'--interactive','--execute',
+                    '--execution-mode','impedance','--tool-id','g099-curved',
+                    '--output-dir',str(root/'logs')])
+            self.assertEqual([c.args[0].action for c in execute.call_args_list],['Push','SideScoop','Flip'])
+            outputs=[c.args[0].output for c in execute.call_args_list]
+            self.assertEqual(len(set(outputs)),3)
+            self.assertTrue(all(p.parent==root/'logs' for p in outputs))
+            self.assertTrue(all(c.args[0].execution_mode=='impedance' for c in execute.call_args_list))
+
+    def test_action_failure_exits_menu_before_another_selection(self):
+        from contextlib import redirect_stdout
+        from io import StringIO
+        from unittest.mock import patch
+        import snowbot_bringup.teleop.snowbot_primitive_replay as module
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            library,_=PrimitiveTransitionTests().fixture(root)
+            with patch('builtins.input',side_effect=['1','2']) as choose, \
+                    patch.object(module,'execute',side_effect=RuntimeError('STOP_UNCONFIRMED')) as execute, \
+                    redirect_stdout(StringIO()):
+                with self.assertRaisesRegex(RuntimeError,'STOP_UNCONFIRMED'):
+                    module.main(['--library',str(library),'--interactive','--execute',
+                        '--execution-mode','impedance','--tool-id','g099-curved',
+                        '--output-dir',str(root/'logs')])
+            self.assertEqual(choose.call_count,1)
+            self.assertEqual(execute.call_count,1)
+
+
 class EmptyPrepareTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
