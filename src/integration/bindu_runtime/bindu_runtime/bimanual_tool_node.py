@@ -758,7 +758,8 @@ class BimanualToolNode(RuntimeNode):
                                 executed,_=sampled_nominal_reference(s,self.names,lease.epoch,self.now(),
                                     min(.1,self.cfg['feedback_max_age']))
                             reference_lead,budgets=reference_tracking_budget(work_reference,
-                                tuple(measured[n] for n in self.names),limit,executed=executed)
+                                tuple(measured[n] for n in self.names),limit,executed=executed,
+                                target_limit=self.cfg.get('max_target_lead_error',limit))
                             admission=dict(feedback_stamp=seconds(s.feedback_stamp),
                                 feedback={n:measured[n] for n in self.names},
                                 candidate_lead_rad=max(leads),reference_lead_rad=reference_lead,
@@ -766,7 +767,7 @@ class BimanualToolNode(RuntimeNode):
                                 target_lead_rad=max(abs(q-measured[n]) for n,q in zip(self.names,work_reference)),
                                 candidate_budget_rad=list(budgets),
                                 worst_candidate_joint=self.names[max(range(len(leads)),key=leads.__getitem__)],
-                                reserve_rad=.8*limit,hard_limit_rad=limit)
+                                reserve_rad=.8*self.cfg.get('max_target_lead_error',limit),hard_limit_rad=limit)
                             if reference_lead>limit:
                                 kind,value='error','BIMANUAL_REFERENCE_TRACKING_ERROR'
                             elif any(lead>budget+1e-9 for lead,budget in zip(leads,budgets)):

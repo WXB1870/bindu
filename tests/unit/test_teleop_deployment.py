@@ -273,7 +273,7 @@ class DeploymentTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError,'TARGET_LIMITS_REQUIRE_TARGET_STREAM'):
                     load_deployment(path,SHARE)
 
-    def test_target_recipe_rejects_retired_curve_options_and_impedance_combination(self):
+    def test_target_recipe_rejects_retired_curve_options_and_accepts_explicit_impedance(self):
         recipe=json.loads((package_share("snowbot_bringup")/'config/deployments/snowbot_vr_real.json').read_text())
         with tempfile.TemporaryDirectory() as tmp:
             path=Path(tmp)/'deploy.json';path.write_text(json.dumps(recipe))
@@ -281,10 +281,16 @@ class DeploymentTests(unittest.TestCase):
             self.assertEqual(args['position_protocol'],'session_v3')
             self.assertEqual(args['command_enabled'],'false')
             for key,value in (('trajectory_lead_ms',60.),('trajectory_fast_receipt',True),
-                              ('position_protocol','session_v2'),('execution_mode','impedance')):
+                              ('position_protocol','session_v2')):
                 bad=json.loads(json.dumps(recipe));bad['arguments'][key]=value
                 path.write_text(json.dumps(bad))
                 with self.subTest(key=key),self.assertRaises(ValueError):load_deployment(path,SHARE)
+            recipe['arguments']['execution_mode']='impedance'
+            path.write_text(json.dumps(recipe))
+            _,args=load_deployment(path,SHARE)
+            self.assertEqual(args['execution_mode'],'impedance')
+            self.assertEqual(args['position_protocol'],'session_v3')
+            self.assertEqual(args['command_enabled'],'false')
     def test_position_assembly_rejects_cross_mode_calibration_before_launch(self):
         from launch import LaunchContext
         from bindu_runtime.teleop_assembly import assemble

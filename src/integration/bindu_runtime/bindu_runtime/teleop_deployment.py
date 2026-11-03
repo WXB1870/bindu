@@ -76,7 +76,7 @@ def load_deployment(path, share):
     execution_mode = args.get('execution_mode', 'position')
     if execution_mode not in ('position', 'impedance'):
         raise ValueError('SNOWBOT_EXECUTION_MODE')
-    if execution_mode == 'impedance' and (args.get('runtime_mode') != 'real' or args.get('position_protocol') != 'session_v1'):
+    if execution_mode == 'impedance' and (args.get('runtime_mode') != 'real' or args.get('position_protocol') not in ('session_v1','session_v3')):
         raise ValueError('IMPEDANCE_REQUIRES_REAL_SESSION')
     required = {'runtime_mode'} if execution_only else ({'profile', 'bimanual_config'} if version == 1 else {'robot_config'})
     if not required <= set(args):
@@ -196,5 +196,16 @@ def apply_execution_tracking(config, mode='position', *, real, position_contract
     if not real or not position_contract or config.get('reference_kinematics') is not True:
         raise ValueError(('TRAJECTORY' if mode=='position' else 'IMPEDANCE')+
                          '_REQUIRES_REAL_NOMINAL_KINEMATICS')
-    return {**config, 'tracking_feedback': (config['tracking_feedback'] if
+    selected = {**config, 'tracking_feedback': (config['tracking_feedback'] if
         mode == 'position' and config.get('tracking_feedback') in ('measured_task','measured_shared') else 'reference')}
+    if mode == 'impedance':
+        limits = config.get('impedance_reference_limits', {})
+        if not isinstance(limits, dict) or set(limits)-{'max_reference_error','max_target_lead_error'}:
+            raise ValueError('IMPEDANCE_REFERENCE_LIMITS_CONFIG')
+        selected.update(limits)
+        hard = selected.get('max_reference_error', .15)
+        lead = selected.get('max_target_lead_error', hard)
+        if (any(isinstance(v,bool) or not isinstance(v,(int,float)) or
+                not math.isfinite(v) or v<=0 for v in (hard,lead)) or lead>hard):
+            raise ValueError('IMPEDANCE_REFERENCE_LIMITS_CONFIG')
+    return selected

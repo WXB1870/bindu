@@ -121,7 +121,7 @@ Python 调用入口为 [bindu_kinematics/bimanual.py](../bindu_kinematics/bindu_
 
 Snowbot real配方显式选择`tracking_feedback=measured_shared`：任务FK／Jacobian使用实测共享关节（腰）及已接纳双臂参考，避免提前计入未完成的腰部运动，同时不持续追偿双臂静态柔顺残差。通过增量ABI v1接口`bq_solve_feedback`在同一QP内保留命令处的闭合约束、姿态代价及积分起点；全部实测关节仍用于安全检查。每轴将既有`0.8*max_reference_error`预算纳入速度边界，先重新分配；已超过软预算时允许保持／向内恢复，不强制跳回实测。原硬跟随、几何、整组最终缩步与停止保护不变。该模式要求`reference_kinematics=true`；session_v3位置装配保留显式选择，未选择时沿用`reference`，阻抗模式仍使用名义跟踪。servo采样不替换积分起点。`measured_task`另外提供全关节实测任务运动学作离线对照，但闭环仿真出现目标累积／跟随保护，未选作真实配方。恢复纯名义方案只需将该字段设为`reference`；不得在运动中切换。仿真不证明腰部真实响应、反馈物理尺度、持杆受力或停止已验收。
 
-积分与保护字段：`max_integration_interval`缺省0.1 s且不可超过0.1 s；`max_reference_error`缺省0.15，按各关节位置单位检查参考与实测偏差，超过后要求停止并重新捕获；`sample_period`是离线采样步长，运行节点传入实际候选采样间隔。`solve_timeout_us`按墙钟约束单次候选求解，从输入校验、实测握姿准备到原生调用、限位／几何复核、结果打包和前馈样本准备；现有配置保留30 ms。返回的`solve_us`记录QP内部累计耗时；完整调用和指令往返延迟需分别测量。worker往返另由`worker_timeout`约束，缺省为`solve_timeout_us/1e6 + 0.2`秒，初始化由`worker_startup_timeout`约束（缺省30秒）。这些门限用于软件超时检查，真机延迟仍待实测。
+积分与保护字段：`max_integration_interval`缺省0.1 s且不可超过0.1 s；`max_reference_error`缺省0.15，按各关节位置单位检查参考与实测偏差，超过后要求停止并重新捕获；`max_target_lead_error`缺省等于该硬上限，可单独收紧候选相对实测的推进预算，必须为正且不大于硬上限。生成／提交分别使用其60%／80%；已有较大目标差仅允许保持或缩小，不因硬上限放宽而扩大正常推进；`sample_period`是离线采样步长，运行节点传入实际候选采样间隔。`solve_timeout_us`按墙钟约束单次候选求解，从输入校验、实测握姿准备到原生调用、限位／几何复核、结果打包和前馈样本准备；现有配置保留30 ms。返回的`solve_us`记录QP内部累计耗时；完整调用和指令往返延迟需分别测量。worker往返另由`worker_timeout`约束，缺省为`solve_timeout_us/1e6 + 0.2`秒，初始化由`worker_startup_timeout`约束（缺省30秒）。这些门限用于软件超时检查，真机延迟仍待实测。
 
 Python封装的`tracking_feedback`显式选择跟踪误差来源，适用于持工具与普通双臂；缺省`measured`保持现有位置跟踪，实测工具偏差会继续产生速度并推进已接纳关节参考。设置`"tracking_feedback": "reference"`时必须同时设置`"reference_kinematics": true`：受控关节的FK／Jacobian和任务误差都由已接纳参考计算，未控制关节仍使用实测上下文。目标固定且名义位姿已到达时，不因实测受力偏移继续追偿；尚未完成的名义运动及姿态偏好仍可推进，候选仍只在执行器接纳后提交。可选`tool_feedback`继续校验标定／差异边界，但在该模式不用于任务追踪。
 
@@ -135,7 +135,7 @@ Python封装的`tracking_feedback`显式选择跟踪误差来源，适用于持�
 
 名义参考已到目标、实际机器人仍因受力偏移时，应保留实际偏差；到达状态依据实测反馈判定；名义FK和QP结果用于运动求解。按该分层正确接通后，实际运动的反馈闭环由下层阻抗执行承担；六维力反馈按后端能力接入与标定，名义模式本身不新增力传感器反馈通路。
 
-名义模式保留实测关节／姿态限位、参考偏差、握持、路径碰撞和超时保护，以及整组参考领先量限制；允许的柔顺偏移仍受这些门槛约束，不自动放宽或重新捕获。现有纯位置配方保留缺省`measured`；显式`execution_mode=impedance`的运行装配选择`reference`，适配器核对servo模式及同次PDO力样本。可选后端补丁、标定与停止边界见[Snowbot接入说明](../../../../../snowbot/位置遥操作修改目标.md#可选阻抗执行接入)；名义模式与本机回归均不代替现场验收。
+名义模式保留实测关节／姿态限位、参考偏差、握持、路径碰撞和超时保护，以及整组参考领先量限制；允许的柔顺偏移仍受这些门槛约束，不自动放宽或重新捕获。现有纯位置配方保留缺省`measured`；显式`execution_mode=impedance`的运行装配选择`reference`，适配器核对servo模式及同次PDO力样本。可在同一工具配置的`impedance_reference_limits`对象中显式覆写`max_reference_error`和`max_target_lead_error`，只作用于阻抗装配，不修改位置配方或自动放宽默认值；servo独立的`impedance_following_error_rad`默认仍为0.25 rad，双方须配对。可选后端补丁、标定与停止边界见[Snowbot接入说明](../../../../../snowbot/位置遥操作修改目标.md#可选阻抗执行接入)；名义模式与本机回归均不代替现场验收。
 
 超时诊断为`BIMANUAL_QP_TIMEOUT:native|validation:wall_us=…:cpu_us=…:native_us=…:qp_us=…:geometry_us=…`：`native`检查覆盖输入准备至原生返回，`validation`检查覆盖后续复核、输出与前馈样本准备。`last_timing`保留同一阶段的墙钟、当前线程CPU及分段时间；墙钟明显高于线程CPU提示等待／调度，同线程GC则也消耗CPU，仍须结合GC或线程探针确认。超时使捕获失效，迟到候选不会返回成功或推进前馈样本；检查是调用返回后的拒绝门槛，不能抢占正在执行的原生函数，父进程另以worker期限处理卡住的子进程。
 

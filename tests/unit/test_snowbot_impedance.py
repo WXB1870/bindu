@@ -60,6 +60,42 @@ class ImpedanceSelectionTests(unittest.TestCase):
         self.assertEqual(apply_execution_tracking(config,real=True,position_contract=True,
             trajectory_reference=True)['tracking_feedback'],'measured_shared')
 
+    def test_impedance_limits_are_explicit_and_do_not_change_position_recipe(self):
+        config = dict(self.config, impedance_reference_limits={
+            'max_reference_error': .22, 'max_target_lead_error': .1})
+        selected = apply_execution_tracking(config, 'impedance', real=True,
+                                            position_contract=True, trajectory_reference=True)
+        self.assertEqual(selected['max_reference_error'], .22)
+        self.assertEqual(selected['max_target_lead_error'], .1)
+        self.assertEqual(selected['tracking_feedback'], 'reference')
+        self.assertEqual(config['max_reference_error'], self.config['max_reference_error'])
+        self.assertIs(apply_execution_tracking(config, real=True, position_contract=True), config)
+        for limits in ({'max_reference_error':float('nan')}, {'max_target_lead_error':.3},
+                       {'max_reference_error':True}, {'unknown':.1}, []):
+            with self.subTest(limits=limits), self.assertRaisesRegex(ValueError,'REFERENCE_LIMITS_CONFIG'):
+                apply_execution_tracking(dict(self.config,impedance_reference_limits=limits),
+                                         'impedance',real=True,position_contract=True)
+
+    def test_compliance_limit_does_not_expand_normal_target_advance(self):
+        from bindu_contracts.teleoperation import reference_tracking_budget
+        error,budget = reference_tracking_budget((.03,), (0.,), .22,
+                                                executed=(.02,), target_limit=.1)
+        self.assertAlmostEqual(error,.02)
+        self.assertAlmostEqual(budget[0],.08)
+        # A larger existing compliant displacement can persist but cannot grow
+        # through another joint's unused budget or a relaxed hard threshold.
+        error,budget = reference_tracking_budget((.18,.01), (0.,0.), .22,
+                                                executed=(.17,.01), target_limit=.1)
+        self.assertAlmostEqual(error,.17)
+        self.assertAlmostEqual(budget[0],.18)
+        self.assertAlmostEqual(budget[1],.08)
+        error,_ = reference_tracking_budget((.18,), (0.,), .22,
+                                            executed=(.221,), target_limit=.1)
+        self.assertGreater(error,.22)
+        for lead in (0.,-.1,.23,float('nan'),True):
+            with self.subTest(lead=lead), self.assertRaisesRegex(ValueError,'TARGET_LEAD_LIMIT_CONFIG'):
+                reference_tracking_budget((0.,),(0.,),.22,executed=(0.,),target_limit=lead)
+
     def test_real_sixteen_axis_nominal_config_runs_native_qp(self):
         from bindu_contracts.profile import Profile
         from bindu_kinematics.bimanual import BimanualQP
@@ -84,6 +120,10 @@ class ImpedanceSelectionTests(unittest.TestCase):
                                     ({'runtime_mode':'simulation'}, 'REQUIRES_REAL_SESSION'),
                                     ({'execution_mode':'auto'}, 'EXECUTION_MODE')):
                 data = {**recipe, 'arguments': {**recipe['arguments'], **changes}}
+                if changes.get('position_protocol') == 'legacy_guard' or changes.get('runtime_mode') == 'simulation':
+                    # Isolate mode compatibility from unrelated target-stream limits.
+                    for key in ('trajectory_max_velocity','trajectory_max_acceleration','trajectory_max_jerk'):
+                        data['arguments'].pop(key,None)
                 path.write_text(json.dumps(data))
                 if error:
                     with self.assertRaisesRegex(ValueError, error): load_deployment(path, SHARE)
@@ -101,7 +141,7 @@ class ImpedanceHealthTests(unittest.TestCase):
         self.health = SessionHealth(lambda: 10.001, lambda: 1.001, execution_mode='impedance')
         for layer in ('upper', 'middle', 'servo'):
             self.health.state(layer, S(header=observation().header, layer=layer, instance_id=12,
-                startup_complete=True, feedback_ready=True,
+                startup_complete=True, feedback_ready=True, wire_version=3,
                 control_source='topic' if layer == 'upper' else 'impedance', stop_policy='measured_hold'))
         self.health.observe(observation(wrench=[0.]*12, sensor_valid_mask=3, sensor_age=[.001,.001]))
         self.health.observe(observation(10.001, pdo_sample=2, wrench=[0.]*12, sensor_valid_mask=3, sensor_age=[.001,.001]))
@@ -120,6 +160,22 @@ class ImpedanceHealthTests(unittest.TestCase):
             previous = getattr(obs, field);setattr(obs, field, value)
             with self.assertRaisesRegex(RuntimeError, 'SENSOR_INVALID'): self.health.require(self.groups)
             setattr(obs, field, previous)
+
+    def test_target_stream_requires_matching_protocol_and_live_force_during_nominal_hold(self):
+        self.health.reference_mode = 2
+        for _, state in self.health.states.values():
+            state.wire_version = 5
+        self.health.states['servo'][1].reference_mode = 2
+        self.health.require(self.groups)
+        obs = self.health.observation
+        obs.session_selected=True;obs.session=7;obs.command_sequence=3;obs.session_reason=1
+        obs.hold_valid=True;obs.hold_sample=1;obs.hold_position=[.1]*16
+        obs.reference_mode=2;obs.segment_id=3;obs.trajectory_phase=4;obs.hold_basis=0
+        obs.reference_valid=obs.output_valid=True
+        self.assertIsNotNone(self.health.confirmed_hold((7,3,obs.boot_id,1)))
+        # A nominal hold ACK cannot stand in for a fresh, valid force sample.
+        obs.sensor_age=[.021,.001]
+        self.assertIn('SENSOR_INVALID',self.health.hold_failure((7,3,obs.boot_id,1)))
 
     def test_default_position_requires_no_impedance_sensor_or_calibration(self):
         self.health.execution_mode = 'position'

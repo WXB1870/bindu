@@ -100,6 +100,12 @@ class BimanualQP:
             raise ValueError('BIMANUAL_COUPLED_LOCKED_JOINTS_CONFIG: unknown active joint')
         self.max_interval = float(config.get('max_integration_interval', .1))
         self.max_reference_error = float(config.get('max_reference_error', .15))
+        self.max_target_lead_error = config.get('max_target_lead_error', self.max_reference_error)
+        if (isinstance(self.max_target_lead_error, bool) or
+                not isinstance(self.max_target_lead_error, (int, float)) or
+                not math.isfinite(self.max_target_lead_error) or
+                not 0 < self.max_target_lead_error <= self.max_reference_error):
+            raise ValueError('BIMANUAL_TARGET_LEAD_LIMIT_CONFIG')
         self.measured_limit_tolerance=float(config.get('measured_joint_limit_tolerance_rad',0.))
         if not math.isfinite(self.measured_limit_tolerance) or not 0<=self.measured_limit_tolerance<=math.pi:
             raise ValueError('BIMANUAL_MEASURED_LIMIT_TOLERANCE_CONFIG')
@@ -801,7 +807,8 @@ class BimanualQP:
                 raise ValueError('BIMANUAL_REFERENCE_LAYOUT')
             self._check_measured_limits(measured)
             tracking_error,budgets=reference_tracking_budget(tuple(reference),tuple(measured),
-                self.max_reference_error,executed=getattr(self,'execution_reference',None),reserve_fraction=.6)
+                self.max_reference_error,executed=getattr(self,'execution_reference',None),reserve_fraction=.6,
+                target_limit=getattr(self,'max_target_lead_error',self.max_reference_error))
             if tracking_error>self.max_reference_error:
                 raise ValueError('BIMANUAL_REFERENCE_TRACKING_ERROR')
             if self.tracking_feedback in ('reference', 'measured_task', 'measured_shared'):
@@ -896,7 +903,8 @@ class BimanualQP:
         measured = np.array([feedback[n] for n in self.names])
         self._check_measured_limits(measured)
         tracking_error,budgets=reference_tracking_budget(tuple(reference),tuple(measured),
-            self.max_reference_error,executed=getattr(self,'execution_reference',None),reserve_fraction=.6)
+            self.max_reference_error,executed=getattr(self,'execution_reference',None),reserve_fraction=.6,
+            target_limit=getattr(self,'max_target_lead_error',self.max_reference_error))
         if tracking_error > self.max_reference_error:
             raise ValueError('BIMANUAL_REFERENCE_TRACKING_ERROR')
         measured_tool = None

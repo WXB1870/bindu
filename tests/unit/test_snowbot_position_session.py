@@ -1595,12 +1595,13 @@ class TargetWireTests(unittest.TestCase):
         self.send('ordinary')
         self.assertEqual(self.d.envelopes.sequence,2)
 
-    def test_old_curve_protocol_and_target_impedance_combination_rejected(self):
+    def test_old_curve_protocol_rejected_and_explicit_target_impedance_supported(self):
         for mode in (0,1):
             self.d.health.states['servo'][1].reference_mode=mode
             with self.assertRaisesRegex(RuntimeError,'PROTOCOL_CONFLICT'): self.d.check_health(CONTROL_GROUPS)
-        with self.assertRaisesRegex(ValueError,'PURE_POSITION'):
-            SessionHealth(lambda:10.,execution_mode='impedance',reference_mode=2)
+        health=SessionHealth(lambda:10.,execution_mode='impedance',reference_mode=2)
+        self.assertEqual(health.execution_mode,'impedance')
+        self.assertEqual(health.reference_mode,2)
         with self.assertRaisesRegex(ValueError,'REFERENCE_MODE'):
             SessionHealth(lambda:10.,reference_mode=1)
 
