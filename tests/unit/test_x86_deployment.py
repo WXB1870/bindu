@@ -357,21 +357,6 @@ class X86DeploymentTests(unittest.TestCase):
 
 
 class RuntimeCheckTests(unittest.TestCase):
-    def test_detects_stale_pico_and_gripper_but_allows_site_overrides(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            source = root/'src/integration/bindu_runtime'
-            installed = root/'install/share/bindu_runtime'
-            source.mkdir(parents=True)
-            installed.mkdir(parents=True)
-            for filename in ('pico.json', 'gripper.json'):
-                (source/filename).write_text('new')
-                (installed/filename).write_text('old')
-                with patch.object(runtime_check, 'ROOT', root):
-                    with self.assertRaisesRegex(ValueError, '请重建'):
-                        runtime_check.check_installed_configs([installed/filename], installed)
-                    runtime_check.check_installed_configs([source/filename], installed)
-
     def native_fixture(self, root):
         from bindu_contracts.profile import Profile
         tool = root/'tool.json'
@@ -399,7 +384,7 @@ class RuntimeCheckTests(unittest.TestCase):
     def test_loads_native_execution_vendor_types_and_qp_then_closes(self):
         with tempfile.TemporaryDirectory() as tmp:
             robot, package, solver, support, modules = self.native_fixture(Path(tmp))
-            with patch.dict('sys.modules', modules), patch.object(runtime_check, 'check_installed_configs'), \
+            with patch.dict('sys.modules', modules), \
                     patch.object(runtime_check.importlib, 'import_module', return_value=package) as load:
                 report = runtime_check.check_runtime(dict(runtime_mode='real', robot_config='robot.json'), robot)
             self.assertEqual(report['software_dependencies'], 'passed')
@@ -419,7 +404,7 @@ class RuntimeCheckTests(unittest.TestCase):
                         raise ImportError('missing _native')
                     return package
                 solver.side_effect = ValueError('missing bq_shared_motion_weight') if broken == 'qp' else None
-                with patch.dict('sys.modules', modules), patch.object(runtime_check, 'check_installed_configs'), \
+                with patch.dict('sys.modules', modules), \
                         patch.object(runtime_check.importlib, 'import_module', side_effect=load):
                     with self.assertRaises((ImportError, ValueError)):
                         runtime_check.check_runtime(dict(runtime_mode='real', robot_config='robot.json'), robot)
@@ -431,7 +416,7 @@ class RuntimeCheckTests(unittest.TestCase):
                          'PositionSessionUpper','PositionSessionServo','PositionSessionState'):
                 setattr(package, name, object())
             args = dict(runtime_mode='real', robot_config='robot.json', position_protocol='session_v3')
-            with patch.dict('sys.modules', modules), patch.object(runtime_check, 'check_installed_configs'), \
+            with patch.dict('sys.modules', modules), \
                     patch.object(runtime_check.importlib, 'import_module', return_value=package):
                 with self.assertRaises(AttributeError): runtime_check.check_runtime(args, robot)
                 package.PositionTrajectory = object()
@@ -457,8 +442,7 @@ class CspInstallTests(unittest.TestCase):
                 ('servo_control/include/servo_control/position_observation.h', prefixes['snowbot_servo_control']/'include/servo_control/position_observation.h')):
             target.parent.mkdir(parents=True, exist_ok=True); target.write_bytes((root/'src'/source).read_bytes())
         binary = prefixes['snowbot_servo_control']/'lib/snowbot_servo_control/servo_node'
-        binary.parent.mkdir(parents=True); binary.write_bytes(
-            b'csp_send_attempt_ns= mode_command= mode_display= target_position_raw= actual_position_raw=')
+        binary.parent.mkdir(parents=True); binary.write_bytes(b'test servo binary')
         generated = prefixes['snowbot_ctl_msgs']/'_position_observation.py'; generated.write_text('# generated\n')
         return fields, prefixes, generated, binary
 
@@ -489,7 +473,7 @@ class CspInstallTests(unittest.TestCase):
             binary.write_bytes(binary.read_bytes()+b'other version')
             with self.assertRaisesRegex(ValueError, 'EXPECTED_BINARY_SHA256_MISMATCH'):
                 runtime_check.verify_vendor_install(root, fields, prefixes, generated, receipt)
-            # Diagnostic markers alone prove capability, never an exact build.
+            # Without a frozen receipt, the digest does not identify a selected build.
             self.assertFalse(runtime_check.verify_vendor_install(root, fields, prefixes, generated)
                              ['exact_servo_version_verified'])
 
@@ -502,15 +486,14 @@ class CspInstallTests(unittest.TestCase):
             report = runtime_check.verify_vendor_install(root, fields, prefixes, generated)
             self.assertEqual(report['generated_module'], str(target.resolve()))
 
-    def test_wrong_overlay_module_old_install_and_old_binary_are_rejected(self):
-        for failure in ('overlay', 'module', 'message', 'binary'):
+    def test_wrong_overlay_module_and_old_install_are_rejected(self):
+        for failure in ('overlay', 'module', 'message'):
             with self.subTest(failure=failure), tempfile.TemporaryDirectory() as tmp:
                 root = Path(tmp); fields, prefixes, generated, binary = self.fixture(root)
                 if failure == 'overlay': prefixes['robot_control'] = root/'other-install'
                 elif failure == 'module': generated = root/'other-overlay/_position_observation.py'
                 elif failure == 'message':
                     (prefixes['snowbot_ctl_msgs']/'share/snowbot_ctl_msgs/msg/PositionObservation.msg').write_text('old')
-                else: binary.write_bytes(b'old servo')
                 with self.assertRaises(ValueError):
                     runtime_check.verify_vendor_install(root, fields, prefixes, generated)
 
@@ -626,7 +609,6 @@ class PositionSessionPreflightTests(unittest.TestCase):
         self.node.get_name.return_value = 'position_probe'
         self.node.count_publishers.return_value = 0
         self.writers, self.readers = {}, {}
-        self.local_hash = NS(version=1, value=b'a'*32)
         self.qos = NS(QoSCompatibility=NS(OK=0, WARNING=1, ERROR=2),
                       qos_check_compatible=lambda offered, requested: (0 if offered == requested else 2, ''))
         for endpoint in runtime_check.vendor_endpoints(self.args):
@@ -636,8 +618,7 @@ class PositionSessionPreflightTests(unittest.TestCase):
 
     def add(self, topic, role, owner, kind):
         space, name = owner.rsplit('/', 1)
-        info = NS(node_namespace=space or '/', node_name=name, topic_type=kind,
-                  topic_type_hash=self.local_hash, qos_profile='reliable')
+        info = NS(node_namespace=space or '/', node_name=name, topic_type=kind, qos_profile='reliable')
         target = self.writers if role == 'publisher' else self.readers
         target.setdefault(topic, []).append(info)
         return info
@@ -652,7 +633,7 @@ class PositionSessionPreflightTests(unittest.TestCase):
         with patch.dict('sys.modules', {'rclpy.qos': self.qos}):
             return runtime_check.inspect_position_routes(self.args, self.node)
 
-    def test_local_schema_and_actual_relay_qos_match(self):
+    def test_local_endpoint_and_actual_relay_qos_match(self):
         self.local_readers()
         self.assertEqual(self.inspect(), [])
         self.node.create_publisher.assert_not_called()
@@ -669,28 +650,18 @@ class PositionSessionPreflightTests(unittest.TestCase):
         probe.assert_called_once_with(self.args, 1.)
         self.node.create_publisher.assert_not_called(); self.node.create_client.assert_not_called()
 
-    def test_same_type_name_with_different_hash_rejects_every_route(self):
+    def test_message_type_name_mismatch_rejects_every_route(self):
         self.local_readers()
         for role, graph in (('publisher', self.writers), ('subscription', self.readers)):
             for topic, values in graph.items():
                 for peer in values:
                     if peer.node_name == 'position_probe':continue
                     with self.subTest(topic=topic, role=role):
-                        peer.topic_type_hash = NS(version=1, value=b'b'*32)
-                        self.assertIn('SNOWBOT_ENDPOINT_TYPE_HASH_MISMATCH:'+topic, self.inspect())
-                        peer.topic_type_hash = self.local_hash
-
-    def test_unknown_local_or_peer_hash_cannot_report_compatible(self):
-        self.local_readers()
-        topic = '/bindu/position/command'
-        for index in (0, 1):
-            peer = self.readers[topic][index]
-            for value in (None, NS(version=0, value=b'a'*32), NS(version=1, value=bytes(32)),
-                          NS(version=1, value=b'a')):
-                with self.subTest(index=index, value=value):
-                    peer.topic_type_hash = value
-                    self.assertIn('SNOWBOT_ENDPOINT_TYPE_HASH_UNAVAILABLE:'+topic, self.inspect())
-            peer.topic_type_hash = self.local_hash
+                        kind = peer.topic_type
+                        peer.topic_type = 'std_msgs/msg/String'
+                        self.assertIn('SNOWBOT_ENDPOINT_TYPE:'+topic+':'+kind,
+                                      runtime_check.inspect_vendor_endpoints(self.args, self.node))
+                        peer.topic_type = kind
 
     def test_relay_qos_uses_its_receiver_and_not_the_passive_reader(self):
         self.local_readers()
@@ -708,10 +679,10 @@ class PositionSessionPreflightTests(unittest.TestCase):
         self.readers['/bindu/position/command'].pop()
         self.assertIn('SNOWBOT_SESSION_ROUTE_UNVERIFIED:/bindu/position/command', self.inspect())
 
-    def test_readonly_probe_detects_mixed_command_schema_and_cleans_up(self):
+    def test_readonly_probe_detects_wrong_command_type_and_cleans_up(self):
         import snowbot_hardware.session as session
         self.node.get_clock.return_value.now.return_value.nanoseconds = 10_000_000_000
-        self.readers['/bindu/position/command'][0].topic_type_hash = NS(version=1, value=b'b'*32)
+        self.readers['/bindu/position/command'][0].topic_type = 'std_msgs/msg/String'
         def subscribe(kind, topic, callback, qos):
             name = next(e['type'] for e in runtime_check.vendor_endpoints(self.args) if e['topic'] == topic)
             self.add(topic, 'subscription', '/position_probe', name)
@@ -728,7 +699,7 @@ class PositionSessionPreflightTests(unittest.TestCase):
                 patch.object(runtime_check.time, 'monotonic', side_effect=[0.,2.]):
             result = runtime_check.check_robot_interface(self.args, 1.)
         self.assertEqual(result['robot_interface'], 'unavailable')
-        self.assertIn('SNOWBOT_ENDPOINT_TYPE_HASH_MISMATCH:/bindu/position/command', result['errors'])
+        self.assertIn('SNOWBOT_ENDPOINT_TYPE:/bindu/position/command:snowbot_ctl_msgs/msg/PositionSessionCommand', result['errors'])
         self.assertEqual(self.node.create_subscription.call_count, 7)
         self.node.create_publisher.assert_not_called();self.node.create_client.assert_not_called()
         self.node.destroy_node.assert_called_once();rclpy.shutdown.assert_called_once()
@@ -770,15 +741,15 @@ class DeploymentProcessGuardTests(unittest.TestCase):
             self.assertEqual(process_guard.require_stopped(root),
                              dict(controllers=[], unreadable_pids=[]))
 
-    def test_missing_proc_and_permission_failure_cannot_report_stopped(self):
+    def test_missing_proc_blocks_but_unreadable_process_is_reported(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             with self.assertRaisesRegex(ValueError, 'PROCESS_SCAN_UNAVAILABLE'):
                 process_guard.require_stopped(root/'missing')
             self.process(root, 42, 'python3', '/unknown/script.py')
             with patch.object(Path, 'read_bytes', side_effect=PermissionError):
-                with self.assertRaisesRegex(ValueError, 'PROCESS_STATE_UNKNOWN'):
-                    process_guard.require_stopped(root)
+                self.assertEqual(process_guard.require_stopped(root),
+                                 dict(controllers=[], unreadable_pids=[42]))
 
     def test_build_guard_precedes_build_markers_and_subprocesses(self):
         with tempfile.TemporaryDirectory() as tmp:

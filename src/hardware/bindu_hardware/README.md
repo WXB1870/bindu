@@ -224,7 +224,7 @@ ROS_LOCALHOST_ONLY=1 ROS_DOMAIN_ID=226 python3 -m tests.integration.validate_sno
 会话身份按源ROS时间纳秒及本实例前值递增，接收端以常量大小的高水位拒绝所有旧身份，包括取消但未采用的接管；不再有32个退休槽上限，换新时间戳／序号也不能复活旧身份。共享会话广告为wire 3，目标流为wire 5，必须与本版Bindu和三层成套构建；旧wire 2／4拒绝接纳。源进程重启后若ROS时间回退至接收水位之前，则安全拒绝重连，不能靠清空水位绕过；uint64耗尽亦拒绝，不回绕。源时间、原TTL、同会话sequence、PAUSE和故障锁存判据保持。
 
 
-`session_v1`只读预检同时比较本机生成消息与各层端点的类型哈希，并按实际发布／订阅方向核对QoS；缺失／未知元数据或不兼容均不报告可用。探测仅增加被动订阅，不创建运动发布者或调用控制服务。ROS元数据语义见[端点信息](https://github.com/ros2/rclpy/blob/jazzy/rclpy/rclpy/topic_endpoint_info.py)及[QoS检查](https://github.com/ros2/rclpy/blob/jazzy/rclpy/rclpy/qos.py)。
+`session_v1`／`session_v3`只读预检核对发布者唯一性、节点身份、消息类型名及实际发布／订阅方向的QoS；缺失／未知元数据或不兼容均不报告可用。应用层不比较消息类型哈希，各使用方仍须按配对版本统一生成、构建并核对安装来源。探测仅增加被动订阅，不创建运动发布者或调用控制服务。ROS元数据语义见[端点信息](https://github.com/ros2/rclpy/blob/jazzy/rclpy/rclpy/topic_endpoint_info.py)及[QoS检查](https://github.com/ros2/rclpy/blob/jazzy/rclpy/rclpy/qos.py)。
 
 以下为`legacy_guard`接口：在目标ROS环境构建／加载原包的`snowbot_ctl_msgs`，然后构建并加载Bindu。启用写入时，现场底层控制版本必须应用补丁、上层启动为`control_source:=topic`、伺服节点启动为`bindu_guard:=true`；后者默认false，保留原有控制入口。未补丁的底层节点仍可用于只读观察，适配器拒绝取得控制权。准备器生成源码副本；底层全包的依赖路径、ARM64构建及部署仍需按目标环境验证。
 
