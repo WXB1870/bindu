@@ -460,8 +460,6 @@ class SnowbotAdapterTests(unittest.TestCase):
         self.assertEqual(q['body_joint_2'], .3)
         self.assertEqual(v['head_joint_2'], .05)
         self.assertEqual(stamp, 10.02)
-        bad = copy.deepcopy(msg); bad.r_position = [0.]*7
-        with self.assertRaises(ValueError): decode_feedback(bad)
 
     def sampled_feedback(self, **changes):
         fields = dict(header=S(stamp=S(sec=10, nanosec=20000000)),

@@ -1095,18 +1095,18 @@ class TargetWireTests(unittest.TestCase):
         self.assertGreater(self.rig.steady-received, .2)
         self.assertEqual(self.d.health.received['servo'], received)
 
-    def test_old_conflicting_layer_identity_or_malformed_stamp_still_invalidates(self):
+    def test_old_layer_identity_cannot_invalidate_current_health(self):
         from copy import deepcopy
+        current = self.d.health.states['servo'][1]
+        received = self.d.health.received['servo']
         for changes in (dict(instance_id=99), dict(wire_version=3), dict(reference_mode=0),
-                        dict(control_source='impedance'), dict(feedback_boot_id=99),
-                        dict(stop_policy='unconfirmed'), dict(header=S(stamp=S(sec=10, nanosec=-1))),
-                        dict(header=S(stamp=S(sec=0, nanosec=0)))):
+                        dict(control_source='impedance'), dict(feedback_boot_id=99), dict(stop_policy='unconfirmed')):
             with self.subTest(changes=changes):
-                self.setUp()
-                old = deepcopy(self.d.health.states['servo'][1])
+                old = deepcopy(current)
                 for key, value in changes.items(): setattr(old, key, value)
                 self.d.receive_state('servo', '/bindu/position/servo_state', 'head', old)
-                self.assertNotIn('servo', self.d.health.states)
+                self.assertIs(self.d.health.states['servo'][1], current)
+                self.assertEqual(self.d.health.received['servo'], received)
 
     def test_layer_state_bad_clock_cannot_be_accepted_as_old_healthy_telemetry(self):
         current = self.d.health.states['servo'][1]
