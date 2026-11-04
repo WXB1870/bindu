@@ -92,10 +92,10 @@ class TeleopToolsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix='bindu site ') as tmp:
             config = Path(tmp)/'site.json'
             with patch.object(helper, 'preflight', return_value=({}, None)) as check, \
-                    patch.object(helper, 'ensure_stopped') as stopped, \
+                    patch.object(helper, 'startup_lock') as stopped, \
                     patch.object(helper.os, 'execvp') as execute:
                 self.assertEqual(helper.main(['start', '--config', str(config)]), 0)
-                check.assert_called_once_with(config)
+                check.assert_called_once_with(config, diagnostics=False)
                 stopped.assert_called_once_with({})
                 execute.assert_called_once_with('ros2', ['ros2', 'launch', 'bindu_runtime',
                                                          'teleop_only.launch.py', 'config:='+str(config)])
@@ -108,7 +108,7 @@ class TeleopToolsTests(unittest.TestCase):
 
     def test_running_instance_blocks_start_without_killing_it(self):
         with patch.object(helper, 'preflight', return_value=({}, None)), \
-                patch.object(helper, 'ensure_stopped', side_effect=ValueError('existing execution')), \
+                patch.object(helper, 'startup_lock', side_effect=RuntimeError('existing execution')), \
                 patch.object(helper.os, 'execvp') as execute:
             self.assertEqual(helper.main(['start','--config','unused-site.json']), 2)
             execute.assert_not_called()

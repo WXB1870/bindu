@@ -78,7 +78,7 @@ def configure(options):
     print(f'已生成 {options.config}；command_enabled={options.enable_commands}')
 
 
-def preflight(path):
+def preflight(path, *, diagnostics=True):
     from ament_index_python.packages import get_package_share_directory
     from bindu_runtime.teleop_deployment import load_deployment
     from bindu_runtime.robot_setup import RobotSetup
@@ -87,6 +87,8 @@ def preflight(path):
     share = Path(get_package_share_directory('bindu_runtime'))
     _, args = load_deployment(path, share)
     robot = RobotSetup.load(args['robot_config'])
+    if not diagnostics:
+        return args, robot
     tool = json.loads(robot.tool_config.read_text())
     if robot.robot_id != 'snowbot' or tool.get('simulation_only') is not False:
         raise ValueError('需要 Snowbot 真机模型与工具配置')
@@ -118,9 +120,9 @@ def preflight(path):
     return args, robot
 
 
-def ensure_stopped(args):
-    from snowbot_bringup.teleop.runtime_check import ensure_stopped as implementation
-    return implementation(args)
+def startup_lock(args):
+    from snowbot_bringup.teleop.run_vr import startup_lock as acquire
+    return acquire(os.environ.get('ROS_DOMAIN_ID', '0'), args['namespace'], inherit=True)
 
 
 def assess_state(execution, mode, now, profile_hash):
@@ -343,21 +345,15 @@ def main(argv=None):
             return 0
         if options.command == 'status' and not (math.isfinite(options.seconds) and 0 < options.seconds <= 30):
             raise ValueError('--seconds 须在 0–30 秒内')
-        args, robot = preflight(options.config)
+        args, robot = preflight(options.config, diagnostics=options.command == 'check')
         if options.command == 'gripper':
             return operate_gripper(args, robot, options)
         if options.command == 'status':
             return observe(args, robot, options.seconds)
         if options.command == 'start':
-            if args.get('command_enabled') == 'true':
-                from tools.deployment.runtime_check import check_robot_interface
-                report = check_robot_interface(args)
-                print(json.dumps(report, ensure_ascii=False))
-                if report['errors']:
-                    raise RuntimeError('ROBOT_INTERFACE_UNAVAILABLE:'+','.join(report['errors']))
-            ensure_stopped(args)
             print('前台启动四节点；Ctrl+C 收尾。仍需显式选择模式和开启会话。', flush=True)
-            os.execvp('ros2', ['ros2', 'launch', 'bindu_runtime', 'teleop_only.launch.py', 'config:='+str(options.config)])
+            with startup_lock(args):
+                os.execvp('ros2', ['ros2', 'launch', 'bindu_runtime', 'teleop_only.launch.py', 'config:='+str(options.config)])
         return 0
     except KeyboardInterrupt:
         print('操作已中断；已尝试按夹爪控制权完成保持收尾。', file=sys.stderr)

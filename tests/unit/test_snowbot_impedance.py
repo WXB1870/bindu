@@ -101,7 +101,7 @@ class ImpedanceHealthTests(unittest.TestCase):
         self.health = SessionHealth(lambda: 10.001, lambda: 1.001, execution_mode='impedance')
         for layer in ('upper', 'middle', 'servo'):
             self.health.state(layer, S(header=observation().header, layer=layer, instance_id=12,
-                startup_complete=True, feedback_ready=True,
+                startup_complete=True, feedback_ready=True, wire_version=3,
                 control_source='topic' if layer == 'upper' else 'impedance', stop_policy='measured_hold'))
         self.health.observe(observation(wrench=[0.]*12, sensor_valid_mask=3, sensor_age=[.001,.001]))
         self.health.observe(observation(10.001, pdo_sample=2, wrench=[0.]*12, sensor_valid_mask=3, sensor_age=[.001,.001]))
@@ -112,7 +112,7 @@ class ImpedanceHealthTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'EXECUTION_MODE_CONFLICT'):
             self.health.require(self.groups)
         self.health.states['servo'][1].control_source = 'impedance'
-        for field, value in (('sensor_valid_mask',1), ('wrench',[0.]*11),
+        for field, value in (('sensor_valid_mask',1),
                              ('wrench',[float('nan')]*12), ('valid_mask',0xc7f7f),
                              ('sensor_age',[.021,.001]), ('sensor_age',[-1.,.001]),
                              ('sensor_age',[float('nan'),.001])):

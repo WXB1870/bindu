@@ -9,7 +9,7 @@ import tempfile
 import unittest
 
 from snowbot_bringup.teleop.snowbot_primitive_replay import (
-    NAMES, GROUPS, Replay, load_replay, run_replay, kinematic_digest,
+    NAMES, GROUPS, Replay, load_replay, load_library, replay_graph, run_replay, kinematic_digest,
 )
 
 
@@ -77,17 +77,29 @@ class PrimitiveReplayTests(unittest.TestCase):
         for kind in ('late', 'clock'):
             p = self.plan()
             port = FakePort(p)
-            if kind == 'late': port.late = True
+            if kind == 'late': port.wait_until = lambda due: setattr(port, 'now', due+.3)
             else:
                 original = port.wait_until
                 def shifted(due):
                     original(due)
-                    port.clock_shift = .1
+                    port.clock_shift = .3
                 port.wait_until = shifted
             with self.assertRaisesRegex(RuntimeError, 'STREAM_LATE|CLOCK_CHANGED'):
                 run_replay(p, port)
             self.assertFalse(port.sent)
             self.assertTrue(port.released)
+
+    def test_scheduling_delay_inside_ttl_preserves_original_source_time(self):
+        p = self.plan()
+        port = FakePort(p)
+        wait = port.wait_until
+        def delayed(due):
+            wait(due)
+            if not port.sent: port.now += .06
+        port.wait_until = delayed
+        self.assertTrue(run_replay(p, port)['completed'])
+        self.assertEqual(port.sent[0][1], 100.)
+        self.assertTrue(all(t-(source-100.) < .25 for t,source,_ in port.sent))
 
     def test_partial_acquire_still_cleans_up(self):
         p = self.plan()
@@ -176,6 +188,8 @@ class PrimitiveReplayTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'SPEED'):
                 load_replay(manifest, 'Push', 2.)
             target.write_text('{}')
+            self.assertEqual(load_replay(manifest, 'Push').points[-1][0], .001)
+            load_replay.cache_clear()  # Selecting a new release revalidates its files.
             with self.assertRaisesRegex(ValueError, 'IDENTITY'):
                 load_replay(manifest, 'Push')
 
@@ -214,14 +228,14 @@ class PackagedLibraryTests(unittest.TestCase):
                 shoulder = plan.names.index('arm_r_joint_1')
                 self.assertLess(max(abs(q[shoulder]) for q in plan.points), math.pi/3)
 
-    def test_prepare_configuration_matches_the_packaged_home_pose(self):
+    def test_prepare_configuration_uses_library_home_as_single_source(self):
         config = json.loads((self.config/'teleop.json').read_text())
-        goal = dict(zip(NAMES, load_replay(self.library, 'SideScoop').points[0]))
+        self.assertNotIn('prepare_positions_rad', config)
         for mode in ('real', 'simulation'):
-            positions = config['prepare_positions_rad'] | config['modes'][mode]['prepare_positions_rad']
-            for name, expected in goal.items():
-                with self.subTest(mode=mode, joint=name):
-                    self.assertAlmostEqual(positions[name], expected, places=10)
+            self.assertNotIn('prepare_positions_rad', config['modes'][mode])
+        home = self.manifest['nodes'][self.manifest['home_node']]
+        self.assertEqual(len(home), len(NAMES))
+        self.assertEqual(tuple(home), load_replay(self.library, self.manifest['home_node'].split(':')[0]).points[0])
 
     def test_packaged_paths_fit_the_runtime_profile(self):
         from bindu_contracts.profile import Profile
@@ -312,6 +326,7 @@ class PrimitiveTransitionTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError,'UNKNOWN_START'):
                 plan_from_current(path,'Push',dict.fromkeys(NAMES,.8))
             m['nodes']['Flip:start'][2]+=.01;path.write_text(json.dumps(m))
+            load_library.cache_clear();replay_graph.cache_clear()
             with self.assertRaisesRegex(ValueError,'TRANSITION_ENDPOINT'):
                 plan_from_current(path,'Push',dict.fromkeys(NAMES,0.))
 

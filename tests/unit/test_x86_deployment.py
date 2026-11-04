@@ -263,6 +263,16 @@ class X86DeploymentTests(unittest.TestCase):
                 self.assertEqual(x86_real.main(['start', '--workspace', tmp, '--physics']), 2)
                 execute.assert_not_called()
 
+    def test_start_uses_completed_install_without_scanning_source(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root/'build.json').write_text(json.dumps(dict(ready=True, native_process_exit_success=True)))
+            (root/'deployment.json').write_text('{}')
+            with patch.object(x86_real, 'source_digest', side_effect=AssertionError('startup source scan')):
+                x86_real.require_current_build(root, check_sources=False)
+                (root/'build.json').write_text(json.dumps(dict(ready=False)))
+                with self.assertRaises(ValueError): x86_real.require_current_build(root, check_sources=False)
+
     def test_changed_source_and_failed_build_require_rebuild(self):
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp)

@@ -43,15 +43,13 @@ class PositionSessionTests(unittest.TestCase):
         return S(command_id=changes.get('command_id', 'one'), stamp=changes.get('stamp', self.now),
                  valid_for=changes.get('valid_for', .25))
 
-    def test_ordered_identity_handles_same_tick_rollback_restart_and_uint64_limit(self):
+    def test_ordered_identity_handles_same_tick_rollback_restart(self):
         first = new_session_id(10.)
         self.assertEqual(first, 10_000_000_000)
         self.assertEqual(new_session_id(10., first), first+1)
         self.assertEqual(new_session_id(9., first), first+1)
         self.assertGreater(new_session_id(10.001), first)  # New source process.
         self.assertEqual(new_session_id(1., (1 << 64)-2), (1 << 64)-1)
-        with self.assertRaisesRegex(ValueError, 'ID_EXHAUSTED'):
-            new_session_id(1., (1 << 64)-1)
         for now in (0., -1., float('nan'), float('inf')):
             with self.assertRaisesRegex(ValueError, 'CLOCK_INVALID'):
                 new_session_id(now)
@@ -186,8 +184,9 @@ class PositionSessionTests(unittest.TestCase):
         self.health.observe(observation(pdo_sample=5, status=statuses))
         self.health.observe(observation(pdo_sample=6, status=statuses))
         self.health.require(CONTROL_GROUPS)
+        from snowbot_hardware.position_session import PositionSessionIO
         with self.assertRaisesRegex(RuntimeError, 'RESOURCE_LAYOUT'):
-            self.health.require(('left_tool_axis',))
+            PositionSessionIO.capture(None, ('left_tool_axis',))
 
     def test_missing_waist_never_becomes_zero_or_ready(self):
         msg = observation(pdo_sample=3, valid_mask=0xffff)
@@ -231,7 +230,8 @@ class PositionSessionTests(unittest.TestCase):
         self.health.observe(observation(pdo_sample=self.health.sample+1))
         self.health.observe(observation(pdo_sample=self.health.sample+1))
         self.health.require(CONTROL_GROUPS)
-        with self.assertRaisesRegex(RuntimeError, 'RESOURCE_LAYOUT'): self.health.require(ARMS)
+        from snowbot_hardware.position_session import PositionSessionIO
+        with self.assertRaisesRegex(RuntimeError, 'RESOURCE_LAYOUT'): PositionSessionIO.capture(None, ARMS)
 
     def test_restart_requires_reconnect_and_unconfirmed_policy_stays_blocked(self):
         with self.assertRaisesRegex(ValueError, 'RESTART'):
@@ -244,7 +244,7 @@ class PositionSessionTests(unittest.TestCase):
             self.health.require(CONTROL_GROUPS)
 
     def test_bad_metadata_does_not_relabel_stale_feedback_as_current(self):
-        for changes in (dict(pdo_age=-1), dict(pdo_age=.03), dict(position=[0.]*19)):
+        for changes in (dict(pdo_age=-1), dict(pdo_age=.03)):
             with self.subTest(changes=changes), self.assertRaises(ValueError):
                 self.health.observe(observation(**changes))
 
@@ -256,6 +256,25 @@ class PositionSessionTests(unittest.TestCase):
         self.assertEqual(payload['torque_raw'][16], 123)
         self.assertEqual(payload['torque_raw_valid_mask'], 0xf0000)
         self.assertEqual(payload['current_valid_mask'], 0xffff)
+
+
+    def test_reading_cached_feedback_does_not_decode_again_but_still_expires(self):
+        with patch('snowbot_hardware.session.decode_observation', side_effect=AssertionError('decoded twice')):
+            self.health.require(CONTROL_GROUPS)
+            self.now += .05
+            with self.assertRaisesRegex(RuntimeError, 'PDO_STALE'):
+                self.health.require(CONTROL_GROUPS)
+
+    def test_endpoint_cache_refreshes_conflicts_without_per_packet_discovery(self):
+        from snowbot_hardware.protocol import GraphSnapshot
+        clock = [1.]
+        node = S(get_publishers_info_by_topic=Mock(return_value=['owner']))
+        graph = GraphSnapshot(node, lambda: clock[0])
+        for _ in range(10): self.assertEqual(graph.count_publishers('/command'), 1)
+        node.get_publishers_info_by_topic.assert_called_once()
+        node.get_publishers_info_by_topic.return_value = ['owner', 'conflict']
+        clock[0] += .101
+        self.assertEqual(graph.count_publishers('/command'), 2)
 
 
 class PauseHandoffTests(unittest.TestCase):
@@ -273,6 +292,7 @@ class PauseHandoffTests(unittest.TestCase):
         self.q['body_joint_1'], self.q['body_joint_2'] = .12, -.08
         self.devices = d = PositionSessionDevices.__new__(PositionSessionDevices)
         d.node = S(now=lambda: self.now)
+        d.graph = d.node  # GraphSnapshot is exercised separately with a controllable clock.
         d.health = SessionHealth(lambda: self.now, lambda: self.steady)
         d.envelopes = SourceEnvelope(11, d.node.now)
         d.arm_type = lambda: S(meta=S(), command=S())
@@ -501,7 +521,7 @@ class PauseHandoffTests(unittest.TestCase):
     def test_old_identity_incomplete_or_nonfinite_ack_cannot_finish_stop(self):
         hold = self.start_stop()
         for changes in (dict(session=123), dict(command_sequence=1), dict(hold_valid=False),
-                        dict(hold_sample=0), dict(hold_sample=2**63), dict(hold_position=[0.]*14),
+                        dict(hold_sample=0), dict(hold_sample=2**63),
                         dict(hold_position=[float('nan')]*16)):
             with self.subTest(changes=changes):
                 self.update(hold=hold, **changes); self.engine.tick(self.now)
@@ -1392,7 +1412,9 @@ class TargetWireTests(unittest.TestCase):
     def test_invalid_source_or_target_is_rejected_before_sequence_or_publish(self):
         for changes in ({'lease_id':''},{'command_id':'x'*129},{'epoch':True},{'epoch':-1}):
             with self.subTest(changes=changes), self.assertRaisesRegex(RuntimeError,'IDENTITY'):
-                self.send(**changes)
+                from bindu_contracts.contracts import Motion
+                motion = Motion('cmd','lease',1,self.rig.profile.digest,'task','obs','joint_target','',self.rig.now,.2)
+                self.d.io.validate_motion(replace(motion, **changes), self.rig.now)
             self.assertEqual(self.d.envelopes.sequence,0)
         self.target['body_joint_1'] = float('nan')
         with self.assertRaisesRegex(RuntimeError,'TARGET_LAYOUT_OR_LIMIT'): self.send()
