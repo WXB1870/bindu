@@ -707,7 +707,7 @@ class NativeGripperTests(unittest.TestCase):
     def test_single_gripper_health_ignores_unowned_arm_and_partner_faults(self):
         from snowbot_hardware.session import SessionHealth
         from tests.unit.test_snowbot_position_session import observation
-        health=SessionHealth(lambda:10., lambda:1., execution_mode='impedance')
+        health=SessionHealth(lambda:10., lambda:1.)
         status=[8]*20;status[7]=0x27
         for sample in (1,2):
             health.observe(observation(pdo_sample=sample,valid_mask=1<<7,status=status))

@@ -268,6 +268,17 @@ class DeploymentTests(unittest.TestCase):
                 bad=json.loads(json.dumps(recipe));bad['arguments'][key]=value
                 path.write_text(json.dumps(bad))
                 with self.subTest(key=key),self.assertRaises(ValueError):load_deployment(path,SHARE)
+    def test_position_recipe_rejects_impedance_for_every_protocol(self):
+        recipe=dict(schema_version=2,robot_launch='snowbot_adapter.launch.py',arguments=dict(
+            runtime_mode='real',device_backend='snowbot_vendor',execution_mode='impedance'))
+        with tempfile.TemporaryDirectory() as tmp:
+            path=Path(tmp)/'deploy.json'
+            for protocol in ('legacy_guard','session_v1','session_v3'):
+                recipe['arguments']['position_protocol']=protocol
+                path.write_text(json.dumps(recipe))
+                with self.subTest(protocol=protocol),self.assertRaisesRegex(ValueError,'SNOWBOT_EXECUTION_MODE'):
+                    load_deployment(path,SHARE)
+
     def test_gripper_loader_rejects_cross_mode_configuration(self):
         from snowbot_hardware.parameters import load_mode_config
         for mode in ('sim','real'):

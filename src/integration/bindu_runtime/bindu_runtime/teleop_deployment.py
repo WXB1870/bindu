@@ -74,10 +74,8 @@ def load_deployment(path, share):
             raise ValueError('SNOWBOT_TARGET_LIMITS_REQUIRE_TARGET_STREAM')
         configured_limits = target_stream_limits(configured_limits)
     execution_mode = args.get('execution_mode', 'position')
-    if execution_mode not in ('position', 'impedance'):
+    if execution_mode != 'position':
         raise ValueError('SNOWBOT_EXECUTION_MODE')
-    if execution_mode == 'impedance' and (args.get('runtime_mode') != 'real' or args.get('position_protocol') != 'session_v1'):
-        raise ValueError('IMPEDANCE_REQUIRES_REAL_SESSION')
     required = {'runtime_mode'} if execution_only else ({'profile', 'bimanual_config'} if version == 1 else {'robot_config'})
     if not required <= set(args):
         raise ValueError('TELEOP_DEPLOYMENT_MODEL_REQUIRED')
@@ -189,12 +187,11 @@ def configuration_snapshot(path, share, *, effective_arguments=None):
 def apply_execution_tracking(config, mode='position', *, real, position_contract,
                              trajectory_reference=False):
     """Select nominal tracking unless measured-task tracking is explicit."""
-    if mode not in ('position', 'impedance'):
+    if mode != 'position':
         raise ValueError('SNOWBOT_EXECUTION_MODE')
-    if mode == 'position' and not trajectory_reference:
+    if not trajectory_reference:
         return config
     if not real or not position_contract or config.get('reference_kinematics') is not True:
-        raise ValueError(('TRAJECTORY' if mode=='position' else 'IMPEDANCE')+
-                         '_REQUIRES_REAL_NOMINAL_KINEMATICS')
+        raise ValueError('TRAJECTORY_REQUIRES_REAL_NOMINAL_KINEMATICS')
     return {**config, 'tracking_feedback': (config['tracking_feedback'] if
-        mode == 'position' and config.get('tracking_feedback') in ('measured_task','measured_shared') else 'reference')}
+        config.get('tracking_feedback') in ('measured_task','measured_shared') else 'reference')}
