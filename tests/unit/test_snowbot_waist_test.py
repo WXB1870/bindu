@@ -30,6 +30,54 @@ def pdo():
 
 class WaistTests(unittest.TestCase):
 
+    def test_scurve_has_cruise_and_obeys_requested_dynamics(self):
+        plan = waist.make_scurve_plan(45., .35, 2., 20.)
+        self.assertGreater(plan.cruise, 0.)
+        for value, expected in zip(plan.dynamic_bounds, (.35, 2., 20.)):
+            self.assertAlmostEqual(value, expected)
+        start = plan.dwell+2*plan.ramp+plan.acceleration_hold
+        q, v, a = plan.sample(start+plan.cruise/2)
+        self.assertAlmostEqual(v, .35)
+        self.assertAlmostEqual(a, 0.)
+        previous = plan.sample(0.)
+        for k in range(1, math.ceil(plan.duration/.001)+1):
+            current = plan.sample(k*.001)
+            self.assertLessEqual(abs(current[0]), math.pi/4+1e-10)
+            self.assertLessEqual(abs(current[1]), .35+1e-10)
+            self.assertLessEqual(abs(current[2]), 2.+1e-10)
+            self.assertLessEqual(abs(current[2]-previous[2])/.001, 20.+1e-7)
+            self.assertLessEqual(abs(current[0]-previous[0])/.001, .35+1e-6)
+            previous = current
+        for k, expected in enumerate((plan.amplitude, 0., -plan.amplitude, 0.)):
+            t = plan.dwell+k*(plan.move_seconds+plan.dwell)+plan.move_seconds
+            q, v, a = plan.sample(t)
+            self.assertAlmostEqual(q, expected)
+            self.assertAlmostEqual(v, 0.)
+            self.assertAlmostEqual(a, 0.)
+
+    def test_short_scurve_reports_reduced_peak_without_inventing_cruise(self):
+        plan = waist.make_scurve_plan(.1, .35, 2., 20.)
+        self.assertEqual(plan.cruise, 0.)
+        self.assertEqual(plan.acceleration_hold, 0.)
+        self.assertLess(plan.dynamic_bounds[0], .35)
+        self.assertLess(plan.dynamic_bounds[1], 2.)
+        self.assertAlmostEqual(plan.sample(plan.dwell+plan.move_seconds)[0], plan.amplitude)
+        limited = waist.make_scurve_plan(5., .35, .5, 20.)
+        self.assertEqual(limited.cruise, 0.)
+        self.assertGreater(limited.acceleration_hold, 0.)
+        self.assertAlmostEqual(limited.dynamic_bounds[1], .5)
+        self.assertLess(limited.dynamic_bounds[0], .35)
+        self.assertAlmostEqual(limited.sample(limited.dwell+limited.move_seconds)[0], limited.amplitude)
+        result = subprocess.run([sys.executable, '-m', 'tools.teleop.snowbot_waist_test',
+                                 '--waveform', 'scurve', '--degrees', '45', '--speed', '.35',
+                                 '--acceleration', '2', '--jerk', '20'], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        preview = json.loads(result.stdout)
+        self.assertTrue(preview['preview'])
+        self.assertFalse(preview['starts_driver'])
+        self.assertAlmostEqual(preview['target_peak_speed'], .35)
+        self.assertGreater(preview['constant_speed_s'], 0.)
+
     def test_waist_topic_checks_only_waist_and_refuses_active_session(self):
         msg = pdo()
         msg.session_selected = False
@@ -207,7 +255,7 @@ class WaistTests(unittest.TestCase):
                 self.assertAlmostEqual(a, 0.)
 
     def test_invalid_or_unreviewed_envelope_refused(self):
-        for values in ((0.,), (float('nan'),), (21.,), (3., .376), (3., .05, 2.251), (3., .05, .25, 163.)):
+        for values in ((0.,), (float('nan'),), (46.,), (3., .376), (3., .05, 2.251), (3., .05, .25, 163.)):
             with self.subTest(values=values), self.assertRaises(ValueError):
                 make_plan(*values)
 
@@ -385,6 +433,55 @@ class WaistTests(unittest.TestCase):
             path = Path(tmp)/'capture.jsonl'
             path.write_text(''.join(json.dumps(r)+'\n' for r in rows))
             return analyze(path, **options)
+
+    def test_tracking_uses_pdo_sample_clock_and_separates_three_errors(self):
+        rows = [dict(kind='plan', data=dict(axis='body_joint_2'))]
+        for k in range(31):
+            elapsed = k*.02; t = 10.+elapsed; q = .2*elapsed+.2*elapsed**2; v = .2+.4*elapsed
+            rows.append(dict(kind='target', data=dict(source_stamp=t, elapsed=elapsed,
+                position=q, speed=v, acceleration=.4)))
+            row = self.diagnostic_row(k+1); data = row['data']
+            data.update(stamp=t+20., sample_time_ns=round(t*1e9), reference_acceleration=[.4]*16)
+            data['reference_position'][15] = q-.01
+            data['output_position'][15] = q-.012
+            data['position'][19] = q-.042
+            data['reference_speed'][15] = data['speed'][19] = v
+            rows.append(row)
+        result = self.analyze_rows(rows)['tracking']
+        self.assertEqual(result['samples'], 31)
+        for layer, expected in (('source_to_reference', .01), ('reference_to_output', .002),
+                                ('output_to_measurement', .03)):
+            self.assertAlmostEqual(result['errors_rad'][layer]['rms'], expected)
+        self.assertAlmostEqual(result['peak_acceleration_rad_s2']['measurement_window_estimate'], .4)
+        self.assertEqual(result['raw_csp_output_samples'], 0)
+        self.assertFalse(result['cause_identified'])
+
+    def test_tracking_uses_declared_raw_output_and_reports_sampled_response(self):
+        row = self.diagnostic_row()
+        row['data']['output_position'][14] = .001
+        rows = [dict(kind='target', data=dict(source_stamp=10., elapsed=0., position=0., speed=0., acceleration=0.)),
+                row, dict(kind='target', data=dict(source_stamp=10.1, elapsed=.1, position=0., speed=0., acceleration=0.))]
+        tracking = self.analyze_rows(rows, encoder_profile='outer-262144')['tracking']
+        self.assertEqual(tracking['raw_csp_output_samples'], 1)
+        self.assertAlmostEqual(tracking['errors_rad']['reference_to_output']['peak'], 100*2*math.pi/262144)
+        plan = waist.make_scurve_plan(20., .2, 1., 20.)
+        rows = [dict(kind='plan', data=dict(axis='body_joint_1', **waist.signal_metadata(plan)))]
+        for k in range(math.ceil((plan.dwell+plan.move_seconds)/.02)+1):
+            elapsed = k*.02; q, v, a = plan.sample(elapsed)
+            rows.append(dict(kind='target', data=dict(source_stamp=10.+elapsed, elapsed=elapsed,
+                position=q, speed=v, acceleration=a)))
+            row = self.diagnostic_row(k+1); data = row['data']; data['stamp'] = 10.+elapsed
+            ref = plan.sample(max(0., elapsed-.08)); actual = plan.sample(max(0., elapsed-.18))
+            data['reference_position'][14] = data['output_position'][14] = ref[0]
+            data['reference_speed'][14] = ref[1]
+            data['position'][18], data['speed'][18] = actual[:2]
+            rows.append(row)
+        tracking = self.analyze_rows(rows)['tracking']
+        crossing = tracking['response'][0]['sampled_threshold_crossings']
+        source = crossing['source_speed']['first_10pct_s']
+        self.assertAlmostEqual(crossing['reference_speed']['first_10pct_s']-source, .08, delta=.021)
+        self.assertAlmostEqual(crossing['measurement_speed']['first_10pct_s']-source, .18, delta=.021)
+        self.assertGreater(tracking['constant_speed_windows'][0]['samples'], 0)
 
     def test_unversioned_csp_does_not_guess_position_resolution_from_wire_version(self):
         result = self.analyze_rows([self.diagnostic_row()])['csp_diagnostics']
