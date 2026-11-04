@@ -2,6 +2,7 @@
 import copy
 import hashlib
 import json
+import math
 from pathlib import Path
 from types import SimpleNamespace as S
 import tempfile
@@ -190,6 +191,75 @@ class PrimitiveReplayTests(unittest.TestCase):
             self.assertNotEqual(kinematic_digest(p), digest)
 
 
+class PackagedLibraryTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        import snowbot_bringup.teleop.snowbot_primitive_replay as module
+        cls.app = Path(module.__file__).resolve().parents[4]
+        cls.config = cls.app/'src/snowbot_bringup/config/robots/snowbot'
+        cls.library = cls.config/'primitive-library/manifest.json'
+        cls.manifest = json.loads(cls.library.read_text())
+
+    def test_fast_timing_has_no_unvalidated_waist_phase_shift(self):
+        for action, duration in (('Push', 5.745), ('SideScoop', 12.530), ('Flip', 8.085)):
+            with self.subTest(action=action):
+                plan = load_replay(self.library, action)
+                self.assertEqual(plan.waist_lead_s, 0.)
+                self.assertAlmostEqual(plan.duration, duration, places=6)
+
+    def test_all_packaged_paths_keep_the_upright_shoulder_branch(self):
+        for action in self.manifest['actions'] | self.manifest['transfers']:
+            with self.subTest(action=action):
+                plan = load_replay(self.library, action)
+                shoulder = plan.names.index('arm_r_joint_1')
+                self.assertLess(max(abs(q[shoulder]) for q in plan.points), math.pi/3)
+
+    def test_prepare_configuration_matches_the_packaged_home_pose(self):
+        config = json.loads((self.config/'teleop.json').read_text())
+        goal = dict(zip(NAMES, load_replay(self.library, 'SideScoop').points[0]))
+        for mode in ('real', 'simulation'):
+            positions = config['prepare_positions_rad'] | config['modes'][mode]['prepare_positions_rad']
+            for name, expected in goal.items():
+                with self.subTest(mode=mode, joint=name):
+                    self.assertAlmostEqual(positions[name], expected, places=10)
+
+    def test_packaged_paths_fit_the_runtime_profile(self):
+        from bindu_contracts.profile import Profile
+        profile = Profile.load(self.config/'snowbot_real_position.json')
+        for action in self.manifest['actions'] | self.manifest['transfers']:
+            with self.subTest(action=action):
+                load_replay(self.library, action).validate_profile(profile)
+
+    def test_arm_speed_limit_is_uniform_and_matches_the_target_stream(self):
+        from bindu_contracts.profile import Profile
+        profile = Profile.load(self.config/'snowbot_real_position.json')
+        parameters = (self.app/'tools/deployment/snowbot_vendor/position_session/target_stream.yaml').read_text()
+        ceiling = float(next(line.split(':', 1)[1] for line in parameters.splitlines()
+                             if line.strip().startswith('trajectory_max_velocity:')))
+        self.assertEqual(ceiling, 1.25)
+        arms = [n for side in ('left_arm', 'right_arm') for n in profile.groups[side]]
+        self.assertEqual(len(arms), 14)
+        self.assertEqual({profile.speed(n) for n in arms}, {ceiling})
+
+    def test_packaged_successors_and_home_join_the_updated_nodes(self):
+        from snowbot_bringup.teleop.snowbot_primitive_replay import plan_from_current
+        for source in ('Push', 'SideScoop', 'Flip'):
+            node = self.manifest['actions'][source]['end_node']
+            current = dict(zip(NAMES, self.manifest['nodes'][node]))
+            for action in ('Push', 'SideScoop', 'Flip', 'Home'):
+                with self.subTest(source=source, action=action):
+                    plan = plan_from_current(self.library, action, current)
+                    self.assertLess(max(abs(a-b) for a, b in zip(
+                        plan.points[0], (current[n] for n in NAMES))), 1e-8)
+                    end = (self.manifest['home_node'] if action == 'Home'
+                           else self.manifest['actions'][action]['end_node'])
+                    self.assertLess(max(abs(a-b) for a, b in zip(
+                        plan.sample(plan.duration), self.manifest['nodes'][end])), 1e-8)
+                    for before, after in zip(plan.segments, plan.segments[1:]):
+                        self.assertLess(max(abs(a-b) for a, b in zip(
+                            before.points[-1], after.points[0])), 1e-8)
+
+
 class PrimitiveTransitionTests(unittest.TestCase):
     def fixture(self, root):
         import gzip
@@ -289,7 +359,10 @@ class EmptyPrepareTests(unittest.TestCase):
         self.assertTrue(plan.empty_prepare)
         self.assertGreaterEqual(plan.duration,30.)
         self.assertFalse(factory.call_args.kwargs['tool_present'])
-        self.assertGreater(len(checker.call_args.args[0]),600)
+        checked = checker.call_args.args[0]
+        self.assertGreater(len(checked), 2)
+        self.assertTrue(all(max(abs(b['q'][n]-a['q'][n]) for n in NAMES) <= .005+1e-12
+                            for a, b in zip(checked, checked[1:])))
         plan.validate_profile(self.robot.profile)
         with self.assertRaisesRegex(ValueError,'POSITION_LIMIT'):
             replace(plan,empty_prepare=False).validate_profile(self.robot.profile)
