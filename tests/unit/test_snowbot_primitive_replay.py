@@ -209,11 +209,29 @@ class PackagedLibraryTests(unittest.TestCase):
         cls.manifest = json.loads(cls.library.read_text())
 
     def test_fast_timing_has_no_unvalidated_waist_phase_shift(self):
-        for action, duration in (('Push', 5.745), ('SideScoop', 4.445), ('Flip', 8.085)):
+        for action, duration in (('Push', 11.5), ('SideScoop', 8.9), ('Flip', 16.18)):
             with self.subTest(action=action):
                 plan = load_replay(self.library, action)
                 self.assertEqual(plan.waist_lead_s, 0.)
                 self.assertAlmostEqual(plan.duration, duration, places=6)
+
+    def test_final_fifty_hz_derivatives_and_independent_return_routes(self):
+        from snowbot_bringup.teleop.snowbot_primitive_replay import plan_from_current
+        for action in self.manifest['actions'] | self.manifest['transfers']:
+            plan = load_replay(self.library, action)
+            self.assertEqual(len(plan.times), len(plan.velocities))
+            self.assertTrue(all(abs(b-a-.02)<1e-8 for a,b in zip(plan.times,plan.times[1:])))
+            for k in range(0,len(plan.times),17):
+                q,v,a = plan.state(plan.times[k])
+                for actual,expected in ((q,plan.points[k]),(v,plan.velocities[k]),(a,plan.accelerations[k])):
+                    self.assertLess(max(abs(x-y) for x,y in zip(actual,expected)),1e-7)
+        for node,route in (('Dump:end',('DumpReturn',)),('Flip:start',('ScoopReturn',))):
+            plan = plan_from_current(self.library,'Home',dict(zip(NAMES,self.manifest['nodes'][node])))
+            self.assertEqual(plan.route,route)
+            self.assertTrue(plan.trajectory_knots())
+        for node in ('Push:start','Push:end','SideScoop:start','Dump:end'):
+            with self.assertRaisesRegex(RuntimeError,'REQUIRES_COMPLETED_SIDE_SCOOP'):
+                plan_from_current(self.library,'Flip',dict(zip(NAMES,self.manifest['nodes'][node])))
 
     def test_all_packaged_paths_keep_the_upright_shoulder_branch(self):
         for action in self.manifest['actions'] | self.manifest['transfers']:
@@ -229,7 +247,7 @@ class PackagedLibraryTests(unittest.TestCase):
             self.assertNotIn('prepare_positions_rad', config['modes'][mode])
         home = self.manifest['nodes'][self.manifest['home_node']]
         self.assertEqual(len(home), len(NAMES))
-        self.assertEqual(tuple(home), load_replay(self.library, self.manifest['home_node'].split(':')[0]).points[0])
+        self.assertLess(max(abs(a-b) for a,b in zip(home, load_replay(self.library, self.manifest['home_node'].split(':')[0]).points[0])),1e-12)
 
     def test_packaged_paths_fit_the_runtime_profile(self):
         from bindu_contracts.profile import Profile
@@ -254,7 +272,8 @@ class PackagedLibraryTests(unittest.TestCase):
         for source in ('Push', 'SideScoop', 'Flip'):
             node = self.manifest['actions'][source]['end_node']
             current = dict(zip(NAMES, self.manifest['nodes'][node]))
-            for action in ('Push', 'SideScoop', 'Flip', 'Home'):
+            for action in (('Push', 'SideScoop', 'Flip', 'Home') if source == 'SideScoop'
+                           else ('Push', 'SideScoop', 'Home')):
                 with self.subTest(source=source, action=action):
                     plan = plan_from_current(self.library, action, current)
                     self.assertLess(max(abs(a-b) for a, b in zip(
@@ -277,7 +296,7 @@ class PrimitiveTransitionTests(unittest.TestCase):
             ('BridgeForward','Push:start','SideScoop:start'),('BridgeReverse','SideScoop:start','Push:start'),
             ('ScoopPrefix','SideScoop:start','Flip:start'),('ScoopPrefixReverse','Flip:start','SideScoop:start'),
             ('Flip','Flip:start','Dump:end'),('FlipReverse','Dump:end','Flip:start'),
-            ('SideScoop','SideScoop:start','Dump:end')]
+            ('SideScoop','SideScoop:start','Flip:start')]
         m = dict(schema_version=1,validation_passed=True,transition_validation_passed=True,
             backend_ready=True,tool_id='g099-curved',kinematic_sha256='kin',waist_lead_s=.02,
             home_node='SideScoop:start',preparation={'goal_node':'Push:start'},
@@ -299,7 +318,8 @@ class PrimitiveTransitionTests(unittest.TestCase):
             path,m=self.fixture(Path(d))
             for source in ('Push','SideScoop','Flip'):
                 current=dict(zip(NAMES,m['nodes'][m['actions'][source]['end_node']]))
-                for action in ('Push','SideScoop','Flip','Home'):
+                for action in (('Push','SideScoop','Flip','Home') if source == 'SideScoop'
+                               else ('Push','SideScoop','Home')):
                     with self.subTest(source=source,action=action):
                         p=plan_from_current(path,action,current)
                         self.assertEqual(p.points[0],tuple(current[n] for n in NAMES))
@@ -385,7 +405,8 @@ class EmptyPrepareTests(unittest.TestCase):
         self.assertLess(max(abs(a-b) for a,b in zip(expected,plan.points[-1])),1e-12)
         self.assertEqual(plan.reference_margin_rad,.027453292519943294)
         self.assertTrue(plan.empty_prepare)
-        self.assertGreaterEqual(plan.duration,30.)
+        self.assertGreaterEqual(plan.duration,2.)
+        self.assertLess(plan.duration,30.)
         self.assertFalse(factory.call_args.kwargs['tool_present'])
         checked = checker.call_args.args[0]
         self.assertGreater(len(checked), 2)

@@ -616,6 +616,34 @@ class RealResourceTests(unittest.TestCase):
 
 class TargetWireTests(unittest.TestCase):
     """Production binding with synthetic messages; no ROS or device access."""
+    def test_prepared_curve_wire_order_heartbeats_and_pause_keep_source_contract(self):
+        from bindu_contracts.contracts import Motion
+        from bindu_execution.delegated_position import PreparedReplay
+        names = tuple(reversed(CONTROL_NAMES))
+        before = tuple(self.target[n] for n in names)
+        after = tuple(q+.005 if n.endswith('_1') else q for n,q in zip(names,before))
+        zero = (0.,)*16
+        motion = Motion('curve','lease',3,self.rig.profile.digest,'test','',
+            'prepared_trajectory','',self.rig.now,.2,names=names,points=(before,after),
+            offsets=(.12,1.12),velocities=(zero,zero),accelerations=(zero,zero))
+        prepared = PreparedReplay.create(motion,self.rig.profile)
+        self.d.io.prepared_replay = prepared
+        first = self.send('curve',mode='prepared_trajectory',names=names)
+        self.assertEqual(first.trajectory.version,4)
+        self.assertEqual(first.trajectory.control_count,[6]*16)
+        for j,name in enumerate(CONTROL_NAMES):
+            self.assertEqual(first.trajectory.controls[j*6],before[names.index(name)])
+        self.d.receive_receipt(self.receipt(first))
+        self.rig.now += .001;self.rig.steady += .001
+        beat = self.send('beat',mode='trajectory_heartbeat',names=names)
+        self.assertEqual(beat.trajectory.controls,[])
+        self.assertEqual(beat.trajectory.segment_id,first.trajectory.segment_id)
+        self.assertEqual(beat.trajectory.effective_at_ns,first.trajectory.effective_at_ns)
+        self.assertGreater(beat.meta.sequence,first.meta.sequence)
+        self.assertGreater(beat.meta.source_stamp_ns,first.meta.source_stamp_ns)
+        pause = self.send('pause',pause=True)
+        self.assertEqual((pause.meta.operation,pause.trajectory.version),(2,2))
+
     def setUp(self):
         self.rig = rig = PauseHandoffTests(); rig.setUp()
         self.d = d = rig.devices
