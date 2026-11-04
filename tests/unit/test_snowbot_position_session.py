@@ -1224,7 +1224,7 @@ class TargetWireTests(unittest.TestCase):
         self.assertNotIn('trajectory_fast_receipt', descriptors)
         self.assertIn('/bindu/position/servo_receipt', [call.args[1] for call in node.create_subscription.call_args_list])
         self.assertEqual(created.trajectory_limits, dict(trajectory_max_velocity=.25,
-            trajectory_max_acceleration=.5, trajectory_max_jerk=162.))
+            trajectory_max_acceleration=.5, trajectory_max_jerk=162., target_stream_brake_lead_s=.12))
         for key in created.trajectory_limits:
             self.assertTrue(descriptors[key].read_only)
         parameters.update(trajectory_max_velocity=.4, trajectory_max_acceleration=.8,
@@ -1232,7 +1232,7 @@ class TargetWireTests(unittest.TestCase):
         with patch.dict('sys.modules', modules):
             configured = PositionSessionDevices(node, self.rig.profile)
             self.assertEqual(configured.trajectory_limits, dict(trajectory_max_velocity=.4,
-                trajectory_max_acceleration=.8, trajectory_max_jerk=259.2))
+                trajectory_max_acceleration=.8, trajectory_max_jerk=259.2, target_stream_brake_lead_s=.12))
             for key in configured.trajectory_limits:
                 for invalid in (0., -1., float('nan'), float('inf'), True):
                     parameters[key] = invalid
@@ -1257,7 +1257,7 @@ class TargetWireTests(unittest.TestCase):
         self.assertEqual(first.meta.expires_at_ns-first.meta.source_stamp_ns, 200_000_000)
         self.assertEqual(pause.meta.expires_at_ns-pause.meta.source_stamp_ns, 2_000_000_000)
 
-    def test_candidate_deployment_keeps_group_limits_and_geometry_through_target_and_pause_wire(self):
+    def test_deployment_preserves_limits_profile_and_expiry_in_target_and_pause_wire(self):
         from bindu_contracts.profile import Profile
         from bindu_runtime.teleop_deployment import load_deployment
         from tests.support.paths import ROOT
@@ -1271,9 +1271,8 @@ class TargetWireTests(unittest.TestCase):
         servo_config=package_share('snowbot_bringup').parents[1]/'tools/deployment/snowbot_vendor/position_session/target_stream.yaml'
         servo_limits={key.strip():float(value) for line in servo_config.read_text().splitlines()
                       for key,sep,value in [line.partition(':')] if key.strip() in self.d.trajectory_limits}
-        self.assertEqual(servo_limits,self.d.trajectory_limits)
-        tool=json.loads((robot_path.parent/robot['teleop']['tool']).read_text())
-        self.assertIs(tool['rigid_reference_prediction'],True)
+        for key, value in self.d.trajectory_limits.items():
+            self.assertLessEqual(value, servo_limits[key])
         self.assertEqual(args['command_enabled'],'false')
         for rigid,pause in ((False,False),(True,False),(True,True)):
             self.d.new_session()

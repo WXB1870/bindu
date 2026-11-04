@@ -172,7 +172,11 @@ class X86DeploymentTests(unittest.TestCase):
             (root/'argparse.py').write_text('raise RuntimeError("obsolete argparse imported")\n')
             env_file = root/'env.sh'
             import shlex
-            env_file.write_text('export BINDU_VIEWER_DEPS='+shlex.quote(str(root))+'\n')
+            from importlib.util import find_spec
+            packages = os.pathsep.join(str(Path(find_spec(name).origin).parents[1])
+                                       for name in ('snowbot_bringup', 'bindu_contracts'))
+            env_file.write_text('export PYTHONPATH='+shlex.quote(packages)+'\n'
+                               'export BINDU_VIEWER_DEPS='+shlex.quote(str(root))+'\n')
             env = dict(os.environ, BINDU_VR_ENV=str(env_file), PYTHONPATH='', PYTHONDONTWRITEBYTECODE='1')
             result = subprocess.run(['bash', str(x86_real.ROOT/'tools/run_vr.sh'), '--unknown-flag'],
                                     cwd=root, env=env, text=True, capture_output=True)

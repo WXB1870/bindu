@@ -873,6 +873,7 @@ class SnowbotRosBindingTests(unittest.TestCase):
         profile = Profile.load(package_share("snowbot_bringup")/'config/robots/snowbot/snowbot_real_position.json')
         devices = SnowbotDevices.__new__(SnowbotDevices)
         devices.node=Mock();devices.node.now.return_value=10.
+        devices.graph=devices.node
         devices.feedback_topic='/dualArmCtl_fdback';devices.health_receivers={'servo':'/servo_node'}
         devices.node.get_publishers_info_by_topic.return_value=[S(node_namespace='/',node_name='servo_node')]
         devices.io=SnowbotIO(profile, Mock(), lambda:10.)
