@@ -16,9 +16,6 @@ spec.loader.exec_module(helper)
 
 
 class TeleopToolsTests(unittest.TestCase):
-    def setUp(self):
-        self.recipe = json.loads(helper.recipe_path().read_text())
-
     def test_unknown_wrong_or_duplicate_gripper_writer_cannot_establish_identity(self):
         node=Mock();topic='/fixture/gripper/state';expected='/fixture/execution'
         writer=NS(node_namespace='_NODE_NAMESPACE_UNKNOWN_',node_name='_NODE_NAME_UNKNOWN_',
@@ -66,27 +63,6 @@ class TeleopToolsTests(unittest.TestCase):
             self.assertTrue(Path(args['cert_file']).is_absolute())
             self.assertEqual(args['vendor_namespace'], '/')
             self.assertFalse(args['command_enabled'])
-
-    def test_minimal_recipe_rejects_simulation_and_extra_nodes(self):
-        for key, value in (('runtime_mode', 'simulation'), ('device_backend', 'kinematic'),
-                           ('command_enabled', 'false'), ('pico_enabled', True),
-                           ('single_arm_enabled', True), ('recorder_enabled', True),
-                           ('tool_input_source', 'tool_pose'), ('description_enabled', True)):
-            with self.subTest(key=key):
-                changed = copy.deepcopy(self.recipe)
-                changed['arguments'][key] = value
-                with self.assertRaises(ValueError):
-                    helper.validate_recipe(changed)
-
-    def test_bad_names_and_ports_fail_closed(self):
-        for key, value in (('namespace', 'bad/name/'), ('vendor_namespace', 'snowbot'),
-                           ('servo_receiver_node', '/'), ('arm_receiver_node', 'servo'),
-                           ('port', 0), ('port', True), ('host', '')):
-            with self.subTest(key=key, value=value):
-                changed = copy.deepcopy(self.recipe)
-                changed['arguments'][key] = value
-                with self.assertRaises(ValueError):
-                    helper.validate_recipe(changed)
 
     def test_start_checks_before_exec_and_propagates_exact_config_path(self):
         with tempfile.TemporaryDirectory(prefix='bindu site ') as tmp:

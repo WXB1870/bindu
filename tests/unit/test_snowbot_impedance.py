@@ -76,8 +76,8 @@ class ImpedanceSelectionTests(unittest.TestCase):
         self.assertEqual(len(output), 16)
 
     def test_recipe_rejects_impedance_with_legacy_or_simulation(self):
-        recipe = json.loads((package_share("snowbot_bringup")/'config/deployments/snowbot_vr_real.json').read_text())
-        recipe['arguments']['execution_mode'] = 'impedance'
+        recipe = dict(schema_version=2, robot_launch='snowbot_adapter.launch.py', arguments=dict(
+            runtime_mode='real', device_backend='snowbot_vendor', execution_mode='impedance', position_protocol='session_v1'))
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp)/'recipe.json'
             for changes, error in (({}, None), ({'position_protocol':'legacy_guard'}, 'REQUIRES_REAL_SESSION'),

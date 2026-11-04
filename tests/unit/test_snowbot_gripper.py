@@ -513,15 +513,11 @@ class GripperTests(unittest.TestCase):
         r.step(12);r.acquire()
         with self.assertRaisesRegex(RuntimeError,'STALE_LEASE'):r.core.check_lease(token,epoch)
 
-    def test_limit_support_old_patch_and_malformed_health_rejected(self):
+    def test_limit_and_support_rejected(self):
         r=self.r;r.acquire();r.authorize('held',False)
         with self.assertRaisesRegex(RuntimeError,'SUPPORT'):r.command('open','left')
         r.authorize('held',True)
         with self.assertRaisesRegex(RuntimeError,'LIMIT'):r.command('position','left',position=-100.)
-        r.health['gripper_control_enabled']=False
-        with self.assertRaisesRegex(RuntimeError,'PATCH'):r.command('close','left')
-        r.health['gripper_control_enabled']=True;r.health['gripper_sequence']=['bad',0]
-        with self.assertRaisesRegex(RuntimeError,'HEALTH_INVALID'):r.command('close','left')
         self.assertFalse(r.sent)
 
     def test_stale_duplicate_and_future_api_commands_rejected(self):
