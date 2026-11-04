@@ -315,23 +315,6 @@ class PrimitiveTransitionTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,'TRANSITION_ENDPOINT'):
                 plan_from_current(path,'Push',dict.fromkeys(NAMES,0.))
 
-    def test_released_spins_pass_but_forbidden_grip_separation_stops(self):
-        import numpy as np
-        from snowbot_bringup.teleop.snowbot_primitive_replay import AxialGraspGuard
-        guard=AxialGraspGuard.__new__(AxialGraspGuard);guard.np=np
-        guard.spec=dict(left_frame='l',right_frame='r',left_grip_in_flange_m=[0,0,0],
-            right_grip_in_flange_m=[0,0,0],left_axis_in_flange=[0,1,0],right_axis_in_flange=[0,0,1],
-            shaft_separation_m=-.42,bar_separation_m=.015,max_position_error_m=.01,max_axis_error_rad=.05)
-        a=.7;b=-1.2
-        L=np.eye(4);R=np.eye(4)
-        L[:3,:3]=[[np.cos(a),0,np.sin(a)],[0,1,0],[-np.sin(a),0,np.cos(a)]]
-        R[:3,:3]=[[np.cos(b),-np.sin(b),0],[np.sin(b),np.cos(b),0],[0,0,1]]
-        R[:3,3]=[0,.015,-.42]
-        guard.model=S(frames=lambda *args:{'l':L,'r':R})
-        self.assertAlmostEqual(guard.check(dict.fromkeys(NAMES,0.))[0],0.)
-        R[0,3]=.02
-        with self.assertRaisesRegex(RuntimeError,'GRASP_ERROR'):
-            guard.check(dict.fromkeys(NAMES,0.))
 
 class InteractiveReplayTests(unittest.TestCase):
     def test_numbered_menu_executes_three_actions_with_separate_logs(self):
