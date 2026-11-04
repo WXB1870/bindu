@@ -172,7 +172,11 @@ class X86DeploymentTests(unittest.TestCase):
             (root/'argparse.py').write_text('raise RuntimeError("obsolete argparse imported")\n')
             env_file = root/'env.sh'
             import shlex
-            env_file.write_text('export BINDU_VIEWER_DEPS='+shlex.quote(str(root))+'\n')
+            from importlib.util import find_spec
+            packages = os.pathsep.join(str(Path(find_spec(name).origin).parents[1])
+                                       for name in ('snowbot_bringup', 'bindu_contracts'))
+            env_file.write_text('export PYTHONPATH='+shlex.quote(packages)+'\n'
+                               'export BINDU_VIEWER_DEPS='+shlex.quote(str(root))+'\n')
             env = dict(os.environ, BINDU_VR_ENV=str(env_file), PYTHONPATH='', PYTHONDONTWRITEBYTECODE='1')
             result = subprocess.run(['bash', str(x86_real.ROOT/'tools/run_vr.sh'), '--unknown-flag'],
                                     cwd=root, env=env, text=True, capture_output=True)
@@ -262,6 +266,16 @@ class X86DeploymentTests(unittest.TestCase):
                 execute.reset_mock()
                 self.assertEqual(x86_real.main(['start', '--workspace', tmp, '--physics']), 2)
                 execute.assert_not_called()
+
+    def test_start_uses_completed_install_without_scanning_source(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root/'build.json').write_text(json.dumps(dict(ready=True, native_process_exit_success=True)))
+            (root/'deployment.json').write_text('{}')
+            with patch.object(x86_real, 'source_digest', side_effect=AssertionError('startup source scan')):
+                x86_real.require_current_build(root, check_sources=False)
+                (root/'build.json').write_text(json.dumps(dict(ready=False)))
+                with self.assertRaises(ValueError): x86_real.require_current_build(root, check_sources=False)
 
     def test_changed_source_and_failed_build_require_rebuild(self):
         with tempfile.TemporaryDirectory() as tmp:

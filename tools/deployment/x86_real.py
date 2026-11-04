@@ -172,13 +172,13 @@ def source_digest(application_source=None, *, files=None):
     return digest.hexdigest()
 
 
-def require_current_build(workspace):
+def require_current_build(workspace, *, check_sources=True):
     build_info = json.loads((workspace/'build.json').read_text())
     profile = json.loads((workspace/'deployment.json').read_text())
     if (not build_info.get('ready') or not build_info.get('native_process_exit_success') or
-            build_info.get('source_sha256') != source_digest(profile.get('application_source'))):
+            check_sources and build_info.get('source_sha256') != source_digest(profile.get('application_source'))):
         changed = []
-        if build_info.get('source_files'):
+        if check_sources and build_info.get('source_files'):
             current = source_files(profile.get('application_source'))
             previous = build_info['source_files']
             changed = sorted(name for name in previous.keys() | current.keys()
@@ -364,7 +364,7 @@ def main(argv=None):
             else:
                 if not (options.workspace/'install/local_setup.bash').is_file():
                     raise ValueError('请先执行 build')
-                require_current_build(options.workspace)
+                require_current_build(options.workspace, check_sources=options.command != 'start')
                 site = json.loads((options.workspace/'site.json').read_text())['arguments']
                 if site.get('runtime_mode') != 'real' or site.get('device_backend') != 'snowbot_vendor':
                     raise ValueError('此部署入口需要 real/snowbot_vendor 现场配方')

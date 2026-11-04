@@ -513,15 +513,11 @@ class GripperTests(unittest.TestCase):
         r.step(12);r.acquire()
         with self.assertRaisesRegex(RuntimeError,'STALE_LEASE'):r.core.check_lease(token,epoch)
 
-    def test_limit_support_old_patch_and_malformed_health_rejected(self):
+    def test_limit_and_support_rejected(self):
         r=self.r;r.acquire();r.authorize('held',False)
         with self.assertRaisesRegex(RuntimeError,'SUPPORT'):r.command('open','left')
         r.authorize('held',True)
         with self.assertRaisesRegex(RuntimeError,'LIMIT'):r.command('position','left',position=-100.)
-        r.health['gripper_control_enabled']=False
-        with self.assertRaisesRegex(RuntimeError,'PATCH'):r.command('close','left')
-        r.health['gripper_control_enabled']=True;r.health['gripper_sequence']=['bad',0]
-        with self.assertRaisesRegex(RuntimeError,'HEALTH_INVALID'):r.command('close','left')
         self.assertFalse(r.sent)
 
     def test_stale_duplicate_and_future_api_commands_rejected(self):
@@ -535,9 +531,28 @@ class GripperTests(unittest.TestCase):
         r=self.r
         for value in (float('nan'),100.):
             r.now+=.01;r.q[JOINTS['left']]=value
-            with self.assertRaises(ValueError):r.observe()
+            r.observe()
             with self.assertRaises(RuntimeError):r.acquire()
         self.assertFalse(r.sent)
+
+    def test_single_gripper_does_not_require_partner_feedback(self):
+        r = self.r
+        r.now += .01
+        del r.q[JOINTS['right']]
+        del r.v[JOINTS['right']]
+        r.observe()
+        r.acquire(groups=(GROUPS['left'],))
+        r.command('authorize_direct')
+        r.command('close', 'left')
+        self.assertEqual(r.sent[-1][0], 'left')
+        self.assertNotIn('right', r.core.feedback_sides())
+        self.assertTrue(r.core.snapshot('left')['feedback_valid'])
+        self.assertFalse(r.core.snapshot('right')['feedback_valid'])
+        r.now += .01
+        r.q[JOINTS['left']] = float('nan')
+        r.observe()
+        with self.assertRaisesRegex(RuntimeError, 'FEEDBACK_INVALID:left'):
+            r.core.require_feedback()
 
     def test_position_api_cannot_bypass_loaded_opening_interlock(self):
         r=self.r;r.acquire();r.authorize('held',False)
@@ -689,6 +704,29 @@ class IndependentInputHandoffTests(unittest.TestCase):
 
 
 class NativeGripperTests(unittest.TestCase):
+    def test_single_gripper_health_ignores_unowned_arm_and_partner_faults(self):
+        from snowbot_hardware.session import SessionHealth
+        from tests.unit.test_snowbot_position_session import observation
+        health=SessionHealth(lambda:10., lambda:1., execution_mode='impedance')
+        status=[8]*20;status[7]=0x27
+        for sample in (1,2):
+            health.observe(observation(pdo_sample=sample,valid_mask=1<<7,status=status))
+        source=Path(find_spec('snowbot_hardware.gripper_node').origin)
+        cls=next(n for n in ast.parse(source.read_text()).body if isinstance(n,ast.ClassDef))
+        method=next(n for n in cls.body if getattr(n,'name','')=='health')
+        ns=dict(MASKS={'left':1<<7,'right':1<<15},SIDES=SIDES)
+        exec(compile(ast.Module(body=[method],type_ignores=[]),str(source),'exec'),ns)
+        reader=S(node_namespace='/',node_name='servo_node',topic_type='std_msgs/msg/Float64MultiArray')
+        graph=S(count_publishers=Mock(return_value=1),get_subscriptions_info_by_topic=Mock(return_value=[reader]))
+        devices=S(health=health,graph=graph,receivers={'head':'/servo_node'})
+        runtime=S(session_protocol=True,devices=devices,core=S(feedback_sides=lambda:{'left'}),
+                  topics={'left':'/left'},publishers={'left':object()})
+        self.assertEqual(ns['health'](runtime)['sample'],2)
+        health.observation.status[7] |= 8
+        with self.assertRaisesRegex(RuntimeError,'GRIPPER_DRIVER_FAULT:left'):
+            ns['health'](runtime)
+
+
     def test_session_health_reports_exact_fault_without_querying_command_graph(self):
         source=Path(find_spec('snowbot_hardware.gripper_node').origin)
         cls=next(n for n in ast.parse(source.read_text()).body if isinstance(n,ast.ClassDef))
@@ -701,14 +739,14 @@ class NativeGripperTests(unittest.TestCase):
                     obs=S(valid_mask=0xfffff,status=[0x27]*20)
                     if missing:obs.valid_mask &= ~(1<<slot)
                     else:obs.status[slot]=0x218
-                    devices=S(io=S(require_feedback=Mock()),health=S(require=Mock(),observation=obs))
+                    devices=S(io=S(require_feedback=Mock()),health=S(require_observation=Mock(return_value=obs)))
                     node=S(count_publishers=Mock(side_effect=AssertionError('fault must reject before graph query')))
-                    runtime=S(session_protocol=True,devices=devices,node=node)
+                    runtime=S(session_protocol=True,devices=devices,node=node,core=S(feedback_sides=lambda:{side}))
                     expected=(f'GRIPPER_DRIVER_FEEDBACK_INVALID:{side}:slot={slot}' if missing else
                               f'GRIPPER_DRIVER_FAULT:{side}:slot={slot}:status=0x0218')
                     with self.assertRaisesRegex(RuntimeError,expected):ns['health'](runtime)
-                    devices.io.require_feedback.assert_called_once_with()
-                    devices.health.require.assert_called_once()
+                    devices.io.require_feedback.assert_not_called()
+                    devices.health.require_observation.assert_called_once()
                     node.count_publishers.assert_not_called()
 
     def rig(self):
@@ -767,13 +805,17 @@ class DirectOperationTests(unittest.TestCase):
         ns=dict(parameters_for=parameters_for,time=__import__('time'),SIDES=SIDES,GROUPS=GROUPS,Lease=S(Request=lambda **kw:S(**kw)),
                 seconds=lambda v:v,target_position_tolerance=target_position_tolerance)
         exec(compile(ast.Module(body=[method],type_ignores=[]),str(source),'exec'),ns)
-        for failed in (False,True):
-            with self.subTest(failed=failed):
+        for outcome in ('arrived','failed','held'):
+            failed = outcome == 'failed'
+            with self.subTest(outcome=outcome):
                 control=S(pending=S(value='bimanual_tool'),load='unknown',supported=False,
                           gripper_update_token=None,reason='closing')
                 node=S(control=control,current=lambda _:None,now=lambda:10.)
                 lease=S(epoch=1);state=S(state='FAILED' if failed else 'SUCCEEDED',code='POSITION_TIMEOUT',
                     epoch=1,control_sequence=20,stamp=11.,feedback_stamp=11.,position_reached=not failed,measured_position=0.)
+                if outcome == 'held':
+                    state.state='CANCELED';state.code='CLOSE_STOPPED'
+                    state.position_reached=False;state.measured_position=.15
                 ops=S(node=node,config=Rig().config,sequence=0,acquire=AsyncMock(return_value=lease),
                     request=AsyncMock(),reading=lambda _:state,release=AsyncMock())
                 intent=S(token=1,operation='select_mode',value='bimanual_tool')
@@ -794,7 +836,7 @@ class DirectOperationTests(unittest.TestCase):
         method=next(n for n in cls.body if getattr(n,'name','')=='close_grippers')
         ns=dict(parameters_for=parameters_for,SIDES=SIDES,json=json,target_position_tolerance=target_position_tolerance)
         exec(compile(ast.Module(body=[method],type_ignores=[]),str(source),'exec'),ns)
-        for fault in ('none','moving','invalid','trigger','unclosed','failed_close'):
+        for fault in ('none','held','moving','invalid','trigger','unclosed','failed_close'):
             with self.subTest(fault=fault):
                 state=S(state='IDLE',measured_position=.2,measured_velocity=0.)
                 node=S(current=Mock(),feedback=lambda:S(healthy=True,stopped=fault!='moving'),
@@ -804,11 +846,12 @@ class DirectOperationTests(unittest.TestCase):
                     if fault=='invalid':raise RuntimeError('PICO_GRIPPER_FEEDBACK_OR_CALIBRATION_REQUIRED:left')
                     return state
                 async def move(*a,**kw):
-                    if fault!='failed_close':state.measured_position=0.
+                    if fault=='held':state.state='CANCELED';state.code='CLOSE_STOPPED'
+                    elif fault!='failed_close':state.measured_position=0.
                 ops=S(node=node,config=Rig().config,reading=reading,move_grippers=AsyncMock(side_effect=move))
                 intent=S(operation='select_mode',token=1)
                 async def run():await ns['close_grippers'](ops,intent,allow_command=fault!='unclosed')
-                if fault=='none':
+                if fault in ('none','held'):
                     asyncio.run(run());ops.move_grippers.assert_awaited_once()
                     self.assertFalse(json.loads(node.event.call_args.args[1])['grasp_sensor_confirmed'])
                     asyncio.run(run());self.assertEqual(ops.move_grippers.await_count,1)

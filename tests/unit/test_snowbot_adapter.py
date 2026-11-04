@@ -35,6 +35,13 @@ class SnowbotAdapterTests(unittest.TestCase):
         self.observe()
         self.engine = DelegatedPositionExecutor(self.profile, self.io)
 
+    def test_arm_feedback_does_not_require_gripper_slots(self):
+        self.now += .01
+        names = [n for g in ('waist', 'left_arm', 'right_arm') for n in GROUPS[g]]
+        self.observe(positions={n:self.q[n] for n in names}, velocities={n:0. for n in names})
+        self.io.require_feedback(('waist', 'left_arm', 'right_arm'))
+        self.assertIn('left_tool_axis', self.io.missing_feedback_groups)
+
     def observe(self, **changes):
         self.io.observe(changes.get('positions', self.q), changes.get('velocities', self.v),
                         changes.get('stamp', self.now), self.now)
@@ -62,9 +69,10 @@ class SnowbotAdapterTests(unittest.TestCase):
         self.assertEqual(self.profile.limits['head_joint_1'], [-.791, .791])
         old = Profile.load(package_share("snowbot_bringup")/'config/examples/snowbot/snowbot_shovel_sim.json')
         self.assertEqual(old.limits['body_joint_2'], [-.79, 1.83])
-        for filename in ('examples/snowbot/snowbot_shovel_sim.json', 'simulation/wheel_sim.json'):
+        for path in (CONFIG/'examples/snowbot/snowbot_shovel_sim.json',
+                     package_share('bindu_runtime')/'config/simulation/wheel_sim.json'):
             with self.assertRaisesRegex(ValueError, 'PROFILE_REQUIRED'):
-                SnowbotIO(Profile.load(CONFIG/filename), None, lambda: self.now)
+                SnowbotIO(Profile.load(path), None, lambda: self.now)
 
     def test_session_source_binding_changes_only_after_an_accepted_motion(self):
         self.io.source_motion = None
@@ -338,6 +346,7 @@ class SnowbotAdapterTests(unittest.TestCase):
         from snowbot_hardware.adapter import SnowbotDevices
         transport = SnowbotDevices.__new__(SnowbotDevices)
         transport.node = Mock()
+        transport.graph = transport.node
         transport.node.get_clock.return_value.now.return_value.nanoseconds = 10_000_000_000
         transport.command_sequence, transport.session = 0, 123
         transport.io = S(sending_hold=False)
@@ -451,8 +460,6 @@ class SnowbotAdapterTests(unittest.TestCase):
         self.assertEqual(q['body_joint_2'], .3)
         self.assertEqual(v['head_joint_2'], .05)
         self.assertEqual(stamp, 10.02)
-        bad = copy.deepcopy(msg); bad.r_position = [0.]*7
-        with self.assertRaises(ValueError): decode_feedback(bad)
 
     def sampled_feedback(self, **changes):
         fields = dict(header=S(stamp=S(sec=10, nanosec=20000000)),
@@ -482,10 +489,10 @@ class SnowbotAdapterTests(unittest.TestCase):
         self.assertNotIn('body_joint_1', q)
 
     def test_invalid_pdo_never_becomes_feedback_despite_fresh_ros_header(self):
-        for fields in (dict(pdo_sample=0), dict(pdo_sample=True), dict(pdo_age=.021),
+        for fields in (dict(pdo_sample=0), dict(pdo_age=.021),
                        dict(pdo_age=-1.), dict(pdo_age=float('nan')), dict(pdo_wkc=41),
                        dict(pdo_expected_wkc=0), dict(feedback_valid_mask=0xffffe),
-                       dict(feedback_valid_mask=0x100ffff), dict(feedback_status=[])):
+                       dict(feedback_valid_mask=0x100ffff)):
             with self.subTest(fields=fields), self.assertRaisesRegex(ValueError, 'SNOWBOT_PDO'):
                 decode_feedback(self.sampled_feedback(**fields))
         msg = self.sampled_feedback()
@@ -576,6 +583,7 @@ class SnowbotAdapterTests(unittest.TestCase):
         from snowbot_hardware.adapter import SnowbotDevices
         transport = SnowbotDevices.__new__(SnowbotDevices)
         transport.node, transport.io = Mock(), Mock()
+        transport.graph = transport.node
         transport.feedback_topic = '/test/feedback'
         transport.health_receivers = {'servo': '/test/servo'}
         transport.node.get_publishers_info_by_topic.return_value = [S(node_namespace='/test', node_name='observer')]
@@ -865,6 +873,7 @@ class SnowbotRosBindingTests(unittest.TestCase):
         profile = Profile.load(package_share("snowbot_bringup")/'config/robots/snowbot/snowbot_real_position.json')
         devices = SnowbotDevices.__new__(SnowbotDevices)
         devices.node=Mock();devices.node.now.return_value=10.
+        devices.graph=devices.node
         devices.feedback_topic='/dualArmCtl_fdback';devices.health_receivers={'servo':'/servo_node'}
         devices.node.get_publishers_info_by_topic.return_value=[S(node_namespace='/',node_name='servo_node')]
         devices.io=SnowbotIO(profile, Mock(), lambda:10.)

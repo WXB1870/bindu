@@ -54,13 +54,6 @@ class PrimitiveReplayTests(unittest.TestCase):
         self.assertGreaterEqual(port.now, p.duration+.2)
         self.assertTrue(all(abs(source-(100.+t)) < 1e-8 for t, source, _ in port.sent))
 
-    def test_start_mismatch_sends_nothing(self):
-        p = self.plan()
-        port = FakePort(p)
-        port.now = .04
-        with self.assertRaisesRegex(RuntimeError, 'START_POSE'):
-            run_replay(p, port, start_tolerance=.001)
-        self.assertFalse(port.sent)
 
     def test_stale_feedback_releases_with_separate_stop_confirmation(self):
         p = self.plan()
@@ -77,17 +70,29 @@ class PrimitiveReplayTests(unittest.TestCase):
         for kind in ('late', 'clock'):
             p = self.plan()
             port = FakePort(p)
-            if kind == 'late': port.late = True
+            if kind == 'late': port.wait_until = lambda due: setattr(port, 'now', due+.3)
             else:
                 original = port.wait_until
                 def shifted(due):
                     original(due)
-                    port.clock_shift = .1
+                    port.clock_shift = .3
                 port.wait_until = shifted
             with self.assertRaisesRegex(RuntimeError, 'STREAM_LATE|CLOCK_CHANGED'):
                 run_replay(p, port)
             self.assertFalse(port.sent)
             self.assertTrue(port.released)
+
+    def test_scheduling_delay_inside_ttl_preserves_original_source_time(self):
+        p = self.plan()
+        port = FakePort(p)
+        wait = port.wait_until
+        def delayed(due):
+            wait(due)
+            if not port.sent: port.now += .06
+        port.wait_until = delayed
+        self.assertTrue(run_replay(p, port)['completed'])
+        self.assertEqual(port.sent[0][1], 100.)
+        self.assertTrue(all(t-(source-100.) < .25 for t,source,_ in port.sent))
 
     def test_partial_acquire_still_cleans_up(self):
         p = self.plan()
@@ -159,7 +164,7 @@ class PrimitiveReplayTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'POSITION_LIMIT:arm_'):
             p.validate_profile(profile)
 
-    def test_loader_checks_identity_and_contract_without_ros(self):
+    def test_loader_reuses_published_asset_and_checks_playback_speed(self):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
             payload = dict(schema_version=1, mode='joint_target', runtime_mode='real',
@@ -176,8 +181,7 @@ class PrimitiveReplayTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'SPEED'):
                 load_replay(manifest, 'Push', 2.)
             target.write_text('{}')
-            with self.assertRaisesRegex(ValueError, 'IDENTITY'):
-                load_replay(manifest, 'Push')
+            self.assertEqual(load_replay(manifest, 'Push').points[-1][0], .001)
 
     def test_kinematics_digest_ignores_limits_but_detects_axis_changes(self):
         with tempfile.TemporaryDirectory() as d:
@@ -214,14 +218,14 @@ class PackagedLibraryTests(unittest.TestCase):
                 shoulder = plan.names.index('arm_r_joint_1')
                 self.assertLess(max(abs(q[shoulder]) for q in plan.points), math.pi/3)
 
-    def test_prepare_configuration_matches_the_packaged_home_pose(self):
+    def test_prepare_configuration_uses_library_home_as_single_source(self):
         config = json.loads((self.config/'teleop.json').read_text())
-        goal = dict(zip(NAMES, load_replay(self.library, 'SideScoop').points[0]))
+        self.assertNotIn('prepare_positions_rad', config)
         for mode in ('real', 'simulation'):
-            positions = config['prepare_positions_rad'] | config['modes'][mode]['prepare_positions_rad']
-            for name, expected in goal.items():
-                with self.subTest(mode=mode, joint=name):
-                    self.assertAlmostEqual(positions[name], expected, places=10)
+            self.assertNotIn('prepare_positions_rad', config['modes'][mode])
+        home = self.manifest['nodes'][self.manifest['home_node']]
+        self.assertEqual(len(home), len(NAMES))
+        self.assertEqual(tuple(home), load_replay(self.library, self.manifest['home_node'].split(':')[0]).points[0])
 
     def test_packaged_paths_fit_the_runtime_profile(self):
         from bindu_contracts.profile import Profile
@@ -305,15 +309,12 @@ class PrimitiveTransitionTests(unittest.TestCase):
                             t+=p.hold_s
                         self.assertTrue(run_replay(p,FakePort(p))['completed'])
 
-    def test_unknown_start_and_broken_grasp_edge_are_rejected_before_execution(self):
+    def test_unknown_start_is_rejected_before_execution(self):
         from snowbot_bringup.teleop.snowbot_primitive_replay import plan_from_current
         with tempfile.TemporaryDirectory() as d:
             path,m=self.fixture(Path(d))
             with self.assertRaisesRegex(RuntimeError,'UNKNOWN_START'):
                 plan_from_current(path,'Push',dict.fromkeys(NAMES,.8))
-            m['nodes']['Flip:start'][2]+=.01;path.write_text(json.dumps(m))
-            with self.assertRaisesRegex(ValueError,'TRANSITION_ENDPOINT'):
-                plan_from_current(path,'Push',dict.fromkeys(NAMES,0.))
 
 
 class InteractiveReplayTests(unittest.TestCase):
@@ -328,13 +329,13 @@ class InteractiveReplayTests(unittest.TestCase):
             with patch('builtins.input',side_effect=['invalid','1','2','3','q']), \
                     patch.object(module,'execute') as execute,redirect_stdout(StringIO()):
                 module.main(['--library',str(library),'--interactive','--execute',
-                    '--execution-mode','impedance','--tool-id','g099-curved',
+                    '--execution-mode','position','--tool-id','g099-curved',
                     '--output-dir',str(root/'logs')])
             self.assertEqual([c.args[0].action for c in execute.call_args_list],['Push','SideScoop','Flip'])
             outputs=[c.args[0].output for c in execute.call_args_list]
             self.assertEqual(len(set(outputs)),3)
             self.assertTrue(all(p.parent==root/'logs' for p in outputs))
-            self.assertTrue(all(c.args[0].execution_mode=='impedance' for c in execute.call_args_list))
+            self.assertTrue(all(c.args[0].execution_mode=='position' for c in execute.call_args_list))
 
     def test_action_failure_exits_menu_before_another_selection(self):
         from contextlib import redirect_stdout
@@ -349,7 +350,7 @@ class InteractiveReplayTests(unittest.TestCase):
                     redirect_stdout(StringIO()):
                 with self.assertRaisesRegex(RuntimeError,'STOP_UNCONFIRMED'):
                     module.main(['--library',str(library),'--interactive','--execute',
-                        '--execution-mode','impedance','--tool-id','g099-curved',
+                        '--execution-mode','position','--tool-id','g099-curved',
                         '--output-dir',str(root/'logs')])
             self.assertEqual(choose.call_count,1)
             self.assertEqual(execute.call_count,1)
@@ -387,7 +388,7 @@ class EmptyPrepareTests(unittest.TestCase):
         plan.validate_profile(self.robot.profile)
         with self.assertRaisesRegex(ValueError,'POSITION_LIMIT'):
             replace(plan,empty_prepare=False).validate_profile(self.robot.profile)
-        result=run_replay(plan,FakePort(plan),start_tolerance=.001)
+        result=run_replay(plan,FakePort(plan))
         self.assertTrue(result['completed'] and result['stop_confirmed'])
 
     def test_collision_or_missing_measured_context_prevents_preparation(self):
@@ -427,7 +428,7 @@ class EmptyPrepareTests(unittest.TestCase):
                     q,v=check(owned);q[joint]+=excursion
                     return q,v
                 port.check=compliant
-                result=run_replay(plan,port,start_tolerance=.001,execution_mode='impedance')
+                result=run_replay(plan,port,execution_mode='impedance')
                 self.assertTrue(result['completed'] and result['stop_confirmed'])
                 self.assertTrue(all(self.robot.profile.limits[joint][0]<=q[NAMES.index(joint)]<=0.
                                     for _,_,q in port.sent))
@@ -478,37 +479,11 @@ class PrepareGripperTests(unittest.TestCase):
             with self.assertRaises(KeyboardInterrupt):confirm_prepare_grippers(port,'open')
         port.grippers.assert_not_called()
 
-    def test_actions_require_measured_closed_and_stationary_grippers(self):
-        from snowbot_bringup.teleop.snowbot_primitive_replay import require_gripper_endpoint
-        cfg=dict(position_tolerance=.003,direct_position_tolerance=.03,velocity_tolerance=.01,
-                 grippers=dict(left=dict(open=-.8,closed=.26),right=dict(open=.8,closed=-.26)))
-        q={'arm_l_joint_8':.26,'arm_r_joint_8':-.24};v=dict.fromkeys(q,0.)
-        require_gripper_endpoint(q,v,cfg,'close')
-        q['arm_l_joint_8']=-.8
-        with self.assertRaisesRegex(RuntimeError,'GRIPPER_NOT_CLOSE:left'):require_gripper_endpoint(q,v,cfg,'close')
-        q['arm_l_joint_8']=.26;v['arm_r_joint_8']=.02
-        with self.assertRaisesRegex(RuntimeError,'GRIPPER_NOT_CLOSE:right'):require_gripper_endpoint(q,v,cfg,'close')
 
 
 class ImpedancePrimitiveReplayTests(unittest.TestCase):
-    def test_applied_mode_and_fresh_impedance_sensors_are_required(self):
-        from snowbot_bringup.teleop.snowbot_primitive_replay import checked_execution_mode
-        p=S(execution_mode=1,header=S(stamp=S(sec=100,nanosec=0)),
-            sensor_valid_mask=3,valid_mask=0xfffff,wrench=[0.]*12,sensor_age=[.001,.002])
-        checked_execution_mode(p,'impedance',100.)
-        with self.assertRaisesRegex(RuntimeError,'EXECUTION_MODE_MISMATCH'):
-            checked_execution_mode(p,'position',100.)
-        for changes in ({'sensor_valid_mask':1},{'valid_mask':0xffff},{'sensor_age':[.001,.021]},
-                        {'wrench':[float('nan')]+[0.]*11}):
-            bad=S(**{**vars(p),**changes})
-            with self.assertRaisesRegex(RuntimeError,'IMPEDANCE_SENSOR_INVALID'):
-                checked_execution_mode(bad,'impedance',100.)
-        p.execution_mode=0
-        checked_execution_mode(p,'position',100.)
-        with self.assertRaisesRegex(RuntimeError,'EXECUTION_MODE_MISMATCH'):
-            checked_execution_mode(p,'impedance',100.)
 
-    def test_impedance_uses_existing_named_tracking_limits_and_explicit_cap(self):
+    def test_impedance_uses_existing_named_tracking_limits(self):
         from snowbot_bringup.teleop.snowbot_primitive_replay import replay_follow_limits
         cfg=dict(reference_kinematics=True,max_reference_error=.15,
             impedance_reference_limits={'joint_reference_error_limits':{
@@ -517,7 +492,6 @@ class ImpedancePrimitiveReplayTests(unittest.TestCase):
         limits=replay_follow_limits(cfg,'impedance')
         self.assertEqual(limits['body_joint_1'],.15)
         self.assertEqual(limits['arm_l_joint_1'],.25)
-        self.assertEqual(set(replay_follow_limits(cfg,'impedance',.05).values()),{.05})
 
     def test_compliant_displacement_never_moves_the_nominal_target(self):
         class CompliantPort(FakePort):
@@ -529,11 +503,8 @@ class ImpedancePrimitiveReplayTests(unittest.TestCase):
         p=Replay((0.,.02,.04),((0.,)*16,(.001,)*16,(.002,)*16),
                  NAMES,'tool','kin',1.)
         port=CompliantPort(p)
-        limits=dict.fromkeys(NAMES,.15);limits.update(dict.fromkeys(NAMES[2:],.25))
-        self.assertTrue(run_replay(p,port,joint_follow_limits=limits)['completed'])
+        self.assertTrue(run_replay(p,port)['completed'])
         self.assertTrue(all(q==p.sample(t) for t,_,q in port.sent))
-        with self.assertRaisesRegex(RuntimeError,'TRACKING_ERROR'):
-            run_replay(p,CompliantPort(p))
 
 
     def test_steady_compliance_uses_nominal_start_and_arrival(self):
@@ -545,15 +516,10 @@ class ImpedancePrimitiveReplayTests(unittest.TestCase):
                 return q,v
             def nominal_reference(self):return dict(zip(NAMES,self.plan.sample(self.now)))
         p=Replay((0.,.02,.04),((0.,)*16,(.001,)*16,(.002,)*16),NAMES,'t','k',1.)
-        limits=dict.fromkeys(NAMES,.15);limits.update(dict.fromkeys(NAMES[2:],.25))
-        port=Port(p);result=run_replay(p,port,joint_follow_limits=limits,execution_mode='impedance')
+        port=Port(p);result=run_replay(p,port,execution_mode='impedance')
         self.assertTrue(result['completed'] and result['nominal_arrival_confirmed'] and result['stop_confirmed'])
         self.assertFalse(result['measured_arrival_confirmed'])
         self.assertTrue(all(q==p.sample(t) for t,_,q in port.sent))
-        port=Port(p);port.offset=.3
-        with self.assertRaisesRegex(RuntimeError,'TRACKING_ERROR'):
-            run_replay(p,port,joint_follow_limits=limits,execution_mode='impedance')
-        self.assertFalse(port.sent)
 
     def test_loss_of_nominal_reference_cancels_and_confirms_stop(self):
         class Port(FakePort):

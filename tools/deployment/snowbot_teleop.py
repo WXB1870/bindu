@@ -7,15 +7,11 @@ import hashlib
 import math
 import os
 from pathlib import Path
-import platform
 import re
-import ssl
 import sys
 import time
 import uuid
 
-from tools import ROOT
-SHARE = ROOT/'src/integration/bindu_runtime'
 def recipe_path():
     return package_share('snowbot_bringup')/'config/examples/snowbot/snowbot_real_teleop.json'
 
@@ -24,38 +20,6 @@ def namespace(value):
     if value != '/' and not re.fullmatch(r'/?[A-Za-z_][A-Za-z_0-9]*(/[A-Za-z_][A-Za-z_0-9]*)*', value):
         raise ValueError('命名空间格式无效：'+str(value))
     return '/'+value.strip('/') if value != '/' else '/'
-
-
-def validate_recipe(data):
-    """Keep this helper bounded to the four-node real teleop assembly."""
-    args = data['arguments']
-    expected = dict(runtime_mode='real', device_backend='snowbot_vendor',
-                    single_arm_enabled=False, pico_enabled=False, recorder_enabled=False,
-                    recording_mode='off', description_enabled=False, tool_display_enabled=False,
-                    tool_input_source='vr', vr_enabled=True)
-    if data['schema_version'] != 2 or data['robot_launch'] != 'robot_teleop.launch.py':
-        raise ValueError('需要 Snowbot 真机最小配方')
-    for key, value in expected.items():
-        if type(args.get(key)) is not type(value) or args[key] != value:
-            raise ValueError('真机最小配方不匹配：'+key)
-    if type(args.get('command_enabled')) is not bool:
-        raise ValueError('command_enabled 必须是布尔值')
-    namespace(args['namespace'])
-    vendor = namespace(args['vendor_namespace'])
-    if vendor != args['vendor_namespace']:
-        raise ValueError('vendor_namespace 须为绝对路径且无末尾斜线')
-    for key in ('arm_receiver_node', 'servo_receiver_node', 'mid_receiver_node'):
-        if args.get(key) and (namespace(args[key]) != args[key] or args[key] == '/'):
-            raise ValueError('接收节点须为完整绝对名称：'+key)
-    if not isinstance(args.get('host'), str) or not args['host'].strip():
-        raise ValueError('VR 监听地址不能为空')
-    if type(args.get('port')) is not int or not 1 <= args['port'] <= 65535:
-        raise ValueError('VR 端口须在 1–65535 内')
-    if bool(args.get('cert_file')) != bool(args.get('key_file')):
-        raise ValueError('证书和私钥路径须同时填写')
-    if args['host'] not in ('127.0.0.1', 'localhost', '::1') and not args.get('cert_file'):
-        raise ValueError('局域网 VR 监听需要 TLS 证书和私钥路径')
-    return args
 
 
 def configure(options):
@@ -70,7 +34,11 @@ def configure(options):
     for key in ('cert_file', 'key_file'):
         value = getattr(options, key)
         data['arguments'][key] = str(Path(value).expanduser().resolve()) if value else ''
-    validate_recipe(data)
+    args = data['arguments']
+    if bool(args['cert_file']) != bool(args['key_file']):
+        raise ValueError('证书和私钥路径须同时填写')
+    if args['host'] not in ('127.0.0.1', 'localhost', '::1') and not args['cert_file']:
+        raise ValueError('局域网 VR 监听需要 TLS 证书和私钥路径')
     # Exclusive creation also protects symlinks; never replace a reviewed site recipe.
     options.config.parent.mkdir(parents=True, exist_ok=True)
     with options.config.open('x', encoding='utf-8') as stream:
@@ -78,49 +46,20 @@ def configure(options):
     print(f'已生成 {options.config}；command_enabled={options.enable_commands}')
 
 
-def preflight(path):
-    from ament_index_python.packages import get_package_share_directory
+def preflight(path, *, diagnostics=True):
     from bindu_runtime.teleop_deployment import load_deployment
     from bindu_runtime.robot_setup import RobotSetup
-
-    raw = validate_recipe(json.loads(path.read_text()))
-    share = Path(get_package_share_directory('bindu_runtime'))
-    _, args = load_deployment(path, share)
+    _, args = load_deployment(path, package_share('bindu_runtime'))
     robot = RobotSetup.load(args['robot_config'])
-    tool = json.loads(robot.tool_config.read_text())
-    if robot.robot_id != 'snowbot' or tool.get('simulation_only') is not False:
-        raise ValueError('需要 Snowbot 真机模型与工具配置')
-    if tool.get('demo', {}).get('initial_positions_rad'):
-        raise ValueError('真机工具配置包含演示初始关节')
-    from tools.deployment.runtime_check import check_runtime
-    report = check_runtime(args, robot)
-    if args.get('gripper_config'):
-        from snowbot_hardware.gripper import validate_config
-        from snowbot_hardware.parameters import load_mode_config
-        grippers = validate_config(load_mode_config(args['gripper_config'],args['runtime_mode']), robot.profile)
-        if not grippers['calibrated']:
-            print('夹爪配置未现场标定：状态可读，夹爪写入将拒绝。')
-    if args.get('cert_file'):
-        # Do not include SSL exceptions in output: they may contain private file paths.
-        try:
-            ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER).load_cert_chain(args['cert_file'], args['key_file'], password='')
-        except (OSError, ssl.SSLError):
-            raise ValueError('TLS 证书/私钥无法加载或不匹配') from None
-    print(json.dumps(dict(python=sys.executable, version=platform.python_version(),
-                          architecture=platform.machine(), ros=os.environ.get('ROS_DISTRO'),
-                          runtime_share=str(share), robot_digest=robot.digest,
-                          command_enabled=raw['command_enabled'],
-                          ros_domain_id=os.environ.get('ROS_DOMAIN_ID', '0'),
-                          ros_localhost_only=os.environ.get('ROS_LOCALHOST_ONLY', '0')),
-                     ensure_ascii=False, indent=2))
-    print(json.dumps(report, ensure_ascii=False))
-    print('软件依赖与消息兼容性检查通过；机器人在线端点未检查，不能据此确认接口可用。')
+    if diagnostics:
+        from tools.deployment.runtime_check import check_runtime
+        print(json.dumps(check_runtime(args, robot), ensure_ascii=False))
     return args, robot
 
 
-def ensure_stopped(args):
-    from snowbot_bringup.teleop.runtime_check import ensure_stopped as implementation
-    return implementation(args)
+def startup_lock(args):
+    from snowbot_bringup.teleop.run_vr import startup_lock as acquire
+    return acquire(os.environ.get('ROS_DOMAIN_ID', '0'), args['namespace'], inherit=True)
 
 
 def assess_state(execution, mode, now, profile_hash):
@@ -343,21 +282,15 @@ def main(argv=None):
             return 0
         if options.command == 'status' and not (math.isfinite(options.seconds) and 0 < options.seconds <= 30):
             raise ValueError('--seconds 须在 0–30 秒内')
-        args, robot = preflight(options.config)
+        args, robot = preflight(options.config, diagnostics=options.command == 'check')
         if options.command == 'gripper':
             return operate_gripper(args, robot, options)
         if options.command == 'status':
             return observe(args, robot, options.seconds)
         if options.command == 'start':
-            if args.get('command_enabled') == 'true':
-                from tools.deployment.runtime_check import check_robot_interface
-                report = check_robot_interface(args)
-                print(json.dumps(report, ensure_ascii=False))
-                if report['errors']:
-                    raise RuntimeError('ROBOT_INTERFACE_UNAVAILABLE:'+','.join(report['errors']))
-            ensure_stopped(args)
             print('前台启动四节点；Ctrl+C 收尾。仍需显式选择模式和开启会话。', flush=True)
-            os.execvp('ros2', ['ros2', 'launch', 'bindu_runtime', 'teleop_only.launch.py', 'config:='+str(options.config)])
+            with startup_lock(args):
+                os.execvp('ros2', ['ros2', 'launch', 'bindu_runtime', 'teleop_only.launch.py', 'config:='+str(options.config)])
         return 0
     except KeyboardInterrupt:
         print('操作已中断；已尝试按夹爪控制权完成保持收尾。', file=sys.stderr)

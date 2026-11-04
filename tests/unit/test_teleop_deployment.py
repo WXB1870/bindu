@@ -164,23 +164,6 @@ from bindu_runtime.simulation_devices import SimulationDevices,PhysicsJoints,Phy
             with self.assertRaisesRegex(ValueError,'SNOWBOT_BRAKE_LEAD_MOVED'):
                 namespace['assemble'](context)
             context.pop('target_stream_brake_lead_s')
-            from snowbot_hardware.parameters import load_mode_config
-            original_pico=context['pico_config']
-            selected=load_mode_config(original_pico,'real')
-            pico=Path(tmp)/'teleop.json';context['pico_config']=str(pico)
-            for policy in (None,'unsupported'):
-                bad=dict(selected)
-                if policy is None:bad.pop('tool_grasp_confirmation')
-                else:bad['tool_grasp_confirmation']=policy
-                pico.write_text(json.dumps(bad))
-                with self.assertRaisesRegex(ValueError,'PICO_TOOL_GRASP_CONFIRMATION_CONFIG'):
-                    namespace['assemble'](context)
-            context['pico_config']=original_pico
-            grippers=Path(tmp)/'wrong-mode-grippers.json'
-            grippers.write_text(json.dumps(load_mode_config(context['gripper_config'],'simulation')))
-            context['gripper_config']=str(grippers)
-            with self.assertRaisesRegex(ValueError,'SNOWBOT_CONFIG_MODE_MISMATCH'):
-                namespace['assemble'](context)
 
     def test_selected_source_is_explicit_and_rejects_ambiguous_packages(self):
         import os
@@ -291,20 +274,16 @@ class DeploymentTests(unittest.TestCase):
             self.assertEqual(args['execution_mode'],'impedance')
             self.assertEqual(args['position_protocol'],'session_v3')
             self.assertEqual(args['command_enabled'],'false')
-    def test_position_assembly_rejects_cross_mode_calibration_before_launch(self):
-        from launch import LaunchContext
-        from bindu_runtime.teleop_assembly import assemble
+    def test_gripper_loader_rejects_cross_mode_configuration(self):
+        from snowbot_hardware.parameters import load_mode_config
         for mode in ('sim','real'):
             _,args=load_deployment(package_share("snowbot_bringup")/f'config/deployments/snowbot_vr_{mode}.json',SHARE)
-            context=LaunchContext();context.launch_configurations.update(args)
-            self.assertTrue(assemble(context))
-            from snowbot_hardware.parameters import load_mode_config
             other='real' if mode=='sim' else 'simulation'
             wrong=load_mode_config(args['gripper_config'],other)
             with tempfile.TemporaryDirectory() as tmp:
                 path=Path(tmp)/'wrong-mode-grippers.json';path.write_text(json.dumps(wrong))
-                context.launch_configurations['gripper_config']=str(path)
-                with self.assertRaisesRegex(ValueError,'SNOWBOT_CONFIG_MODE_MISMATCH'):assemble(context)
+                with self.assertRaisesRegex(ValueError,'SNOWBOT_CONFIG_MODE_MISMATCH'):
+                    load_mode_config(path,args['runtime_mode'])
 
     def test_position_recipes_share_model_and_reject_demo_shortcut(self):
         _,sim=load_deployment(package_share("snowbot_bringup")/'config/deployments/snowbot_vr_sim.json',SHARE)

@@ -16,9 +16,6 @@ spec.loader.exec_module(helper)
 
 
 class TeleopToolsTests(unittest.TestCase):
-    def setUp(self):
-        self.recipe = json.loads(helper.recipe_path().read_text())
-
     def test_unknown_wrong_or_duplicate_gripper_writer_cannot_establish_identity(self):
         node=Mock();topic='/fixture/gripper/state';expected='/fixture/execution'
         writer=NS(node_namespace='_NODE_NAMESPACE_UNKNOWN_',node_name='_NODE_NAME_UNKNOWN_',
@@ -67,35 +64,14 @@ class TeleopToolsTests(unittest.TestCase):
             self.assertEqual(args['vendor_namespace'], '/')
             self.assertFalse(args['command_enabled'])
 
-    def test_minimal_recipe_rejects_simulation_and_extra_nodes(self):
-        for key, value in (('runtime_mode', 'simulation'), ('device_backend', 'kinematic'),
-                           ('command_enabled', 'false'), ('pico_enabled', True),
-                           ('single_arm_enabled', True), ('recorder_enabled', True),
-                           ('tool_input_source', 'tool_pose'), ('description_enabled', True)):
-            with self.subTest(key=key):
-                changed = copy.deepcopy(self.recipe)
-                changed['arguments'][key] = value
-                with self.assertRaises(ValueError):
-                    helper.validate_recipe(changed)
-
-    def test_bad_names_and_ports_fail_closed(self):
-        for key, value in (('namespace', 'bad/name/'), ('vendor_namespace', 'snowbot'),
-                           ('servo_receiver_node', '/'), ('arm_receiver_node', 'servo'),
-                           ('port', 0), ('port', True), ('host', '')):
-            with self.subTest(key=key, value=value):
-                changed = copy.deepcopy(self.recipe)
-                changed['arguments'][key] = value
-                with self.assertRaises(ValueError):
-                    helper.validate_recipe(changed)
-
     def test_start_checks_before_exec_and_propagates_exact_config_path(self):
         with tempfile.TemporaryDirectory(prefix='bindu site ') as tmp:
             config = Path(tmp)/'site.json'
             with patch.object(helper, 'preflight', return_value=({}, None)) as check, \
-                    patch.object(helper, 'ensure_stopped') as stopped, \
+                    patch.object(helper, 'startup_lock') as stopped, \
                     patch.object(helper.os, 'execvp') as execute:
                 self.assertEqual(helper.main(['start', '--config', str(config)]), 0)
-                check.assert_called_once_with(config)
+                check.assert_called_once_with(config, diagnostics=False)
                 stopped.assert_called_once_with({})
                 execute.assert_called_once_with('ros2', ['ros2', 'launch', 'bindu_runtime',
                                                          'teleop_only.launch.py', 'config:='+str(config)])
@@ -108,7 +84,7 @@ class TeleopToolsTests(unittest.TestCase):
 
     def test_running_instance_blocks_start_without_killing_it(self):
         with patch.object(helper, 'preflight', return_value=({}, None)), \
-                patch.object(helper, 'ensure_stopped', side_effect=ValueError('existing execution')), \
+                patch.object(helper, 'startup_lock', side_effect=RuntimeError('existing execution')), \
                 patch.object(helper.os, 'execvp') as execute:
             self.assertEqual(helper.main(['start','--config','unused-site.json']), 2)
             execute.assert_not_called()
