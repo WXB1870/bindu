@@ -6,11 +6,12 @@ from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace as S
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, AsyncMock
 
 from tests.support.execution import ExecutionFixture
 from bindu_execution.executor import Rejected
 from bindu_runtime.stop_evidence import stop_feedback_matches
+from snowbot_hardware.parameters import parameters_for
 
 
 SOURCE = Path(__file__).resolve().parents[2]/'src/integration/bindu_runtime/bindu_runtime/bimanual_tool_node.py'
@@ -21,7 +22,7 @@ NODE = next(n for n in TREE.body if isinstance(n, ast.ClassDef) and n.name == 'B
 def actual_methods(clock):
     names = {'wait', 'begin_stop', 'execution_revision', 'stop_pending', 'stop','cleanup_event'}
     methods = [n for n in NODE.body if getattr(n, 'name', '') in names]
-    namespace = {'time':clock, 'seconds':lambda stamp:stamp,
+    namespace = {'time':clock, 'seconds':lambda stamp:stamp, 'parameters_for':parameters_for,
                  'stop_feedback_matches':stop_feedback_matches,
                  'Lease':S(Request=lambda **kw:S(**kw)),
                  'ControlExecution':S(Request=lambda **kw:S(**kw)),
@@ -395,7 +396,7 @@ class PicoStopEvidence(unittest.IsolatedAsyncioTestCase,ExecutionFixture):
         common=SOURCE.with_name('common.py')
         rest=next(n for n in ast.parse(common.read_text()).body
                   if isinstance(n,ast.FunctionDef) and n.name=='joints_at_rest')
-        namespace=dict(time=S(monotonic=lambda:self.clock),json=__import__('json'),
+        namespace=dict(time=S(monotonic=lambda:self.clock),json=__import__('json'),parameters_for=parameters_for,
             math=__import__('math'),seconds=lambda stamp:stamp,
             PicoFeedback=__import__('snowbot_teleop.control',fromlist=['PicoFeedback']).PicoFeedback,
             TeleopSession=S(Goal=lambda **kw:S(**kw)),Superseded=RuntimeError,
@@ -405,6 +406,7 @@ class PicoStopEvidence(unittest.IsolatedAsyncioTestCase,ExecutionFixture):
              body=[n for n in node.body if getattr(n,'name','') in selected],decorator_list=[])]
         exec(compile(ast.fix_missing_locations(ast.Module(body=body,type_ignores=[])),str(PICO_SOURCE),'exec'),namespace)
         self.node=n=namespace['ActualPico']()
+        n.reset_grasp_reference=AsyncMock()
         n.base=None
         n.profile,n.simulation,n.backend=self.p,True,'memory'
         n.tool_cfg={'feedback_max_age':.2};n.names=tuple(self.p.limits)
@@ -482,7 +484,7 @@ class PicoStopEvidence(unittest.IsolatedAsyncioTestCase,ExecutionFixture):
         # Execute the complete production Action method, stopping at its actual
         # explicit acquire rejection. No ROS Action server or hardware endpoint.
         method=next(n for n in NODE.body if getattr(n,'name','')=='execute')
-        namespace=dict(json=__import__('json'),time=S(monotonic=lambda:self.clock),
+        namespace=dict(json=__import__('json'),time=S(monotonic=lambda:self.clock),parameters_for=parameters_for,
             seconds=lambda stamp:stamp,ToolPoseSession=lambda *a,**kw:S(identity='session'),
             AcceptedReference=lambda *a,**kw:S(),
             TeleopAction=S(Result=lambda **kw:S(code='',success=False,**kw)),

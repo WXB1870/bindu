@@ -88,8 +88,11 @@ def _run(config, profile, requests, results, preload_path_checks=False):
         while True:
             item=requests.get()
             if item is None: return
-            operation,token,feedback,target,reference,dt,grasp_mode,target_stamp,*executed=item
-            solver.execution_reference=executed[0] if executed and operation=='solve' else None
+            operation,token,feedback,target,reference,dt,grasp_mode,target_stamp,executed,reset_grasp=item
+            solver.execution_reference=executed if operation=='solve' else None
+            if reset_grasp:
+                solver.rigid_grasp_q=solver.rigid_grasp_reference=None
+                solver.captured=False
             try:
                 solver.last_constraint=solver.last_timing=None
                 independent=isinstance(grasp_mode,str) and grasp_mode.startswith('independent:')
@@ -197,6 +200,7 @@ class BimanualWorker:
         self.requests,self.results=ctx.Queue(maxsize=1),ctx.Queue(maxsize=2)
         self.process=ctx.Process(target=_run,args=(config,profile,self.requests,self.results,preload_path_checks),daemon=True)
         self.ready=self.busy=False
+        self.reset_grasp_pending=False
         self.error=''
         self.failure=''
         self.diagnostic=None
@@ -207,11 +211,17 @@ class BimanualWorker:
     def submit(self,operation,token,feedback,target=None,*,reference=None,dt=None,grasp_mode='rigid',target_stamp=None,
                execution_reference=None):
         if self.failure or not self.ready or self.busy: return False
-        self.requests.put_nowait((operation,token,feedback,target,reference,dt,grasp_mode,target_stamp,execution_reference))
+        self.requests.put_nowait((operation,token,feedback,target,reference,dt,grasp_mode,target_stamp,
+                                 execution_reference,self.reset_grasp_pending))
+        self.reset_grasp_pending=False
         self.diagnostic=None
         self.busy=True
         self.submitted=time.monotonic()
         return True
+
+    def reset_grasp_reference(self):
+        """End an explicit preparation scope before the next worker request."""
+        self.reset_grasp_pending=True
 
     def poll(self):
         if getattr(self,'failure',''): raise RuntimeError(self.failure)

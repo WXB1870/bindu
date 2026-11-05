@@ -139,11 +139,23 @@ class BimanualToolNode(RuntimeNode):
         self.waiters=set()
         self.create_timer(WORKER_POLL_PERIOD,self.poll_worker)
         self.create_service(Trigger,'teleop/tool_ready',self.ready)
+        self.create_service(Trigger,'teleop/tool_reference_reset',self.reset_grasp_reference)
         if self.independent_enabled:self.create_service(Trigger,'teleop/arms_ready',self.arms_ready)
         self.create_service(SetBool,'teleop/tool_pause',self.request_pause)
         self.server=ActionServer(self,TeleopAction,'teleop/tool_session',
             execute_callback=self.execute,goal_callback=self.goal,
             cancel_callback=lambda _:CancelResponse.ACCEPT,callback_group=group)
+
+    def reset_grasp_reference(self,request,reply):
+        if self.busy:
+            reply.success,reply.message=False,'BIMANUAL_SESSION_ACTIVE'
+            return reply
+        self.worker.reset_grasp_reference()
+        self.preflight_token-=1
+        self.preflight_status=''
+        self.preflight_mode=self.preflight_grasp=None
+        reply.success,reply.message=True,'GRASP_REFERENCE_RESET_QUEUED'
+        return reply
 
     def request_pause(self,request,reply):
         if not self.busy:

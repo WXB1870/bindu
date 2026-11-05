@@ -2,7 +2,7 @@
 from snowbot_hardware.parameters import load_mode_config
 from bindu_contracts.resources import package_share
 from importlib.util import find_spec
-from snowbot_hardware.parameters import parameters_for
+from snowbot_hardware.parameters import parameters_for, load_parameters
 from tests.support.paths import ROOT
 import copy
 import json
@@ -623,13 +623,14 @@ class IndependentInputHandoffTests(unittest.TestCase):
             for subscribed,callback in subscriptions:
                 if subscribed==topic:callback(msg)
         control=S(source=None,seq=-1,frames=None,reason='SQUEEZE_RELEASED',last_pose_jump=None,
+                  superseded_remote_input=lambda source,seq:False,
                   last_prepare_check=None,phase=phase,teleop_mode=mode,
                   squeeze_released=[True,True],virtual=False,fault_active=False,stop_failure=None,
                   recovery_required='',update_feedback=Mock())
         control.__dict__.update(barriers)
         def ingest(left,right,now):control.source,control.seq,control.frames=left.source_id,left.seq,(left,right)
         control.ingest=ingest
-        node=S(matches_mode=lambda _:True,frames={},last_pair_at=None,base=None,control=control,
+        node=S(matches_mode=lambda _:True,frames={},last_pair_at=None,base=None,control=control,runtime_parameters=load_parameters(),
                now=lambda:r.now,feedback=Mock(),event=Mock(),last_prepare_check=None,release_until=0.,
                handoff_complete=False,independent_grippers=independent,position_contract=True,
                instance_id='coordinator',projected=S(publish=lambda msg:publish('teleop/vr/input',msg)),

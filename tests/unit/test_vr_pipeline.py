@@ -66,7 +66,7 @@ class TimingSummaries(unittest.TestCase):
         # Execute production launch/assembly/receiver code with inert launch,
         # ROS and process boundaries. No listener or control node is started.
         from tools.teleop.run_vr import commands
-        from bindu_runtime.teleop_deployment import TARGET_STREAM_LIMIT_DEFAULTS, target_stream_limits
+        from bindu_runtime.teleop_deployment import TARGET_STREAM_LIMIT_DEFAULTS, target_stream_limits, execution_backend
         runtime=ROOT/'src/integration/bindu_runtime'
         def load_definition(path,name,namespace):
             source=ast.parse(path.read_text())
@@ -94,7 +94,7 @@ class TimingSummaries(unittest.TestCase):
         robot.tool_config=config/selection['teleop']['tool']
         assembly=load_definition(package_share('snowbot_bringup')/'snowbot_bringup/assembly.py','assemble',
             dict(Path=Path,json=json,TARGET_STREAM_LIMIT_DEFAULTS=TARGET_STREAM_LIMIT_DEFAULTS,
-                 target_stream_limits=target_stream_limits,LaunchConfiguration=Configuration,ParameterValue=Parameter,
+                 target_stream_limits=target_stream_limits,execution_backend=execution_backend,LaunchConfiguration=Configuration,ParameterValue=Parameter,
                  IfCondition=lambda v:v,LogInfo=lambda **kw:kw,Node=lambda **kw:kw,
                  RobotSetup=S(load=lambda *args,**kw:robot),resolve_mode=lambda mode:mode))
         launch=load_definition(package_share('snowbot_bringup')/'launch/robot_teleop.launch.py','generate_launch_description',
@@ -152,7 +152,8 @@ class TimingSummaries(unittest.TestCase):
                        VRFrame=VRFrame,VRInput=lambda **kw:S(**kw),PICO_MAPPING=PICO_MAPPING)
         exec(compile(ast.Module(body=[method],type_ignores=[]),str(path),'exec'),namespace)
         events=[];projected=[]
-        owner=S(matches_mode=lambda m:True,frames={},last_pair_at=None,base=None,
+        from snowbot_hardware.parameters import load_parameters
+        owner=S(matches_mode=lambda m:True,frames={},last_pair_at=None,base=None,runtime_parameters=load_parameters(),
                 now=lambda:clock.ros,event=lambda *v:events.append(v),
                 control=PicoControl(),feedback=lambda:PicoFeedback(clock.ros,True,('closed','closed')),
                 last_prepare_check=None,release_until=0.,projected=S(publish=projected.append),

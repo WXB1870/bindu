@@ -212,7 +212,7 @@ class InitialCollisionRecoveryTests(unittest.TestCase):
         check=make_collision_checker(description/recipe['display_urdf'],recipe,conservative_convex=True,
                                      tool_present=False,validation_only=True)
         names=list(feedback);start=np.array([feedback[n] for n in names])
-        end=np.array([pico['prepare_positions_rad'][n] if n not in ('head_joint_1','head_joint_2','arm_l_joint_8','arm_r_joint_8') else feedback[n] for n in names])
+        end=np.array([config['demo']['initial_positions_rad'].get(n,feedback[n]) for n in names])
         count=int(np.ceil(np.max(abs(end-start))/.001))
         samples=[dict(t=float(f),q=dict(zip(names,start+f*(end-start))),tool=np.eye(4)) for f in np.linspace(0,1,count+1)]
         with self.assertRaisesRegex(ValueError,'SELF_COLLISION'):
@@ -234,7 +234,7 @@ class LoadedPreparePathTests(unittest.TestCase):
         solver.handle=1;solver.model_names=['joint'];solver.nq=1
         solver.limits={'joint':(-1.,1.)};solver.collision_step=.01
         solver.grasp_position_tolerance=.001;solver.grasp_rotation_tolerance=.01
-        solver.grasp_reference=np.eye(4);solver.capture=Mock()
+        solver.grasp_reference=np.eye(4);solver.capture=Mock();solver.grasp_mode='rigid'
         solver._ptr=lambda value:value
         def relative(handle,q,nq,out):
             out[:]=np.eye(4);out[0,3]=relative_shift(q[0]);return 1
@@ -514,6 +514,7 @@ class CandidateGeometryBacktracking(unittest.TestCase):
         cls.profile=Profile.load(package_share("snowbot_bringup")/'config/robots/snowbot/snowbot_real_position.json')
         recorded=json.loads((ROOT/'tests/config/teleoperation/snowbot_candidate_steps.json').read_text())
         cls.config.update(recorded['recorded_config'])
+        cls.config.pop('grasp_reference_source',None)
         # Preserve the original geometry fixtures independently of live thresholds.
         cls.config['grasp_position_tolerance_m']=.01
         cls.config['grasp_rotation_tolerance_rad']=.02
