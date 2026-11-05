@@ -13,9 +13,14 @@ from bindu_execution.executor import Rejected
 from bindu_runtime.stop_evidence import stop_feedback_matches
 
 
-SOURCE = Path(__file__).resolve().parents[2]/'src/integration/bindu_runtime/bindu_runtime/bimanual_tool_node.py'
+SOURCE = Path(__file__).resolve().parents[2]/'src/integration/bindu_runtime/bindu_runtime/tool_session.py'
 TREE = ast.parse(SOURCE.read_text())
-NODE = next(n for n in TREE.body if isinstance(n, ast.ClassDef) and n.name == 'BimanualToolNode')
+NODE = next(n for n in TREE.body if isinstance(n, ast.ClassDef) and n.name == 'ToolSession')
+
+FOLLOW = ast.parse(SOURCE.with_name('tool_follow.py').read_text())
+EXECUTE = next(n for n in FOLLOW.body if getattr(n, 'name', '') == 'run_session')
+EXECUTE.name = 'execute'
+NODE.body = [n for n in NODE.body if getattr(n, 'name', '') != 'execute'] + [EXECUTE]
 
 
 def actual_methods(clock):
@@ -353,7 +358,7 @@ class StopRevisionFence(ExecutionFixture):
             self.e.submit(replace(current,command_id='revoked'),10.02)
 
 
-PICO_SOURCE=package_share('snowbot_teleop')/'snowbot_teleop/node.py'
+PICO_SOURCE=package_share('snowbot_teleop')/'snowbot_teleop/application.py'
 
 
 class PicoStopEvidence(unittest.IsolatedAsyncioTestCase,ExecutionFixture):
@@ -389,13 +394,16 @@ class PicoStopEvidence(unittest.IsolatedAsyncioTestCase,ExecutionFixture):
         self.rpc_hook=None
         self.e.steady=lambda:self.clock
         tree=ast.parse(PICO_SOURCE.read_text())
-        node=next(n for n in tree.body if isinstance(n,ast.ClassDef) and n.name=='PicoNode')
+        node=next(n for n in tree.body if isinstance(n,ast.ClassDef) and n.name=='PicoApplication')
+        preparation=ast.parse(PICO_SOURCE.with_name('preparation.py').read_text())
+        node.body=[n for n in node.body if getattr(n,'name','')!='move']+[next(n for n in preparation.body if getattr(n,'name','')=='move')]
         selected={'wait','reading','feedback','begin_stop_wait','stop_unconfirmed','stopped',
                   'cancel_tool','release_lease','tool_feedback','follow','move'}
         common=SOURCE.with_name('common.py')
         rest=next(n for n in ast.parse(common.read_text()).body
                   if isinstance(n,ast.FunctionDef) and n.name=='joints_at_rest')
-        namespace=dict(time=S(monotonic=lambda:self.clock),json=__import__('json'),
+        from snowbot_hardware.parameters import parameters_for
+        namespace=dict(parameters_for=parameters_for,time=S(monotonic=lambda:self.clock),json=__import__('json'),
             math=__import__('math'),seconds=lambda stamp:stamp,
             PicoFeedback=__import__('snowbot_teleop.control',fromlist=['PicoFeedback']).PicoFeedback,
             TeleopSession=S(Goal=lambda **kw:S(**kw)),Superseded=RuntimeError,
@@ -470,9 +478,9 @@ class PicoStopEvidence(unittest.IsolatedAsyncioTestCase,ExecutionFixture):
         result=asyncio.get_running_loop().create_future()
         def cancel():
             response=self.rpc('lease',S(operation='release',lease_id=self.lease.lease_id,epoch=self.lease.epoch))
-            result.set_result(S(result=S(code='CANCELED')))
+            result.set_result(S(code='CANCELED'))
             return response
-        goal=S(accepted=True,cancel_goal_async=cancel,get_result_async=lambda:result)
+        goal=S(accepted=True,cancel=cancel)
         self.node.tool_goal,self.node.tool_result=goal,result
         self.node.tool_request=dict(instance_id='original',epoch=self.lease.epoch,token=1,
             future=self.future(goal),canceling=False)
@@ -514,9 +522,8 @@ class PicoStopEvidence(unittest.IsolatedAsyncioTestCase,ExecutionFixture):
         epoch=self.e.epoch
         reply=S(ok=False,code='COMMANDS_DISABLED',lease_id='',epoch=epoch,profile_hash=self.p.digest)
         if code is None:code=await self.rejected_acquisition_code(reply)
-        result=self.future(S(result=S(code=code)),delay)
-        goal=S(accepted=True,get_result_async=lambda:result,
-               cancel_goal_async=lambda:self.future(S()))
+        result=self.future(S(code=code),delay)
+        goal=S(accepted=True,cancel=lambda:None)
         self.node.tool_goal,self.node.tool_result=goal,result
         self.node.tool_request=dict(instance_id='original',epoch=epoch+1,token=1,
             future=self.future(goal),canceling=False)
@@ -524,7 +531,7 @@ class PicoStopEvidence(unittest.IsolatedAsyncioTestCase,ExecutionFixture):
 
     async def test_accepted_action_explicit_no_grant_confirms_original_baseline_rest(self):
         epoch=await self.denied_tool()
-        self.assertTrue(self.node.tool_result.result().result.code.startswith('BIMANUAL_LEASE_NOT_ACQUIRED:'))
+        self.assertTrue(self.node.tool_result.result().code.startswith('BIMANUAL_LEASE_NOT_ACQUIRED:'))
         await self.node.cancel_tool()
         self.assertEqual(self.e.epoch,epoch)
         self.assertIsNone(self.node.stop_request);self.assertIsNone(self.node.tool_request)
@@ -555,7 +562,7 @@ class PicoStopEvidence(unittest.IsolatedAsyncioTestCase,ExecutionFixture):
                 else:
                     proof[change]=epoch+1 if change=='epoch' else 'other'
                     code='BIMANUAL_LEASE_NOT_ACQUIRED:'+__import__('json').dumps(proof)
-                self.node.tool_result=self.future(S(result=S(code=code)))
+                self.node.tool_result=self.future(S(code=code))
                 with self.assertRaisesRegex(RuntimeError,'PICO_STOP_UNCONFIRMED'):
                     await self.node.cancel_tool()
                 self.assertTrue(self.node.stop_request['failed'])
@@ -681,7 +688,7 @@ class PicoStopEvidence(unittest.IsolatedAsyncioTestCase,ExecutionFixture):
         old,_=self.tool();new=S(accepted=True)
         def replace(method,request):
             self.node.tool_goal=new
-            self.node.tool_result=self.future(S(result=S(code='CANCELED')))
+            self.node.tool_result=self.future(S(code='CANCELED'))
             self.node.tool_request=dict(instance_id='original',epoch=99,token=2,canceling=False)
         self.rpc_hook=replace
         with self.assertRaisesRegex(RuntimeError,'PICO_STOP_UNCONFIRMED'):
@@ -691,7 +698,7 @@ class PicoStopEvidence(unittest.IsolatedAsyncioTestCase,ExecutionFixture):
 
     async def test_inner_unconfirmed_result_is_not_overridden_by_fresh_idle(self):
         self.tool()
-        self.node.tool_result=self.future(S(result=S(code='CANCELED:STOP_UNCONFIRMED')))
+        self.node.tool_result=self.future(S(code='CANCELED:STOP_UNCONFIRMED'))
         # Cancellation callback still has its separate exact result future.
         with self.assertRaisesRegex(RuntimeError,'PICO_STOP_UNCONFIRMED'):
             await self.node.cancel_tool()
@@ -721,48 +728,45 @@ class PicoStopEvidence(unittest.IsolatedAsyncioTestCase,ExecutionFixture):
         self.assertIsNone(self.node.stop_request)
         self.node.tool_request=dict(token=2,canceling=False)
         self.node.tool_phase='capturing'
-        self.node.tool_feedback(S(feedback=S(mode='follow')),old)
+        self.node.tool_feedback(S(mode='follow'),old)
         self.assertEqual(self.node.tool_phase,'capturing')
 
-    async def late_goal(self,delay):
-        self.services.lease(S(operation='release',lease_id=self.lease.lease_id,epoch=self.lease.epoch),S())
-        self.update();self.node.lease=None
-        await self.pause();await self.pause()
-        result=asyncio.get_running_loop().create_future()
-        acquired=[];cancels=[]
+    async def delayed_session(self, delay):
+        self.node.lease = None
+        result = asyncio.get_running_loop().create_future()
+        cancels = []
         def cancel():
             cancels.append(self.clock)
-            lease=acquired[0]
-            reply=self.rpc('lease',S(operation='release',lease_id=lease.lease_id,epoch=lease.epoch))
-            if not result.done():result.set_result(S(result=S(code='CANCELED')))
-            return reply
-        goal=S(accepted=True,cancel_goal_async=cancel,get_result_async=lambda:result)
-        def accepted():
-            acquired.append(self.services.lease(S(operation='acquire',owner='tool',resources=['arm','hand']),S()))
-            self.update();return goal
-        future=self.future(accepted,delay)
-        self.node.tools=S(send_goal_async=lambda *a,**kw:future)
-        with self.assertRaisesRegex(RuntimeError,'PICO_RPC_TIMEOUT'):
-            await self.node.follow(S(token=1))
+            def finish():
+                self.services.lease(S(operation='release', lease_id=self.lease.lease_id,
+                                      epoch=self.lease.epoch), S())
+                self.update()
+                return S(code='CANCELED')
+            self.pending.append((self.clock + delay, result, finish))
+        self.node.tool_goal = S(cancel=cancel)
+        self.node.tool_result = result
+        self.node.tool_request = dict(instance_id='original', epoch=self.lease.epoch,
+                                      token=1, canceling=False)
         return cancels
 
-    async def test_late_action_acceptance_is_settled_and_canceled_before_stop_confirmation(self):
-        cancels=await self.late_goal(3.)
+    async def test_local_cancel_waits_for_session_result_and_measured_stop(self):
+        cancels = await self.delayed_session(.1)
         await self.node.cancel_tool()
         self.assertTrue(cancels)
         self.assertFalse(self.e.lease_id)
         self.assertIsNone(self.node.stop_request)
         self.assertIsNone(self.node.tool_goal)
 
-    async def test_action_acceptance_after_stop_deadline_is_canceled_but_does_not_recover(self):
-        cancels=await self.late_goal(10.)
-        with self.assertRaisesRegex(RuntimeError,'PICO_STOP_UNCONFIRMED'):
+    async def test_local_result_after_stop_deadline_cannot_recover(self):
+        cancels = await self.delayed_session(10.)
+        with self.assertRaisesRegex(RuntimeError, 'PICO_STOP_UNCONFIRMED'):
             await self.node.cancel_tool()
-        request=self.node.stop_request
-        while self.clock<20.1:await self.pause()
+        request = self.node.stop_request
+        while self.clock < 20.1:
+            await self.pause()
         self.assertTrue(cancels)
         self.assertFalse(self.e.lease_id)
-        self.assertIs(self.node.stop_request,request)
+        self.assertIs(self.node.stop_request, request)
         self.assertFalse(self.node.feedback().healthy)
 
     async def test_unknown_grant_is_settled_before_cleanup_and_never_rebound_to_new_instance(self):

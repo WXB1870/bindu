@@ -157,7 +157,10 @@ from bindu_runtime.simulation_devices import SimulationDevices,PhysicsJoints,Phy
             context['parameters_config']=str(parameters)
             actions=namespace['assemble'](context)
             nodes={item['executable']:item['parameters'][0] for item in actions if 'executable' in item}
-            for name in ('teleop_tool','pico_control','snowbot_adapter'):
+            self.assertNotIn('teleop_tool',nodes)
+            self.assertNotIn('teleop_mode',nodes)
+            self.assertTrue(nodes['pico_control']['position_contract'])
+            for name in ('pico_control','snowbot_adapter'):
                 self.assertEqual(nodes[name]['parameters_config'],str(parameters))
             self.assertEqual(nodes['snowbot_adapter']['target_stream_brake_lead_s'],.04)
             context['target_stream_brake_lead_s']='.12'
