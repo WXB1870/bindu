@@ -105,7 +105,7 @@ class ImpedanceSelectionTests(unittest.TestCase):
 
     def test_real_impedance_only_widens_arm_bounds_and_retains_waist_and_advance(self):
         from bindu_contracts.teleoperation import joint_reference_limits, reference_tracking_budget
-        raw=load_tool_config(package_share('snowbot_bringup')/'config/robots/snowbot/bimanual_snowbot_real.json')
+        raw=json.loads((package_share('snowbot_bringup')/'config/robots/snowbot/bimanual_snowbot_real.json').read_text())
         selected=apply_execution_tracking(raw,'impedance')
         arms=[f'arm_{s}_joint_{j}' for s in ('l','r') for j in range(1,8)]
         self.assertEqual(selected['joint_reference_error_limits'],dict.fromkeys(arms,.25))
@@ -133,7 +133,7 @@ class ImpedanceSelectionTests(unittest.TestCase):
         from bindu_contracts.profile import Profile
         from bindu_kinematics.bimanual import BimanualQP
         from snowbot_hardware.protocol import GROUPS
-        raw=json.loads((package_share('snowbot_bringup')/'config/robots/snowbot/bimanual_snowbot_real.json').read_text())
+        raw=load_tool_config(package_share('snowbot_bringup')/'config/robots/snowbot/bimanual_snowbot_real.json')
         cfg = apply_execution_tracking(raw, 'impedance')
         cfg['urdf'] = str(package_share("snowbot_description")/'urdf/snowbot_control.urdf')
         profile = Profile.load(package_share("snowbot_bringup")/'config/examples/snowbot/snowbot_vendor_position.json')
