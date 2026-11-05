@@ -299,6 +299,11 @@ def _serve(config, output, feedback, health):
                    cert=config['cert_file'], key=config['key_file'],
                    static_root=static.name, queries={'grid': True}, queue_len=2)
         owner = None
+        remote_timeout = config.get('remote_input_timeout_s', 0.)
+        if not math.isfinite(remote_timeout) or remote_timeout < 0:
+            raise ValueError('VR_REMOTE_INPUT_TIMEOUT')
+        retired_connections = set()
+        last_owner_input = None
         identity = ''
         seq = 0
         clutch_seq = {'left': 0, 'right': 0}
@@ -344,6 +349,21 @@ def _serve(config, output, feedback, health):
 
         async def on_controller(event, session):
             nonlocal owner, identity, seq, clutch_seq, previous_grip, stop_latched, counters, last_event, controller_ack, headset
+            nonlocal last_owner_input
+            if remote_timeout:
+                connection = session.CURRENT_WS_ID
+                if connection not in app.ws or connection in retired_connections:
+                    return
+                received = time.monotonic()
+                if owner is not None and owner is not session and owner.CURRENT_WS_ID in app.ws:
+                    if received - last_owner_input <= remote_timeout:
+                        return
+                    # The tunnel may keep the old socket open after the headset
+                    # reconnects. Only one socket may contribute controller frames.
+                    retired_connections.intersection_update(app.ws)
+                    retired_connections.add(owner.CURRENT_WS_ID)
+                    owner = None
+                last_owner_input = received
             if owner is None or owner.CURRENT_WS_ID not in app.ws:
                 owner, identity = session, uuid.uuid4().hex
                 clutch_seq = {'left': 0, 'right': 0}

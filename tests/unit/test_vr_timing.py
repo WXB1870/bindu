@@ -145,7 +145,7 @@ class ControllerWebSocketTests(unittest.IsolatedAsyncioTestCase):
         await acknowledge_controller(ws,1978)
 
     async def test_actual_handler_delivers_input_before_reply_and_bounds_pending_replies(self):
-        import asyncio,queue,numpy as np
+        import asyncio,queue,time,numpy as np
         from types import SimpleNamespace as S,ModuleType
         from unittest.mock import AsyncMock,patch
         from bindu_teleoperation.vr.receiver import _serve
@@ -165,7 +165,7 @@ class ControllerWebSocketTests(unittest.IsolatedAsyncioTestCase):
         output=queue.Queue(2);health=queue.Queue(128)
         with patch.dict('sys.modules',{'vuer':vuer,'vuer.schemas':schemas,'PIL':pil,'PIL.ImageFont':font}):
             _serve(dict(host='127.0.0.1',port=0,cert_file=None,key_file=None,side='both',
-                mapping='pico_snowbot_v1'),output,queue.Queue(1),health)
+                mapping='pico_snowbot_v1', remote_input_timeout_s=1.),output,queue.Queue(1),health)
             self.assertTrue(apps,list(output.queue))
             app=apps[0];handler=app.handlers['CONTROLLER_MOVE'];session=S(CURRENT_WS_ID='offline')
             state=dict(squeezeValue=0.,triggerValue=0.,aButton=False,bButton=False,thumbstick=False)
@@ -184,6 +184,18 @@ class ControllerWebSocketTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(all(f.stamp==first[0].stamp for f in first))
             await asyncio.sleep(.02)
             self.assertTrue(output.empty())  # Timeout/pong never mints input.
+
+            new = S(CURRENT_WS_ID='reconnected')
+            app.ws[new.CURRENT_WS_ID] = S(ping=AsyncMock())
+            await handler(event,new)
+            self.assertTrue(output.empty())  # The current socket is still active.
+            with patch('bindu_teleoperation.vr.receiver.time.monotonic',return_value=time.monotonic()+1.1):
+                await handler(event,new)
+            replacement = output.get_nowait()[1]
+            self.assertNotEqual(first[0].source_id,replacement[0].source_id)
+            with patch('bindu_teleoperation.vr.receiver.time.monotonic',return_value=time.monotonic()+3.):
+                await handler(event,session)
+            self.assertTrue(output.empty())  # Even late traffic cannot resurrect the retired socket.
 
     async def test_vuer_none_return_preserves_the_prepared_response_on_disconnect(self):
         from types import ModuleType
