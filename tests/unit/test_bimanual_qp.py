@@ -559,7 +559,8 @@ class CandidateGeometryBacktracking(unittest.TestCase):
                     scale=.5 if rejected else 1.
                     np.testing.assert_allclose(np.array(positions)-reference,scale*(raw[0]-reference),atol=1e-8)
                     self.assertTrue(after.captured)
-                    self.assertEqual(after.last_geometry_step['scale'],scale)
+                    if rejected:self.assertEqual(after.last_geometry_step['scale'],scale)
+                    else:self.assertIsNone(after.last_geometry_step)
                     self.assertGreater(np.max(np.abs(np.array(positions)-reference)),.001)
                     after.check_path(case['feedback'],positions,reference)
                     self.assertTrue(np.isfinite(metrics).all())
