@@ -1,5 +1,6 @@
 """Optional impedance selection and nominal tracking, without ROS or devices."""
 from bindu_contracts.resources import package_share
+from bindu_contracts.teleoperation import load_tool_config
 import json
 from pathlib import Path
 import tempfile
@@ -105,7 +106,7 @@ class ImpedanceSelectionTests(unittest.TestCase):
 
     def test_real_impedance_only_widens_arm_bounds_and_retains_waist_and_advance(self):
         from bindu_contracts.teleoperation import joint_reference_limits, reference_tracking_budget
-        raw=json.loads((package_share('snowbot_bringup')/'config/robots/snowbot/bimanual_snowbot_real.json').read_text())
+        raw=load_tool_config(package_share('snowbot_bringup')/'config/robots/snowbot/bimanual_snowbot_real.json')
         selected=apply_execution_tracking(raw,'impedance')
         arms=[f'arm_{s}_joint_{j}' for s in ('l','r') for j in range(1,8)]
         self.assertEqual(selected['joint_reference_error_limits'],dict.fromkeys(arms,.25))
@@ -216,6 +217,16 @@ class ImpedanceHealthTests(unittest.TestCase):
         # A nominal hold ACK cannot stand in for a fresh, valid force sample.
         obs.sensor_age=[.021,.001]
         self.assertIn('SENSOR_INVALID',self.health.hold_failure((7,3,obs.boot_id,1)))
+
+    def test_ros_delivery_delay_keeps_its_existing_budget_for_force_feedback(self):
+        self.health.observation.sensor_age=[.01,.01]
+        self.health.now=lambda:10.031
+        self.health.steady=lambda:1.031
+        self.health.require(self.groups)
+        self.health.now=lambda:10.042
+        self.health.steady=lambda:1.042
+        with self.assertRaisesRegex(RuntimeError,'PDO_NOT_ADVANCING'):
+            self.health.require(self.groups)
 
     def test_default_position_requires_no_impedance_sensor_or_calibration(self):
         self.health.execution_mode = 'position'
