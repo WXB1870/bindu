@@ -9,7 +9,7 @@ from types import SimpleNamespace as S
 import tempfile
 import unittest
 
-from snowbot_bringup.teleop.snowbot_primitive_replay import (
+from snowbot_teleop.replay import (
     NAMES, GROUPS, Replay, load_replay, run_replay, kinematic_digest,
 )
 
@@ -131,8 +131,8 @@ class PrimitiveReplayTests(unittest.TestCase):
         import shutil
         import subprocess
         import xml.etree.ElementTree as ET
-        import snowbot_bringup.teleop.snowbot_primitive_replay as replay_module
-        app = Path(replay_module.__file__).resolve().parents[4]
+        import snowbot_teleop.replay as replay_module
+        app = Path(replay_module.__file__).resolve().parents[3]
         patch = (app/'tools/deployment/snowbot_vendor/position_session/takeover.patch').read_text()
         urdf = ET.parse(app/'src/snowbot_description/urdf/snowbot_control.urdf')
         wire_names = [f'arm_{s}_joint_{i}' for s in ('l','r') for i in range(1,8)] + ['body_joint_1','body_joint_2']
@@ -159,8 +159,8 @@ class PrimitiveReplayTests(unittest.TestCase):
             subprocess.run([str(binary)],check=True,capture_output=True)
 
     def test_reference_margin_is_preserved_and_checked_separately(self):
-        import snowbot_bringup.teleop.snowbot_primitive_replay as module
-        app = Path(module.__file__).resolve().parents[4]
+        import snowbot_teleop.replay as module
+        app = Path(module.__file__).resolve().parents[3]
         cfg = load_tool_config(app/'src/snowbot_bringup/config/robots/snowbot/bimanual_snowbot_real.json')
         self.assertAlmostEqual(cfg['posture_reference_margin_rad'], .027453292519943294, places=14)
         p = Replay((0., .02), ((.98,)*16, (.98,)*16), NAMES, 'tool', 'kin', 1., reference_margin_rad=.03)
@@ -203,8 +203,8 @@ class PrimitiveReplayTests(unittest.TestCase):
 class PackagedLibraryTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        import snowbot_bringup.teleop.snowbot_primitive_replay as module
-        cls.app = Path(module.__file__).resolve().parents[4]
+        import snowbot_teleop.replay as module
+        cls.app = Path(module.__file__).resolve().parents[3]
         cls.config = cls.app/'src/snowbot_bringup/config/robots/snowbot'
         cls.library = cls.config/'primitive-library/manifest.json'
         cls.manifest = json.loads(cls.library.read_text())
@@ -218,7 +218,7 @@ class PackagedLibraryTests(unittest.TestCase):
                 self.assertGreaterEqual(plan.duration, previous_duration/2)
 
     def test_final_fifty_hz_derivatives_and_independent_return_routes(self):
-        from snowbot_bringup.teleop.snowbot_primitive_replay import plan_from_current
+        from snowbot_teleop.replay import plan_from_current
         for action in self.manifest['actions'] | self.manifest['transfers']:
             plan = load_replay(self.library, action)
             self.assertEqual(len(plan.times), len(plan.velocities))
@@ -283,7 +283,7 @@ class PackagedLibraryTests(unittest.TestCase):
         self.assertEqual({profile.speed(n) for n in arms}, {ceiling})
 
     def test_packaged_successors_and_home_join_the_updated_nodes(self):
-        from snowbot_bringup.teleop.snowbot_primitive_replay import plan_from_current
+        from snowbot_teleop.replay import plan_from_current
         for source in ('Push', 'SideScoop', 'Flip'):
             node = self.manifest['actions'][source]['end_node']
             current = dict(zip(NAMES, self.manifest['nodes'][node]))
@@ -328,7 +328,7 @@ class PrimitiveTransitionTests(unittest.TestCase):
         file=root/'manifest.json';file.write_text(json.dumps(m));return file,m
 
     def test_all_nine_successors_and_a_home_have_continuous_certified_joins(self):
-        from snowbot_bringup.teleop.snowbot_primitive_replay import plan_from_current
+        from snowbot_teleop.replay import plan_from_current
         with tempfile.TemporaryDirectory() as d:
             path,m=self.fixture(Path(d))
             for source in ('Push','SideScoop','Flip'):
@@ -350,7 +350,7 @@ class PrimitiveTransitionTests(unittest.TestCase):
                         self.assertTrue(run_replay(p,FakePort(p))['completed'])
 
     def test_unknown_start_is_rejected_before_execution(self):
-        from snowbot_bringup.teleop.snowbot_primitive_replay import plan_from_current
+        from snowbot_teleop.replay import plan_from_current
         with tempfile.TemporaryDirectory() as d:
             path,m=self.fixture(Path(d))
             with self.assertRaisesRegex(RuntimeError,'UNKNOWN_START'):
@@ -362,7 +362,7 @@ class InteractiveReplayTests(unittest.TestCase):
         from contextlib import redirect_stderr
         from io import StringIO
         from unittest.mock import patch
-        import snowbot_bringup.teleop.snowbot_primitive_replay as module
+        import snowbot_bringup.runtime.snowbot_primitive_replay as module
         for flag in (None, False):
             with self.subTest(flag=flag), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
@@ -383,7 +383,7 @@ class InteractiveReplayTests(unittest.TestCase):
         from contextlib import redirect_stdout
         from io import StringIO
         from unittest.mock import patch
-        import snowbot_bringup.teleop.snowbot_primitive_replay as module
+        import snowbot_bringup.runtime.snowbot_primitive_replay as module
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory)
             library,_=PrimitiveTransitionTests().fixture(root)
@@ -402,7 +402,7 @@ class InteractiveReplayTests(unittest.TestCase):
         from contextlib import redirect_stdout
         from io import StringIO
         from unittest.mock import patch
-        import snowbot_bringup.teleop.snowbot_primitive_replay as module
+        import snowbot_bringup.runtime.snowbot_primitive_replay as module
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory)
             library,_=PrimitiveTransitionTests().fixture(root)
@@ -431,7 +431,7 @@ class EmptyPrepareTests(unittest.TestCase):
     def test_empty_entry_reaches_configured_ready_and_retains_reference_margin(self):
         from dataclasses import replace
         from unittest.mock import Mock,patch
-        from snowbot_bringup.teleop.snowbot_primitive_replay import plan_prepare
+        from snowbot_teleop.replay import plan_prepare
         checker=Mock()
         with patch('bindu_kinematics.tool_geometry.make_collision_checker',return_value=checker) as factory:
             plan=plan_prepare(self.library,self.robot,self.measured())
@@ -456,7 +456,7 @@ class EmptyPrepareTests(unittest.TestCase):
 
     def test_collision_or_missing_measured_context_prevents_preparation(self):
         from unittest.mock import Mock,patch
-        from snowbot_bringup.teleop.snowbot_primitive_replay import plan_prepare
+        from snowbot_teleop.replay import plan_prepare
         with patch('bindu_kinematics.tool_geometry.make_collision_checker',
                    return_value=Mock(side_effect=ValueError('SELF_COLLISION'))):
             with self.assertRaisesRegex(ValueError,'SELF_COLLISION'):
@@ -467,7 +467,7 @@ class EmptyPrepareTests(unittest.TestCase):
 
     def test_small_measured_limit_excursion_uses_confirmed_inward_reference(self):
         from unittest.mock import Mock,patch
-        from snowbot_bringup.teleop.snowbot_primitive_replay import plan_prepare
+        from snowbot_teleop.replay import plan_prepare
         joint='arm_r_joint_2'
         for excursion in (9.587379463482648e-5, .03490658503988659):
             with self.subTest(excursion=excursion):
@@ -498,7 +498,7 @@ class EmptyPrepareTests(unittest.TestCase):
 
     def test_limit_recovery_rejects_larger_excursion_or_unconfirmed_reference(self):
         from unittest.mock import Mock,patch
-        from snowbot_bringup.teleop.snowbot_primitive_replay import plan_prepare
+        from snowbot_teleop.replay import plan_prepare
         measured=self.measured();measured['arm_r_joint_2']=.03490658503988659+1e-6
         with self.assertRaisesRegex(ValueError,'PREPARE_START_JOINT_LIMIT:arm_r_joint_2'):
             plan_prepare(self.library,self.robot,measured,reference=dict.fromkeys(NAMES,0.))
@@ -527,7 +527,7 @@ class EmptyPrepareTests(unittest.TestCase):
 class PrepareGripperTests(unittest.TestCase):
     def test_each_enter_precedes_the_corresponding_gripper_command(self):
         from unittest.mock import Mock,patch
-        from snowbot_bringup.teleop.snowbot_primitive_replay import confirm_prepare_grippers
+        from snowbot_bringup.runtime.snowbot_primitive_replay import confirm_prepare_grippers
         port=Mock()
         expected=iter((0,1))
         def enter(message):
@@ -547,7 +547,7 @@ class PrepareGripperTests(unittest.TestCase):
 class ImpedancePrimitiveReplayTests(unittest.TestCase):
 
     def test_impedance_uses_existing_named_tracking_limits(self):
-        from snowbot_bringup.teleop.snowbot_primitive_replay import replay_follow_limits
+        from snowbot_teleop.replay import replay_follow_limits
         cfg=dict(reference_kinematics=True,max_reference_error=.15,
             impedance_reference_limits={'joint_reference_error_limits':{
                 n:.25 for n in NAMES if n.startswith('arm_')}})
@@ -597,7 +597,7 @@ class ImpedancePrimitiveReplayTests(unittest.TestCase):
 
     def test_held_and_sampled_reference_authentication_and_freshness(self):
         import ast,math
-        import snowbot_bringup.teleop.snowbot_primitive_replay as module
+        import snowbot_bringup.runtime.snowbot_primitive_replay as module
         from bindu_runtime.stop_evidence import sampled_nominal_reference
         tree=ast.parse(Path(module.__file__).read_text())
         operation=next(n for n in tree.body if getattr(n,'name','')=='execute')
