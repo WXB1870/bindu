@@ -167,8 +167,10 @@ class PhysicsController:
         from bindu_hardware.robot_io.system import RobotIO
         from bindu_contracts.profile import Profile
         from bindu_kinematics.bimanual import BimanualQP
+        from bindu_contracts.teleoperation import load_tool_config
         self.config_path = Path(config_path)
-        self.cfg = json.loads(self.config_path.read_text())
+        self.config_sources = []
+        self.cfg = load_tool_config(self.config_path, sources=self.config_sources)
         self.profile = Profile.load(self.config_path.parent/self.cfg['demo']['profile'])
         self.cfg['urdf'] = str(package_share('snowbot_description')/'urdf'/self.cfg['urdf'])
         self.observer = None
@@ -228,7 +230,7 @@ class PhysicsController:
         modules = ('bindu_kinematics.bimanual','bindu_execution.executor','bindu_execution.interpolation',
                    'bindu_execution._native','bindu_teleoperation.bimanual_session','bindu_hardware.robot_io.system')
         paths = [Path(sys.modules[m].__file__).resolve() for m in modules]
-        paths += [Path(self.solver.lib._name), self.config_path, Path(self.cfg['urdf'])]
+        paths += [Path(self.solver.lib._name), *self.config_sources, Path(self.cfg['urdf'])]
         (self.output/'controller_sources.json').write_text(json.dumps({str(p):hashlib.sha256(p.read_bytes()).hexdigest()
             for p in paths},indent=2)+'\n')
         self.initialized = True

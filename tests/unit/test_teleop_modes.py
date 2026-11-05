@@ -1,3 +1,4 @@
+from bindu_contracts.teleoperation import load_tool_config
 from bindu_contracts.resources import package_share
 from tests.support.paths import ROOT
 import unittest
@@ -28,7 +29,7 @@ class AcceptedReferenceTests(unittest.TestCase):
 
     def test_deployment_tolerates_205ms_gap_without_integrating_more_than_100ms(self):
         import json
-        config=json.loads((package_share("snowbot_bringup")/'config/robots/snowbot/bimanual_snowbot_real.json').read_text())
+        config=load_tool_config(package_share("snowbot_bringup")/'config/robots/snowbot/bimanual_snowbot_real.json')
         ref=AcceptedReference(config['max_integration_interval'],max_sample_gap=config['integration_max_sample_gap'])
         self.assertEqual(ref.max_sample_gap,.25)
         self.assertLessEqual(ref.max_sample_gap,config['input_max_age'])
@@ -451,7 +452,7 @@ class RelativeRodMappingTests(unittest.TestCase):
 class DeployedToolMappingTests(unittest.TestCase):
     def setUp(self):
         import json
-        self.config=json.loads((package_share("snowbot_bringup")/'config/robots/snowbot/bimanual_snowbot_real.json').read_text())
+        self.config=load_tool_config(package_share("snowbot_bringup")/'config/robots/snowbot/bimanual_snowbot_real.json')
         # Verify the exact spatial mapping independently of filter transients.
         # Enabled filtering and midpoint invariance are covered in test_one_euro.
         self.config['pose_filter']=dict(self.config['pose_filter'],enabled=False)
@@ -553,7 +554,7 @@ class DeployedToolMappingTests(unittest.TestCase):
 class HeadsetEngagementTests(unittest.TestCase):
     def setUp(self):
         import json
-        self.cfg=json.loads((package_share("snowbot_bringup")/'config/robots/snowbot/bimanual_snowbot_real.json').read_text())
+        self.cfg=load_tool_config(package_share("snowbot_bringup")/'config/robots/snowbot/bimanual_snowbot_real.json')
         self.cfg.update(engage_seconds=.02,pico_grasp_resume_seconds=.01)
         self.cfg['pose_filter']['enabled']=False
         self.seq=0

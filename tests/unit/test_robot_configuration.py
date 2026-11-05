@@ -156,7 +156,8 @@ class RobotConfigurationTests(unittest.TestCase):
                 robot = RobotSetup.load(fixture(Path(tmp), arms, waist))
                 self.assertEqual(len(robot.active_joints), 2*arms+waist)
                 self.assertEqual(robot.context_joints, ('camera_pan',))
-                config = json.loads(robot.tool_config.read_text()); config['urdf'] = str(robot.urdf)
+                from bindu_contracts.teleoperation import load_tool_config
+                config = load_tool_config(robot.tool_config); config['urdf'] = str(robot.urdf)
                 qp = BimanualQP(config, robot.profile)
                 try:
                     self.assertEqual(tuple(qp.names), robot.active_joints)

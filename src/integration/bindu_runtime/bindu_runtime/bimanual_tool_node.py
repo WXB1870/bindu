@@ -11,6 +11,7 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
 from rclpy.task import Future
 from std_srvs.srv import Trigger, SetBool
 from rcl_interfaces.msg import ParameterDescriptor
+from bindu_contracts.teleoperation import load_tool_config
 from bindu_contracts.teleoperation import VRFrame, ToolPoseFrame, reference_tracking_budget
 from bindu_teleoperation.bimanual_session import BimanualSession, ToolPoseSession, AcceptedReference, ToolPause
 from bindu_teleoperation.independent_session import IndependentArmsSession
@@ -33,7 +34,7 @@ class BimanualToolNode(RuntimeNode):
         share=Path(get_package_share_directory('bindu_runtime'))
         self.declare_parameter('tool_config',str(share/'config/robots/g1/bimanual_g1_sim.json'))
         self.declare_parameter('model_root',str(Path(get_package_share_directory('bindu_description'))/'urdf'))
-        self.cfg=json.loads(Path(self.get_parameter('tool_config').value).read_text())
+        self.cfg=load_tool_config(Path(self.get_parameter('tool_config').value))
         if tool_config_loader is not None:
             self.cfg = tool_config_loader(self, self.cfg)
         for key, default in (('grip_press_threshold',.7),('grip_release_threshold',.3),('trigger_release_threshold',.3)):

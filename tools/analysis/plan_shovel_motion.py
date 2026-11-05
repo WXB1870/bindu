@@ -16,6 +16,7 @@ import numpy as np
 import pinocchio as pin
 from scipy.spatial.transform import Rotation
 
+from bindu_contracts.teleoperation import load_tool_config
 from bindu_contracts.profile import Profile
 from bindu_kinematics.bimanual import BimanualQP
 from tools.analysis.shovel_geometry import bin_boxes, check_dump
@@ -201,7 +202,8 @@ def run_input_stream(solver, profile, config, initial, inputs):
 
 
 def generate(config_path, description, output):
-    config = json.loads(config_path.read_text())
+    config_sources = []
+    config = load_tool_config(config_path, sources=config_sources)
     validate_recipe(config)
     recipe = dict(config['demo'])
     profile = Profile.load(config_path.parent/recipe['profile'])
@@ -223,7 +225,7 @@ def generate(config_path, description, output):
     frames = [config['left_frame'], config['right_frame']]
     ids = [model.getFrameId(n) for n in frames]
     solver = BimanualQP(config, profile)
-    source_paths = (config_path, Path(config['urdf']), display,
+    source_paths = (*config_sources, Path(config['urdf']), display,
                     config_path.parent/recipe['profile'], Path(__file__).resolve(),
                     Path(__import__('tools.analysis.shovel_geometry', fromlist=['']).__file__).resolve(),
                     Path(__import__('bindu_kinematics.tool_geometry',fromlist=['']).__file__).resolve(),

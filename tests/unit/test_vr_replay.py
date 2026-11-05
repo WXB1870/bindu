@@ -1,4 +1,5 @@
 """Full observer capture and offline replay boundaries, without ROS or hardware."""
+from bindu_contracts.teleoperation import load_tool_config
 from bindu_contracts.resources import package_share
 from tests.support.paths import ROOT
 import contextlib
@@ -244,7 +245,7 @@ class ReplayMappingTests(unittest.TestCase):
         from dataclasses import replace
         from bindu_teleoperation.bimanual_session import BimanualSession
         from bindu_teleoperation.independent_session import IndependentArmsSession
-        cfg=json.loads((package_share("snowbot_bringup")/'config/robots/snowbot/bimanual_snowbot_real.json').read_text())
+        cfg=load_tool_config(package_share("snowbot_bringup")/'config/robots/snowbot/bimanual_snowbot_real.json')
         for cls in (BimanualSession,IndependentArmsSession):
             with self.subTest(session=cls.__name__):
                 targets=[];headings=[]

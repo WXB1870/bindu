@@ -1,4 +1,5 @@
 """Position-session source identity, independent PDO freshness and resource scope."""
+from bindu_contracts.teleoperation import load_tool_config
 from bindu_contracts.resources import package_share
 from types import SimpleNamespace as S
 import ast
@@ -578,7 +579,7 @@ class RealResourceTests(unittest.TestCase):
         except ImportError as exc:
             self.skipTest('Optional native QP environment required: '+str(exc))
         base = package_share('snowbot_bringup')/'config/robots/snowbot'
-        cfg = json.loads((base/'bimanual_snowbot_real.json').read_text())
+        cfg = load_tool_config(base/'bimanual_snowbot_real.json')
         self.assertEqual(tuple(cfg['resource_groups']), ('waist','left_arm','right_arm'))
         self.assertEqual(cfg['shared_motion_weight'], .1)
         cfg['urdf'] = str(package_share("snowbot_description")/'urdf/snowbot_control.urdf')

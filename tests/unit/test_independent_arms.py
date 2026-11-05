@@ -1,4 +1,5 @@
 """Independent clutches and native dual-target movement from measured zero."""
+from bindu_contracts.teleoperation import load_tool_config
 from bindu_contracts.resources import package_share
 from tests.support.paths import ROOT
 import json
@@ -85,7 +86,7 @@ class IndependentSessionTests(unittest.TestCase):
 class IndependentNativeTests(unittest.TestCase):
     def setUp(self):
         base=package_share('snowbot_bringup')/'config/robots/snowbot'
-        self.cfg=json.loads((base/'bimanual_snowbot_real.json').read_text())
+        self.cfg=load_tool_config(base/'bimanual_snowbot_real.json')
         self.cfg['urdf']=str(package_share('snowbot_description')/'urdf'/self.cfg['urdf'])
         self.solver=BimanualQP(self.cfg,Profile.load(base/'snowbot_real_position.json'))
         self.addCleanup(self.solver.close)

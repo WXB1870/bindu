@@ -1,4 +1,5 @@
 """Offline primitive replay checks; all I/O is an in-memory port."""
+from bindu_contracts.teleoperation import load_tool_config
 import copy
 import hashlib
 import json
@@ -156,7 +157,7 @@ class PrimitiveReplayTests(unittest.TestCase):
     def test_reference_margin_is_preserved_and_checked_separately(self):
         import snowbot_bringup.teleop.snowbot_primitive_replay as module
         app = Path(module.__file__).resolve().parents[4]
-        cfg = json.loads((app/'src/snowbot_bringup/config/robots/snowbot/bimanual_snowbot_real.json').read_text())
+        cfg = load_tool_config(app/'src/snowbot_bringup/config/robots/snowbot/bimanual_snowbot_real.json')
         self.assertAlmostEqual(cfg['posture_reference_margin_rad'], .027453292519943294, places=14)
         p = Replay((0., .02), ((.98,)*16, (.98,)*16), NAMES, 'tool', 'kin', 1., reference_margin_rad=.03)
         profile = S(groups=dict(zip(GROUPS, (list(NAMES[:2]), list(NAMES[2:9]), list(NAMES[9:])))),

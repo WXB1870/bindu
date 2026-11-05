@@ -1,4 +1,5 @@
 """Position tracking selection, without ROS or devices."""
+from bindu_contracts.teleoperation import load_tool_config
 from bindu_contracts.resources import package_share
 import json
 import unittest
@@ -11,7 +12,7 @@ SHARE = ROOT/'src/integration/bindu_runtime'
 
 class PositionTrackingTests(unittest.TestCase):
     def setUp(self):
-        self.config = json.loads((package_share("snowbot_bringup")/'config/robots/snowbot/bimanual_snowbot_real.json').read_text())
+        self.config = load_tool_config(package_share("snowbot_bringup")/'config/robots/snowbot/bimanual_snowbot_real.json')
         self.config.pop('tracking_feedback',None)  # Legacy callers without an explicit selection.
 
     def test_legacy_position_tracking_is_unchanged_without_explicit_selection(self):
@@ -41,7 +42,7 @@ class PositionTrackingTests(unittest.TestCase):
                 self.assertEqual(config['tracking_feedback'],source)
 
     def test_real_recipe_selects_measured_waist_with_continuous_arm_reference(self):
-        config=json.loads((package_share("snowbot_bringup")/'config/robots/snowbot/bimanual_snowbot_real.json').read_text())
+        config=load_tool_config(package_share("snowbot_bringup")/'config/robots/snowbot/bimanual_snowbot_real.json')
         self.assertEqual(apply_execution_tracking(config,real=True,position_contract=True,
             trajectory_reference=True)['tracking_feedback'],'measured_shared')
 
