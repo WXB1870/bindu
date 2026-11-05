@@ -105,7 +105,7 @@ class ImpedanceSelectionTests(unittest.TestCase):
 
     def test_real_impedance_only_widens_arm_bounds_and_retains_waist_and_advance(self):
         from bindu_contracts.teleoperation import joint_reference_limits, reference_tracking_budget
-        raw=json.loads((package_share('snowbot_bringup')/'config/robots/snowbot/bimanual_snowbot_real.json').read_text())
+        raw=load_tool_config(package_share('snowbot_bringup')/'config/robots/snowbot/bimanual_snowbot_real.json')
         selected=apply_execution_tracking(raw,'impedance')
         arms=[f'arm_{s}_joint_{j}' for s in ('l','r') for j in range(1,8)]
         self.assertEqual(selected['joint_reference_error_limits'],dict.fromkeys(arms,.25))
@@ -129,6 +129,7 @@ class ImpedanceSelectionTests(unittest.TestCase):
                 joint_reference_limits(names,.15,overrides)
 
     def test_real_sixteen_axis_nominal_config_runs_native_qp(self):
+        from bindu_contracts.teleoperation import load_tool_config
         from bindu_contracts.profile import Profile
         from bindu_kinematics.bimanual import BimanualQP
         from snowbot_hardware.protocol import GROUPS
