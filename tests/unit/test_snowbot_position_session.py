@@ -1565,6 +1565,27 @@ class TargetWireTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'PDO_NOT_ADVANCING'):
             self.d.check_health(CONTROL_GROUPS)
 
+    def test_previous_stopped_session_waits_for_takeover_without_masking_new_fault(self):
+        stopped=dict(session_reason=6,hold_valid=False,trajectory_phase=0,
+                     reference_valid=False,output_valid=False)
+        self.held_feedback(**stopped)
+        self.d.new_session()
+        first=self.send()
+        self.d.check_health(CONTROL_GROUPS)
+        self.d.receive_receipt(self.receipt(first))
+        self.held_feedback(**stopped)
+        self.d.check_health(CONTROL_GROUPS)
+        self.assertEqual(self.d.applied_sequence,0)
+        for change in (dict(session_reason=5),dict(session=first.meta.session),
+                       dict(command_sequence=3),dict(status=[0x2f]*20)):
+            self.held_feedback(**(stopped|change))
+            with self.assertRaises(RuntimeError):self.d.check_health(CONTROL_GROUPS)
+        self.held_feedback(**stopped)
+        self.rig.now=first.meta.expires_at_ns*1e-9
+        self.held_feedback(**stopped)
+        with self.assertRaisesRegex(RuntimeError,'SESSION_STOPPED:6'):
+            self.d.check_health(CONTROL_GROUPS)
+
     def test_handoff_deadline_is_original_takeover_even_after_ack_and_new_targets(self):
         for acknowledged in (False, True):
             with self.subTest(acknowledged=acknowledged):
