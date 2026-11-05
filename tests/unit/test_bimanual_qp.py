@@ -212,9 +212,9 @@ class InitialCollisionRecoveryTests(unittest.TestCase):
         check=make_collision_checker(description/recipe['display_urdf'],recipe,conservative_convex=True,
                                      tool_present=False,validation_only=True)
         names=list(feedback);start=np.array([feedback[n] for n in names])
-        from snowbot_hardware.session import REPLAY_NAMES
-        library=json.loads((base/'primitive-library/manifest.json').read_text())
-        prepared=dict(zip(REPLAY_NAMES,library['nodes'][library['home_node']]))
+        # Keep the recorded recovery destination independent of daily A routing.
+        example=package_share('snowbot_bringup')/'config/examples/snowbot/bimanual_snowbot_shovel.json'
+        prepared=json.loads(example.read_text())['demo']['initial_positions_rad']
         end=np.array([prepared.get(n,feedback[n]) for n in names])
         count=int(np.ceil(np.max(abs(end-start))/.001))
         samples=[dict(t=float(f),q=dict(zip(names,start+f*(end-start))),tool=np.eye(4)) for f in np.linspace(0,1,count+1)]
