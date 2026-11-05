@@ -47,14 +47,13 @@ class BimanualToolNode(RuntimeNode):
         self.declare_parameter('position_contract',False)
         position_contract=self.get_parameter('position_contract').value
         self.declare_parameter('execution_mode','position',descriptor=ParameterDescriptor(read_only=True))
-        self.declare_parameter('position_protocol','legacy_guard',descriptor=ParameterDescriptor(read_only=True))
-        self.trajectory_reference = (not self.simulation and position_contract and
-                                    self.get_parameter('position_protocol').value == 'session_v3')
+        if 'position_protocol' in self._parameter_overrides:
+            raise ValueError('SNOWBOT_POSITION_PROTOCOL_REMOVED: session_v3 is fixed; remove position_protocol')
+        self.trajectory_reference = not self.simulation and position_contract
         if type(self.cfg.get('rigid_reference_prediction',False)) is not bool:
             raise ValueError('RIGID_REFERENCE_CONFIG')
         from .teleop_deployment import apply_execution_tracking
         self.cfg=apply_execution_tracking(self.cfg,self.get_parameter('execution_mode').value,
-                                          real=not self.simulation,position_contract=position_contract,
                                           trajectory_reference=self.trajectory_reference)
         self.declare_parameter('gripper_config','',descriptor=ParameterDescriptor(read_only=True))
         gripper_path=self.get_parameter('gripper_config').value
