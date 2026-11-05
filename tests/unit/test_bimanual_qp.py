@@ -516,10 +516,8 @@ class CandidateGeometryBacktracking(unittest.TestCase):
         cls.config.pop('coupled_locked_joints',None)
         cls.profile=Profile.load(package_share("snowbot_bringup")/'config/robots/snowbot/snowbot_real_position.json')
         recorded=json.loads((ROOT/'tests/config/teleoperation/snowbot_candidate_steps.json').read_text())
+        # Keep the original long-tool geometry with these recorded fault inputs.
         cls.config.update(recorded['recorded_config'])
-        cls.config.pop('grasp_reference_source',None)
-        cls.config.update(tracking_feedback='measured',measured_joint_limit_tolerance_rad=0.,
-                          limit_avoidance_margin=0.,limit_avoidance_weight=0.)
         # Preserve the original geometry fixtures independently of live thresholds.
         cls.config['grasp_position_tolerance_m']=.01
         cls.config['grasp_rotation_tolerance_rad']=.02
