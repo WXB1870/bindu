@@ -17,12 +17,13 @@ import pinocchio as pin
 from scipy.optimize import least_squares
 from scipy.spatial.transform import Rotation
 
+from bindu_contracts.teleoperation import load_tool_config
 from bindu_contracts.profile import Profile
 from tools.analysis.plan_shovel_motion import ROOT, collision_check, validate_recipe
 
 
 def search(config_path, description):
-    config = json.loads(config_path.read_text())
+    config = load_tool_config(config_path)
     validate_recipe(config)
     recipe = config['demo']
     settings = recipe['design_search']

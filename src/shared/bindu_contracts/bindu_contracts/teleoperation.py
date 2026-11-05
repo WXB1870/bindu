@@ -6,6 +6,30 @@ them when polling. generation fences IK results across clutch/re-anchor events.
 from dataclasses import dataclass
 from typing import Tuple, Protocol
 import math
+import json
+from pathlib import Path
+from .resources import resource_file
+
+
+def tool_with_timing(config, teleop, solver):
+    return dict(config, input_max_age=teleop['input_max_age_s'],
+                feedback_max_age=teleop['feedback_max_age_s'], command_max_age=teleop['command_ttl_s'],
+                worker_timeout=solver['worker_timeout_s'], worker_startup_timeout=solver['startup_timeout_s'],
+                solve_timeout_us=round(solver['timeout_s'] * 1e6))
+
+
+def load_tool_config(path, *, sources=None):
+    """Read standalone tool settings, resolving shared defaults when declared."""
+    config = json.loads(Path(path).read_text())
+    if sources is not None:
+        sources.append(Path(path))
+    if 'timing_defaults' in config:
+        timing_path = resource_file(config.pop('timing_defaults'), owner=path)
+        timing = json.loads(timing_path.read_text())
+        if sources is not None:
+            sources.append(timing_path)
+        config = tool_with_timing(config, timing['teleop'], timing['solver'])
+    return config
 
 
 def tool_grasp_mode(config):

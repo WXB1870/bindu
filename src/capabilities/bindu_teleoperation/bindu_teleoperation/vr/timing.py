@@ -30,7 +30,8 @@ class WebSocketTiming:
 
 class TransportWindow:
     """Eight preceding reports and four recovery frames; no extra normal traffic."""
-    def __init__(self):
+    def __init__(self, gap_warning_s=.1):
+        self.gap_warning_s = gap_warning_s
         self.history = deque(maxlen=8)
         self.source = None
         self.remaining = 0
@@ -41,7 +42,7 @@ class TransportWindow:
             self.history.clear()
             self.remaining = 0
             self.source = report['source_id']
-        gap = report.get('server_controller_interval_s', 0.) > .1
+        gap = report.get('server_controller_interval_s', 0.) > self.gap_warning_s
         if gap:
             samples = list(self.history)+[report]
             self.trigger_seq = report['seq']

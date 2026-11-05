@@ -310,7 +310,9 @@ class WaistTests(unittest.TestCase):
             output = targets(plan, t, initial, limits)
             self.assertAlmostEqual(output['body_joint_1'], offset)
             self.assertTrue(all(output[n] == initial[n] for n in NAMES if n != 'body_joint_1'))
-        initial['arm_r_joint_2'] = limits['arm_r_joint_2'][1]+.0001
+        initial['arm_r_joint_2'] = limits['arm_r_joint_2'][1]+.0005
+        self.assertEqual(targets(plan, 0., initial, limits)['arm_r_joint_2'], limits['arm_r_joint_2'][1])
+        initial['arm_r_joint_2'] = limits['arm_r_joint_2'][1]+.0011
         with self.assertRaisesRegex(ValueError, 'TEST_POSITION_LIMIT:arm_r_joint_2'):
             targets(plan, 0., initial, limits)
 

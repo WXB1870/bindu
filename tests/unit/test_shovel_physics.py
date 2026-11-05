@@ -1,4 +1,5 @@
 """Analytical checks for mass, wrench balance and the released shaft axis."""
+from bindu_contracts.teleoperation import load_tool_config
 from bindu_contracts.resources import package_share
 from tests.support.paths import ROOT
 import copy
@@ -138,7 +139,7 @@ class ShovelPhysicsTests(unittest.TestCase):
         np.testing.assert_allclose(i2, 2*inertia)
 
     def test_deployed_short_tool_has_only_its_shaft_mass_and_contact_shape(self):
-        cfg=json.loads((package_share("snowbot_bringup")/'config/robots/snowbot/bimanual_snowbot_real.json').read_text())
+        cfg=load_tool_config(package_share("snowbot_bringup")/'config/robots/snowbot/bimanual_snowbot_real.json')
         recipe=cfg['demo'];mount=np.array(cfg['left_to_tool']).reshape(4,4)
         recipe['left_grip_in_tool_m']=(np.linalg.inv(mount) @ np.r_[recipe['grip_offset_m'],1.])[:3].tolist()
         recipe['pan_size_m']=[100.,100.,100.]

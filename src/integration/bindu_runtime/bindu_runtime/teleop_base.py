@@ -10,9 +10,9 @@ from .common import seconds
 
 
 class TeleopBase:
-    def __init__(self, node, config_path, command_enabled):
+    def __init__(self, node, config_path, command_enabled, *, pair_max_skew_s=0.):
         self.node = node
-        self.core = BaseTeleop(json.loads(Path(config_path).read_text()))
+        self.core = BaseTeleop(json.loads(Path(config_path).read_text()), pair_max_skew_s=pair_max_skew_s)
         self.cfg = self.core.cfg
         # Keep the default receiver-watchdog requirement. A site can explicitly
         # defer it; a missing timeout stays unknown rather than being fabricated.

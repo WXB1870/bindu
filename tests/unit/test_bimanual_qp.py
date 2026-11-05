@@ -1,5 +1,6 @@
 """Native integration gate; skips when the optional QP package is not installed."""
 from snowbot_hardware.parameters import load_mode_config
+from bindu_contracts.teleoperation import load_tool_config
 from bindu_contracts.resources import package_share
 from tests.support.paths import ROOT
 import json
@@ -203,7 +204,7 @@ class InitialCollisionRecoveryTests(unittest.TestCase):
     def test_recorded_collision_has_a_bounded_exit_and_strict_remaining_path(self):
         from bindu_kinematics.tool_geometry import make_collision_checker
         base=package_share('snowbot_bringup')/'config/robots/snowbot'
-        config=json.loads((base/'bimanual_snowbot_real.json').read_text())
+        config=load_tool_config(base/'bimanual_snowbot_real.json')
         pico=load_mode_config(base/'teleop.json','simulation')
         feedback=json.loads((ROOT/'tests/config/teleoperation/snowbot_prepare_collision.json').read_text())['feedback']
         description=package_share('snowbot_description')/'urdf'
@@ -501,7 +502,7 @@ class CandidateGeometryBacktracking(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.config=json.loads((package_share("snowbot_bringup")/'config/robots/snowbot/bimanual_snowbot_real.json').read_text())
+        cls.config=load_tool_config(package_share("snowbot_bringup")/'config/robots/snowbot/bimanual_snowbot_real.json')
         cls.config['urdf']=str(package_share("snowbot_description")/'urdf/snowbot_control.urdf')
         cls.config['demo']['max_grasp_penetration_m']=.0005
         # These historical collision fixtures exercise the optional contact
@@ -659,7 +660,7 @@ class CandidateGeometryBacktracking(unittest.TestCase):
             finally:qp.close()
 
     def test_real_recipe_retains_reviewed_grasp_and_solver_limits(self):
-        cfg=json.loads((package_share("snowbot_bringup")/'config/robots/snowbot/bimanual_snowbot_real.json').read_text())
+        cfg=load_tool_config(package_share("snowbot_bringup")/'config/robots/snowbot/bimanual_snowbot_real.json')
         # Real recipe; the operator selected 0.05 rad on 2026-10-25.
         self.assertEqual(cfg['grasp_position_tolerance_m'],.06)
         self.assertEqual(cfg['grasp_rotation_tolerance_rad'],.05)

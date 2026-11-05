@@ -1,4 +1,5 @@
 """Ground and tool/body clearance regressions against the Snowbot CAD model."""
+from bindu_contracts.teleoperation import load_tool_config
 from bindu_contracts.resources import package_share
 from tests.support.paths import ROOT
 import copy
@@ -87,7 +88,7 @@ class ShovelGeometryTests(unittest.TestCase):
 
     def test_measured_band_intersects_physical_rod_without_widening_contact(self):
         from bindu_kinematics.tool_geometry import make_collision_checker
-        cfg=json.loads((package_share("snowbot_bringup")/'config/robots/snowbot/bimanual_snowbot_real.json').read_text())
+        cfg=load_tool_config(package_share("snowbot_bringup")/'config/robots/snowbot/bimanual_snowbot_real.json')
         recipe=cfg['demo'];recipe['left_grip_in_tool_m']=self.recipe['left_grip_in_tool_m']
         checker=make_collision_checker(self.urdf,recipe,conservative_convex=True)
         right=[n for n,b in recipe['shaft_contacts'].items() if b['grip']=='right']
@@ -289,7 +290,7 @@ class ShovelGeometryTests(unittest.TestCase):
         self.assertLess(result['min_tool_ground_clearance_m'],.05)
 
     def test_real_deployment_relative_grip_acceptance_is_one_cm(self):
-        config=json.loads((package_share("snowbot_bringup")/'config/robots/snowbot/bimanual_snowbot_real.json').read_text())
+        config=load_tool_config(package_share("snowbot_bringup")/'config/robots/snowbot/bimanual_snowbot_real.json')
         self.assertEqual(config['demo']['acceptance']['max_grip_error_m'],.01)
         reference=dict(t=0.,flanges={config['left_frame']:np.linalg.inv(np.array(config['left_to_tool']).reshape(4,4)),
                                     config['right_frame']:np.linalg.inv(np.array(config['right_to_tool']).reshape(4,4))})

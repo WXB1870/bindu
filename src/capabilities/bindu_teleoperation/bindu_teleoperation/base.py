@@ -50,8 +50,9 @@ class BaseTeleop:
     limiting use an independent monotonic clock. Published zero is not a stop
     acknowledgement: require subsequent, sustained measured zero velocity.
     """
-    def __init__(self, config):
+    def __init__(self, config, *, pair_max_skew_s=0.):
         self.cfg = validate_base_config(config)
+        self.pair_max_skew_s = pair_max_skew_s
         self.source = None
         self.retired = set()
         self.seq = -1
@@ -79,7 +80,7 @@ class BaseTeleop:
         pair = (left, right)
         if (left.side != 'left' or right.side != 'right' or not left.source_id or
                 left.source_id != right.source_id or left.seq != right.seq or
-                left.stamp != right.stamp or any(not f.valid or f.mapping != 'pico_snowbot_v1' or
+                abs(left.stamp-right.stamp) > self.pair_max_skew_s or any(not f.valid or f.mapping != 'pico_snowbot_v1' or
                 f.stop or len(f.stick) != 2 or any(type(x) not in (int, float) or
                 not -1 <= x <= 1 for x in f.stick) for f in pair)):
             self.target = ZERO
@@ -94,11 +95,12 @@ class BaseTeleop:
                 self.retired.add(self.source)
             self.source, self.seq, self.input_stamp = left.source_id, -1, float('-inf')
             self.inhibit('BASE_SOURCE_CHANGED', now)
-        if (left.seq <= self.seq or left.stamp <= self.input_stamp or
-                not 0 <= now-left.stamp <= self.cfg['input_max_age_s']):
+        oldest = min(left.stamp, right.stamp)
+        if (left.seq <= self.seq or oldest <= self.input_stamp or
+                not all(0 <= now-f.stamp <= self.cfg['input_max_age_s'] for f in pair)):
             self.inhibit('BASE_INPUT_STALE', now)
             return
-        self.seq, self.input_stamp, self.received = left.seq, left.stamp, clock
+        self.seq, self.input_stamp, self.received = left.seq, oldest, clock
         # Calibrate forward/reverse per deployment; yaw keeps its WebXR sign.
         def axis(value,sign=-1):
             return 0. if abs(value) < self.cfg['deadzone'] else sign*value
