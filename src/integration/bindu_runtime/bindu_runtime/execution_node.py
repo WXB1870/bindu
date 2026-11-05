@@ -221,7 +221,7 @@ class ExecutionNode(RuntimeNode):
         replay = getattr(self.engine, 'replay', None)
         if replay is not None and self.engine.replay_wait is not None and not replay.lease_id:
             msg.state, msg.code = 'WAIT_REST', 'WAIT_REST'
-            msg.task_id, msg.command_id = replay.motion.task_id, replay.identity
+            msg.task_id, msg.command_id = replay.motion.task_id, replay.motion.command_id
             if self.engine.steady()-self.engine.replay_wait[0] >= self.robot_io.replay_timing['completion_timeout_s']:
                 msg.state, msg.code = 'FAILED', 'REPLAY_NOT_SETTLED'
         if msg.missing_feedback_groups and msg.state == 'IDLE':

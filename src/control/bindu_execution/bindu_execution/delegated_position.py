@@ -22,16 +22,12 @@ class DirectTarget:
 
 @dataclass(frozen=True)
 class PreparedReplay:
-    identity: str
     effective: float
     description: tuple
-    initial: tuple
     lease_id: str
     epoch: int
     inner_reference: bool
     motion: object
-    final: tuple
-    duration: float
     hold: object = None
 
     @classmethod
@@ -51,20 +47,18 @@ class PreparedReplay:
             raise Rejected('PREPARED_TRAJECTORY_LAYOUT')
         if any(abs(x) > 1e-8 for s in (states[0], states[-1]) for row in (s.v, s.a) for x in row):
             raise Rejected('PREPARED_TRAJECTORY_ENDPOINT_NOT_REST')
-        origin = motion.offsets[0]
         pieces = []
         for a, b, first, last in zip(motion.offsets, motion.offsets[1:], states, states[1:]):
             h = b-a
             controls = tuple((q0, q0+v0*h/5, q0+2*v0*h/5+a0*h*h/20,
                               q1-2*v1*h/5+a1*h*h/20, q1-v1*h/5, q1)
                              for q0,v0,a0,q1,v1,a1 in zip(first.q,first.v,first.a,last.q,last.v,last.a))
-            pieces.append((a-origin, h, h, 0., controls))
+            pieces.append((a, h, h, 0., controls))
         # Import/certify the supplied polynomials once. No target fitting or
         # retiming; heartbeats below carry only this immutable identity.
         PreparedSegment.from_description(profile, motion.names, tuple(pieces))
-        return cls(motion.command_id, 0., tuple(pieces), states[0].q,
-                   '', 0, motion.mode.removesuffix('_impedance') == 'prepared_trajectory', motion,
-                   states[-1].q, motion.offsets[-1])
+        return cls(0., tuple(pieces), '', 0,
+                   motion.mode.removesuffix('_impedance') == 'prepared_trajectory', motion)
 
 
 class DelegatedPositionExecutor(Executor):
@@ -155,7 +149,7 @@ class DelegatedPositionExecutor(Executor):
                 measured_arrival_confirmed=False, nominal_arrival_confirmed=False,
                 measured_end_error_rad=None, error=None, details=[])
             return lease, epoch
-        elif rest is not None and feedback.stamp > rest[1]:
+        elif feedback.stamp > rest[1]:
             rest = (rest[0], feedback.stamp)
         self.replay_wait = (began, rest)
         raise Rejected('WAIT_REST:'+('MEASURED_SPEED' if not quiet else 'REST_WINDOW'))
@@ -186,11 +180,13 @@ class DelegatedPositionExecutor(Executor):
         if (prepared is None or not prepared.effective or self.replay_result is None or self.replay_result['final']
                 or not self.active or self.stopping):
             return
-        if now < prepared.effective+prepared.duration:
+        end = prepared.effective+prepared.motion.offsets[-1]
+        if now < end:
             return
         timing, names = self.io.replay_timing, prepared.motion.names
         q, v = self.feedback.positions, self.feedback.joint_velocities
-        errors = {n:q[n]-x for n,x in zip(names, prepared.final)}
+        goal = prepared.motion.points[-1]
+        errors = {n:q[n]-x for n,x in zip(names, goal)}
         tolerance = self.io.replay_position_tolerances
         if not prepared.inner_reference:
             tolerance = {n:max(t, self.io.replay_prepare_tolerance) for n,t in tolerance.items()}
@@ -198,9 +194,9 @@ class DelegatedPositionExecutor(Executor):
         nominal = getattr(self.io, 'execution_mode', 'position') == 'impedance'
         reference = self.io.sampled_reference()[1] if nominal else q
         arrived = (all(n in reference and abs(reference[n]-x) <= tolerance[n]
-                       for n,x in zip(names, prepared.final)) and
+                       for n,x in zip(names, goal)) and
                    all(n in v and math.isfinite(v[n]) and abs(v[n]) <= timing['velocity_tolerance_rad_s'] for n in names)
-                   and self.feedback.stamp >= prepared.effective+prepared.duration)
+                   and self.feedback.stamp >= end)
         previous = self.replay_rest
         if not arrived:
             self.replay_rest = None
@@ -214,7 +210,7 @@ class DelegatedPositionExecutor(Executor):
                     nominal_arrival_confirmed=nominal, measured_end_error_rad=errors)
                 self.halt(now, 'REPLAY_COMPLETED', revoke=True)
                 return
-        if now-prepared.effective-prepared.duration >= timing['completion_timeout_s']:
+        if now-end >= timing['completion_timeout_s']:
             self.halt(now, 'REPLAY_ARRIVAL_UNCONFIRMED', revoke=True)
 
     def acquire(self, owner, groups, ttl, now):
@@ -248,7 +244,7 @@ class DelegatedPositionExecutor(Executor):
             if self.stopping:
                 raise Rejected('STOPPING')
             prepared = self.replay
-            if (prepared is None or motion.observation_id != prepared.identity or
+            if (prepared is None or motion.observation_id != prepared.motion.command_id or
                     motion.task_id != prepared.motion.task_id or motion.schema_version != 2 or
                     motion.profile_hash != self.profile.digest or motion.names != prepared.motion.names or
                     motion.resource_groups != prepared.motion.resource_groups or motion.group or
@@ -274,10 +270,10 @@ class DelegatedPositionExecutor(Executor):
                 source = replace(prepared.motion, command_id=motion.command_id,
                     stamp=motion.stamp, valid_for=motion.valid_for,
                     lease_id=motion.lease_id, epoch=motion.epoch)
-                self.path = DirectTarget(State.rest(prepared.initial))
+                self.path = DirectTarget(State.rest(prepared.motion.points[0]))
                 self.reference_names = prepared.motion.names
                 self.reference = self.path.sample(now)
-            self.active = replace(motion, mode='joint_target', positions=prepared.initial)
+            self.active = replace(motion, mode='joint_target', positions=prepared.motion.points[0])
             self.started, self.last_stamp = motion.stamp, motion.stamp
             self.io.source_motion, self.io.prepared_replay = source, prepared
             self.revision += 1
