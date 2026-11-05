@@ -1,4 +1,5 @@
 import os
+import json
 import signal
 import time
 import rclpy
@@ -11,7 +12,6 @@ from bindu_execution.executor import Executor, Rejected
 from bindu_interfaces.msg import ExecutionState, MotionCommand
 from bindu_interfaces.srv import Lease, SubmitMotion, ControlExecution, InjectFault
 from .common import RuntimeNode, seconds, stamp, EVENT_QOS
-from bindu_contracts.runtime_mode import command_mode
 
 
 class ExecutionNode(RuntimeNode):
@@ -42,7 +42,17 @@ class ExecutionNode(RuntimeNode):
         try:
             if self.closing:
                 raise Rejected('SHUTDOWN')
-            if request.operation == 'acquire':
+            if request.operation in ('ready', 'acquire_replay') and not getattr(self.robot_io, 'supports_prepared_replay', False):
+                raise Rejected('PREPARED_TRAJECTORY_UNSUPPORTED')
+            if request.operation == 'ready':
+                if self.engine.stop_fault or self.robot_io.stop_failures:
+                    raise Rejected('STOP_UNCONFIRMED')
+                if self.engine.lease_id or self.engine.stopping:
+                    raise Rejected('BUSY')
+                self.robot_io.check_ready(request.resources)
+            elif request.operation == 'acquire_replay':
+                self.engine.acquire_replay(request.owner, request.resources, self.now())
+            elif request.operation == 'acquire':
                 self.engine.acquire(request.owner, request.resources, 2., self.now())
             elif request.operation == 'renew':
                 self.engine.renew(request.lease_id, request.epoch, self.now())
@@ -51,10 +61,11 @@ class ExecutionNode(RuntimeNode):
                 self.engine.halt(self.now(), revoke=True)
             else:
                 raise Rejected('INVALID_OPERATION')
-            reply.ok, reply.code = True, 'OK'
+            reply.ok = True
+            reply.code = json.dumps(self.robot_io.replay_timing) if request.operation == 'ready' else 'OK'
             if request.operation == 'release' and not self.engine.stopping and self.robot_io.stop_failures:
                 reply.ok, reply.code = False, 'STOP_REQUEST_FAILED'
-        except Rejected as exc:
+        except (Rejected, RuntimeError) as exc:
             reply.ok, reply.code = False, str(exc)
         reply.lease_id, reply.epoch = self.engine.lease_id, self.engine.epoch
         reply.profile_hash = self.profile.digest
@@ -63,7 +74,6 @@ class ExecutionNode(RuntimeNode):
     def accept(self, msg):
         if self.closing:
             raise Rejected('SHUTDOWN')
-        selected_mode = command_mode(msg.runtime_mode, self.runtime_mode)
         if any(v != 0. for v in (msg.velocity.linear.y, msg.velocity.linear.z,
                                 msg.velocity.angular.x, msg.velocity.angular.y)):
             raise Rejected('UNSUPPORTED_VELOCITY_AXIS')
@@ -77,9 +87,9 @@ class ExecutionNode(RuntimeNode):
                    (msg.velocity.linear.x, msg.velocity.angular.z), msg.duration, msg.schema_version,
                    tuple(tuple(p.velocities) for p in msg.points) if any(p.velocities for p in msg.points) else (),
                    tuple(tuple(p.accelerations) for p in msg.points) if any(p.accelerations for p in msg.points) else (),
-                   msg.expected_revision, tuple(msg.resource_groups), selected_mode, msg.rigid_reference)
+                   msg.expected_revision, tuple(msg.resource_groups), msg.runtime_mode, msg.rigid_reference)
         self.engine.submit(m, self.now())
-        msg.runtime_mode = selected_mode
+        msg.runtime_mode = self.runtime_mode
         self.accepted_pub.publish(msg)
         return max(m.stamp, self.engine.last_tick)
 
@@ -105,6 +115,13 @@ class ExecutionNode(RuntimeNode):
 
     def control(self, request, reply):
         try:
+            if request.operation in ('replay_stop', 'replay_result'):
+                if not getattr(self.robot_io, 'supports_prepared_replay', False):
+                    raise Rejected('PREPARED_TRAJECTORY_UNSUPPORTED')
+                result = self.engine.replay_status(request.lease_id, request.epoch, self.now(),
+                                                   stop=request.operation == 'replay_stop')
+                reply.ok, reply.code = True, json.dumps(result, allow_nan=False)
+                return reply
             if self.closing:
                 raise Rejected('SHUTDOWN')
             self.engine.check_lease(request.lease_id, request.epoch, self.now())
@@ -201,6 +218,12 @@ class ExecutionNode(RuntimeNode):
             msg.command_id, msg.task_id, msg.state, msg.code = e.command_id, e.task_id, e.state, e.code
         else:
             msg.state, msg.code = 'IDLE', 'OK'
+        replay = getattr(self.engine, 'replay', None)
+        if replay is not None and self.engine.replay_wait is not None and not replay.lease_id:
+            msg.state, msg.code = 'WAIT_REST', 'WAIT_REST'
+            msg.task_id, msg.command_id = replay.motion.task_id, replay.identity
+            if self.engine.steady()-self.engine.replay_wait[0] >= self.robot_io.replay_timing['completion_timeout_s']:
+                msg.state, msg.code = 'FAILED', 'REPLAY_NOT_SETTLED'
         if msg.missing_feedback_groups and msg.state == 'IDLE':
             msg.code = 'FEEDBACK_INCOMPLETE:'+','.join(msg.missing_feedback_groups)
         self.state_pub.publish(msg)
