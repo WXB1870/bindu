@@ -17,36 +17,11 @@ from bindu_teleoperation.bimanual_session import ToolPause
 from bindu_kinematics.bimanual_worker import BimanualWorker
 from bindu_interfaces.srv import Lease, ControlExecution
 from .common import MODE_STATE_MAX_AGE, seconds, joints_at_rest
-from .execution_client import ExecutionClient, parameter
+from .execution_client import ExecutionClient, parameter, wait_for
 from .tool_follow import run_session
 from .stop_evidence import stop_feedback_matches
 
 WORKER_POLL_PERIOD = 0.005
-
-
-class SessionOperation:
-    """In-process session lifecycle with the same cancellation/result contract."""
-
-    def __init__(self, request, feedback):
-        self.request = request
-        self.feedback = feedback
-        self.is_cancel_requested = False
-        self.status = "running"
-
-    def cancel(self):
-        self.is_cancel_requested = True
-
-    def publish_feedback(self, feedback):
-        self.feedback(feedback)
-
-    def succeed(self):
-        self.status = "succeeded"
-
-    def canceled(self):
-        self.status = "canceled"
-
-    def abort(self):
-        self.status = "failed"
 
 
 class ToolSession:
@@ -551,12 +526,9 @@ class ToolSession:
         await self.yield_control()
 
     async def wait(self, future, timeout=0.7):
-        deadline = time.monotonic() + timeout
-        while not future.done():
-            if time.monotonic() >= deadline:
-                raise RuntimeError("BIMANUAL_SERVICE_TIMEOUT")
-            await self.pause()
-        return future.result()
+        return await wait_for(
+            future, self.pause, timeout, "BIMANUAL_SERVICE_TIMEOUT", clock=time.monotonic
+        )
 
     def begin_stop(self, lease, release=False):
         # This identity is captured before acquire is dispatched. An idle

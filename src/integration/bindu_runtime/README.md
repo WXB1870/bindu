@@ -90,7 +90,7 @@ Snowbot 当前配方、模型、设备适配及 PICO 操作分别由独立工作
 
 ## 职责与边界
 
-遥操作会话运行由 [tool_session.py](bindu_runtime/tool_session.py) 组合输入、模式快照、QP worker 和执行客户端，[tool_follow.py](bindu_runtime/tool_follow.py) 维护一次跟随事务及有界清理。[execution_client.py](bindu_runtime/execution_client.py) 提供共享执行服务客户端和反馈缓存。通用 [bimanual_tool_node.py](bindu_runtime/bimanual_tool_node.py) 是独立 ROS 传输入口；Snowbot PICO 应用将同一会话组件与操作流程组合在自己的节点内，型号夹爪及配置通过构造参数注入。参考反馈采样由 `stop_evidence.py` 维护，Snowbot 物理位置 IO 由应用维护。
+遥操作会话运行由 [tool_session.py](bindu_runtime/tool_session.py) 组合输入、模式快照、QP worker 和执行客户端，[tool_follow.py](bindu_runtime/tool_follow.py) 维护一次跟随事务及有界清理。[execution_client.py](bindu_runtime/execution_client.py) 提供共享执行服务客户端、反馈缓存和有界 RPC 等待。[session_operation.py](bindu_runtime/session_operation.py) 定义本地操作和结构化结果；租约拒绝证据直接在进程内传递，仅在独立 ROS Action 边界转换为消息格式。通用 [bimanual_tool_node.py](bindu_runtime/bimanual_tool_node.py) 是独立 ROS 传输入口；Snowbot PICO 应用将同一会话组件与操作流程组合在自己的节点内，型号夹爪及配置通过构造参数注入。参考反馈采样由 `stop_evidence.py` 维护，Snowbot 物理位置 IO 由应用维护。
 
 - 负责消息转换、依赖选择、设备／遥操作装配、本体校验与进程生命周期。
 - 启动时明确仿真／真实环境，检查指令和反馈模式一致性；环境选择与设备后端、写权限分别配置。

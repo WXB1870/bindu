@@ -1,9 +1,16 @@
-"""One execution transport and feedback cache per application node."""
+"""Shared execution transport, feedback cache and bounded RPC waiting."""
 
-from rclpy.callback_groups import ReentrantCallbackGroup
-from std_srvs.srv import Trigger
-from bindu_interfaces.msg import ExecutionState
-from bindu_interfaces.srv import Lease, SubmitMotion, ControlExecution
+import time
+
+
+async def wait_for(future, pause, timeout, timeout_code, *, clock=time.monotonic):
+    """Wait without canceling a dispatched request whose outcome may be unknown."""
+    deadline = clock() + timeout
+    while not future.done():
+        if clock() >= deadline:
+            raise RuntimeError(timeout_code)
+        await pause()
+    return future.result()
 
 
 def parameter(node, name, default, **kwargs):
@@ -15,6 +22,11 @@ def parameter(node, name, default, **kwargs):
 
 class ExecutionClient:
     def __init__(self, node):
+        from rclpy.callback_groups import ReentrantCallbackGroup
+        from std_srvs.srv import Trigger
+        from bindu_interfaces.msg import ExecutionState
+        from bindu_interfaces.srv import Lease, SubmitMotion, ControlExecution
+
         self.state = None
         self.node = node
         group = ReentrantCallbackGroup()

@@ -14,6 +14,7 @@ from bindu_interfaces.action import TeleopSession as TeleopAction
 from bindu_interfaces.msg import MotionCommand
 from bindu_interfaces.srv import Lease, SubmitMotion
 from .common import seconds, stamp
+from .session_operation import LeaseRejection, SessionResult
 
 WORKER_POLL_PERIOD = 0.005
 
@@ -37,7 +38,7 @@ async def run_session(self, goal):
         self.cfg.get("max_integration_interval", 0.1),
         max_sample_gap=self.cfg.get("integration_max_sample_gap"),
     )
-    result = TeleopAction.Result(simulated=self.simulation)
+    result = SessionResult(simulated=self.simulation)
     lease = acquisition = pending = renewal = None
     accepted = 0
     last_feedback_mode = None
@@ -86,7 +87,7 @@ async def run_session(self, goal):
     self.preflight_status = ""
     acquisition_epoch = None
 
-    def rejected_acquisition_code(reply):
+    def record_acquisition_rejection(reply):
         if (
             not reply.lease_id
             and reply.epoch == acquisition_epoch
@@ -94,15 +95,13 @@ async def run_session(self, goal):
             and self.state is not None
             and self.state.instance_id == self.execution_instance_id
         ):
-            # The same Action result carries explicit no-grant evidence;
-            # its coordinator must still observe fresh baseline-epoch rest.
-            return "BIMANUAL_LEASE_NOT_ACQUIRED:" + json.dumps(
-                dict(
-                    instance_id=self.execution_instance_id,
-                    epoch=reply.epoch,
-                    profile_hash=reply.profile_hash,
-                    reason=reply.code,
-                )
+            # Carry explicit no-grant evidence as data. The coordinator must
+            # still observe fresh baseline-epoch rest from this executor.
+            result.lease_rejection = LeaseRejection(
+                instance_id=self.execution_instance_id,
+                epoch=reply.epoch,
+                profile_hash=reply.profile_hash,
+                reason=reply.code,
             )
         return reply.code
 
@@ -121,7 +120,7 @@ async def run_session(self, goal):
         lease = await self.wait(acquisition)
         if not lease.ok:
             stopped = True  # Explicit rejection did not grant this session control.
-            raise RuntimeError(rejected_acquisition_code(lease))
+            raise RuntimeError(record_acquisition_rejection(lease))
         if lease.profile_hash != self.profile.digest:
             raise RuntimeError("PROFILE_MISMATCH")
         # Service round-trips can span a DDS scheduling gap. Wait for
@@ -922,8 +921,8 @@ async def run_session(self, goal):
                         lease = await self.wait(acquisition)
                         stopped = not lease.ok
                         if stopped:
-                            code = rejected_acquisition_code(lease)
-                            if code.startswith("BIMANUAL_LEASE_NOT_ACQUIRED:"):
+                            code = record_acquisition_rejection(lease)
+                            if result.lease_rejection is not None:
                                 result.code = code
                     except Exception as exc:
                         self.cleanup_event(

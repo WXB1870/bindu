@@ -11,6 +11,8 @@ from unittest.mock import Mock
 from tests.support.execution import ExecutionFixture
 from bindu_execution.executor import Rejected
 from bindu_runtime.stop_evidence import stop_feedback_matches
+from bindu_runtime.execution_client import wait_for
+from bindu_runtime.session_operation import LeaseRejection, SessionResult
 
 
 SOURCE = Path(__file__).resolve().parents[2]/'src/integration/bindu_runtime/bindu_runtime/tool_session.py'
@@ -27,7 +29,7 @@ def actual_methods(clock):
     names = {'wait', 'begin_stop', 'execution_revision', 'stop_pending', 'stop','cleanup_event'}
     methods = [n for n in NODE.body if getattr(n, 'name', '') in names]
     namespace = {'time':clock, 'seconds':lambda stamp:stamp,
-                 'stop_feedback_matches':stop_feedback_matches,
+                 'stop_feedback_matches':stop_feedback_matches, 'wait_for':wait_for,
                  'Lease':S(Request=lambda **kw:S(**kw)),
                  'ControlExecution':S(Request=lambda **kw:S(**kw)),
                  'joints_at_rest':lambda joints,names,tolerance:all(
@@ -40,6 +42,30 @@ def actual_methods(clock):
 
 
 class BimanualStopHandoff(unittest.IsolatedAsyncioTestCase):
+    async def test_ros_adapter_preserves_result_fields_and_no_grant_wire_format(self):
+        from dataclasses import asdict
+        from unittest.mock import AsyncMock
+        import json
+        source=SOURCE.with_name('bimanual_tool_node.py')
+        node=next(n for n in ast.parse(source.read_text()).body
+                  if isinstance(n,ast.ClassDef) and n.name=='BimanualToolNode')
+        method=next(n for n in node.body if getattr(n,'name','')=='execute')
+        namespace=dict(json=json,asdict=asdict,TeleopAction=S(Result=lambda **kw:S(**kw)))
+        exec(compile(ast.fix_missing_locations(ast.Module(body=[method],type_ignores=[])),
+                     str(source),'exec'),namespace)
+        proof=LeaseRejection('original',3,'profile','DENIED')
+        for code,evidence in (('CANCELED',None),('DENIED',proof),
+                              ('DENIED:STOP_UNCONFIRMED',proof)):
+            with self.subTest(code=code):
+                result=SessionResult(simulated=True,code=code,accepted_commands=4,
+                                     lease_rejection=evidence)
+                host=S(session=S(execute=AsyncMock(return_value=result)))
+                wire=await namespace['execute'](host,object())
+                self.assertEqual((wire.success,wire.simulated,wire.accepted_commands),(False,True,4))
+                expected=code if evidence is None else 'BIMANUAL_LEASE_NOT_ACQUIRED:'+json.dumps(asdict(proof))
+                if evidence is not None and 'STOP_UNCONFIRMED' in code:expected+=':STOP_UNCONFIRMED'
+                self.assertEqual(wire.code,expected)
+
     def setUp(self):
         self.clock = S(value=0.)
         self.clock.monotonic = lambda:self.clock.value
@@ -407,7 +433,8 @@ class PicoStopEvidence(unittest.IsolatedAsyncioTestCase,ExecutionFixture):
             math=__import__('math'),seconds=lambda stamp:stamp,
             PicoFeedback=__import__('snowbot_teleop.control',fromlist=['PicoFeedback']).PicoFeedback,
             TeleopSession=S(Goal=lambda **kw:S(**kw)),Superseded=RuntimeError,
-            stop_feedback_matches=stop_feedback_matches,
+            stop_feedback_matches=stop_feedback_matches, wait_for=wait_for,
+            LeaseRejection=LeaseRejection, SessionResult=SessionResult,
             Lease=S(Request=lambda **kw:S(**kw)),ControlExecution=S(Request=lambda **kw:S(**kw)))
         body=[rest,ast.ClassDef(name='ActualPico',bases=[],keywords=[],
              body=[n for n in node.body if getattr(n,'name','') in selected],decorator_list=[])]
@@ -478,7 +505,7 @@ class PicoStopEvidence(unittest.IsolatedAsyncioTestCase,ExecutionFixture):
         result=asyncio.get_running_loop().create_future()
         def cancel():
             response=self.rpc('lease',S(operation='release',lease_id=self.lease.lease_id,epoch=self.lease.epoch))
-            result.set_result(S(code='CANCELED'))
+            result.set_result(SessionResult(simulated=True,code='CANCELED'))
             return response
         goal=S(accepted=True,cancel=cancel)
         self.node.tool_goal,self.node.tool_result=goal,result
@@ -486,11 +513,12 @@ class PicoStopEvidence(unittest.IsolatedAsyncioTestCase,ExecutionFixture):
             future=self.future(goal),canceling=False)
         return goal,result
 
-    async def rejected_acquisition_code(self,reply,*,instance_id='original',epoch=None,late=False,replacement=False):
+    async def rejected_acquisition(self,reply,*,instance_id='original',epoch=None,late=False,replacement=False):
         # Execute the complete production Action method, stopping at its actual
         # explicit acquire rejection. No ROS Action server or hardware endpoint.
         method=next(n for n in NODE.body if getattr(n,'name','')=='execute')
         namespace=dict(json=__import__('json'),time=S(monotonic=lambda:self.clock),
+            LeaseRejection=LeaseRejection, SessionResult=SessionResult,
             seconds=lambda stamp:stamp,ToolPoseSession=lambda *a,**kw:S(identity='session'),
             AcceptedReference=lambda *a,**kw:S(),
             TeleopAction=S(Result=lambda **kw:S(code='',success=False,**kw)),
@@ -515,14 +543,15 @@ class PicoStopEvidence(unittest.IsolatedAsyncioTestCase,ExecutionFixture):
         goal=S(request=S(task_id='denied'),succeed=Mock(),abort=Mock(),canceled=Mock())
         result=await n.execute(goal)
         goal.abort.assert_called_once()
-        return result.code
+        return result
 
     async def denied_tool(self,*,code=None,delay=0.):
         await self.node.release_lease();await self.pause()
         epoch=self.e.epoch
         reply=S(ok=False,code='COMMANDS_DISABLED',lease_id='',epoch=epoch,profile_hash=self.p.digest)
-        if code is None:code=await self.rejected_acquisition_code(reply)
-        result=self.future(S(code=code),delay)
+        if code is None:outcome=await self.rejected_acquisition(reply)
+        else:outcome=SessionResult(simulated=True,code=code)
+        result=self.future(outcome,delay)
         goal=S(accepted=True,cancel=lambda:None)
         self.node.tool_goal,self.node.tool_result=goal,result
         self.node.tool_request=dict(instance_id='original',epoch=epoch+1,token=1,
@@ -531,38 +560,38 @@ class PicoStopEvidence(unittest.IsolatedAsyncioTestCase,ExecutionFixture):
 
     async def test_accepted_action_explicit_no_grant_confirms_original_baseline_rest(self):
         epoch=await self.denied_tool()
-        self.assertTrue(self.node.tool_result.result().code.startswith('BIMANUAL_LEASE_NOT_ACQUIRED:'))
+        self.assertEqual(self.node.tool_result.result().lease_rejection,
+                         LeaseRejection('original',epoch,self.p.digest,'COMMANDS_DISABLED'))
         await self.node.cancel_tool()
         self.assertEqual(self.e.epoch,epoch)
         self.assertIsNone(self.node.stop_request);self.assertIsNone(self.node.tool_request)
         self.assertTrue(self.node.feedback().stopped)
 
-    async def test_no_grant_marker_only_emitted_for_explicit_empty_matching_reply(self):
+    async def test_no_grant_evidence_only_for_explicit_empty_matching_reply(self):
         for change in ('lease_id','epoch','profile_hash'):
             reply=S(ok=False,code='DENIED',lease_id='',epoch=self.e.epoch,profile_hash=self.p.digest)
             setattr(reply,change,{'lease_id':'other','epoch':self.e.epoch+1,'profile_hash':'other'}[change])
-            code=await self.rejected_acquisition_code(reply)
-            self.assertEqual(code,'DENIED')
+            result=await self.rejected_acquisition(reply)
+            self.assertEqual(result.code,'DENIED')
+            self.assertIsNone(result.lease_rejection)
 
     async def test_late_explicit_denial_emits_proof_but_replacement_cannot(self):
         reply=S(ok=False,code='DENIED',lease_id='',epoch=self.e.epoch,profile_hash=self.p.digest)
-        code=await self.rejected_acquisition_code(reply,late=True)
-        self.assertTrue(code.startswith('BIMANUAL_LEASE_NOT_ACQUIRED:'))
-        code=await self.rejected_acquisition_code(reply,replacement=True)
-        self.assertEqual(code,'DENIED')
+        result=await self.rejected_acquisition(reply,late=True)
+        self.assertIsNotNone(result.lease_rejection)
+        result=await self.rejected_acquisition(reply,replacement=True)
+        self.assertEqual(result.code,'DENIED')
+        self.assertIsNone(result.lease_rejection)
 
     async def test_no_grant_proof_mismatch_and_plain_rejection_do_not_clear_stop(self):
-        for change in ('plain','malformed','instance_id','epoch','profile_hash'):
+        for change in ('plain','instance_id','epoch','profile_hash'):
             with self.subTest(change=change):
                 self.setUp()
                 epoch=await self.denied_tool()
-                proof=dict(instance_id='original',epoch=epoch,profile_hash=self.p.digest,reason='DENIED')
-                if change=='plain':code='DENIED'
-                elif change=='malformed':code='BIMANUAL_LEASE_NOT_ACQUIRED:bad-json'
-                else:
-                    proof[change]=epoch+1 if change=='epoch' else 'other'
-                    code='BIMANUAL_LEASE_NOT_ACQUIRED:'+__import__('json').dumps(proof)
-                self.node.tool_result=self.future(S(code=code))
+                proof=LeaseRejection('original',epoch,self.p.digest,'DENIED')
+                if change=='plain':proof=None
+                else:proof=replace(proof,**{change:epoch+1 if change=='epoch' else 'other'})
+                self.node.tool_result=self.future(SessionResult(simulated=True,code='DENIED',lease_rejection=proof))
                 with self.assertRaisesRegex(RuntimeError,'PICO_STOP_UNCONFIRMED'):
                     await self.node.cancel_tool()
                 self.assertTrue(self.node.stop_request['failed'])
@@ -688,7 +717,7 @@ class PicoStopEvidence(unittest.IsolatedAsyncioTestCase,ExecutionFixture):
         old,_=self.tool();new=S(accepted=True)
         def replace(method,request):
             self.node.tool_goal=new
-            self.node.tool_result=self.future(S(code='CANCELED'))
+            self.node.tool_result=self.future(SessionResult(simulated=True,code='CANCELED'))
             self.node.tool_request=dict(instance_id='original',epoch=99,token=2,canceling=False)
         self.rpc_hook=replace
         with self.assertRaisesRegex(RuntimeError,'PICO_STOP_UNCONFIRMED'):
@@ -698,7 +727,7 @@ class PicoStopEvidence(unittest.IsolatedAsyncioTestCase,ExecutionFixture):
 
     async def test_inner_unconfirmed_result_is_not_overridden_by_fresh_idle(self):
         self.tool()
-        self.node.tool_result=self.future(S(code='CANCELED:STOP_UNCONFIRMED'))
+        self.node.tool_result=self.future(SessionResult(simulated=True,code='CANCELED:STOP_UNCONFIRMED'))
         # Cancellation callback still has its separate exact result future.
         with self.assertRaisesRegex(RuntimeError,'PICO_STOP_UNCONFIRMED'):
             await self.node.cancel_tool()
@@ -741,7 +770,7 @@ class PicoStopEvidence(unittest.IsolatedAsyncioTestCase,ExecutionFixture):
                 self.services.lease(S(operation='release', lease_id=self.lease.lease_id,
                                       epoch=self.lease.epoch), S())
                 self.update()
-                return S(code='CANCELED')
+                return SessionResult(simulated=True,code='CANCELED')
             self.pending.append((self.clock + delay, result, finish))
         self.node.tool_goal = S(cancel=cancel)
         self.node.tool_result = result

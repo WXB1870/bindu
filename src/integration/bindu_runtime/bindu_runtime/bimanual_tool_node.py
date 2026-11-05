@@ -1,6 +1,8 @@
 """ROS transport for a reusable ToolSession."""
 
 import os
+import json
+from dataclasses import asdict
 from rclpy.action import ActionServer, CancelResponse
 from rclpy.callback_groups import ReentrantCallbackGroup, MutuallyExclusiveCallbackGroup
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
@@ -54,7 +56,7 @@ class BimanualToolNode(RuntimeNode):
             self,
             TeleopAction,
             "teleop/tool_session",
-            execute_callback=session.execute,
+            execute_callback=self.execute,
             goal_callback=session.goal,
             cancel_callback=lambda _: CancelResponse.ACCEPT,
             callback_group=ReentrantCallbackGroup(),
@@ -62,6 +64,21 @@ class BimanualToolNode(RuntimeNode):
 
     def on_mode(self, message):
         self.session.mode_state = message if self.matches_mode(message) else None
+
+    async def execute(self, goal):
+        result = await self.session.execute(goal)
+        code = result.code
+        if result.lease_rejection is not None:
+            # Preserve the standalone Action wire format at the ROS boundary.
+            code = "BIMANUAL_LEASE_NOT_ACQUIRED:" + json.dumps(asdict(result.lease_rejection))
+            if "STOP_UNCONFIRMED" in result.code:
+                code += ":STOP_UNCONFIRMED"
+        return TeleopAction.Result(
+            simulated=result.simulated,
+            success=result.success,
+            code=code,
+            accepted_commands=result.accepted_commands,
+        )
 
     async def pause(self):
         future = Future(executor=self.executor)

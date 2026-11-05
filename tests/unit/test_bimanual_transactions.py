@@ -25,6 +25,8 @@ from bindu_hardware.robot_io.system import RobotIO
 from bindu_teleoperation.bimanual_session import AcceptedReference, BimanualSession, ToolPoseSession, ToolPause
 from bindu_teleoperation.independent_session import IndependentArmsSession
 from bindu_runtime.stop_evidence import stop_feedback_matches
+from bindu_runtime.execution_client import wait_for
+from bindu_runtime.session_operation import LeaseRejection, SessionResult
 
 
 SOURCE = Path(__file__).resolve().parents[2]/'src/integration/bindu_runtime/bindu_runtime/tool_session.py'
@@ -99,7 +101,8 @@ class Rig:
         namespace = dict(time=S(monotonic=lambda:self.steady),json=json,math=__import__('math'),
             __name__='bindu_runtime.bimanual_tool_node',__package__='bindu_runtime',
             reference_tracking_budget=reference_tracking_budget,
-            stop_feedback_matches=stop_feedback_matches,
+            stop_feedback_matches=stop_feedback_matches, wait_for=wait_for,
+            LeaseRejection=LeaseRejection, SessionResult=SessionResult,
             WORKER_POLL_PERIOD=next(ast.literal_eval(n.value) for n in tree.body
                 if isinstance(n,ast.Assign) and any(isinstance(t,ast.Name) and
                     t.id=='WORKER_POLL_PERIOD' for t in n.targets)),
