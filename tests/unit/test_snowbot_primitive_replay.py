@@ -465,6 +465,23 @@ class EmptyPrepareTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'MEASUREMENT_REQUIRED:head_joint_1'):
             plan_prepare(self.library,self.robot,measured)
 
+    def test_in_bounds_impedance_entry_continues_held_reference(self):
+        from unittest.mock import Mock,patch
+        from snowbot_teleop.replay import plan_prepare
+        measured=self.measured();measured['arm_r_joint_4']=-.012
+        reference=dict.fromkeys(NAMES,0.)
+        checker=Mock()
+        with patch('bindu_kinematics.tool_geometry.make_collision_checker',return_value=checker):
+            plan=plan_prepare(self.library,self.robot,measured,reference=reference)
+        self.assertEqual(plan.state(0.),((0.,)*16,(0.,)*16,(0.,)*16))
+        self.assertEqual(plan.start_reference_source,'confirmed_pause')
+        self.assertEqual(plan.measured_start,tuple(measured[n] for n in NAMES))
+        self.assertEqual(checker.call_args.args[0][0]['q'],measured)
+        checker.side_effect=ValueError('SELF_COLLISION')
+        with patch('bindu_kinematics.tool_geometry.make_collision_checker',return_value=checker):
+            with self.assertRaisesRegex(ValueError,'SELF_COLLISION'):
+                plan_prepare(self.library,self.robot,measured,reference=reference)
+
     def test_small_measured_limit_excursion_uses_confirmed_inward_reference(self):
         from unittest.mock import Mock,patch
         from snowbot_teleop.replay import plan_prepare
