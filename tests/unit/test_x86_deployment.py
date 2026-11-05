@@ -6,6 +6,7 @@ from contextlib import redirect_stdout, redirect_stderr
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 from types import SimpleNamespace as NS
 import unittest
@@ -436,6 +437,16 @@ class RuntimeCheckTests(unittest.TestCase):
 
 
 class CspInstallTests(unittest.TestCase):
+    def test_legacy_module_cli_preserves_help_and_argument_errors(self):
+        env = dict(os.environ, PYTHONPATH=os.pathsep.join(sys.path))
+        for arguments, code in ((['--help'], 0), ([], 2)):
+            with self.subTest(arguments=arguments):
+                result = subprocess.run(
+                    [sys.executable, '-m', 'tools.deployment.runtime_check', *arguments],
+                    cwd=x86_real.ROOT, env=env, capture_output=True, text=True)
+                self.assertEqual(result.returncode, code)
+                self.assertIn('--vendor-workspace', result.stdout+result.stderr)
+
     def fixture(self, root):
         fields = {k: v[0] for k, v in runtime_check.CSP_DIAGNOSTIC_FIELDS.items()}
         prefixes = {k: root/'install'/k for k in
