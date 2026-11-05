@@ -140,7 +140,7 @@ from bindu_runtime.simulation_devices import SimulationDevices,PhysicsJoints,Phy
         import ast
         from bindu_runtime.robot_setup import RobotSetup
         from bindu_contracts.runtime_mode import resolve_mode
-        from bindu_runtime.teleop_deployment import TARGET_STREAM_LIMIT_DEFAULTS, target_stream_limits, execution_backend
+        from bindu_runtime.teleop_deployment import TARGET_STREAM_LIMIT_DEFAULTS, target_stream_limits, execution_backend, position_contract_for
         source=package_share('snowbot_bringup')/'snowbot_bringup/assembly.py'
         definition=next(n for n in ast.parse(source.read_text()).body if getattr(n,'name','')=='assemble')
         class Configuration:
@@ -148,7 +148,7 @@ from bindu_runtime.simulation_devices import SimulationDevices,PhysicsJoints,Phy
             def perform(self,context):return context.get(self.name,self.default)
         namespace=dict(Path=Path,json=json,RobotSetup=RobotSetup,resolve_mode=resolve_mode,
             LaunchConfiguration=Configuration,TARGET_STREAM_LIMIT_DEFAULTS=TARGET_STREAM_LIMIT_DEFAULTS,
-            target_stream_limits=target_stream_limits,execution_backend=execution_backend,get_package_share_directory=lambda name:str(package_share(name)),
+            target_stream_limits=target_stream_limits,execution_backend=execution_backend,position_contract_for=position_contract_for,get_package_share_directory=lambda name:str(package_share(name)),
             Node=lambda **values:values,LogInfo=lambda **values:values,IfCondition=lambda value:value,
             ParameterValue=lambda value,**kw:value)
         exec(compile(ast.Module(body=[definition],type_ignores=[]),str(source),'exec'),namespace)

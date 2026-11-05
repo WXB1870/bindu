@@ -371,10 +371,25 @@ class X86DeploymentTests(unittest.TestCase):
 
 
 class RuntimeCheckTests(unittest.TestCase):
+    def test_legacy_simulation_preflight_preserves_its_tool_timing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)
+            robot,package,solver,_,modules=self.native_fixture(root)
+            source=json.loads((package_share('snowbot_bringup')/'config/examples/snowbot/bimanual_snowbot_shovel.json').read_text())
+            robot.tool_config.write_text(json.dumps(source))
+            parameters=root/'parameters.json'
+            parameters.write_text(json.dumps({'teleop':{'input_max_age_s':.3,'command_ttl_s':.35}}))
+            with patch.dict('sys.modules',modules),patch.object(runtime_check.importlib,'import_module',return_value=package):
+                runtime_check.check_runtime(dict(runtime_mode='simulation',parameters_config=str(parameters)),robot)
+            self.assertEqual(solver.call_args.args[0]['input_max_age'],source['input_max_age'])
+            self.assertEqual(solver.call_args.args[0]['command_max_age'],source['command_max_age'])
+
     def native_fixture(self, root):
         from bindu_contracts.profile import Profile
         tool = root/'tool.json'
-        tool.write_text('{}')
+        source=package_share('snowbot_bringup')/'config/robots/snowbot/bimanual_snowbot_real.json'
+        tool.write_bytes(source.read_bytes())
+        (root/'runtime_parameters.json').write_bytes(source.with_name('runtime_parameters.json').read_bytes())
         profile = Profile.load(package_share("snowbot_bringup")/'config/robots/snowbot/snowbot_real_position.json')
         robot = NS(tool_config=tool, urdf=root/'robot.urdf', profile=profile, profile_path=root/'profile.json')
         package = NS(**{name: object() for name in (
@@ -416,7 +431,8 @@ class RuntimeCheckTests(unittest.TestCase):
                 solver.side_effect = ValueError('missing bq_shared_motion_weight') if broken == 'qp' else None
                 with patch.dict('sys.modules', modules), \
                         patch.object(runtime_check.importlib, 'import_module', side_effect=load):
-                    with self.assertRaises((ImportError, ValueError)):
+                    with self.assertRaisesRegex(ImportError if broken=='execution' else ValueError,
+                            'missing _native' if broken=='execution' else 'missing bq_shared_motion_weight'):
                         runtime_check.check_runtime(dict(runtime_mode='real', robot_config='robot.json'), robot)
 
     def test_target_session_requires_wire_type_without_upper_curve_generator(self):

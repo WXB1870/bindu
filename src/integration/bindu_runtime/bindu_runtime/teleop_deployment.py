@@ -29,6 +29,11 @@ EXECUTION.update(TARGET_STREAM_LIMIT_DEFAULTS)
 PATHS = {'profile', 'bimanual_config', 'robot_config', 'cert_file', 'key_file', 'output', 'pico_config', 'gripper_config', 'physics_config', 'base_config', 'parameters_config'}
 
 
+def position_contract_for(tool_config):
+    """Select position execution for the shared, configured robot geometry."""
+    return tool_config.get('simulation_only') is False
+
+
 def execution_backend(runtime_mode, backend='', execution_mode='position'):
     """Resolve the supported execution backend for recipes and launch assembly."""
     if execution_mode not in ('position', 'impedance'):
