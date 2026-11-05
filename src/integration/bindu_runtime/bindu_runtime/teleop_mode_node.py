@@ -34,6 +34,7 @@ class TeleopModeNode(RuntimeNode):
         tool_cfg = json.loads(Path(tool_config).read_text()) if tool_config else {}
         release = self.declare_parameter('grip_release_threshold',.3,descriptor=ParameterDescriptor(read_only=True)).value
         pair_skew = self.declare_parameter('pair_max_skew_s',.02,descriptor=ParameterDescriptor(read_only=True)).value
+        input_age = self.declare_parameter('input_max_age_s', .25, descriptor=ParameterDescriptor(read_only=True)).value
         axial = 'right_axial_grasp' in tool_cfg
         self.declare_parameter('input_source', 'vr')
         input_source = self.get_parameter('input_source').value
@@ -45,7 +46,7 @@ class TeleopModeNode(RuntimeNode):
         self.require_single_worker = self.get_parameter('require_single_worker').value
         self.supported_sides = tuple(self.get_parameter('supported_sides').value)
         self.selection = ModeSelection(self.profile, self.get_parameter('initial_side').value, self.now(),
-                                       grip_release_threshold=release, pair_max_skew_s=pair_skew,
+                                       input_age=input_age, grip_release_threshold=release, pair_max_skew_s=pair_skew,
                                        left_orientation=axial, tool_config=tool_cfg if input_source == 'tool_pose' else None,
                                        require_recording=self.require_recording,
                                        enabled_modes=(('single_arm',) if self.single_arm_enabled else ())+
@@ -88,7 +89,7 @@ class TeleopModeNode(RuntimeNode):
                 msg.mapping or "v34",msg.buttons,tuple(int(v) for v in msg.button_edges),msg.virtual_grip)
         left,right=self.frames.get('left'),self.frames.get('right')
         if (left and right and left.source_id==right.source_id and left.seq==right.seq and
-                abs(left.stamp-right.stamp)<=.02):
+                abs(left.stamp-right.stamp)<=self.selection.pair_max_skew_s):
             # Keep the last complete receiver event while the next side arrives.
             self.paired_frames={'left':left,'right':right}
 
