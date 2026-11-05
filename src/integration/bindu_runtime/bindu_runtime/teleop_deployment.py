@@ -17,20 +17,37 @@ EXECUTION = {'runtime_mode', 'namespace', 'profile', 'device_backend', 'run_id',
              'servo_receiver_node', 'mid_receiver_node'}
 COMMON.update(('gripper_config', 'base_config'))
 COMMON.add('parameters_config')
-COMMON.update(('position_protocol','execution_mode'))
-COMMON.update(('position_contract','physics_config'))
+COMMON.add('execution_mode')
+COMMON.add('physics_config')
 EXECUTION.add('gripper_config')
 EXECUTION.add('parameters_config')
-EXECUTION.update(('position_protocol','execution_mode'))
+EXECUTION.add('execution_mode')
 TARGET_STREAM_LIMIT_DEFAULTS = {'trajectory_max_velocity': .25, 'trajectory_max_acceleration': .5,
-                              'trajectory_max_jerk': 162., 'target_stream_brake_lead_s': .12}
+                              'trajectory_max_jerk': 162.}
 COMMON.update(TARGET_STREAM_LIMIT_DEFAULTS)
 EXECUTION.update(TARGET_STREAM_LIMIT_DEFAULTS)
 PATHS = {'profile', 'bimanual_config', 'robot_config', 'cert_file', 'key_file', 'output', 'pico_config', 'gripper_config', 'physics_config', 'base_config', 'parameters_config'}
 
 
+def position_contract_for(tool_config):
+    """Select position execution for the shared, configured robot geometry."""
+    return tool_config.get('simulation_only') is False
+
+
+def execution_backend(runtime_mode, backend='', execution_mode='position'):
+    """Resolve the supported execution backend for recipes and launch assembly."""
+    if execution_mode not in ('position', 'impedance'):
+        raise ValueError('SNOWBOT_EXECUTION_MODE')
+    if backend == '':
+        backend = 'snowbot_vendor' if runtime_mode == 'real' else 'kinematic'
+    supported = ('snowbot_vendor',) if runtime_mode == 'real' else ('kinematic', 'external_simulation')
+    if backend not in supported or execution_mode == 'impedance' and backend != 'snowbot_vendor':
+        raise ValueError(f'ROBOT_HARDWARE_BACKEND_NOT_IMPLEMENTED:{backend}:{execution_mode}')
+    return backend
+
+
 def target_stream_limits(values):
-    """Startup dynamic ceilings and braking lead; profile limits still apply."""
+    """Startup dynamic ceilings; profile limits still apply."""
     result = {}
     for key, default in TARGET_STREAM_LIMIT_DEFAULTS.items():
         raw = values.get(key, default)
@@ -40,9 +57,6 @@ def target_stream_limits(values):
             value = float('nan')
         if not math.isfinite(value) or value <= 0:
             raise ValueError('SNOWBOT_TARGET_DYNAMIC_LIMIT:'+key)
-        if key == 'target_stream_brake_lead_s' and (
-                value >= .4 or not 0 < round(value*1e9) < 400_000_000):
-            raise ValueError('SNOWBOT_TARGET_BRAKE_LEAD')
         result[key] = value
     return result
 
@@ -63,36 +77,27 @@ def load_deployment(path, share):
     if not execution_only and launch != ('snowbot_sim.launch.py' if version == 1 else 'robot_teleop.launch.py'):
         raise ValueError('TELEOP_DEPLOYMENT_ROBOT_UNSUPPORTED')
     args = data['arguments']
+    if isinstance(args, dict) and 'position_protocol' in args:
+        raise ValueError('SNOWBOT_POSITION_PROTOCOL_REMOVED: session_v3 is fixed; remove position_protocol')
+    if isinstance(args, dict) and 'position_contract' in args:
+        raise ValueError('SNOWBOT_POSITION_CONTRACT_REMOVED: selected by robot tool configuration; remove position_contract')
+    if isinstance(args, dict) and 'target_stream_brake_lead_s' in args:
+        raise ValueError('SNOWBOT_BRAKE_LEAD_MOVED: set execution.target_stream_brake_lead_s in parameters_config')
     allowed = EXECUTION if execution_only else (COMMON if version == 1 else COMMON-{'profile', 'bimanual_config'} | {'robot_config'})
     if not isinstance(args, dict) or set(args)-allowed:
         raise ValueError('TELEOP_DEPLOYMENT_ARGUMENT')
-    if args.get('position_protocol', 'legacy_guard') not in ('legacy_guard', 'session_v1', 'session_v3'):
-        raise ValueError('SNOWBOT_POSITION_PROTOCOL')
     configured_limits = {key: args[key] for key in TARGET_STREAM_LIMIT_DEFAULTS if key in args}
     if configured_limits:
-        if args.get('runtime_mode') != 'real' or args.get('position_protocol') != 'session_v3':
+        if args.get('runtime_mode') != 'real':
             raise ValueError('SNOWBOT_TARGET_LIMITS_REQUIRE_TARGET_STREAM')
         configured_limits = target_stream_limits(configured_limits)
-    execution_mode = args.get('execution_mode', 'position')
-    if execution_mode not in ('position', 'impedance'):
-        raise ValueError('SNOWBOT_EXECUTION_MODE')
-    if execution_mode == 'impedance' and (args.get('runtime_mode') != 'real' or args.get('position_protocol') not in ('session_v1','session_v3')):
-        raise ValueError('IMPEDANCE_REQUIRES_REAL_SESSION')
     required = {'runtime_mode'} if execution_only else ({'profile', 'bimanual_config'} if version == 1 else {'robot_config'})
     if not required <= set(args):
         raise ValueError('TELEOP_DEPLOYMENT_MODEL_REQUIRED')
     if 'runtime_mode' in args and args['runtime_mode'] not in ('simulation', 'real'):
         raise ValueError('RUNTIME_MODE_INVALID')
     selected_mode = resolve_mode(args.get('runtime_mode', 'simulation'))
-    position_contract=args.get('position_contract',False)
-    if type(position_contract) is not bool:
-        raise ValueError('TELEOP_DEPLOYMENT_BOOLEAN:position_contract')
-    if args.get('gripper_config') and selected_mode != 'real' and not position_contract:
-        raise ValueError('GRIPPER_REQUIRES_REAL_MODE')
-    backend = args.get('device_backend', '') if execution_only else args.get('device_backend', 'kinematic')
-    allowed_backends = ('', 'snowbot_vendor') if selected_mode == 'real' else ('', 'kinematic', 'external_simulation')
-    if backend not in allowed_backends:
-        raise ValueError('RUNTIME_MODE_BACKEND_CONFLICT')
+    backend = execution_backend(selected_mode, args.get('device_backend', ''), args.get('execution_mode', 'position'))
     if selected_mode == 'real' and not execution_only and (
             version!=2 or args.get('single_arm_enabled',True)):
         raise ValueError('REAL_REQUIRES_SNOWBOT_BIMANUAL_POSITION')
@@ -100,29 +105,28 @@ def load_deployment(path, share):
         raise ValueError('RECORDER_DISABLED_REQUIRES_OFF')
     if args.get('tool_input_source', 'tool_pose') not in ('vr', 'tool_pose'):
         raise ValueError('TELEOP_DEPLOYMENT_INPUT')
-    if position_contract and (version!=2 or execution_only or backend not in ('kinematic','snowbot_vendor','external_simulation')):
-        raise ValueError('POSITION_CONTRACT_BACKEND')
-    if args.get('physics_config') and (selected_mode!='simulation' or backend!='external_simulation' or not position_contract):
+    if args.get('physics_config') and (selected_mode!='simulation' or backend!='external_simulation'):
         raise ValueError('PHYSICS_REQUIRES_SIMULATION_POSITION_BACKEND')
-    if args.get('pico_enabled', False) and (args.get('tool_input_source') != 'vr' or
-            (backend != 'kinematic' and not position_contract)):
+    if args.get('pico_enabled', False) and args.get('tool_input_source') != 'vr':
         raise ValueError('PICO_REQUIRES_KINEMATIC_VR')
     if args.get('base_config') and (version != 2 or not args.get('pico_enabled') or
-            not args.get('vr_enabled') or not position_contract):
+            not args.get('vr_enabled')):
         raise ValueError('BASE_REQUIRES_PICO_POSITION_VR')
     if 'pico_simulation_demo' in args and type(args['pico_simulation_demo']) is not bool:
         raise ValueError('TELEOP_DEPLOYMENT_BOOLEAN:pico_simulation_demo')
-    if args.get('pico_simulation_demo',False) and (position_contract or not args.get('pico_enabled',False) or
+    if args.get('pico_simulation_demo',False) and (not args.get('pico_enabled',False) or
             selected_mode!='simulation' or backend!='kinematic'):
         raise ValueError('PICO_DEMO_REQUIRES_KINEMATIC_SIMULATION')
     if args.get('recording_mode', 'compact') not in ('off', 'compact', 'normal'):
         raise ValueError('TELEOP_DEPLOYMENT_RECORDING')
-    result = {'runtime_mode': selected_mode} if execution_only else {
-        'runtime_mode': selected_mode, 'tool_input_source': 'tool_pose', 'vr_enabled': 'false',
+    result = {'runtime_mode': selected_mode, 'device_backend': backend} if execution_only else {
+        'runtime_mode': selected_mode, 'device_backend': backend, 'tool_input_source': 'tool_pose', 'vr_enabled': 'false',
         'initialize_tool_pose': 'false'}
     if version == 2 and not execution_only:
         del result['initialize_tool_pose']
     for key, value in args.items():
+        if key == 'device_backend':
+            continue
         if key in configured_limits:
             result[key] = str(configured_limits[key])
             continue
@@ -186,16 +190,14 @@ def configuration_snapshot(path, share, *, effective_arguments=None):
             'sources': sources, 'sha256': fingerprint}
 
 
-def apply_execution_tracking(config, mode='position', *, real, position_contract,
-                             trajectory_reference=False):
+def apply_execution_tracking(config, mode='position', *, trajectory_reference=False):
     """Select nominal tracking unless measured-task tracking is explicit."""
     if mode not in ('position', 'impedance'):
         raise ValueError('SNOWBOT_EXECUTION_MODE')
     if mode == 'position' and not trajectory_reference:
         return config
-    if not real or not position_contract or config.get('reference_kinematics') is not True:
-        raise ValueError(('TRAJECTORY' if mode=='position' else 'IMPEDANCE')+
-                         '_REQUIRES_REAL_NOMINAL_KINEMATICS')
+    if config.get('reference_kinematics') is not True:
+        raise ValueError('NOMINAL_KINEMATICS_REQUIRED')
     selected = {**config, 'tracking_feedback': (config['tracking_feedback'] if
         mode == 'position' and config.get('tracking_feedback') in ('measured_task','measured_shared') else 'reference')}
     if mode == 'impedance':

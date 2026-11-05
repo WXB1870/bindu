@@ -50,8 +50,7 @@ PICO协调器管理准备、夹爪请求与控制权交接；旧模拟入口使�
 
 | 协议 | 曲线与参考职责 |
 |---|---|
-| `legacy_guard`／`session_v1` | 委托已有底层的位置跟随，不从通用执行器推定曲线导数或到达时间 |
-| `session_v3` | 上层只发送16轴联合目标及原身份／期限，与servo的`position_reference_mode=target_stream`配对；servo后台复用`PreparedSegment`生成曲线，原周期统一采样，普通发送和PAUSE不等待接纳回执 |
+| `session_v3` | 上层只发送16轴联合目标及原身份／期限，servo固定使用`reference_mode=2`；servo后台复用`PreparedSegment`生成曲线，原周期统一采样，普通发送和PAUSE不等待接纳回执 |
 
 `rigid_reference`的连续目标先保留原刚性预测。仅当其前100 ms采样预测某轴领先目标、沿投影趋势运动却即将反向时，才尝试新接续：将趋势与有界位置纠偏投影到相对位姿约束的切空间，再由当前参考速度／加速度积分生成候选终点。候选须通过原动态限值、全段几何门槛及返回实际目标的有限尾段检查；另以4 ms间隔比较其前100 ms与原刚性曲线的相对位姿误差，复用原P95检查的10 μm／10 μrad绝对裕量择优。新接续不可行时保留原刚性预测，诊断为`accepted_absolute_fallback`；无须修正时为`accepted_absolute`。这不是全程单调或实体握持保证，真实输入反向及PAUSE／期限／实测停稳语义保持原契约。
 
@@ -115,11 +114,24 @@ ROS_LOCALHOST_ONLY=1 ROS_DOMAIN_ID=209 python3 -m tests.integration.validate_exe
 
 `describe()`导出每个真实片段的`(start, duration, source_duration, source_elapsed, controls[axis])`；位置控制点采用Bernstein基，每轴4个（cubic）或6个（quintic）。`source_duration==0`时按`elapsed/duration`求值，否则按`(elapsed+source_elapsed)/source_duration`保留原曲线裁剪区间。`from_description(description, limits)`只在非实时侧重建导数、核验片段时间／`q/v/a`接续、动态限制及最终静止条件，不拟合、重排或重定时。轴序、源身份、原期限、时钟异常和真实停止确认由调用方管理；取样、派生帧和心跳沿用原期限。机器人实际到达由设备实测反馈判定。Python同名类提供`target`／`stop`／`describe`／`from_description`／`sample_into`。
 
-`session_v3`是纯位置目标流协议（wire 5、reference 2、目标配方version 2）。上层退休曲线发送及跨层提前量配置；旧`session_v2`配方拒绝加载。目标轴序为左臂J1～J7、右臂J1～J7、腰部J1～J2，单位rad；动态界逐轴取profile与发送端只读启动参数`trajectory_max_velocity`（默认0.25 rad/s）、`trajectory_max_acceleration`（默认0.5 rad/s²）及`trajectory_max_jerk`（默认162 rad/s³）的较小值。消息同时保留session、源command／lease／epoch／profile身份、sequence、源时间及原始期限；中层只透传，派生帧、接纳、采样和心跳不续期。普通目标原始TTL最多300 ms（旧follower／trajectory及阻抗普通目标仍为200 ms）；纯目标流PAUSE作为独立停止命令，由源端一次生成固定2 s原始期限，须在该期限内完成制动参考并转入固定保持，不续期旧目标或授权恢复运动。旧follower／trajectory及阻抗PAUSE仍最多200 ms；新停止命令须与更新后的三层配对。
+`session_v3`是位置目标流协议（wire 5、reference 2、目标配方version 2）。上层退休曲线发送及跨层提前量配置；旧协议及`position_protocol`选择字段均拒绝加载。目标轴序为左臂J1～J7、右臂J1～J7、腰部J1～J2，单位rad；动态界逐轴取profile与发送端只读启动参数`trajectory_max_velocity`（默认0.25 rad/s）、`trajectory_max_acceleration`（默认0.5 rad/s²）及`trajectory_max_jerk`（默认162 rad/s³）的较小值。消息同时保留session、源command／lease／epoch／profile身份、sequence、源时间及原始期限；中层只透传，派生帧、接纳、采样和心跳不续期。普通目标原始TTL最多400 ms；纯目标流PAUSE作为独立停止命令，由源端一次生成固定2 s原始期限，须在该期限内完成制动参考并转入固定保持，不续期旧目标或授权恢复运动。停止命令须与更新后的三层配对。
+
+协议收敛后的维护职责如下，不另建会话管理器。
+
+| 事实 | 唯一维护位置 |
+|---|---|
+| 租约、epoch、revision和命令接纳 | Bindu `executor.py`；委托执行及最终停止判定在`delegated_position.py` |
+| 原始来源、源时间、固定有效期、单调session/sequence | Snowbot `session.py::SourceEnvelope`创建；三层复用`position_session_contract.h::Gate`校验，透传不续期 |
+| 实测PDO、WKC、采样进度和新鲜度 | `session.py::SessionHealth`及`position_session.py`，不以目标或ACK补反馈 |
+| 迟到结果隔离 | `position_trajectory.h::TrajectoryAdmission/ServoAdmissionState`与servo原线程提交；上层QP沿用`bimanual_tool_node.py`事务隔离 |
+| PAUSE身份、保持点、停止确认 | `position_session.py`绑定请求，`SessionHealth`解释回执，`DelegatedPositionExecutor`确认实测停止，上层核对原执行实例／租约epoch |
+
+`session_v3`协议、`reference_mode=2`和目标配方version分别维护：普通目标／PAUSE用version 2，显式刚性预测用version 3，准备曲线及心跳保留version 4/5。位置与阻抗属于执行方式；本配套软件支持position与impedance，由后端装配选择；现场已部署版本须另行成套迁移。
+
 
 servo在非实时后台从已采用名义轨迹的未来`q/v/a`快照调用`tracking_target`生成共同时间的联合曲线。速度趋势由相邻已提交目标及原始源时间差估计，避免投递／接纳抖动进入导数；采用40 ms导数平滑并限制在逐轴速度帽的80%，为追赶保留余量。这不是上层QP直接提供的速度，也不再滤波目标位置。普通接续将趋势叠加200 ms响应尺度的位置误差修正；非零趋势下，误差修正最多将其降至一半，避免参考超前后被位置修正拉成反向终点。终点位置由当前及终点速度／加速度的Hermite积分确定，较长连接缩小终点速度，终点距原目标最多为逐轴速度帽对应的200 ms位移；随后接回原目标的有限静止尾段。整段解析认证位置／速度／加速度／急动度，保持C2；这不保证任何初始状态下整段速度绝不反向，真实输入反向仍正常规划。运动连接从100 ms规划时域起搜索可行曲线（不是先等待100 ms）；动态或有限返回尾段不可行时仍回退原`target`。不再以未来40 ms位置误差比较将已可行的运动趋势切回静止终点。首次目标、重复位置、超过100 ms或不足5 ms的源间隔、PAUSE与重新接管清除趋势。消息、原有效期和停止判据不变；周期线程只验证版本、期限及接续条件后切换，拒绝或迟到结果不更新趋势历史。
 
-普通在途生成不因更新取消，待处理普通目标只保留最新一份；PAUSE及控制权／故障边界使旧结果失效，仍调用原`stop`。首次从失能接管用新鲜实测播种；已带电暂停后的重新接管延续原固定参考，避免跟随偏差变成参考跳变，正常更新不逐帧用实测重置。周期采样不规划、不分配或释放内存；共同时间不承诺任意换目标的共同标量进度、闭链几何或jerk连续。旧整段轨迹入口和`stream_target`公共接口仍保留。此处描述本机源码，现场仍须核对选定版本是否已构建并加载。
+普通在途生成不因更新取消，待处理普通目标只保留最新一份；PAUSE及控制权／故障边界使旧结果失效，仍调用原`stop`。首次从失能接管用新鲜实测播种；已带电暂停后的重新接管延续原固定参考，避免跟随偏差变成参考跳变，正常更新不逐帧用实测重置。周期采样不规划、不分配或释放内存；共同时间不承诺任意换目标的共同标量进度、闭链几何或jerk连续。准备回放的定时曲线及通用`stream_target`数学接口仍保留。此处描述本机源码，现场仍须核对选定版本是否已构建并加载。
 
 纯位置PAUSE在原期限内完成制动参考后，由servo复用本地固定参考保持；不再接收运动点也不因2 s到期撤使能。原source时间与期限保持不变，仅继续新鲜的本地采样，普通运动断流及反馈／Fault／撤权／采样超时保护保留。Bindu仍先核对同一PAUSE的有效保持回执，再要求100 ms内新鲜、持续推进的实测满足原速度界及固定实测锚点的位置变化界；名义到位误差单独诊断，不作为target_stream暂停停稳的前提。停稳确认要求回执有效、速度合规且窗口内位置稳定，原停止总预算保持不变。下发保持、实测停稳与运动目标到达分别判定。
 
@@ -203,6 +215,6 @@ python3 -m tools.analysis.compare_interpolators --legacy-root reference/source-a
 | 手柄位姿滤波 | 共用Snowbot配方已启用One Euro；普通双臂分别滤波手柄，扫雪滤波合成中点／姿态。按键与时效使用原始输入，参数及重置规则见[遥操作模块](../../capabilities/bindu_teleoperation/README.md#vr-位姿-one-euro-滤波) |
 | 共享位置执行 | `DelegatedPositionExecutor.prepare_path`保留直接位置目标，不调用通用执行器的原生自适应／S曲线生成；该路径的插值方式由实际执行入口决定，profile中的`joint_target_interpolation=adaptive`在此处不生效 |
 | 当前PhysX设备 | 腰与双臂共用一个限速向量进度，生成一致的位置／速度参考；实际关节由物理驱动跟随，头部与夹爪独立 |
-| 真实设备 | `legacy_guard/session_v1`委托底层跟随；`session_v3`由servo后台生成联合曲线并统一采样，实际配置和同步性能仍需按现场记录与实测核对 |
+| 真实设备 | 固定`session_v3`由servo后台生成联合曲线并统一采样，实际配置和同步性能仍需按现场记录与实测核对 |
 
 原有插值路径仍由通用`Executor`使用；`PreparedSegment`供`session_v3`执行侧非实时生成复用，见[snowbot_position_session.py](../../../../../snowbot/src/snowbot_hardware/snowbot_hardware/position_session.py)。软件接入与现场已加载版本、真实周期及停止验收分别核对。输入滤波保持独立。

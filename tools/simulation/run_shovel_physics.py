@@ -779,7 +779,7 @@ def main():
             sys.path.insert(0,str(ROOT/'src'/package))
         from bindu_runtime.teleop_deployment import apply_execution_tracking
         policy=apply_execution_tracking(json.loads(args.impedance_reference_config.read_text()),
-            'impedance',real=True,position_contract=True,trajectory_reference=True)
+            'impedance',trajectory_reference=True)
         cfg['max_joint_error_rad']=policy['max_reference_error']
         cfg['joint_reference_error_limits']=policy.get('joint_reference_error_limits',{})
         cfg['max_target_lead_error_rad']=policy.get('max_target_lead_error',policy['max_reference_error'])

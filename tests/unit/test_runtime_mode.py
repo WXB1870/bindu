@@ -77,7 +77,7 @@ class RuntimeModeTests(unittest.TestCase):
             self.assertTrue(all(a['parameters'][0]['runtime_mode'] == mode for a in actions))
             self.assertEqual(actions[1]['parameters'][0]['device_backend'], backend)
             context.launch_configurations['device_backend'] = 'snowbot_vendor' if mode == 'simulation' else 'kinematic'
-            with self.assertRaisesRegex(ValueError, 'BACKEND_CONFLICT'): module.assemble(context)
+            with self.assertRaisesRegex(ValueError, 'BACKEND_NOT_IMPLEMENTED'): module.assemble(context)
 
     def test_mixed_state_and_command_are_not_written_to_real_recording(self):
         node = RecorderNode.__new__(RecorderNode)
@@ -100,7 +100,7 @@ class RuntimeModeTests(unittest.TestCase):
         self.assertEqual(args['runtime_mode'], 'simulation')
         self.assertEqual(args['command_enabled'], 'false')
         self.assertEqual(args['recording_mode'], 'compact')
-        self.assertNotIn('device_backend', args)
+        self.assertEqual(args['device_backend'], 'kinematic')
 
     def test_unknown_partial_duplicate_and_nonfinite_velocities_are_not_rest(self):
         self.assertTrue(joints_at_rest(S(name=['j'],velocity=[0.]),['j']))

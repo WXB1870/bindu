@@ -32,7 +32,7 @@ class PositionSessionTests(unittest.TestCase):
         self.health = SessionHealth(lambda: self.now, lambda: self.steady)
         for layer in ('upper', 'middle', 'servo'):
             self.health.state(layer, S(header=S(stamp=S(sec=10, nanosec=0)), layer=layer,
-                startup_complete=True, feedback_ready=True, instance_id=12, wire_version=3,
+                startup_complete=True, feedback_ready=True, instance_id=12, wire_version=5, reference_mode=2,
                 control_source='topic' if layer == 'upper' else 'position',
                 stop_policy='disable_no_load' if layer == 'servo' else 'servo_owned'))
         self.health.observe(observation())
@@ -58,18 +58,18 @@ class PositionSessionTests(unittest.TestCase):
     def test_old_unordered_wire_versions_are_rejected_before_control(self):
         for layer in ('upper', 'middle', 'servo'):
             state = self.health.states[layer][1]
-            for version in (2, 4):
+            for version in (0, 1, 2, 3, 4):
                 state.wire_version = version
                 with self.assertRaisesRegex(RuntimeError, 'SESSION_PROTOCOL_CONFLICT:'+layer):
                     self.health.require(CONTROL_GROUPS, acquiring=True)
-            state.wire_version = 3
+            state.wire_version = 5
 
     def test_executor_republication_and_lease_heartbeat_cannot_renew_source(self):
         source = SourceEnvelope(11, lambda: self.now)
         motion = self.motion()
         first = source.command(motion)
         self.assertEqual(first['operation'], 1)
-        self.assertEqual(first['expires_at_ns']-first['source_stamp_ns'], 200_000_000)
+        self.assertEqual(first['expires_at_ns']-first['source_stamp_ns'], 250_000_000)
         for _ in range(30):
             self.now += .001
             self.assertIsNone(source.command(motion))
@@ -92,10 +92,10 @@ class PositionSessionTests(unittest.TestCase):
     def test_epoch_nanoseconds_do_not_round_ttl_above_protocol_limit(self):
         self.now = 1_792_567_890.1234567
         packet = SourceEnvelope(1, lambda: self.now).command(self.motion())
-        self.assertEqual(packet['expires_at_ns']-packet['source_stamp_ns'], 200_000_000)
+        self.assertEqual(packet['expires_at_ns']-packet['source_stamp_ns'], 250_000_000)
 
     def test_target_stream_pause_has_own_fixed_stop_deadline(self):
-        source = SourceEnvelope(11, lambda: self.now, target_stream=True)
+        source = SourceEnvelope(11, lambda: self.now)
         motion = self.motion(valid_for=.4)
         ordinary = source.command(motion)
         self.now += .01
@@ -106,15 +106,13 @@ class PositionSessionTests(unittest.TestCase):
         self.now += .02
         self.assertIsNone(source.command(motion))
         self.assertEqual(pause['expires_at_ns'], pause['source_stamp_ns']+2_000_000_000)
-        legacy = SourceEnvelope(12, lambda: self.now).command(None, pause=True)
-        self.assertEqual(legacy['expires_at_ns']-legacy['source_stamp_ns'], 200_000_000)
 
     def test_target_stream_ttl_uses_original_source_and_never_extends_short_commands(self):
         for stamp in (10., 1_792_567_890.1234567):
             for valid_for, ttl in ((.15, 150_000_000), (.4, 400_000_000), (.5, 400_000_000)):
                 with self.subTest(stamp=stamp, valid_for=valid_for):
                     self.now = stamp+.1
-                    source = SourceEnvelope(11, lambda: self.now, target_stream=True)
+                    source = SourceEnvelope(11, lambda: self.now)
                     motion = self.motion(stamp=stamp, valid_for=valid_for)
                     packet = source.command(motion)
                     self.assertEqual(packet['source_stamp_ns'], round(stamp*1e9))
@@ -286,15 +284,24 @@ class PauseHandoffTests(unittest.TestCase):
         self.q['arm_l_joint_2'], self.q['arm_r_joint_2'] = .2, -.2
         self.q['body_joint_1'], self.q['body_joint_2'] = .12, -.08
         self.devices = d = PositionSessionDevices.__new__(PositionSessionDevices)
+        from snowbot_hardware.parameters import load_parameters
+        d.runtime_parameters = load_parameters()
         d.node = S(now=lambda: self.now)
         d.graph = d.node  # GraphSnapshot is exercised separately with a controllable clock.
         d.health = SessionHealth(lambda: self.now, lambda: self.steady)
         d.envelopes = SourceEnvelope(11, d.node.now)
-        d.arm_type = lambda: S(meta=S(), command=S())
+        d.arm_type = lambda: S(meta=S(), command=S(), trajectory=S(effective_at_ns=0,
+            piece_start=[], duration=[], source_duration=[], source_elapsed=[], control_count=[], controls=[]))
+        d.trajectory_limits = dict(trajectory_max_velocity=.25, trajectory_max_acceleration=.5)
+        d.sent, d.target_instance, d.source_identity, d.target_fault = {}, None, None, ''
+        d.applied_sequence = 0
+        d.takeover_pending = d.takeover_previous_hold = None
+        d.node.event = Mock(); d.node.get_logger = Mock()
         d.publishers = {'arms': Mock()}
         d.check_ready = lambda groups: d.check_health(groups, acquiring=True)
         self.io = d.io = PositionSessionIO(self.profile, d.send, d.node.now, command_enabled=True,
                                          check_ready=d.check_ready, check_health=d.check_health)
+        self.io.source_motion = None
         self.io.after_capture = d.new_session
         self.io.pause_feedback = d.health.confirmed_hold
         self.update(); self.update()
@@ -305,7 +312,7 @@ class PauseHandoffTests(unittest.TestCase):
         d = self.devices
         for layer in ('upper', 'middle', 'servo'):
             d.health.state(layer, S(header=observation(self.now).header, layer=layer, instance_id=12,
-                startup_complete=True, feedback_ready=True, wire_version=3, control_source='topic' if layer=='upper' else 'position',
+                startup_complete=True, feedback_ready=True, wire_version=5, reference_mode=2, control_source='topic' if layer=='upper' else 'position',
                 stop_policy='measured_hold'))
         msg = observation(self.now, pdo_sample=self.sample,
                           position=[self.q[n] for n in SLOTS], speed=[velocity]*20)
@@ -315,6 +322,8 @@ class PauseHandoffTests(unittest.TestCase):
             msg.session, msg.command_sequence, msg.boot_id = session, sequence, boot
             msg.session_selected, msg.session_reason, msg.hold_valid = True, 1, True
             msg.hold_sample, msg.hold_position = baseline, list(hold)
+            msg.reference_mode=2;msg.segment_id=sequence;msg.trajectory_phase=4
+            msg.hold_basis=0;msg.reference_valid=msg.output_valid=True
         for key, value in changes.items(): setattr(msg, key, value)
         q, v, stamp = d.health.observe(msg)
         self.io.observe(q, v, stamp, self.now, sample=msg.pdo_sample)
@@ -331,7 +340,7 @@ class PauseHandoffTests(unittest.TestCase):
         self.devices.advance_session()
         self.engine.halt(self.now, revoke=True)
         self.assertTrue(self.engine.stopping)
-        return [self.io.stop_targets[n] for n in CONTROL_NAMES]
+        return [self.q[n] for n in CONTROL_NAMES]
 
     def test_delayed_pause_ack_still_needs_actual_position_and_velocity(self):
         hold = self.start_stop()
@@ -1029,7 +1038,7 @@ class TargetWireTests(unittest.TestCase):
 
     def test_configured_braking_lead_keeps_original_source_deadline(self):
         self.production_readiness()
-        self.d.trajectory_limits['target_stream_brake_lead_s'] = .1
+        self.d.runtime_parameters['execution']['target_stream_brake_lead_s'] = .1
         motion = self.source_motion()
         engine = self.rig.engine
         engine.submit(motion, self.rig.now); engine.tick(self.rig.now)
@@ -1231,7 +1240,7 @@ class TargetWireTests(unittest.TestCase):
         def declare(key, default, descriptor):
             descriptors[key] = descriptor; parameters.setdefault(key, default)
             return S(value=parameters[key])
-        node = S(runtime_mode='real', snowbot_execution_mode='position', snowbot_reference_mode=2,
+        node = S(runtime_mode='real', snowbot_execution_mode='position', snowbot_reference_mode=2, _parameter_overrides={},
             now=lambda: 10., declare_parameter=declare, get_parameter=lambda key: S(value=parameters[key]),
             create_subscription=Mock(), create_publisher=Mock(), create_service=Mock())
         modules['std_srvs.srv']=S(Trigger=object)
@@ -1253,7 +1262,9 @@ class TargetWireTests(unittest.TestCase):
         self.assertNotIn('trajectory_fast_receipt', descriptors)
         self.assertIn('/bindu/position/servo_receipt', [call.args[1] for call in node.create_subscription.call_args_list])
         self.assertEqual(created.trajectory_limits, dict(trajectory_max_velocity=.25,
-            trajectory_max_acceleration=.5, trajectory_max_jerk=162., target_stream_brake_lead_s=.12))
+            trajectory_max_acceleration=.5, trajectory_max_jerk=162.))
+        self.assertNotIn('target_stream_brake_lead_s', descriptors)
+        self.assertEqual(created.runtime_parameters['execution']['target_stream_brake_lead_s'], .12)
         for key in created.trajectory_limits:
             self.assertTrue(descriptors[key].read_only)
         parameters.update(trajectory_max_velocity=.4, trajectory_max_acceleration=.8,
@@ -1261,13 +1272,16 @@ class TargetWireTests(unittest.TestCase):
         with patch.dict('sys.modules', modules):
             configured = PositionSessionDevices(node, self.rig.profile)
             self.assertEqual(configured.trajectory_limits, dict(trajectory_max_velocity=.4,
-                trajectory_max_acceleration=.8, trajectory_max_jerk=259.2, target_stream_brake_lead_s=.12))
+                trajectory_max_acceleration=.8, trajectory_max_jerk=259.2))
             for key in configured.trajectory_limits:
                 for invalid in (0., -1., float('nan'), float('inf'), True):
                     parameters[key] = invalid
                     with self.subTest(key=key, invalid=invalid), self.assertRaisesRegex(ValueError, 'TARGET_DYNAMIC_LIMIT'):
                         PositionSessionDevices(node, self.rig.profile)
                 parameters[key] = configured.trajectory_limits[key]
+            node._parameter_overrides['target_stream_brake_lead_s']=.12
+            with self.assertRaisesRegex(ValueError,'BRAKE_LEAD_MOVED'):
+                PositionSessionDevices(node,self.rig.profile)
         node.create_publisher.assert_not_called()
 
     def test_configurable_limits_preserve_each_axis_profile_and_pause_deadline(self):
@@ -1718,7 +1732,7 @@ class DelayedFeedbackPauseTests(unittest.TestCase):
         self.fixture = TargetWireTests()
         self.fixture.setUp()
         self.d = self.fixture.d
-        self.d.envelopes = SourceEnvelope(11, self.d.node.now, target_stream=True)
+        self.d.envelopes = SourceEnvelope(11, self.d.node.now)
         self.d.node.count_publishers = lambda topic: int(topic == '/bindu/position/command')
         self.d.receivers.update(arms='upper', middle='middle')
         self.d.check_ready = lambda groups: PositionSessionDevices.check_ready(self.d, groups)
