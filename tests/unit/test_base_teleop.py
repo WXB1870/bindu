@@ -109,6 +109,17 @@ class BaseTests(unittest.TestCase):
                 self.assertFalse(self.base.armed)
                 self.assertFalse(self.base.neutral)
 
+    def test_remote_pair_skew_uses_oldest_axis_for_freshness(self):
+        for tolerance, skew, accepted in ((0., .04, False), (.05, .04, True),
+                                         (.05, .051, False)):
+            base = BaseTeleop(self.cfg, pair_max_skew_s=tolerance)
+            left, right = self.pair()
+            right = replace(right, stamp=self.now-skew)
+            base.ingest(left, right, self.now, self.now)
+            self.assertEqual(base.seq == left.seq, accepted)
+            if accepted:
+                self.assertEqual(base.input_stamp, right.stamp)
+
     def test_replayed_input_does_not_renew_expiry_or_rearm(self):
         pair = self.pair()
         self.base.ingest(*pair, self.now, self.now)

@@ -24,7 +24,7 @@ class VRInputClockTests(unittest.TestCase):
         from snowbot_teleop.control import PICO_MAPPING
         pose=(1.,0.,0.,0.,0.,1.,0.,0.,0.,0.,1.,0.,0.,0.,0.,1.)
         packets=[];published=[]
-        owner=S(last_poll=None,poll_delay_max=0.,last_frame=None,input_clock_offset=None,
+        owner=S(input_gap_warning_s=.1,last_poll=None,poll_delay_max=0.,last_frame=None,input_clock_offset=None,
                 run_id='clock-test',runtime_mode='simulation',emit_health=Mock(),
                 receiver=S(poll_health=lambda:[],poll=lambda:packets.pop(0)),
                 publisher=S(publish=published.append),now=Mock(side_effect=lambda:wall[0]+next(delays)))
@@ -155,19 +155,22 @@ class ControllerWebSocketTests(unittest.IsolatedAsyncioTestCase):
         class Vuer:
             def __init__(self,**kw):self.ws={'offline':ws};self.handlers={};apps.append(self)
             def add_handler(self,name,fn):self.handlers[name]=fn
-            def spawn(self,*a,**kw):pass
+            def spawn(self,fn,**kw):self.display=fn
             def run(self):pass
         vuer=ModuleType('vuer');vuer.Vuer=Vuer
         schemas=ModuleType('vuer.schemas')
-        schemas.MotionControllers=schemas.Scene=schemas.Grid=object
+        schemas.MotionControllers=schemas.Scene=schemas.Grid=S
         font=ModuleType('PIL.ImageFont');font.load_default=lambda **kw:S(font_bytes=b'font')
         pil=ModuleType('PIL');pil.ImageFont=font
         output=queue.Queue(2);health=queue.Queue(128)
         with patch.dict('sys.modules',{'vuer':vuer,'vuer.schemas':schemas,'PIL':pil,'PIL.ImageFont':font}):
             _serve(dict(host='127.0.0.1',port=0,cert_file=None,key_file=None,side='both',
-                mapping='pico_snowbot_v1', remote_input_timeout_s=1.),output,queue.Queue(1),health)
+                mapping='pico_snowbot_v1', remote_input_timeout_s=1., controller_fps=45),output,queue.Queue(1),health)
             self.assertTrue(apps,list(output.queue))
             app=apps[0];handler=app.handlers['CONTROLLER_MOVE'];session=S(CURRENT_WS_ID='offline')
+            scenes=[]
+            await app.display(S(CURRENT_WS_ID='scene-only',set=scenes.append))
+            self.assertEqual(scenes[0].bgChildren[-1].fps,45)
             state=dict(squeezeValue=0.,triggerValue=0.,aButton=False,bButton=False,thumbstick=False)
             event=S(value=dict(left=np.eye(4).ravel().tolist(),right=np.eye(4).ravel().tolist(),
                 leftState=state,rightState=state))
@@ -235,6 +238,9 @@ class ControllerTimingTests(unittest.TestCase):
             report=probe.observe(sample(seq*16.,seq),50.+seq*.016,10.+seq*.016,'source',seq)
             self.assertIsNone(window.observe(report))
         gap=probe.observe(sample(1616.,101),51.766,11.766,'source',101)
+        remote = TransportWindow(gap_warning_s=1.)
+        self.assertIsNone(remote.observe(gap))
+        self.assertEqual(remote.observe(dict(gap, server_controller_interval_s=1.1))['phase'], 'gap')
         before=window.observe(gap)
         self.assertEqual([r['seq'] for r in before['samples']],list(range(93,102)))
         self.assertEqual(before['phase'],'gap')

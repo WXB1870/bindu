@@ -318,7 +318,9 @@ def _serve(config, output, feedback, health):
         loop_delay = 0.
         from .timing import ControllerTiming, TransportWindow
         controller_timing = ControllerTiming()
-        transport_window = TransportWindow()
+        input_gap_warning_s = config.get('input_gap_warning_s', .1)
+        transport_window = TransportWindow(input_gap_warning_s)
+        controller_fps = config.get('controller_fps', 60 if config.get('mapping') == 'pico_snowbot_v1' else 30)
         health_overflows = 0
 
         def emit_health(report):
@@ -339,7 +341,7 @@ def _serve(config, output, feedback, health):
             emit_health(dict(stamp=now,source_id=identity,seq=seq,
                 event_interval_s=gap,event_loop_delay_max_s=loop_delay,
                 websocket_clients=len(app.ws),last_event_stamp=last_event,
-                controller_fps=60 if config.get('mapping')=='pico_snowbot_v1' else 30,
+                controller_fps=controller_fps,
                 socket=controller_socket_status(controller_sockets.get(id(app.ws.get(owner.CURRENT_WS_ID)))) if owner else {},
                 stage='websocket_handler',stamp_semantics='server_report_wall_clock',
                 last_event_stamp_semantics='controller_handler_entry_wall_clock'))
@@ -395,7 +397,7 @@ def _serve(config, output, feedback, health):
             if window:emit_health(window)
             gap=now-last_event if last_event is not None else None
             last_event=now
-            if now-last_report>=1. or gap is not None and gap>.1:report_health(now,gap)
+            if now-last_report>=1. or gap is not None and gap>input_gap_warning_s:report_health(now,gap)
             sides = ('left', 'right') if config['side'] == 'both' else (config['side'],)
             frames = [replace(decode_controller(event.value, side, identity, seq, now,
                 config.get("mapping", "v34")),**head) for side in sides]
@@ -430,7 +432,7 @@ def _serve(config, output, feedback, health):
             session.set(Scene(camPosition=[0., 1., 2.], camRotation=[0., 0., 0.],
                 bgChildren=[Grid(key='default-grid'),
                             MotionControllers(stream=True, key='motionControllers', left=True, right=True,
-                                fps=60 if config.get('mapping')=='pico_snowbot_v1' else 30)]))
+                                fps=controller_fps)]))
             render_error = ''
             render_key = None
             loop_probe = asyncio.create_task(monitor_loop(session))

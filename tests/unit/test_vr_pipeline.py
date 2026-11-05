@@ -296,7 +296,7 @@ class VuerPipeline(unittest.IsolatedAsyncioTestCase):
             receiver.poll_health=lambda:[]
             node=actual_poller(clock)
             node.receiver=receiver;node.last_poll=None;node.poll_delay_max=0.
-            node.last_frame=None;node.input_clock_offset=None
+            node.last_frame=None;node.input_clock_offset=None;node.input_gap_warning_s=.1
             node.run_id,node.runtime_mode='offline','simulation'
             node.now=lambda:100.
             node.input_timing=InputPipelineTiming()

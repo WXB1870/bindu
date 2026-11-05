@@ -44,6 +44,12 @@ class VRInputNode(RuntimeNode):
             cfg[key] = self.get_parameter(key).value
         if not 0 <= cfg['trigger_release_threshold'] < cfg['trigger_press_threshold'] <= 1 or not 0 <= cfg['grip_release_threshold'] < 1:
             raise ValueError('VR_INPUT_THRESHOLDS')
+        cfg['controller_fps'] = self.declare_parameter(
+            'controller_fps', 60 if cfg['mapping'] == 'pico_snowbot_v1' else 30,
+            descriptor=ParameterDescriptor(read_only=True)).value
+        self.input_gap_warning_s = self.declare_parameter(
+            'input_gap_warning_s', .1, descriptor=ParameterDescriptor(read_only=True)).value
+        cfg['input_gap_warning_s'] = self.input_gap_warning_s
         cfg['remote_input_timeout_s'] = self.declare_parameter(
             'remote_input_timeout_s', 0., descriptor=ParameterDescriptor(read_only=True)).value
         self.declare_parameter('input_timing_enabled',False,descriptor=ParameterDescriptor(read_only=True))
@@ -136,7 +142,7 @@ class VRInputNode(RuntimeNode):
         first=frame[0] if isinstance(frame,tuple) else frame
         if self.last_frame and self.last_frame.source_id==first.source_id:
             gap=first.stamp-self.last_frame.stamp
-            if gap>.1 or first.seq-self.last_frame.seq>1:
+            if gap>self.input_gap_warning_s or first.seq-self.last_frame.seq>1:
                 self.emit_health(dict(
                     run_id=self.run_id,runtime_mode=self.runtime_mode,stage='ros_input_publish',
                     stamp=time.time(),source_id=first.source_id,seq=first.seq,
