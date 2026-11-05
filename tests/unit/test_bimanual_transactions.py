@@ -16,7 +16,7 @@ from unittest.mock import Mock
 import numpy as np
 from bindu_contracts.contracts import Motion
 from bindu_contracts.profile import Profile
-from bindu_contracts.teleoperation import VRFrame, reference_tracking_budget
+from bindu_contracts.teleoperation import VRFrame, reference_tracking_budget, joint_reference_limits
 from bindu_execution.executor import Executor, Rejected
 from bindu_contracts.runtime_mode import command_mode
 from bindu_hardware.drivers.simulated_joints import SimJointDriver
@@ -95,6 +95,7 @@ class Rig:
         namespace = dict(time=S(monotonic=lambda:self.steady),json=json,math=__import__('math'),
             __name__='bindu_runtime.bimanual_tool_node',__package__='bindu_runtime',
             reference_tracking_budget=reference_tracking_budget,
+            joint_reference_limits=joint_reference_limits,
             stop_feedback_matches=stop_feedback_matches,
             WORKER_POLL_PERIOD=next(ast.literal_eval(n.value) for n in tree.body
                 if isinstance(n,ast.Assign) and any(isinstance(t,ast.Name) and
@@ -683,6 +684,32 @@ class BimanualTransactions(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(diagnostic['admission']['reference_basis'],'executed')
         self.assertGreater(diagnostic['admission']['target_lead_rad'],.15)
         self.assertLess(diagnostic['admission']['reference_lead_rad'],.15)
+
+    async def test_named_arm_compliance_preserves_shared_joint_guard_at_admission(self):
+        for axis,offset,allowed in ((2,.20,True),(0,.16,False),(2,.27,False)):
+            with self.subTest(axis=axis):
+                rig=Rig();rig.node.trajectory_reference=True
+                rig.node.cfg['joint_reference_error_limits']={'l':.25,'r':.25}
+                async def held_reference(lease,revision):return (0.,0.,0.)
+                rig.node.held_reference=held_reference
+                original_update=rig.update
+                def update():
+                    original_update()
+                    at=rig.clock-.001;positions=[0.,0.,0.]
+                    if rig.commands:positions[axis]=offset
+                    rig.node.state.reference=S(name=list(rig.node.names),position=positions,
+                        header=S(stamp=S(sec=int(at),nanosec=round((at-int(at))*1e9))))
+                    if len(rig.commands)>=2:rig.goal.is_cancel_requested=True
+                rig.update=update
+                result=await rig.run()
+                if allowed:
+                    self.assertGreaterEqual(len(rig.commands),2,result.code)
+                    diagnostic=json.loads([e[1] for e in rig.events if e[0]=='BIMANUAL_QP_RESULT'][-1])['admission']
+                    self.assertEqual(diagnostic['joint_hard_limits_rad'],{'w':.15,'l':.25,'r':.25})
+                    self.assertAlmostEqual(diagnostic['reserve_rad'],.12)
+                else:
+                    self.assertEqual(len(rig.commands),1,result.code)
+                    self.assertIn('REFERENCE_TRACKING_ERROR',result.code)
 
     def empty_bootstrap_rig(self, mode='bimanual_tool', mask=3, *, publish_after_first=True):
         rig=Rig();rig.node.trajectory_reference=True;rig.node.mode_state.mode=mode

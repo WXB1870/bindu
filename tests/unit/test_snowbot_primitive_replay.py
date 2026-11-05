@@ -21,17 +21,21 @@ class FakePort:
         self.late = False
         self.clock_shift = 0.
         self.acquire_failure = False
+        self.acquired_at = None
     def steady(self): return self.now
     def ros(self): return 100.+self.now+self.clock_shift
+    def feedback_stamp(self): return 100.+self.now
+    def elapsed(self): return 0. if self.acquired_at is None else self.now-self.acquired_at
     def wait_until(self, due):
         self.now = max(self.now, due)
         if self.late: self.now += .1
     def check(self, owned):
         if self.fail_after is not None and len(self.sent) >= self.fail_after:
             raise RuntimeError('STALE_FEEDBACK')
-        q = self.plan.sample(self.now)
+        q = self.plan.sample(self.elapsed())
         return dict(zip(NAMES, q)), dict.fromkeys(NAMES, 0.)
     def acquire(self):
+        self.acquired_at = self.now
         if self.acquire_failure: raise RuntimeError('ACQUIRE_ACK_TIMEOUT')
     def renew(self): pass
     def send(self, q, source): self.sent.append((self.now, source, tuple(q)))
@@ -71,12 +75,12 @@ class PrimitiveReplayTests(unittest.TestCase):
         for kind in ('late', 'clock'):
             p = self.plan()
             port = FakePort(p)
-            if kind == 'late': port.wait_until = lambda due: setattr(port, 'now', due+.3)
+            if kind == 'late': port.wait_until = lambda due: setattr(port, 'now', due+(.3 if port.acquired_at is not None else 0.))
             else:
                 original = port.wait_until
                 def shifted(due):
                     original(due)
-                    port.clock_shift = .3
+                    if port.acquired_at is not None: port.clock_shift = .3
                 port.wait_until = shifted
             with self.assertRaisesRegex(RuntimeError, 'STREAM_LATE|CLOCK_CHANGED'):
                 run_replay(p, port)
@@ -89,10 +93,10 @@ class PrimitiveReplayTests(unittest.TestCase):
         wait = port.wait_until
         def delayed(due):
             wait(due)
-            if not port.sent: port.now += .06
+            if port.acquired_at is not None and not port.sent: port.now += .06
         port.wait_until = delayed
         self.assertTrue(run_replay(p, port)['completed'])
-        self.assertEqual(port.sent[0][1], 100.)
+        self.assertEqual(port.sent[0][1], 100.+port.acquired_at)
         self.assertTrue(all(t-(source-100.) < .25 for t,source,_ in port.sent))
 
     def test_partial_acquire_still_cleans_up(self):
@@ -206,11 +210,30 @@ class PackagedLibraryTests(unittest.TestCase):
         cls.manifest = json.loads(cls.library.read_text())
 
     def test_fast_timing_has_no_unvalidated_waist_phase_shift(self):
-        for action, duration in (('Push', 5.745), ('SideScoop', 12.530), ('Flip', 8.085)):
+        for action, previous_duration in (('Push', 11.5), ('SideScoop', 8.9), ('Flip', 16.18)):
             with self.subTest(action=action):
                 plan = load_replay(self.library, action)
                 self.assertEqual(plan.waist_lead_s, 0.)
-                self.assertAlmostEqual(plan.duration, duration, places=6)
+                self.assertLess(plan.duration, previous_duration)
+                self.assertGreaterEqual(plan.duration, previous_duration/2)
+
+    def test_final_fifty_hz_derivatives_and_independent_return_routes(self):
+        from snowbot_bringup.teleop.snowbot_primitive_replay import plan_from_current
+        for action in self.manifest['actions'] | self.manifest['transfers']:
+            plan = load_replay(self.library, action)
+            self.assertEqual(len(plan.times), len(plan.velocities))
+            self.assertTrue(all(abs(b-a-.02)<1e-8 for a,b in zip(plan.times,plan.times[1:])))
+            for k in range(0,len(plan.times),17):
+                q,v,a = plan.state(plan.times[k])
+                for actual,expected in ((q,plan.points[k]),(v,plan.velocities[k]),(a,plan.accelerations[k])):
+                    self.assertLess(max(abs(x-y) for x,y in zip(actual,expected)),1e-7)
+        for node,route in (('Dump:end',('DumpReturn',)),('Flip:start',('ScoopReturn',))):
+            plan = plan_from_current(self.library,'Home',dict(zip(NAMES,self.manifest['nodes'][node])))
+            self.assertEqual(plan.route,route)
+            self.assertTrue(plan.trajectory_knots())
+        for node in ('Push:start','Push:end','SideScoop:start','Dump:end'):
+            with self.assertRaisesRegex(RuntimeError,'REQUIRES_COMPLETED_SIDE_SCOOP'):
+                plan_from_current(self.library,'Flip',dict(zip(NAMES,self.manifest['nodes'][node])))
 
     def test_all_packaged_paths_keep_the_upright_shoulder_branch(self):
         for action in self.manifest['actions'] | self.manifest['transfers']:
@@ -219,6 +242,15 @@ class PackagedLibraryTests(unittest.TestCase):
                 shoulder = plan.names.index('arm_r_joint_1')
                 self.assertLess(max(abs(q[shoulder]) for q in plan.points), math.pi/3)
 
+    def test_packaged_waist_participates_under_the_reported_delay_assumption(self):
+        self.assertEqual(self.manifest['waist_response_assumption']['delay_s'], .1)
+        plans = [load_replay(self.library, action)
+                 for action in self.manifest['actions'] | self.manifest['transfers']]
+        for i, name in enumerate(NAMES[:2]):
+            with self.subTest(joint=name):
+                positions = [q[i] for plan in plans for q in plan.points]
+                self.assertGreater(max(positions)-min(positions), math.radians(1))
+
     def test_prepare_configuration_uses_library_home_as_single_source(self):
         config = json.loads((self.config/'teleop.json').read_text())
         self.assertNotIn('prepare_positions_rad', config)
@@ -226,14 +258,18 @@ class PackagedLibraryTests(unittest.TestCase):
             self.assertNotIn('prepare_positions_rad', config['modes'][mode])
         home = self.manifest['nodes'][self.manifest['home_node']]
         self.assertEqual(len(home), len(NAMES))
-        self.assertEqual(tuple(home), load_replay(self.library, self.manifest['home_node'].split(':')[0]).points[0])
+        self.assertLess(max(abs(a-b) for a,b in zip(home, load_replay(self.library, self.manifest['home_node'].split(':')[0]).points[0])),1e-12)
 
     def test_packaged_paths_fit_the_runtime_profile(self):
         from bindu_contracts.profile import Profile
         profile = Profile.load(self.config/'snowbot_real_position.json')
         for action in self.manifest['actions'] | self.manifest['transfers']:
             with self.subTest(action=action):
-                load_replay(self.library, action).validate_profile(profile)
+                plan = load_replay(self.library, action)
+                plan.validate_profile(profile)
+                for i, name in enumerate(NAMES):
+                    self.assertLessEqual(max(abs(v[i]) for v in plan.velocities), .85*profile.speed(name)+1e-6)
+                    self.assertLessEqual(max(abs(a[i]) for a in plan.accelerations), .85*profile.acceleration(name)+1e-6)
 
     def test_arm_speed_limit_is_uniform_and_matches_the_target_stream(self):
         from bindu_contracts.profile import Profile
@@ -251,7 +287,8 @@ class PackagedLibraryTests(unittest.TestCase):
         for source in ('Push', 'SideScoop', 'Flip'):
             node = self.manifest['actions'][source]['end_node']
             current = dict(zip(NAMES, self.manifest['nodes'][node]))
-            for action in ('Push', 'SideScoop', 'Flip', 'Home'):
+            for action in (('Push', 'SideScoop', 'Flip', 'Home') if source == 'SideScoop'
+                           else ('Push', 'SideScoop', 'Home')):
                 with self.subTest(source=source, action=action):
                     plan = plan_from_current(self.library, action, current)
                     self.assertLess(max(abs(a-b) for a, b in zip(
@@ -274,10 +311,11 @@ class PrimitiveTransitionTests(unittest.TestCase):
             ('BridgeForward','Push:start','SideScoop:start'),('BridgeReverse','SideScoop:start','Push:start'),
             ('ScoopPrefix','SideScoop:start','Flip:start'),('ScoopPrefixReverse','Flip:start','SideScoop:start'),
             ('Flip','Flip:start','Dump:end'),('FlipReverse','Dump:end','Flip:start'),
-            ('SideScoop','SideScoop:start','Dump:end')]
+            ('SideScoop','SideScoop:start','Flip:start')]
         m = dict(schema_version=1,validation_passed=True,transition_validation_passed=True,
-            backend_ready=True,tool_id='g099-curved',kinematic_sha256='kin',waist_lead_s=.02,
-            home_node='SideScoop:start',nodes=nodes,actions={},transfers={},edges=[])
+            tool_id='g099-curved',kinematic_sha256='kin',waist_lead_s=.02,
+            home_node='SideScoop:start',preparation={'goal_node':'Push:start'},
+            nodes=nodes,actions={},transfers={},edges=[])
         for name,a,b in definitions:
             x=dict(schema_version=1,mode='joint_target',runtime_mode='real',joint_names=list(NAMES),
                    resource_groups=list(GROUPS),period_s=.02,valid_for_s=.25,start_q_rad=nodes[a],
@@ -295,7 +333,8 @@ class PrimitiveTransitionTests(unittest.TestCase):
             path,m=self.fixture(Path(d))
             for source in ('Push','SideScoop','Flip'):
                 current=dict(zip(NAMES,m['nodes'][m['actions'][source]['end_node']]))
-                for action in ('Push','SideScoop','Flip','Home'):
+                for action in (('Push','SideScoop','Flip','Home') if source == 'SideScoop'
+                               else ('Push','SideScoop','Home')):
                     with self.subTest(source=source,action=action):
                         p=plan_from_current(path,action,current)
                         self.assertEqual(p.points[0],tuple(current[n] for n in NAMES))
@@ -319,7 +358,28 @@ class PrimitiveTransitionTests(unittest.TestCase):
 
 
 class InteractiveReplayTests(unittest.TestCase):
-    def test_numbered_menu_executes_three_actions_with_separate_logs(self):
+    def test_dispatch_does_not_require_a_manual_backend_ready_flag(self):
+        from contextlib import redirect_stderr
+        from io import StringIO
+        from unittest.mock import patch
+        import snowbot_bringup.teleop.snowbot_primitive_replay as module
+        for flag in (None, False):
+            with self.subTest(flag=flag), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                library, manifest = PrimitiveTransitionTests().fixture(root)
+                if flag is None:
+                    manifest.pop('backend_ready', None)
+                else:
+                    manifest['backend_ready'] = flag
+                library.write_text(json.dumps(manifest))
+                with patch.object(module, 'execute') as execute, redirect_stderr(StringIO()):
+                    module.main(['--library', str(library), '--action', 'Push',
+                                 '--from-node', 'Push:start', '--execute',
+                                 '--tool-id', 'g099-curved', '--output', str(root/'run.jsonl')])
+                execute.assert_called_once()
+                self.assertEqual(execute.call_args.args[1].route, ('Push',))
+
+    def test_staged_menu_executes_actions_and_returns_with_separate_logs(self):
         from contextlib import redirect_stdout
         from io import StringIO
         from unittest.mock import patch
@@ -327,14 +387,14 @@ class InteractiveReplayTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory)
             library,_=PrimitiveTransitionTests().fixture(root)
-            with patch('builtins.input',side_effect=['invalid','1','2','3','q']), \
+            with patch('builtins.input',side_effect=['invalid','1','','2','3','','q']), \
                     patch.object(module,'execute') as execute,redirect_stdout(StringIO()):
                 module.main(['--library',str(library),'--interactive','--execute',
                     '--execution-mode','position','--tool-id','g099-curved',
                     '--output-dir',str(root/'logs')])
-            self.assertEqual([c.args[0].action for c in execute.call_args_list],['Push','SideScoop','Flip'])
+            self.assertEqual([c.args[0].action for c in execute.call_args_list],['Push','PushReverse','SideScoop','Flip','Home'])
             outputs=[c.args[0].output for c in execute.call_args_list]
-            self.assertEqual(len(set(outputs)),3)
+            self.assertEqual(len(set(outputs)),5)
             self.assertTrue(all(p.parent==root/'logs' for p in outputs))
             self.assertTrue(all(c.args[0].execution_mode=='position' for c in execute.call_args_list))
 
@@ -368,7 +428,7 @@ class EmptyPrepareTests(unittest.TestCase):
     def measured(self):
         return dict.fromkeys((n for group in self.robot.profile.groups.values() for n in group),0.)
 
-    def test_empty_entry_reaches_side_ready_and_retains_reference_margin(self):
+    def test_empty_entry_reaches_configured_ready_and_retains_reference_margin(self):
         from dataclasses import replace
         from unittest.mock import Mock,patch
         from snowbot_bringup.teleop.snowbot_primitive_replay import plan_prepare
@@ -376,11 +436,13 @@ class EmptyPrepareTests(unittest.TestCase):
         with patch('bindu_kinematics.tool_geometry.make_collision_checker',return_value=checker) as factory:
             plan=plan_prepare(self.library,self.robot,self.measured())
         self.assertEqual(plan.points[0],(0.,)*16)
-        expected=load_replay(self.library,'SideScoop').points[0]
+        manifest=json.loads(self.library.read_text())
+        expected=tuple(manifest['nodes'][manifest['preparation']['goal_node']])
         self.assertLess(max(abs(a-b) for a,b in zip(expected,plan.points[-1])),1e-12)
         self.assertEqual(plan.reference_margin_rad,.027453292519943294)
         self.assertTrue(plan.empty_prepare)
-        self.assertGreaterEqual(plan.duration,30.)
+        self.assertGreaterEqual(plan.duration,2.)
+        self.assertLess(plan.duration,30.)
         self.assertFalse(factory.call_args.kwargs['tool_present'])
         checked = checker.call_args.args[0]
         self.assertGreater(len(checked), 2)
@@ -423,6 +485,16 @@ class EmptyPrepareTests(unittest.TestCase):
                                     for row in plan.points for n,q in zip(NAMES,row)))
                 self.assertTrue(all(a[joint]>=b[joint] for a,b in
                     zip((x['q'] for x in samples),(x['q'] for x in samples[1:]))))
+                port=FakePort(plan);check=port.check
+                port.nominal_reference=lambda:dict(zip(NAMES,plan.sample(port.now)))
+                def compliant(owned):
+                    q,v=check(owned);q[joint]+=excursion
+                    return q,v
+                port.check=compliant
+                result=run_replay(plan,port,execution_mode='impedance')
+                self.assertTrue(result['completed'] and result['stop_confirmed'])
+                self.assertTrue(all(self.robot.profile.limits[joint][0]<=q[NAMES.index(joint)]<=0.
+                                    for _,_,q in port.sent))
 
     def test_limit_recovery_rejects_larger_excursion_or_unconfirmed_reference(self):
         from unittest.mock import Mock,patch

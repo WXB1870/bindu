@@ -31,29 +31,31 @@ def pdo():
 class WaistTests(unittest.TestCase):
 
     def test_scurve_has_cruise_and_obeys_requested_dynamics(self):
-        plan = waist.make_scurve_plan(45., .35, 2., 20.)
-        self.assertGreater(plan.cruise, 0.)
-        for value, expected in zip(plan.dynamic_bounds, (.35, 2., 20.)):
-            self.assertAlmostEqual(value, expected)
-        start = plan.dwell+2*plan.ramp+plan.acceleration_hold
-        q, v, a = plan.sample(start+plan.cruise/2)
-        self.assertAlmostEqual(v, .35)
-        self.assertAlmostEqual(a, 0.)
-        previous = plan.sample(0.)
-        for k in range(1, math.ceil(plan.duration/.001)+1):
-            current = plan.sample(k*.001)
-            self.assertLessEqual(abs(current[0]), math.pi/4+1e-10)
-            self.assertLessEqual(abs(current[1]), .35+1e-10)
-            self.assertLessEqual(abs(current[2]), 2.+1e-10)
-            self.assertLessEqual(abs(current[2]-previous[2])/.001, 20.+1e-7)
-            self.assertLessEqual(abs(current[0]-previous[0])/.001, .35+1e-6)
-            previous = current
-        for k, expected in enumerate((plan.amplitude, 0., -plan.amplitude, 0.)):
-            t = plan.dwell+k*(plan.move_seconds+plan.dwell)+plan.move_seconds
-            q, v, a = plan.sample(t)
-            self.assertAlmostEqual(q, expected)
-            self.assertAlmostEqual(v, 0.)
-            self.assertAlmostEqual(a, 0.)
+        for degrees, speed, acceleration, jerk in ((45., .35, 2., 20.), (90., 1., 3., 100.)):
+            with self.subTest(degrees=degrees, speed=speed):
+                plan = waist.make_scurve_plan(degrees, speed, acceleration, jerk)
+                self.assertGreater(plan.cruise, 0.)
+                for value, expected in zip(plan.dynamic_bounds, (speed, acceleration, jerk)):
+                    self.assertAlmostEqual(value, expected)
+                start = plan.dwell+2*plan.ramp+plan.acceleration_hold
+                q, v, a = plan.sample(start+plan.cruise/2)
+                self.assertAlmostEqual(v, speed)
+                self.assertAlmostEqual(a, 0.)
+                previous = plan.sample(0.)
+                for k in range(1, math.ceil(plan.duration/.001)+1):
+                    current = plan.sample(k*.001)
+                    self.assertLessEqual(abs(current[0]), math.radians(degrees)+1e-10)
+                    self.assertLessEqual(abs(current[1]), speed+1e-10)
+                    self.assertLessEqual(abs(current[2]), acceleration+1e-10)
+                    self.assertLessEqual(abs(current[2]-previous[2])/.001, jerk+1e-7)
+                    self.assertLessEqual(abs(current[0]-previous[0])/.001, speed+1e-6)
+                    previous = current
+                for k, expected in enumerate((plan.amplitude, 0., -plan.amplitude, 0.)):
+                    t = plan.dwell+k*(plan.move_seconds+plan.dwell)+plan.move_seconds
+                    q, v, a = plan.sample(t)
+                    self.assertAlmostEqual(q, expected)
+                    self.assertAlmostEqual(v, 0.)
+                    self.assertAlmostEqual(a, 0.)
 
     def test_short_scurve_reports_reduced_peak_without_inventing_cruise(self):
         plan = waist.make_scurve_plan(.1, .35, 2., 20.)
@@ -255,7 +257,7 @@ class WaistTests(unittest.TestCase):
                 self.assertAlmostEqual(a, 0.)
 
     def test_invalid_or_unreviewed_envelope_refused(self):
-        for values in ((0.,), (float('nan'),), (46.,), (3., .376), (3., .05, 2.251), (3., .05, .25, 163.)):
+        for values in ((0.,), (float('nan'),), (90.001,), (3., 1.001), (3., .05, 3.001), (3., .05, .25, 163.)):
             with self.subTest(values=values), self.assertRaises(ValueError):
                 make_plan(*values)
 
@@ -308,7 +310,9 @@ class WaistTests(unittest.TestCase):
             output = targets(plan, t, initial, limits)
             self.assertAlmostEqual(output['body_joint_1'], offset)
             self.assertTrue(all(output[n] == initial[n] for n in NAMES if n != 'body_joint_1'))
-        initial['arm_r_joint_2'] = limits['arm_r_joint_2'][1]+.0001
+        initial['arm_r_joint_2'] = limits['arm_r_joint_2'][1]+.0005
+        self.assertEqual(targets(plan, 0., initial, limits)['arm_r_joint_2'], limits['arm_r_joint_2'][1])
+        initial['arm_r_joint_2'] = limits['arm_r_joint_2'][1]+.0011
         with self.assertRaisesRegex(ValueError, 'TEST_POSITION_LIMIT:arm_r_joint_2'):
             targets(plan, 0., initial, limits)
 

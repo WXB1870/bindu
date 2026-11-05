@@ -23,6 +23,39 @@ CONFIG = package_share('snowbot_bringup')/'config'
 
 
 class SnowbotAdapterTests(unittest.TestCase):
+    def test_prepared_replay_heartbeats_keep_one_validated_curve_and_source_deadlines(self):
+        self.io.supports_prepared_replay = True
+        self.io.source_motion = None
+        lease, epoch = self.acquire()
+        names = tuple(n for group in ('left_arm', 'right_arm') for n in GROUPS[group])
+        q0 = tuple(self.q[n] for n in names)
+        q1 = (q0[0]+.01, *q0[1:])
+        zero = (0.,)*len(names)
+        motion = Motion('curve', lease, epoch, self.profile.digest, 'test', '',
+            'prepared_trajectory', '', self.now, .25, names=names, offsets=(.12, 1.12),
+            points=(q0,q1), velocities=(zero,zero), accelerations=(zero,zero),
+            schema_version=2, resource_groups=('left_arm','right_arm'), runtime_mode='real')
+        self.engine.submit(motion,self.now)
+        prepared = self.io.prepared_replay
+        from bindu_execution.interpolation import PreparedSegment
+        curve = PreparedSegment.from_description(self.profile,names,prepared.description)
+        # Independent quintic expectation, not an endpoint-only equality.
+        self.assertAlmostEqual(curve.sample(.25).q[0]-q0[0], .01*.103515625)
+        self.assertAlmostEqual(curve.sample(.25).v[0], .01*1.0546875)
+        self.now += .02
+        heartbeat = replace(motion, command_id='beat', observation_id='curve', stamp=self.now,
+                            mode='trajectory_heartbeat',points=(),offsets=(),velocities=(),accelerations=())
+        with patch('bindu_execution.delegated_position.PreparedReplay.create',side_effect=AssertionError('refit')):
+            self.engine.submit(heartbeat,self.now)
+        self.assertIs(self.io.prepared_replay,prepared)
+        self.assertIs(self.io.source_motion,heartbeat)
+        with self.assertRaisesRegex(Rejected,'IDENTITY'):
+            self.engine.submit(replace(heartbeat,command_id='bad',observation_id='other'),self.now)
+        self.assertEqual(self.engine.active.command_id,'beat')
+        with self.assertRaisesRegex(Rejected,'VENDOR_TARGET_TIME|EXPIRED|STALE|INVALID_LEASE'):
+            self.engine.submit(replace(heartbeat,command_id='late'),self.now+.25)
+        self.assertFalse(self.engine.lease_id)  # Tick/watchdog revokes the expired source.
+
     def setUp(self):
         self.profile = Profile.load(package_share("snowbot_bringup")/'config/examples/snowbot/snowbot_vendor_position.json')
         self.now = 10.

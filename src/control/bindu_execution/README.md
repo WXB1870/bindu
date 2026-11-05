@@ -40,7 +40,7 @@ ros2 launch bindu_runtime skeleton.launch.py runtime_mode:=simulation recording_
 
 ## 扫雪位置执行
 
-- 当前统一Snowbot VR位置契约使用`DelegatedPositionExecutor`，直接交目标给选定位置设备；准备、普通双臂及扫雪共用该接口。上层仅接纳非定时`joint_target`；底层参考生成方式由具体设备协议与对应装配决定。滤波和插值的实际路径见[下表](#当前snowbot-vr链路的滤波与插值)。
+- 当前统一Snowbot VR位置契约使用`DelegatedPositionExecutor`，直接交目标给选定位置设备；准备、普通双臂及扫雪共用该接口。连续输入接纳非定时`joint_target`；支持定时会话的设备还可接纳预先校验的`prepared_trajectory/prepared_entry`，通过`trajectory_heartbeat`沿用原曲线并更新来源有效期。底层参考生成方式由具体设备协议与对应装配决定。滤波和插值的实际路径见[下表](#当前snowbot-vr链路的滤波与插值)。
 - 旧`tool_pose`运动学装配仍可使用通用`Executor`及`snowbot_shovel_sim.json`的同步插值；该路径与当前统一位置契约分别由装配选择，实际算法以装配后的执行路径为准。
 - 换握、暂停和取消依赖新鲜实测反馈确认停稳。停稳确认要求反馈新鲜且速度有效；停止超时锁存未确认状态并阻止新接管。
 

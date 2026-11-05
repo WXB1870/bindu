@@ -5,7 +5,7 @@ import time
 from pathlib import Path
 import numpy as np
 from ament_index_python.packages import get_package_prefix
-from bindu_contracts.teleoperation import reference_tracking_budget, tool_grasp_mode
+from bindu_contracts.teleoperation import reference_tracking_budget, joint_reference_limits, tool_grasp_mode
 
 
 ABI_VERSION = 1
@@ -100,6 +100,14 @@ class BimanualQP:
             raise ValueError('BIMANUAL_COUPLED_LOCKED_JOINTS_CONFIG: unknown active joint')
         self.max_interval = float(config.get('max_integration_interval', .1))
         self.max_reference_error = float(config.get('max_reference_error', .15))
+        self.joint_reference_error_limits = config.get('joint_reference_error_limits',{})
+        joint_reference_limits(self.names,self.max_reference_error,self.joint_reference_error_limits)
+        self.max_target_lead_error = config.get('max_target_lead_error', self.max_reference_error)
+        if (isinstance(self.max_target_lead_error, bool) or
+                not isinstance(self.max_target_lead_error, (int, float)) or
+                not math.isfinite(self.max_target_lead_error) or
+                not 0 < self.max_target_lead_error <= self.max_reference_error):
+            raise ValueError('BIMANUAL_TARGET_LEAD_LIMIT_CONFIG')
         self.measured_limit_tolerance=float(config.get('measured_joint_limit_tolerance_rad',0.))
         if not math.isfinite(self.measured_limit_tolerance) or not 0<=self.measured_limit_tolerance<=math.pi:
             raise ValueError('BIMANUAL_MEASURED_LIMIT_TOLERANCE_CONFIG')
@@ -388,7 +396,7 @@ class BimanualQP:
                 raise ValueError('BIMANUAL_REFERENCE_LAYOUT')
             if not self.reference_kinematics:
                 raise ValueError('BIMANUAL_CAPTURE_REQUIRES_REFERENCE_KINEMATICS')
-            if np.max(np.abs(reference-positions))>self.max_reference_error:
+            if np.any(np.abs(reference-positions)>self._reference_error_limits()):
                 raise ValueError('BIMANUAL_REFERENCE_TRACKING_ERROR')
             self._check_measured_limits(positions)
             anchor_q=q.copy()
@@ -753,6 +761,10 @@ class BimanualQP:
                     lower_rad=float(lo),upper_rad=float(hi),
                     violation_rad=float(max(lo-value,value-hi)))
 
+    def _reference_error_limits(self):
+        return np.asarray(joint_reference_limits(self.names,self.max_reference_error,
+            getattr(self,'joint_reference_error_limits',{})))
+
     def capture_independent(self, feedback, *, reference=None, preserve_rigid_grasp=False):
         self.captured=False;self.independent_abi()
         q=self._q(feedback);poses=np.empty((2,4,4),dtype=np.float64)
@@ -761,7 +773,7 @@ class BimanualQP:
             reference=np.asarray(reference,dtype=float)
             if reference.shape!=measured.shape or not np.isfinite(reference).all():
                 raise ValueError('BIMANUAL_REFERENCE_LAYOUT')
-            if np.max(np.abs(reference-measured))>self.max_reference_error:
+            if np.any(np.abs(reference-measured)>self._reference_error_limits()):
                 raise ValueError('BIMANUAL_REFERENCE_TRACKING_ERROR')
             self._check_measured_limits(measured)
             q=q.copy();q[[self.model_names.index(n) for n in self.names]]=reference
@@ -800,10 +812,10 @@ class BimanualQP:
             if reference.shape!=measured.shape or not np.isfinite(reference).all():
                 raise ValueError('BIMANUAL_REFERENCE_LAYOUT')
             self._check_measured_limits(measured)
-            tracking_error,budgets=reference_tracking_budget(tuple(reference),tuple(measured),
-                self.max_reference_error,executed=getattr(self,'execution_reference',None),reserve_fraction=.6)
-            if tracking_error>self.max_reference_error:
-                raise ValueError('BIMANUAL_REFERENCE_TRACKING_ERROR')
+            hard_limits=self._reference_error_limits()
+            _,budgets=reference_tracking_budget(tuple(reference),tuple(measured),
+                float(max(hard_limits)),executed=getattr(self,'execution_reference',None),reserve_fraction=.6,
+                target_limit=getattr(self,'max_target_lead_error',self.max_reference_error),joint_limits=tuple(hard_limits))
             if self.tracking_feedback in ('reference', 'measured_task', 'measured_shared'):
                 q = q.copy()
                 q[[self.model_names.index(n) for n in self.names]] = reference
@@ -836,7 +848,7 @@ class BimanualQP:
                 lo,hi=self.limits[n]
                 if not lo<=new<=hi or abs(new-old)>self.speed[n]*dt+1e-6:
                     raise ValueError('BIMANUAL_POSITION_LIMIT:'+n)
-            output_limits=reserve+1e-9 if getattr(self,'execution_reference',None) is not None else self.max_reference_error
+            output_limits=reserve+1e-9 if getattr(self,'execution_reference',None) is not None else hard_limits
             if np.any(np.abs(out-measured)>output_limits):
                 raise ValueError('BIMANUAL_REFERENCE_TRACKING_ERROR')
             geometry_at=time.perf_counter()
@@ -895,10 +907,10 @@ class BimanualQP:
             raise ValueError('BIMANUAL_REFERENCE_LAYOUT')
         measured = np.array([feedback[n] for n in self.names])
         self._check_measured_limits(measured)
-        tracking_error,budgets=reference_tracking_budget(tuple(reference),tuple(measured),
-            self.max_reference_error,executed=getattr(self,'execution_reference',None),reserve_fraction=.6)
-        if tracking_error > self.max_reference_error:
-            raise ValueError('BIMANUAL_REFERENCE_TRACKING_ERROR')
+        hard_limits=self._reference_error_limits()
+        _,budgets=reference_tracking_budget(tuple(reference),tuple(measured),
+            float(max(hard_limits)),executed=getattr(self,'execution_reference',None),reserve_fraction=.6,
+            target_limit=getattr(self,'max_target_lead_error',self.max_reference_error),joint_limits=tuple(hard_limits))
         measured_tool = None
         if self.reference_kinematics:
             measured_tool = np.empty((4,4), dtype=np.float64)
@@ -1007,7 +1019,7 @@ class BimanualQP:
             out = reference+scale*delta
             metrics[2] *= scale
         output_limits=(np.asarray(budgets)+1e-9 if getattr(self,'execution_reference',None) is not None
-                       else self.max_reference_error)
+                       else hard_limits)
         if np.any(np.abs(out-measured) > output_limits):
             raise ValueError('BIMANUAL_REFERENCE_TRACKING_ERROR')
         for name, old, new in zip(self.names, reference, out):

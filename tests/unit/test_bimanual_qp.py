@@ -127,6 +127,33 @@ class ExecutedReferenceTrackingTests(unittest.TestCase):
             with self.subTest(executed=executed),self.assertRaisesRegex(ValueError,'REFERENCE_TRACKING_ERROR'):
                 self.solve(reference,measured,executed,reference)
 
+    def test_larger_compliance_envelope_does_not_increase_candidate_advance(self):
+        qp=self.solver(.03,0.,(.02,),.12)
+        qp.max_reference_error=.22;qp.max_target_lead_error=.1
+        out,_=qp.solve_independent({'r':0.},np.array([np.eye(4),np.eye(4)]),
+                                  active_mask=2,reference=(.03,),dt=.1)
+        self.assertAlmostEqual(out[0],.6*.1)
+        # A pre-existing safe displacement may remain while outward advance is zero.
+        qp=self.solver(.18,0.,(.17,),.19)
+        qp.max_reference_error=.22;qp.max_target_lead_error=.1
+        out,metrics=qp.solve_independent({'r':0.},np.array([np.eye(4),np.eye(4)]),
+                                       active_mask=2,reference=(.18,),dt=.1)
+        self.assertAlmostEqual(out[0],.18)
+        self.assertEqual(metrics[2],0.)
+
+    def test_named_arm_bound_keeps_waist_guard_and_candidate_budget(self):
+        qp=self.solver(.21,0.,(.20,),.22)
+        qp.joint_reference_error_limits={'r':.25}
+        out,_=qp.solve_independent({'r':0.},np.array([np.eye(4),np.eye(4)]),
+                                  active_mask=2,reference=(.21,),dt=.1)
+        self.assertAlmostEqual(out[0],.21)  # Existing displacement cannot grow.
+        qp=self.solver(.21,0.,(.251,),.21);qp.joint_reference_error_limits={'r':.25}
+        with self.assertRaisesRegex(ValueError,'REFERENCE_TRACKING_ERROR'):
+            qp.solve_independent({'r':0.},np.array([np.eye(4),np.eye(4)]),active_mask=2,reference=(.21,),dt=.1)
+        # A shared/waist joint without an override still fails at the original .15.
+        with self.assertRaisesRegex(ValueError,'REFERENCE_TRACKING_ERROR'):
+            self.solve(.15,0.,(.151,),.15)
+
     def test_invalid_executed_reference_is_not_ignored(self):
         for executed in ((),(float('nan'),),(0.,0.)):
             with self.subTest(executed=executed),self.assertRaisesRegex(ValueError,'REFERENCE_LAYOUT'):
