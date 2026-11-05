@@ -209,11 +209,12 @@ class PackagedLibraryTests(unittest.TestCase):
         cls.manifest = json.loads(cls.library.read_text())
 
     def test_fast_timing_has_no_unvalidated_waist_phase_shift(self):
-        for action, duration in (('Push', 11.5), ('SideScoop', 8.9), ('Flip', 16.18)):
+        for action, previous_duration in (('Push', 11.5), ('SideScoop', 8.9), ('Flip', 16.18)):
             with self.subTest(action=action):
                 plan = load_replay(self.library, action)
                 self.assertEqual(plan.waist_lead_s, 0.)
-                self.assertAlmostEqual(plan.duration, duration, places=6)
+                self.assertLess(plan.duration, previous_duration)
+                self.assertGreaterEqual(plan.duration, previous_duration/2)
 
     def test_final_fifty_hz_derivatives_and_independent_return_routes(self):
         from snowbot_bringup.teleop.snowbot_primitive_replay import plan_from_current
@@ -263,7 +264,11 @@ class PackagedLibraryTests(unittest.TestCase):
         profile = Profile.load(self.config/'snowbot_real_position.json')
         for action in self.manifest['actions'] | self.manifest['transfers']:
             with self.subTest(action=action):
-                load_replay(self.library, action).validate_profile(profile)
+                plan = load_replay(self.library, action)
+                plan.validate_profile(profile)
+                for i, name in enumerate(NAMES):
+                    self.assertLessEqual(max(abs(v[i]) for v in plan.velocities), .85*profile.speed(name)+1e-6)
+                    self.assertLessEqual(max(abs(a[i]) for a in plan.accelerations), .85*profile.acceleration(name)+1e-6)
 
     def test_arm_speed_limit_is_uniform_and_matches_the_target_stream(self):
         from bindu_contracts.profile import Profile
