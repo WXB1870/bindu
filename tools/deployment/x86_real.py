@@ -1,4 +1,4 @@
-"""Prepare/build the existing Snowbot real VR chain in one isolated x86 workspace."""
+"""Prepare/build the Snowbot real VR chain in one isolated native workspace."""
 from tools import package_share
 import argparse
 import hashlib
@@ -28,8 +28,10 @@ OVERLAYS = ('PYTHONPATH', 'PYTHONHOME', 'AMENT_PREFIX_PATH', 'COLCON_PREFIX_PATH
 
 
 def target_distro(os_info, machine, version):
-    if machine not in ('x86_64', 'AMD64'):
-        raise ValueError('此入口仅支持 x86_64')
+    if machine not in ('x86_64', 'AMD64', 'aarch64'):
+        raise ValueError('此入口支持 x86_64，或 Ubuntu 22.04 aarch64')
+    if machine == 'aarch64' and os_info.get('VERSION_ID') != '22.04':
+        raise ValueError('aarch64 部署需要 Ubuntu 22.04 / ROS 2 Humble')
     target = {'22.04': ('humble', (3, 10)), '24.04': ('jazzy', (3, 12))}
     if os_info.get('ID') != 'ubuntu' or os_info.get('VERSION_ID') not in target:
         raise ValueError('需要 Ubuntu 22.04/Humble 或 Ubuntu 24.04/Jazzy')

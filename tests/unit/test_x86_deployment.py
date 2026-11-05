@@ -62,7 +62,12 @@ class X86DeploymentTests(unittest.TestCase):
         for release, version, distro in [('22.04', (3, 10), 'humble'), ('24.04', (3, 12), 'jazzy')]:
             info = dict(ID='ubuntu', VERSION_ID=release)
             self.assertEqual(x86_real.target_distro(info, 'x86_64', version), distro)
-            for machine, python in [('aarch64', version), ('x86_64', (3, 11))]:
+            if release == '22.04':
+                self.assertEqual(x86_real.target_distro(info, 'aarch64', version), distro)
+            else:
+                with self.assertRaises(ValueError):
+                    x86_real.target_distro(info, 'aarch64', version)
+            for machine, python in [('armv7l', version), ('x86_64', (3, 11)), ('aarch64', (3, 11))]:
                 with self.assertRaises(ValueError):
                     x86_real.target_distro(info, machine, python)
         with self.assertRaises(ValueError):
