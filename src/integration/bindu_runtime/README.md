@@ -132,15 +132,15 @@ Snowbot 当前配方、模型、设备适配及 PICO 操作分别由独立工作
 
 统一PICO入口为[`tools/run_vr.sh`](../../../tools/run_vr.sh)，选择`snowbot_vr_sim.json`或`snowbot_vr_real.json`。两者使用`position_contract=true`、同一真实位置profile／工具几何和协调器；只在设备IO、初始测量状态及现场标定处区分。状态统一到`teleop/state`，夹爪由同一执行节点提供服务。旧四节点配方保留底层联调用途；具体启动与操作见[统一入口](https://github.com/WXB1870/snowbot/blob/main/运行与验证.md#日常启动)。
 
-真实腰臂通过`position_protocol=session_v3`显式选择目标流，须与servo只读参数`position_reference_mode=target_stream`配对（wire 5／reference 2／普通目标配方version 2，显式刚性预测version 3），消息及使用方成套重建。上层只发送16轴联合目标和源身份／期限，servo非实时后台复用`PreparedSegment`生成；仅首次／恢复接管有一次真实接纳握手；正常更新不等待上一目标接纳，PAUSE立即绕过等待，由执行侧从已采用名义参考制动。适配器已移除旧`session_v2`曲线准备、ACK串行依赖及跨层提前量配置；`ExecutionState.reference`来自有效servo采样的q／dq／ddq及采样时刻，缺失时为空。
+真实腰臂由配套软件固定使用`session_v3`，servo内部固定`reference_mode=2`，不再提供协议选择参数（wire 5／reference 2／普通目标配方version 2，显式刚性预测version 3），消息及使用方成套重建。上层只发送16轴联合目标和源身份／期限，servo非实时后台复用`PreparedSegment`生成；仅首次／恢复接管有一次真实接纳握手；正常更新不等待上一目标接纳，PAUSE立即绕过等待，由执行侧从已采用名义参考制动。适配器已移除旧`session_v2`曲线准备、ACK串行依赖及跨层提前量配置；`ExecutionState.reference`来自有效servo采样的q／dq／ddq及采样时刻，缺失时为空。
 
 刚性双臂模式按`rigid_reference_prediction`显式选择version 3几何预测，独立臂、准备与PAUSE保持version 2；须与包含实际模型的servo成套构建，具体边界见[执行说明](../../control/bindu_execution/README.md#扫雪位置执行)。
 
 目标流启动上限由[真实VR配方](../../../../../snowbot/src/snowbot_bringup/config/deployments/snowbot_vr_real.json)维护，逐轴限制由[真实位置profile](../../../../../snowbot/src/snowbot_bringup/config/robots/snowbot/snowbot_real_position.json)维护，发送时按关节取较小值。servo加载[目标流配方](../../../../../snowbot/tools/deployment/snowbot_vendor/position_session/target_stream.yaml)中的接收上限；现场覆盖以实际选定文件为准，接收端仍独立拒绝超限值。参数值只在配置中维护，已有部署覆盖不自动迁移；实体跟踪与停止待现场验证。
 
-目标轴序为左臂J1～J7、右臂J1～J7、腰J1～J2，rad。动态界逐轴取profile与发送端只读启动参数`trajectory_max_velocity`、`trajectory_max_acceleration`、`trajectory_max_jerk`的较小值；参数默认值见实现，servo独立校验接收帽，部署时须配对相同启动上限。配置20 ms执行tick／servo名义1 ms采样保持；submit也可触发执行tick，50 Hz不是发送硬限频，实际频率与抖动须现场记录。普通目标最多300 ms，新PAUSE独立固定2 s停止期限，详见[执行时间语义](../../control/bindu_execution/README.md)；沿途不续期。当前main运行装配只支持`execution_mode=position`，已移除可选阻抗入口；位置准备器保留目标流与停止补丁。真实腰臂配方为`session_v3`、`position`、`command_enabled=false`；servo默认仍`follower`／`unconfirmed`，必须显式成套选择新路径。版本、离线证据与现场未完成项见[Snowbot当前进度](../../../../../snowbot/docs/当前进度.md)。
+目标轴序为左臂J1～J7、右臂J1～J7、腰J1～J2，rad。动态界逐轴取profile与发送端只读启动参数`trajectory_max_velocity`、`trajectory_max_acceleration`、`trajectory_max_jerk`的较小值；参数默认值见实现，servo独立校验接收帽，部署时须配对相同启动上限。配置20 ms执行tick／servo名义1 ms采样保持；submit也可触发执行tick，50 Hz不是发送硬限频，实际频率与抖动须现场记录。普通目标最多300 ms，新PAUSE独立固定2 s停止期限，详见[执行时间语义](../../control/bindu_execution/README.md)；沿途不续期。当前main运行装配只支持`execution_mode=position`，已移除可选阻抗入口；位置准备器保留目标流与停止补丁。真实腰臂配方为`session_v3`、`position`、`command_enabled=false`；servo停止策略默认仍为`unconfirmed`，现场须配置停止策略并成套更新。版本、离线证据与现场未完成项见[Snowbot当前进度](../../../../../snowbot/docs/当前进度.md)。
 
-真实`session_v3`配方的`arguments`可设置上述速度、加速度和急动度参数，统一遥操与独立适配器launch均透传；只接受有限正值，其他协议／仿真配方显式设置时拒绝。servo已有同名只读启动参数，必须允许下发的逐轴有效值，超出接收帽仍拒收；不自动远程修改servo参数。同一会话内动态界不得改变。提高发送帽不会自动提高QP使用的profile速度，profile更低时仍受其限制；调参须成套选择启动值和逐轴profile，尤其不要借全局参数提高腰部等不打算调整的轴。参考超差保护、TTL和PAUSE期限保持。
+真实`session_v3`配方的`arguments`可设置上述速度、加速度和急动度参数，统一遥操与独立适配器launch均透传；只接受有限正值，仿真配方显式设置时拒绝。servo已有同名只读启动参数，必须允许下发的逐轴有效值，超出接收帽仍拒收；不自动远程修改servo参数。同一会话内动态界不得改变。提高发送帽不会自动提高QP使用的profile速度，profile更低时仍受其限制；调参须成套选择启动值和逐轴profile，尤其不要借全局参数提高腰部等不打算调整的轴。参考超差保护、TTL和PAUSE期限保持。
 
 ### 配套配置与流程
 
@@ -209,7 +209,7 @@ VR输入、PICO协调、双臂求解和执行进程入口在ROS初始化前默�
 
 - 环境切换：[统一仿真与真实模式选择](../../../运行与验证.md#框架运行与环境选择)。
 - 本体与装配检查：[本体配置](../../../tests/unit/test_robot_configuration.py)、[模式](../../../tests/unit/test_runtime_mode.py)、[遥操作装配](../../../tests/unit/test_teleop_deployment.py)。
-- ROS 检查：[示例任务](../../../tests/integration/validate_ros.py)、[环境一致性](../../../tests/integration/validate_runtime_mode.py)、[遥操作](../../../tests/integration/validate_teleop.py)。Snowbot的[底层适配](https://github.com/WXB1870/snowbot/blob/main/tests/integration/validate_snowbot_adapter.py)和[真机位置链合成验证](https://github.com/WXB1870/snowbot/blob/main/tests/integration/validate_real_teleop.py)已归应用仓库，后者自带替身控制器，不接硬件。
+- ROS 检查：[示例任务](../../../tests/integration/validate_ros.py)、[环境一致性](../../../tests/integration/validate_runtime_mode.py)、[遥操作](../../../tests/integration/validate_teleop.py)。Snowbot的[会话协议ROS验证](https://github.com/WXB1870/snowbot/blob/main/tests/integration/validate_position_session_ros.py)使用合成PDO，仅启动upper/middle，不启动真实servo；PICO流程仿真见其`validate_position_teleop.py`。旧guard消息替身场景已退休。
 
 ## 关联模块
 

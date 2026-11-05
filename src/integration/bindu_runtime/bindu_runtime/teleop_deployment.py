@@ -17,11 +17,11 @@ EXECUTION = {'runtime_mode', 'namespace', 'profile', 'device_backend', 'run_id',
              'servo_receiver_node', 'mid_receiver_node'}
 COMMON.update(('gripper_config', 'base_config'))
 COMMON.add('parameters_config')
-COMMON.update(('position_protocol','execution_mode'))
+COMMON.add('execution_mode')
 COMMON.update(('position_contract','physics_config'))
 EXECUTION.add('gripper_config')
 EXECUTION.add('parameters_config')
-EXECUTION.update(('position_protocol','execution_mode'))
+EXECUTION.add('execution_mode')
 TARGET_STREAM_LIMIT_DEFAULTS = {'trajectory_max_velocity': .25, 'trajectory_max_acceleration': .5,
                               'trajectory_max_jerk': 162., 'target_stream_brake_lead_s': .12}
 COMMON.update(TARGET_STREAM_LIMIT_DEFAULTS)
@@ -63,14 +63,14 @@ def load_deployment(path, share):
     if not execution_only and launch != ('snowbot_sim.launch.py' if version == 1 else 'robot_teleop.launch.py'):
         raise ValueError('TELEOP_DEPLOYMENT_ROBOT_UNSUPPORTED')
     args = data['arguments']
+    if isinstance(args, dict) and 'position_protocol' in args:
+        raise ValueError('SNOWBOT_POSITION_PROTOCOL_REMOVED: session_v3 is fixed; remove position_protocol')
     allowed = EXECUTION if execution_only else (COMMON if version == 1 else COMMON-{'profile', 'bimanual_config'} | {'robot_config'})
     if not isinstance(args, dict) or set(args)-allowed:
         raise ValueError('TELEOP_DEPLOYMENT_ARGUMENT')
-    if args.get('position_protocol', 'legacy_guard') not in ('legacy_guard', 'session_v1', 'session_v3'):
-        raise ValueError('SNOWBOT_POSITION_PROTOCOL')
     configured_limits = {key: args[key] for key in TARGET_STREAM_LIMIT_DEFAULTS if key in args}
     if configured_limits:
-        if args.get('runtime_mode') != 'real' or args.get('position_protocol') != 'session_v3':
+        if args.get('runtime_mode') != 'real':
             raise ValueError('SNOWBOT_TARGET_LIMITS_REQUIRE_TARGET_STREAM')
         configured_limits = target_stream_limits(configured_limits)
     execution_mode = args.get('execution_mode', 'position')
