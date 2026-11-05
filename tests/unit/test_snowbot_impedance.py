@@ -217,6 +217,16 @@ class ImpedanceHealthTests(unittest.TestCase):
         obs.sensor_age=[.021,.001]
         self.assertIn('SENSOR_INVALID',self.health.hold_failure((7,3,obs.boot_id,1)))
 
+    def test_ros_delivery_delay_keeps_its_existing_budget_for_force_feedback(self):
+        self.health.observation.sensor_age=[.01,.01]
+        self.health.now=lambda:10.031
+        self.health.steady=lambda:1.031
+        self.health.require(self.groups)
+        self.health.now=lambda:10.042
+        self.health.steady=lambda:1.042
+        with self.assertRaisesRegex(RuntimeError,'PDO_NOT_ADVANCING'):
+            self.health.require(self.groups)
+
     def test_default_position_requires_no_impedance_sensor_or_calibration(self):
         self.health.execution_mode = 'position'
         self.health.states['servo'][1].control_source = 'position'
