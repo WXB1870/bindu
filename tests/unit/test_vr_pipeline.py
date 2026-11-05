@@ -122,7 +122,7 @@ class TimingSummaries(unittest.TestCase):
                 self.assertIs(nodes['execution']['parameters'][0].get('command_enabled',False),False)
                 class RuntimeBoundary:
                     def __init__(self,*args,**kw):self.simulation=True;self.runtime_mode='simulation'
-                    def declare_parameter(self,key,value,**kw):params.setdefault(key,value)
+                    def declare_parameter(self,key,value,**kw):return S(value=params.setdefault(key,value))
                     def get_parameter(self,key):return S(value=params.get(key,''))
                     def create_publisher(self,*args):return S()
                     def create_timer(self,*args):return S()
@@ -148,7 +148,7 @@ class TimingSummaries(unittest.TestCase):
         node=next(n for n in ast.parse(path.read_text()).body if isinstance(n,ast.ClassDef) and n.name=='PicoNode')
         method=next(n for n in node.body if getattr(n,'name','')=='on_frame')
         clock=S(ros=100.,mono=10.)
-        namespace=dict(time=S(monotonic=lambda:clock.mono),json=json,seconds=lambda x:x,
+        namespace=dict(time=S(monotonic=lambda:clock.mono),json=json,seconds=lambda x:x,copy=__import__('copy').copy,
                        VRFrame=VRFrame,VRInput=lambda **kw:S(**kw),PICO_MAPPING=PICO_MAPPING)
         exec(compile(ast.Module(body=[method],type_ignores=[]),str(path),'exec'),namespace)
         events=[];projected=[]
@@ -156,7 +156,7 @@ class TimingSummaries(unittest.TestCase):
         owner=S(matches_mode=lambda m:True,frames={},last_pair_at=None,base=None,runtime_parameters=load_parameters(),
                 now=lambda:clock.ros,event=lambda *v:events.append(v),
                 control=PicoControl(),feedback=lambda:PicoFeedback(clock.ros,True,('closed','closed')),
-                last_prepare_check=None,release_until=0.,projected=S(publish=projected.append),
+                last_prepare_check=None,release_until=0.,projected=S(publish=projected.append),gripper_projected=S(publish=lambda _:None),
                 instance_id='offline',position_contract=True,handoff_complete=True,independent_grippers=False)
         def pair(seq):
             for side in ('left','right'):

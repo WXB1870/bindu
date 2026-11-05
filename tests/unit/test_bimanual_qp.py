@@ -518,7 +518,8 @@ class CandidateGeometryBacktracking(unittest.TestCase):
         recorded=json.loads((ROOT/'tests/config/teleoperation/snowbot_candidate_steps.json').read_text())
         cls.config.update(recorded['recorded_config'])
         cls.config.pop('grasp_reference_source',None)
-        cls.config.update(measured_joint_limit_tolerance_rad=0.,limit_avoidance_margin=0.,limit_avoidance_weight=0.)
+        cls.config.update(tracking_feedback='measured',measured_joint_limit_tolerance_rad=0.,
+                          limit_avoidance_margin=0.,limit_avoidance_weight=0.)
         # Preserve the original geometry fixtures independently of live thresholds.
         cls.config['grasp_position_tolerance_m']=.01
         cls.config['grasp_rotation_tolerance_rad']=.02
