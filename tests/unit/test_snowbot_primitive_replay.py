@@ -298,7 +298,7 @@ class PrimitiveTransitionTests(unittest.TestCase):
             ('Flip','Flip:start','Dump:end'),('FlipReverse','Dump:end','Flip:start'),
             ('SideScoop','SideScoop:start','Flip:start')]
         m = dict(schema_version=1,validation_passed=True,transition_validation_passed=True,
-            backend_ready=True,tool_id='g099-curved',kinematic_sha256='kin',waist_lead_s=.02,
+            tool_id='g099-curved',kinematic_sha256='kin',waist_lead_s=.02,
             home_node='SideScoop:start',preparation={'goal_node':'Push:start'},
             nodes=nodes,actions={},transfers={},edges=[])
         for name,a,b in definitions:
@@ -343,6 +343,27 @@ class PrimitiveTransitionTests(unittest.TestCase):
 
 
 class InteractiveReplayTests(unittest.TestCase):
+    def test_dispatch_does_not_require_a_manual_backend_ready_flag(self):
+        from contextlib import redirect_stderr
+        from io import StringIO
+        from unittest.mock import patch
+        import snowbot_bringup.teleop.snowbot_primitive_replay as module
+        for flag in (None, False):
+            with self.subTest(flag=flag), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                library, manifest = PrimitiveTransitionTests().fixture(root)
+                if flag is None:
+                    manifest.pop('backend_ready', None)
+                else:
+                    manifest['backend_ready'] = flag
+                library.write_text(json.dumps(manifest))
+                with patch.object(module, 'execute') as execute, redirect_stderr(StringIO()):
+                    module.main(['--library', str(library), '--action', 'Push',
+                                 '--from-node', 'Push:start', '--execute',
+                                 '--tool-id', 'g099-curved', '--output', str(root/'run.jsonl')])
+                execute.assert_called_once()
+                self.assertEqual(execute.call_args.args[1].route, ('Push',))
+
     def test_staged_menu_executes_actions_and_returns_with_separate_logs(self):
         from contextlib import redirect_stdout
         from io import StringIO
