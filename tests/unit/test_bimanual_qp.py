@@ -507,10 +507,6 @@ class CandidateGeometryBacktracking(unittest.TestCase):
     def setUpClass(cls):
         cls.config=load_tool_config(package_share("snowbot_bringup")/'config/robots/snowbot/bimanual_snowbot_real.json')
         cls.config['urdf']=str(package_share("snowbot_description")/'urdf/snowbot_control.urdf')
-        cls.config['demo']['max_grasp_penetration_m']=.0005
-        # These historical collision fixtures exercise the optional contact
-        # checker even when the deployed recipe exempts shaft/gripper contact.
-        cls.config['demo']['check_grasp_contacts']=True
         # Freeze the origin-task semantics of these historical fault fixtures.
         cls.config['tool_tracking_point_in_tool_m']=[0.,0.,0.]
         cls.config.pop('coupled_locked_joints',None)
@@ -518,6 +514,9 @@ class CandidateGeometryBacktracking(unittest.TestCase):
         recorded=json.loads((ROOT/'tests/config/teleoperation/snowbot_candidate_steps.json').read_text())
         # Keep the original long-tool geometry with these recorded fault inputs.
         cls.config.update(recorded['recorded_config'])
+        # The recorded fault probe deliberately uses 0.5 mm contact allowance.
+        cls.config['demo']['max_grasp_penetration_m']=.0005
+        cls.config['demo']['check_grasp_contacts']=True
         # Preserve the original geometry fixtures independently of live thresholds.
         cls.config['grasp_position_tolerance_m']=.01
         cls.config['grasp_rotation_tolerance_rad']=.02
