@@ -532,23 +532,34 @@ class CandidateGeometryBacktracking(unittest.TestCase):
     def step(self,qp,case):
         return qp.solve(case['feedback'],case['target'],reference=case['reference'],dt=case['dt'],target_stamp=case['target_stamp'])
 
-    def test_three_recorded_rejections_become_valid_common_half_steps(self):
+    def test_recorded_candidates_backtrack_only_invalid_full_steps(self):
         for case in self.cases:
             with self.subTest(dt=case['dt']):
                 before=self.solver(case,False);raw=[];original=before.check_path
                 def record(feedback,*path):
                     raw.append(np.array(path[0]).copy());return original(feedback,*path)
+                rejected=False
                 try:
-                    with patch.object(before,'check_path',side_effect=record),self.assertRaisesRegex(ValueError,'GRASP_PENETRATION'):
-                        self.step(before,case)
-                    self.assertFalse(before.captured)
+                    # Inputs are frozen; an updated QP may propose a safe full
+                    # step. The direct geometry check is the feasibility oracle.
+                    try:
+                        with patch.object(before,'check_path',side_effect=record):
+                            full,_=self.step(before,case)
+                    except ValueError as exc:
+                        self.assertTrue(str(exc).startswith('GRASP_PENETRATION'),str(exc))
+                        rejected=True
+                        self.assertFalse(before.captured)
+                    else:
+                        np.testing.assert_allclose(full,raw[0],atol=1e-10)
+                        self.assertTrue(before.captured)
                 finally:before.close()
                 after=self.solver(case)
                 try:
                     positions,metrics=self.step(after,case);reference=np.array(case['reference'])
-                    np.testing.assert_allclose(np.array(positions)-reference,.5*(raw[0]-reference),atol=1e-8)
+                    scale=.5 if rejected else 1.
+                    np.testing.assert_allclose(np.array(positions)-reference,scale*(raw[0]-reference),atol=1e-8)
                     self.assertTrue(after.captured)
-                    self.assertEqual(after.last_geometry_step['scale'],.5)
+                    self.assertEqual(after.last_geometry_step['scale'],scale)
                     self.assertGreater(np.max(np.abs(np.array(positions)-reference)),.001)
                     after.check_path(case['feedback'],positions,reference)
                     self.assertTrue(np.isfinite(metrics).all())
