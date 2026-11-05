@@ -244,7 +244,7 @@ class ShaftContactBandTests(unittest.TestCase):
         shape=lambda radius,length:S(radius=radius,length=length)
         for check_contacts in (False,True):
             namespace=dict(np=np,names=['hand','base'],ends=np.array(self.ends),radius=.018,
-                grasp_penetration=.005,geometry_kind='rod',has_pan=False,shaft_reference=np.zeros(3),
+                grasp_penetration=.005,geometry_kind='rod',has_pan=False,shaft_reference=np.zeros(3),handle_queries=[],
                 recipe={'left_grip_in_tool_m':[0.,0.,0.]},shaft_axis=np.array([1.,0.,0.]),
                 check_grasp_contacts=check_contacts,contact_endpoint_tolerance=.1,
                 _shaft_contact_span=_shaft_contact_span,fcl=S(Cylinder=shape,Capsule=shape))

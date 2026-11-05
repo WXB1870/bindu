@@ -212,7 +212,10 @@ class InitialCollisionRecoveryTests(unittest.TestCase):
         check=make_collision_checker(description/recipe['display_urdf'],recipe,conservative_convex=True,
                                      tool_present=False,validation_only=True)
         names=list(feedback);start=np.array([feedback[n] for n in names])
-        end=np.array([config['demo']['initial_positions_rad'].get(n,feedback[n]) for n in names])
+        from snowbot_hardware.session import REPLAY_NAMES
+        library=json.loads((base/'primitive-library/manifest.json').read_text())
+        prepared=dict(zip(REPLAY_NAMES,library['nodes'][library['home_node']]))
+        end=np.array([prepared.get(n,feedback[n]) for n in names])
         count=int(np.ceil(np.max(abs(end-start))/.001))
         samples=[dict(t=float(f),q=dict(zip(names,start+f*(end-start))),tool=np.eye(4)) for f in np.linspace(0,1,count+1)]
         with self.assertRaisesRegex(ValueError,'SELF_COLLISION'):
@@ -515,6 +518,7 @@ class CandidateGeometryBacktracking(unittest.TestCase):
         recorded=json.loads((ROOT/'tests/config/teleoperation/snowbot_candidate_steps.json').read_text())
         cls.config.update(recorded['recorded_config'])
         cls.config.pop('grasp_reference_source',None)
+        cls.config.update(measured_joint_limit_tolerance_rad=0.,limit_avoidance_margin=0.,limit_avoidance_weight=0.)
         # Preserve the original geometry fixtures independently of live thresholds.
         cls.config['grasp_position_tolerance_m']=.01
         cls.config['grasp_rotation_tolerance_rad']=.02

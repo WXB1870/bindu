@@ -209,7 +209,7 @@ class CaptureCliTests(unittest.TestCase):
                     'MotionCommand','GripperState','TeleopModeState')}),
                 'bindu_runtime.common':S(EVENT_QOS=object()),
                 'bindu_runtime.robot_setup':S(RobotSetup=S(load=lambda path:robot)),
-                'tools.teleop.snowbot_errors':S(EndEffectorErrors=lambda *a:S(sample=lambda *a:{}),pinocchio_fk=lambda *a:None),
+                'snowbot_bringup.visualization.snowbot_errors':S(EndEffectorErrors=lambda *a:S(sample=lambda *a:{}),pinocchio_fk=lambda *a:None),
                 'rosidl_runtime_py.convert':S(message_to_ordereddict=lambda message:message)}
             args=S(robot_config=config,run_id='run',runtime_mode='simulation',device_backend='kinematic',
                 state_file=None,trace_file=root/'diagnostics.jsonl',namespace='fixture',duration=0.,record_inputs=True)

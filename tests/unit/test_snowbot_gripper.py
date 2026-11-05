@@ -624,6 +624,7 @@ class IndependentInputHandoffTests(unittest.TestCase):
                 if subscribed==topic:callback(msg)
         control=S(source=None,seq=-1,frames=None,reason='SQUEEZE_RELEASED',last_pose_jump=None,
                   superseded_remote_input=lambda source,seq:False,
+                  expired_remote_pair=lambda pair,now:False,
                   last_prepare_check=None,phase=phase,teleop_mode=mode,
                   squeeze_released=[True,True],virtual=False,fault_active=False,stop_failure=None,
                   recovery_required='',update_feedback=Mock())
