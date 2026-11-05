@@ -11,6 +11,29 @@ from bindu_kinematics.bimanual_worker import BimanualWorker
 
 
 class WorkerReceiptTests(unittest.TestCase):
+    def test_reference_reset_is_bound_to_the_existing_execution_instance_and_epoch(self):
+        source=Path(__file__).resolve().parents[2]/'src/integration/bindu_runtime/bindu_runtime/bimanual_tool_node.py'
+        node=next(n for n in ast.parse(source.read_text()).body if isinstance(n,ast.ClassDef) and n.name=='BimanualToolNode')
+        method=next(n for n in node.body if getattr(n,'name','')=='reset_grasp_reference')
+        scope={};exec(compile(ast.Module(body=[method],type_ignores=[]),str(source),'exec'),scope)
+        owner=SimpleNamespace(state=SimpleNamespace(instance_id='execution',lease_epoch=4),busy=False,
+            worker=SimpleNamespace(reset_grasp_reference=Mock()),preflight_token=-3,
+            preflight_status='ready',preflight_mode='bimanual_tool',preflight_grasp='right_axial')
+        for instance,epoch in (('previous',4),('execution',3),('execution',5)):
+            reply=scope['reset_grasp_reference'](owner,SimpleNamespace(execution_instance_id=instance,epoch=epoch),SimpleNamespace())
+            self.assertFalse(reply.ok)
+        owner.worker.reset_grasp_reference.assert_not_called()
+        request=SimpleNamespace(execution_instance_id='execution',epoch=4)
+        owner.busy=True
+        self.assertFalse(scope['reset_grasp_reference'](owner,request,SimpleNamespace()).ok)
+        owner.busy=False
+        self.assertTrue(scope['reset_grasp_reference'](owner,request,SimpleNamespace()).ok)
+        self.assertEqual(owner.preflight_status,'')
+        self.assertEqual(owner.preflight_token,-4)
+        owner.state.lease_epoch=6
+        self.assertFalse(scope['reset_grasp_reference'](owner,request,SimpleNamespace()).ok)
+        owner.worker.reset_grasp_reference.assert_called_once()
+
     def test_preparation_reference_reset_waits_for_next_admitted_request(self):
         worker=self.worker()
         worker.reset_grasp_reference()
