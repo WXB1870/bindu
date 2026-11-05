@@ -111,14 +111,14 @@ from bindu_runtime.simulation_devices import SimulationDevices,PhysicsJoints,Phy
         import ast
         from types import SimpleNamespace
         from bindu_contracts.runtime_mode import resolve_mode
-        from bindu_runtime.teleop_deployment import TARGET_STREAM_LIMIT_DEFAULTS, target_stream_limits
+        from bindu_runtime.teleop_deployment import TARGET_STREAM_LIMIT_DEFAULTS, target_stream_limits, execution_backend
         source=package_share('snowbot_bringup')/'launch/snowbot_adapter.launch.py'
         definition=next(n for n in ast.parse(source.read_text()).body if isinstance(n,ast.FunctionDef) and n.name=='assemble')
         class Configuration:
             def __init__(self,name,default=''):self.name,self.default=name,default
             def perform(self,context):return context.get(self.name,self.default)
         namespace=dict(Path=Path,LaunchConfiguration=Configuration,resolve_mode=resolve_mode,
-                       TARGET_STREAM_LIMIT_DEFAULTS=TARGET_STREAM_LIMIT_DEFAULTS,target_stream_limits=target_stream_limits,
+                       TARGET_STREAM_LIMIT_DEFAULTS=TARGET_STREAM_LIMIT_DEFAULTS,target_stream_limits=target_stream_limits,execution_backend=execution_backend,
                        get_package_share_directory=lambda name:str(package_share(name)),Node=lambda **values:values)
         exec(compile(ast.Module(body=[definition],type_ignores=[]),str(source),'exec'),namespace)
         for mode,package,executable in (('real','snowbot_hardware','snowbot_adapter'),
@@ -130,13 +130,17 @@ from bindu_runtime.simulation_devices import SimulationDevices,PhysicsJoints,Phy
             parameters.write_text(json.dumps({'execution':{'target_stream_brake_lead_s':.1}}))
             actions=namespace['assemble'](dict(runtime_mode='real',
                                               parameters_config=str(parameters)))
-            self.assertEqual(actions[0]['parameters'][0]['target_stream_brake_lead_s'],.1)
+            self.assertEqual(actions[0]['parameters'][0]['parameters_config'],str(parameters))
+            self.assertNotIn('target_stream_brake_lead_s',actions[0]['parameters'][0])
+            self.assertEqual(actions[0]['parameters'][0]['vendor_namespace'],'/')
+            with self.assertRaisesRegex(ValueError,'BRAKE_LEAD_MOVED'):
+                namespace['assemble'](dict(runtime_mode='real',target_stream_brake_lead_s='.1'))
 
     def test_shared_timing_is_forwarded_to_all_position_nodes_before_launch(self):
         import ast
         from bindu_runtime.robot_setup import RobotSetup
         from bindu_contracts.runtime_mode import resolve_mode
-        from bindu_runtime.teleop_deployment import TARGET_STREAM_LIMIT_DEFAULTS, target_stream_limits
+        from bindu_runtime.teleop_deployment import TARGET_STREAM_LIMIT_DEFAULTS, target_stream_limits, execution_backend
         source=package_share('snowbot_bringup')/'snowbot_bringup/assembly.py'
         definition=next(n for n in ast.parse(source.read_text()).body if getattr(n,'name','')=='assemble')
         class Configuration:
@@ -144,7 +148,7 @@ from bindu_runtime.simulation_devices import SimulationDevices,PhysicsJoints,Phy
             def perform(self,context):return context.get(self.name,self.default)
         namespace=dict(Path=Path,json=json,RobotSetup=RobotSetup,resolve_mode=resolve_mode,
             LaunchConfiguration=Configuration,TARGET_STREAM_LIMIT_DEFAULTS=TARGET_STREAM_LIMIT_DEFAULTS,
-            target_stream_limits=target_stream_limits,get_package_share_directory=lambda name:str(package_share(name)),
+            target_stream_limits=target_stream_limits,execution_backend=execution_backend,get_package_share_directory=lambda name:str(package_share(name)),
             Node=lambda **values:values,LogInfo=lambda **values:values,IfCondition=lambda value:value,
             ParameterValue=lambda value,**kw:value)
         exec(compile(ast.Module(body=[definition],type_ignores=[]),str(source),'exec'),namespace)
@@ -159,11 +163,30 @@ from bindu_runtime.simulation_devices import SimulationDevices,PhysicsJoints,Phy
             nodes={item['executable']:item['parameters'][0] for item in actions if 'executable' in item}
             for name in ('teleop_tool','pico_control','snowbot_adapter'):
                 self.assertEqual(nodes[name]['parameters_config'],str(parameters))
-            self.assertEqual(nodes['snowbot_adapter']['target_stream_brake_lead_s'],.04)
+            self.assertNotIn('target_stream_brake_lead_s',nodes['snowbot_adapter'])
+            for name in ('teleop_tool','pico_control'):
+                self.assertIs(nodes[name]['position_contract'],True)
             context['target_stream_brake_lead_s']='.12'
             with self.assertRaisesRegex(ValueError,'SNOWBOT_BRAKE_LEAD_MOVED'):
                 namespace['assemble'](context)
             context.pop('target_stream_brake_lead_s')
+            context['position_contract']='true'
+            with self.assertRaisesRegex(ValueError,'POSITION_CONTRACT_REMOVED'):
+                namespace['assemble'](context)
+            context.pop('position_contract')
+            _,simulation=load_deployment(package_share('snowbot_bringup')/'config/deployments/snowbot_vr_sim.json',SHARE)
+            actions=namespace['assemble'](simulation)
+            nodes={item['executable']:item['parameters'][0] for item in actions if 'executable' in item}
+            self.assertIn('snowbot_position_sim',nodes)
+            for name in ('teleop_tool','pico_control'):
+                self.assertIs(nodes[name]['position_contract'],True)
+            simulation['pico_simulation_demo']='true'
+            with self.assertRaisesRegex(ValueError,'PICO_DEMO_REQUIRES'):
+                namespace['assemble'](simulation)
+            _,demo=load_deployment(package_share('snowbot_bringup')/'config/examples/snowbot/teleop_pico_snowbot_sim.json',SHARE)
+            demo['device_backend']='external_simulation'
+            with self.assertRaisesRegex(ValueError,'PICO_REQUIRES'):
+                namespace['assemble'](demo)
 
     def test_selected_source_is_explicit_and_rejects_ambiguous_packages(self):
         import os
@@ -213,19 +236,14 @@ from bindu_runtime.simulation_devices import SimulationDevices,PhysicsJoints,Phy
 
 
 class DeploymentTests(unittest.TestCase):
-    def test_target_brake_lead_recipe_is_numeric_bounded_and_target_stream_only(self):
+    def test_target_brake_lead_recipe_rejects_the_retired_override(self):
         recipe=json.loads((package_share("snowbot_bringup")/'config/deployments/snowbot_vr_real.json').read_text())
         with tempfile.TemporaryDirectory() as tmp:
             path=Path(tmp)/'deploy.json'
-            for lead in (.12, .1, '0.08'):
+            for lead in (.12, .1, '0.08',0., -1., .4, 1., 1e308, 1e-12, float('nan'), float('inf'), True, 'bad'):
                 recipe['arguments']['target_stream_brake_lead_s']=lead
                 path.write_text(json.dumps(recipe))
-                _,args=load_deployment(path,SHARE)
-                self.assertEqual(float(args['target_stream_brake_lead_s']),float(lead))
-            for lead in (0., -1., .4, 1., 1e308, 1e-12, float('nan'), float('inf'), True, 'bad'):
-                recipe['arguments']['target_stream_brake_lead_s']=lead
-                path.write_text(json.dumps(recipe))
-                with self.subTest(lead=lead),self.assertRaises(ValueError):
+                with self.subTest(lead=lead),self.assertRaisesRegex(ValueError,'BRAKE_LEAD_MOVED'):
                     load_deployment(path,SHARE)
             recipe['arguments']['target_stream_brake_lead_s']=.12
             recipe['arguments']['position_protocol']='session_v1'
@@ -294,7 +312,7 @@ class DeploymentTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError,'SNOWBOT_CONFIG_MODE_MISMATCH'):
                     load_mode_config(path,args['runtime_mode'])
 
-    def test_position_recipes_share_model_and_reject_demo_shortcut(self):
+    def test_position_recipes_share_model_and_reject_retired_contract_switch(self):
         _,sim=load_deployment(package_share("snowbot_bringup")/'config/deployments/snowbot_vr_sim.json',SHARE)
         _,real=load_deployment(package_share("snowbot_bringup")/'config/deployments/snowbot_vr_real.json',SHARE)
         from bindu_runtime.robot_setup import RobotSetup
@@ -305,11 +323,11 @@ class DeploymentTests(unittest.TestCase):
         self.assertEqual(real['pico_enabled'],'true')
         self.assertEqual(real['command_enabled'],'false')
         recipe=json.loads((package_share("snowbot_bringup")/'config/deployments/snowbot_vr_sim.json').read_text())
-        for key,value in (('position_contract','true'),('pico_simulation_demo',True)):
+        for key,value in (('position_contract','true'),('position_contract',True),('position_contract',False)):
             bad=json.loads(json.dumps(recipe));bad['arguments'][key]=value
             with tempfile.TemporaryDirectory() as tmp:
                 path=Path(tmp)/'bad.json';path.write_text(json.dumps(bad))
-                with self.assertRaises(ValueError):load_deployment(path,SHARE)
+                with self.assertRaisesRegex(ValueError,'POSITION_CONTRACT_REMOVED'):load_deployment(path,SHARE)
 
     def test_default_recipe_has_no_startup_motion_or_vr_requirement(self):
         launch,args=load_deployment(SHARE/'config/deployments/teleop_robot_deployment.json',SHARE)
@@ -341,9 +359,9 @@ class DeploymentTests(unittest.TestCase):
         _,default=load_deployment(SHARE/'config/deployments/teleop_robot_deployment.json',SHARE)
         self.assertNotIn('pico_enabled',default)
 
-    def test_pico_rejects_wrong_source_and_external_actuator_backend(self):
+    def test_pico_recipe_rejects_wrong_source(self):
         recipe=json.loads((package_share("snowbot_bringup")/'config/examples/snowbot/teleop_pico_snowbot_sim.json').read_text())
-        for key,value in [('tool_input_source','tool_pose'),('device_backend','external_simulation')]:
+        for key,value in [('tool_input_source','tool_pose')]:
             changed=json.loads(json.dumps(recipe));changed['arguments'][key]=value
             with tempfile.TemporaryDirectory() as tmp:
                 path=Path(tmp)/'deploy.json';path.write_text(json.dumps(changed))

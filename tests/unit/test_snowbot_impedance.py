@@ -157,7 +157,7 @@ class ImpedanceSelectionTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError,'POSITION_PROTOCOL_REMOVED'):
                     load_deployment(path, SHARE)
     def test_backend_selection_owns_runtime_support(self):
-        from snowbot_hardware.parameters import execution_backend
+        from bindu_runtime.teleop_deployment import execution_backend
         for mode in ('position','impedance'):
             self.assertEqual(execution_backend('real','',mode),'snowbot_vendor')
         for backend in ('kinematic','external_simulation'):
@@ -166,6 +166,8 @@ class ImpedanceSelectionTests(unittest.TestCase):
                 execution_backend('simulation',backend,'impedance')
         with self.assertRaisesRegex(ValueError,'BACKEND_NOT_IMPLEMENTED'):
             execution_backend('simulation','snowbot_vendor','impedance')
+        with self.assertRaisesRegex(ValueError,'BACKEND_NOT_IMPLEMENTED'):
+            execution_backend('real',False)
 
 
 

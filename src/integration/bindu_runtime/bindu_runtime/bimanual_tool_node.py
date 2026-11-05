@@ -44,7 +44,7 @@ class BimanualToolNode(RuntimeNode):
             raise ValueError('VR_PAIR_MAX_SKEW')
         if not 0 <= self.cfg['grip_release_threshold'] < self.cfg['grip_press_threshold'] <= 1 or not 0 <= self.cfg['trigger_release_threshold'] < 1:
             raise ValueError('VR_INPUT_THRESHOLDS')
-        self.declare_parameter('position_contract',False)
+        self.declare_parameter('position_contract',False,descriptor=ParameterDescriptor(read_only=True))
         position_contract=self.get_parameter('position_contract').value
         self.declare_parameter('execution_mode','position',descriptor=ParameterDescriptor(read_only=True))
         if 'position_protocol' in self._parameter_overrides:

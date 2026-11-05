@@ -130,7 +130,7 @@ Snowbot 当前配方、模型、设备适配及 PICO 操作分别由独立工作
 
 `runtime.launch.py` 的默认 [runtime_deployment.json](config/deployments/runtime_deployment.json) 选择位置适配入口的仿真模式。运行扫雪工具会话从 `teleop_only.launch.py` 进入；部署时选择完整的`snowbot_vr_real.json`或底层联调配方`snowbot_real_teleop.json`，不能只切换`runtime_mode`。
 
-统一PICO入口为[`tools/run_vr.sh`](../../../tools/run_vr.sh)，选择`snowbot_vr_sim.json`或`snowbot_vr_real.json`。两者使用`position_contract=true`、同一真实位置profile／工具几何和协调器；只在设备IO、初始测量状态及现场标定处区分。状态统一到`teleop/state`，夹爪由同一执行节点提供服务。旧四节点配方保留底层联调用途；具体启动与操作见[统一入口](https://github.com/WXB1870/snowbot/blob/main/运行与验证.md#日常启动)。
+统一PICO入口为[`tools/run_vr.sh`](../../../tools/run_vr.sh)，选择`snowbot_vr_sim.json`或`snowbot_vr_real.json`。两者由装配层根据机器人工具配置选择位置执行契约，共用真实位置profile／工具几何和协调器；配方不再设置`position_contract`。设备IO、初始测量状态及现场标定分别按运行模式选择。状态统一到`teleop/state`，夹爪由同一执行节点提供服务。旧四节点配方保留底层联调用途；具体启动与操作见[统一入口](https://github.com/WXB1870/snowbot/blob/main/运行与验证.md#日常启动)。
 
 真实腰臂由配套软件固定使用`session_v3`，servo内部固定`reference_mode=2`，不再提供协议选择参数（wire 5／reference 2／普通目标配方version 2，显式刚性预测version 3），消息及使用方成套重建。上层只发送16轴联合目标和源身份／期限，servo非实时后台复用`PreparedSegment`生成；仅首次／恢复接管有一次真实接纳握手；正常更新不等待上一目标接纳，PAUSE立即绕过等待，由执行侧从已采用名义参考制动。适配器已移除旧`session_v2`曲线准备、ACK串行依赖及跨层提前量配置；`ExecutionState.reference`来自有效servo采样的q／dq／ddq及采样时刻，缺失时为空。
 
