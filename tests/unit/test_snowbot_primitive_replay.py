@@ -240,15 +240,14 @@ class PackagedLibraryTests(unittest.TestCase):
                 shoulder = plan.names.index('arm_r_joint_1')
                 self.assertLess(max(abs(q[shoulder]) for q in plan.points), math.pi/3)
 
-    def test_all_packaged_actions_and_transfers_hold_the_selected_waist(self):
-        waist = tuple(self.manifest['fixed_waist_rad'][n] for n in NAMES[:2])
-        for action in self.manifest['actions'] | self.manifest['transfers']:
-            with self.subTest(action=action):
-                plan = load_replay(self.library, action)
-                for q, v, a in zip(plan.points, plan.velocities, plan.accelerations):
-                    self.assertLess(max(abs(x-y) for x,y in zip(q[:2], waist)), 1e-12)
-                    self.assertEqual(v[:2], (0., 0.))
-                    self.assertEqual(a[:2], (0., 0.))
+    def test_packaged_waist_participates_under_the_reported_delay_assumption(self):
+        self.assertEqual(self.manifest['waist_response_assumption']['delay_s'], .1)
+        plans = [load_replay(self.library, action)
+                 for action in self.manifest['actions'] | self.manifest['transfers']]
+        for i, name in enumerate(NAMES[:2]):
+            with self.subTest(joint=name):
+                positions = [q[i] for plan in plans for q in plan.points]
+                self.assertGreater(max(positions)-min(positions), math.radians(1))
 
     def test_prepare_configuration_uses_library_home_as_single_source(self):
         config = json.loads((self.config/'teleop.json').read_text())
