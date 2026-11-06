@@ -17,12 +17,44 @@ import numpy as np
 from scipy.spatial.transform import Rotation
 
 sys.path.insert(0, str(ROOT))
-from tools.simulation.shovel_physics import wooden_parts, compound_mass, grip_wrench, internal_wrench, MeasuredJointVelocity, load_motion, joint_drive_parameters
+from tools.simulation.shovel_physics import wooden_parts, compound_mass, grip_wrench, internal_wrench, MeasuredJointVelocity, load_motion, joint_drive_parameters, ActuatorResponse
 from tools.simulation.run_shovel_physics import contact_wrench, validate_grasp_config
 from tools.simulation.shovel_control import GripLoadObserver, ControlClient
 
 
 class ShovelPhysicsTests(unittest.TestCase):
+    def test_actuator_reference_obeys_profile_velocity_and_acceleration_on_reversals(self):
+        response=ActuatorResponse({}, {'joint':0.}, {'joint':{'velocity':.6,'acceleration':3.6}})
+        before_q=before_v=0.
+        for target in ([1.]*80+[-1.]*160+[0.]*160):
+            q,v=response.step(.004,{'joint':target},{'joint':0.})
+            self.assertLessEqual(abs(v['joint']),.6+1e-10)
+            self.assertLessEqual(abs(v['joint']-before_v)/.004,3.6+1e-8)
+            self.assertAlmostEqual(q['joint']-before_q,v['joint']*.004)
+            before_q,before_v=q['joint'],v['joint']
+
+    def test_optional_actuator_response_preserves_default_and_matches_delayed_step(self):
+        initial={'waist':0.,'arm':2.};target={'waist':1.,'arm':3.};velocity={'waist':.4,'arm':.5}
+        self.assertEqual(ActuatorResponse({},initial).step(.01,target,velocity),(target,velocity))
+        response=ActuatorResponse({'waist':{'time_constant_s':.5,'delay_s':.2}},initial)
+        for _ in range(20):
+            q,v=response.step(.01,target,velocity)
+            self.assertEqual(q['waist'],0.)
+        for _ in range(80):q,v=response.step(.01,target,velocity)
+        self.assertAlmostEqual(q['waist'],1.-np.exp(-.8/.5),places=12)
+        self.assertEqual((q['arm'],v['arm']),(3.,.5))
+        self.assertLessEqual(len(response.history['waist']),21)
+
+    def test_actuator_response_rejects_unknown_joint_fields_and_nonfinite_parameters(self):
+        for setting in ({'unknown':{'time_constant_s':.5,'delay_s':.2}},
+                {'waist':{'time_constant_s':.5}},
+                {'waist':{'time_constant_s':float('nan'),'delay_s':.2}},
+                {'waist':{'time_constant_s':.5,'delay_s':-1.}}):
+            with self.subTest(setting=setting),self.assertRaisesRegex(ValueError,'PHYSICS_RESPONSE'):
+                ActuatorResponse(setting,{'waist':0.})
+        with self.assertRaisesRegex(ValueError,'PHYSICS_RESPONSE_DT'):
+            ActuatorResponse({},{}).step(0.,{},{})
+
     def test_feedback_wrapper_selects_physics_test_without_inheriting_ros_environment(self):
         import subprocess
         with tempfile.TemporaryDirectory() as directory:

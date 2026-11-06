@@ -90,7 +90,7 @@ def input_audit(folder, *, require_full=False):
         upstream_complete=False,scope='receiver coalescing/DDS loss cannot be excluded; no gap filling')
 
 
-def dataset(folder,until):
+def dataset(folder,until,*,source_bindings=None,reanchor_missing_capture=False):
     pairs={}
     for d in records(folder/'vr-raw.jsonl'):
         if seconds(d['stamp'])<=until:pairs.setdefault((d['source_id'],d['seq']),{})[d['side']]=d
@@ -112,14 +112,21 @@ def dataset(folder,until):
             current['end']=seconds(e['stamp']);current['recorded_end']=c['code'];current=None
     for segment in segments:
         c=segment['capture'];seq=c['input_seq']
+        source=(source_bindings or {}).get(c.get('input_source_id'),c.get('input_source_id'))
         candidates=[k for k in pairs if k[1]==seq and
-                    (not c.get('input_source_id') or k[0]==c['input_source_id']) and
+                    (not source or k[0]==source) and
                     abs(seconds(pairs[k][0]['stamp'])-c['input_stamp'])<=.05]
+        if not candidates and reanchor_missing_capture and source:
+            candidates=sorted((k for k in pairs if k[0]==source and k[1]>seq and
+                c['input_stamp']<=seconds(pairs[k][0]['stamp'])<=segment['end']),
+                key=lambda k:seconds(pairs[k][0]['stamp']))[:1]
+            segment['capture_input_missing']=True
         if not candidates:raise ValueError('CAPTURE_INPUT_MISSING')
         if len(candidates)!=1:raise ValueError('CAPTURE_SOURCE_AMBIGUOUS')
         key=candidates[0]
+        segment['replay_baseline_input_seq']=key[1]
         segment['pairs']=[pairs[k] for k in sorted(pairs,key=lambda k:seconds(pairs[k][0]['stamp']))
-            if k[0]==key[0] and k[1]>=seq and seconds(pairs[k][0]['stamp'])<=segment['end']]
+            if k[0]==key[0] and k[1]>=key[1] and seconds(pairs[k][0]['stamp'])<=segment['end']]
     return segments,clocks
 
 
