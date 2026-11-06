@@ -2,7 +2,10 @@ import os
 import json
 import signal
 import time
+from concurrent.futures import ThreadPoolExecutor
 import rclpy
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
+from rclpy.task import Future
 from rclpy.executors import SingleThreadedExecutor
 from rclpy.signals import SignalHandlerOptions
 from rcl_interfaces.msg import ParameterDescriptor
@@ -27,9 +30,13 @@ class ExecutionNode(RuntimeNode):
         self.robot_io, self.devices = device_factory(self, self.profile)
         self.engine = executor_factory(self.profile, self.robot_io, runtime_mode=self.runtime_mode)
         self.engine.tick(self.now())
-        # Default mutually exclusive group serializes every access to the engine.
+        # SingleThreadedExecutor serializes engine access. The submission group
+        # may await pure certification while the default group receives feedback.
+        self.replay_worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix='replay-prepare')
+        self.submit_group = MutuallyExclusiveCallbackGroup()
         self.create_service(Lease, 'execution/lease', self.lease)
-        self.create_service(SubmitMotion, 'execution/submit', self.submit)
+        self.create_service(SubmitMotion, 'execution/submit', self.submit_service,
+                            callback_group=self.submit_group)
         self.create_service(ControlExecution, 'execution/control', self.control)
         self.create_service(InjectFault, 'execution/sim_fault', self.fault)
         self.create_subscription(MotionCommand, 'execution/targets', self.stream, 8)
@@ -71,7 +78,7 @@ class ExecutionNode(RuntimeNode):
         reply.profile_hash = self.profile.digest
         return reply
 
-    def accept(self, msg):
+    def decode_motion(self, msg):
         if self.closing:
             raise Rejected('SHUTDOWN')
         if any(v != 0. for v in (msg.velocity.linear.y, msg.velocity.linear.z,
@@ -79,7 +86,7 @@ class ExecutionNode(RuntimeNode):
             raise Rejected('UNSUPPORTED_VELOCITY_AXIS')
         if any(p.effort for p in msg.points):
             raise Rejected('UNSUPPORTED_TRAJECTORY_EFFORT')
-        m = Motion(msg.command_id, msg.lease_id, msg.epoch, msg.profile_hash,
+        return Motion(msg.command_id, msg.lease_id, msg.epoch, msg.profile_hash,
                    msg.task_id, msg.observation_id, msg.mode, msg.resource_group,
                    seconds(msg.stamp), msg.valid_for, tuple(msg.joint_names),
                    tuple(msg.positions), tuple(seconds(p.time_from_start) for p in msg.points),
@@ -88,10 +95,66 @@ class ExecutionNode(RuntimeNode):
                    tuple(tuple(p.velocities) for p in msg.points) if any(p.velocities for p in msg.points) else (),
                    tuple(tuple(p.accelerations) for p in msg.points) if any(p.accelerations for p in msg.points) else (),
                    msg.expected_revision, tuple(msg.resource_groups), msg.runtime_mode, msg.rigid_reference)
-        self.engine.submit(m, self.now())
+
+    def accept(self, msg, *, prepared=None):
+        m = self.decode_motion(msg)
+        if prepared is None:
+            self.engine.submit(m, self.now())
+        else:
+            self.engine.prepare_replay(m, self.now(), prepared=prepared)
         msg.runtime_mode = self.runtime_mode
         self.accepted_pub.publish(msg)
         return max(m.stamp, self.engine.last_tick)
+
+    async def submit_service(self, request, reply):
+        if (request.command.mode not in ('prepared_trajectory', 'prepared_entry',
+                'prepared_trajectory_impedance', 'prepared_entry_impedance') or
+                not getattr(self.robot_io, 'supports_prepared_replay', False)):
+            return self.submit(request, reply)
+        from bindu_execution.delegated_position import PreparedReplay
+        began = time.monotonic()
+        validation_ms = await_ms = commit_ms = None
+        m = request.command
+        try:
+            motion = self.decode_motion(m)
+            self.get_logger().info('REPLAY_PREPARE_BEGIN:'+json.dumps(dict(
+                command_id=motion.command_id, points=len(motion.points),
+                feedback_age_ms=(self.now()-self.engine.feedback.stamp)*1000)))
+            executor = self.executor
+            ready = Future(executor=executor)
+            def certify():
+                started = time.monotonic()
+                prepared = PreparedReplay.create(motion, self.profile)
+                return prepared, (time.monotonic()-started)*1000
+            def completed(work):
+                try:
+                    ready.set_result(work.result())
+                except Exception as exc:
+                    ready.set_exception(exc)
+                executor.wake()
+            waiting = time.monotonic()
+            self.replay_worker.submit(certify).add_done_callback(completed)
+            prepared, validation_ms = await ready
+            committing = time.monotonic()
+            await_ms = (committing-waiting)*1000
+            # accept/decode checks shutdown again; prepare_replay rechecks the
+            # current revision, lease, source deadline and fresh held reference.
+            switched = self.accept(m, prepared=prepared)
+            commit_ms = (time.monotonic()-committing)*1000
+            reply.switch_stamp = stamp(switched)
+            reply.accepted, reply.code = True, 'OK'
+        except (Rejected, ValueError, RuntimeError) as exc:
+            reply.accepted, reply.code = False, str(exc)
+            self.event('REJECTED', reply.code, m.task_id, m.command_id, m.observation_id)
+        detail = json.dumps(dict(command_id=m.command_id, accepted=reply.accepted,
+            code=reply.code, validation_ms=validation_ms,
+            await_ms=await_ms, commit_ms=commit_ms,
+            total_ms=(time.monotonic()-began)*1000,
+            feedback_age_ms=(self.now()-self.engine.feedback.stamp)*1000))
+        self.get_logger().info('REPLAY_PREPARE_DONE:'+detail)
+        self.event('REPLAY_PREPARE_DONE', detail, m.task_id, m.command_id, m.observation_id)
+        reply.revision = self.engine.revision
+        return reply
 
     def submit(self, request, reply):
         try:
@@ -231,6 +294,7 @@ class ExecutionNode(RuntimeNode):
     def destroy_node(self):
         if not self.closing:
             self.begin_shutdown()
+        self.replay_worker.shutdown(wait=True, cancel_futures=True)
         return super().destroy_node()
 
     def begin_shutdown(self):

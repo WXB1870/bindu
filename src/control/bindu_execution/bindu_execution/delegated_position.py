@@ -67,7 +67,7 @@ class DelegatedPositionExecutor(Executor):
     replay_rest = None
     replay_result = None
 
-    def prepare_replay(self, motion, now):
+    def prepare_replay(self, motion, now, *, prepared=None):
         """Certify the immutable payload before granting any control authority."""
         from bindu_contracts.runtime_mode import command_mode
         command_mode(motion.runtime_mode, self.runtime_mode)
@@ -95,7 +95,8 @@ class DelegatedPositionExecutor(Executor):
         if motion.expected_revision != self.revision:
             raise Rejected('STALE_REVISION')
         self.io.validate_motion(motion, now)
-        prepared = PreparedReplay.create(motion, self.profile)
+        if prepared is None:
+            prepared = PreparedReplay.create(motion, self.profile)
         if motion.observation_id:
             held = self.io.held_reference()
             if motion.observation_id != held[0]:

@@ -41,6 +41,7 @@ ros2 launch bindu_runtime skeleton.launch.py runtime_mode:=simulation recording_
 ## 扫雪位置执行
 
 - Snowbot 使用 `DelegatedPositionExecutor`，普通 VR 跟随仍提交 `joint_target`。预设回放先在无租约时通过 `SubmitMotion` 提交 `prepared_trajectory` 或空手 `prepared_entry`；阻抗使用相应的 `_impedance` 模式。执行器校验模式、profile、关节顺序、revision 和完整 q/v/a 曲线，并由设备适配器预先封包。
+- ROS提交服务在独立工作线程校验不可变曲线，纯C++认证释放GIL；服务的专用互斥回调组等待结果时，既有`SingleThreadedExecutor`继续处理反馈。完成后回到执行线程重新检查关闭状态、revision、租约、原有效期和新鲜保持参考，再提交；准备不授予控制权，也不续期。`REPLAY_PREPARE_BEGIN/DONE`记录校验、等待、提交耗时及反馈年龄，用来区分准备阻塞和ROS通路延迟。
 - `Lease.acquire_replay` 将已准备任务关联到控制权，依据推进中的新鲜实测确认低速连续停稳；等待返回 `WAIT_REST` 原因，原请求最多等待 6 s。保持参考由设备适配器认证并在接管时复核固定身份，客户端只读取规划值。首个 `trajectory_heartbeat` 固定曲线起点，后续心跳仅更新原源时间对应的期限，不重建轨迹；正常结束、取消和异常共用执行器停止流程。`ControlExecution.replay_stop/replay_result` 使用原凭据读取最终结果，撤权后仍可查询本次结果，重复停止不刷新预算。
 - 旧`tool_pose`运动学装配仍可使用通用`Executor`及`snowbot_shovel_sim.json`的同步插值；该路径与当前统一位置契约分别由装配选择，实际算法以装配后的执行路径为准。
 - 换握、暂停和取消依赖新鲜实测反馈确认停稳。停稳确认要求反馈新鲜且速度有效；停止超时锁存未确认状态并阻止新接管。

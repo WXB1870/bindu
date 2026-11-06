@@ -4,6 +4,7 @@
 #include <cstring>
 #include <cstdint>
 #include <stdexcept>
+#include <exception>
 
 using namespace bindu::execution;
 namespace {
@@ -196,7 +197,16 @@ PyObject* prepared_from_description(PyObject*,PyObject* args) {
             for(Py_ssize_t axis=0;axis<n;++axis) d.controls.push_back(vector(PySequence_Fast_GET_ITEM(axes.p,axis)));
             pieces.push_back(std::move(d));
         }
-        return prepared_capsule(PreparedSegment::from_description(pieces,limits(ls)));
+        const auto native_limits=limits(ls);
+        PreparedSegment prepared;std::exception_ptr failure;
+        // All Python values have been copied. Certification only reads native
+        // data; let the feedback executor run while the worker validates it.
+        Py_BEGIN_ALLOW_THREADS
+        try {prepared=PreparedSegment::from_description(pieces,native_limits);}
+        catch(...) {failure=std::current_exception();}
+        Py_END_ALLOW_THREADS
+        if(failure)std::rethrow_exception(failure);
+        return prepared_capsule(std::move(prepared));
     }catch(...){return error();}
 }
 struct Buffer {

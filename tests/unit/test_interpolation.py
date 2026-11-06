@@ -93,6 +93,34 @@ class Interpolation(unittest.TestCase):
             segment.sample_into(10.1,out[0],out[0],out[2],out[3])
         self.assertEqual(out,saved)
 
+    def test_prepared_import_releases_gil_for_feedback_thread(self):
+        import sys
+        import threading
+        names = tuple('axis'+str(i) for i in range(32))
+        profile = replace(self.p, groups={'arm': list(names)}, limits={n:[-1.,1.] for n in names})
+        controls = ((0.,)*6,)*len(names)
+        description = tuple((i*.125, .125, .125, 0., controls) for i in range(1024))
+        entered, finished, errors = threading.Event(), threading.Event(), []
+        def certify():
+            entered.set()
+            try:PreparedSegment.from_description(profile, names, description)
+            except Exception as exc:errors.append(exc)
+            finally:finished.set()
+        previous = sys.getswitchinterval()
+        # Suppress incidental Python bytecode handoffs: the native import must
+        # release the interpreter before this thread can observe it in flight.
+        sys.setswitchinterval(1.)
+        worker = threading.Thread(target=certify)
+        try:
+            worker.start()
+            self.assertTrue(entered.wait(2.))
+            self.assertFalse(finished.is_set(), 'native import held the GIL until completion')
+        finally:
+            sys.setswitchinterval(previous)
+            worker.join(2.)
+        self.assertFalse(worker.is_alive())
+        self.assertFalse(errors, errors)
+
     def test_prepared_wire_roundtrip_preserves_coefficients_and_rejects_tampering(self):
         segment=PreparedSegment.target(self.p,('a',),State((.1,),(.2,),(.3,)),(.5,),10.)
         description=segment.describe()

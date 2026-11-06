@@ -144,9 +144,75 @@ def scenario(node,output,profile,path,label,signum=None,ack=True,sim_clock=False
             peer.close()
 
 
+def prepared_feedback_scenario(profile):
+    """Exercise the real async service/groups with an idle in-memory engine."""
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+    from types import SimpleNamespace as S
+    from unittest.mock import Mock, patch
+    from rclpy.node import Node
+    from rclpy.executors import SingleThreadedExecutor
+    from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
+    from bindu_execution.delegated_position import PreparedReplay
+    from bindu_runtime.execution_node import ExecutionNode
+    probe = ExecutionNode.__new__(ExecutionNode)
+    Node.__init__(probe, 'prepared_feedback_probe')
+    probe.profile, probe.runtime_mode, probe.closing = profile, 'simulation', False
+    probe.robot_io = S(supports_prepared_replay=True)
+    probe.replay_worker = ThreadPoolExecutor(max_workers=1)
+    probe.submit_group = MutuallyExclusiveCallbackGroup()
+    probe.event, probe.accepted_pub = Mock(), Mock()
+    probe.engine = S(feedback=S(stamp=probe.now()), last_tick=probe.now(), revision=1)
+    ticks, entered = [], threading.Event()
+    def feedback():
+        probe.engine.feedback.stamp = probe.now()
+        if entered.is_set():
+            ticks.append(time.monotonic())
+    def certify(motion, selected_profile):
+        entered.set()
+        time.sleep(.065)  # Deliberately longer than the unchanged 40ms budget.
+        return S(motion=motion)
+    def commit(motion, now, *, prepared):
+        assert len(ticks) >= 5, 'feedback callbacks blocked during certification'
+        assert now-probe.engine.feedback.stamp < .04, 'commit used stale feedback'
+        assert prepared.motion == motion
+    probe.engine.prepare_replay = commit
+    probe.create_timer(.005, feedback)
+    probe.create_service(SubmitMotion, '/prepared_feedback/submit', probe.submit_service,
+                         callback_group=probe.submit_group)
+    client_node = rclpy.create_node('prepared_feedback_client')
+    client = client_node.create_client(SubmitMotion, '/prepared_feedback/submit')
+    executor = SingleThreadedExecutor()
+    executor.add_node(probe); executor.add_node(client_node)
+    def wait(predicate):
+        end = time.monotonic()+3.
+        while not predicate():
+            assert time.monotonic() < end, 'prepared service timeout'
+            executor.spin_once(timeout_sec=.005)
+    try:
+        wait(client.service_is_ready)
+        msg = MotionCommand(command_id='prepared_probe', task_id='probe',
+            runtime_mode='simulation', mode='prepared_trajectory', profile_hash=profile.digest,
+            stamp=stamp(probe.now()), valid_for=.25)
+        with patch.object(PreparedReplay, 'create', side_effect=certify):
+            future = client.call_async(SubmitMotion.Request(command=msg))
+            wait(future.done)
+        assert future.result().accepted, future.result().code
+        assert probe.accepted_pub.publish.call_count == 1
+        detail = json.loads(probe.event.call_args.args[1])
+        assert detail['validation_ms'] >= 60 and detail['feedback_age_ms'] < 40
+        return dict(passed=True, feedback_ticks=len(ticks), **detail)
+    finally:
+        probe.closing = True
+        executor.remove_node(probe); executor.remove_node(client_node)
+        probe.destroy_node(); client_node.destroy_node(); executor.shutdown()
+
+
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output',required=True,type=Path)
+    parser.add_argument('--prepared-feedback',action='store_true',
+                        help='Only check feedback progress during async replay certification')
     args=parser.parse_args()
     if os.environ.get('ROS_LOCALHOST_ONLY')!='1' or not os.environ.get('ROS_DOMAIN_ID'):
         raise RuntimeError('ISOLATED_LOCALHOST_DOMAIN_REQUIRED')
@@ -155,6 +221,14 @@ def main():
     path.write_text(json.dumps({'name':'stop_probe','groups':{'arm':['j']},'limits':{'j':[-1.,1.]},
         'max_speed':1.,'capabilities':['joint_position','base_velocity'],'execution':{'stop_timeout':.8}}))
     profile=Profile.load(path)
+    if args.prepared_feedback:
+        rclpy.init()
+        try:
+            result=prepared_feedback_scenario(profile)
+            print(json.dumps(result),flush=True)
+            (output/'results.json').write_text(json.dumps(result,indent=2)+'\n')
+        finally:rclpy.shutdown()
+        return
     rclpy.init();node=rclpy.create_node('execution_stop_verifier_'+uuid.uuid4().hex[:8])
     results=[]
     try:

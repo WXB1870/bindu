@@ -127,6 +127,42 @@ class SnowbotAdapterTests(unittest.TestCase):
             self.engine.acquire_replay('test', motion.resource_groups, self.now)
         self.assertFalse(self.engine.lease_id or self.sent)
 
+    def test_worker_certified_replay_commits_with_fresh_feedback_without_refitting(self):
+        from bindu_execution.delegated_position import PreparedReplay
+        motion = self.prepared(held=True)
+        prepared = PreparedReplay.create(motion, self.profile)
+        self.now += .055
+        self.observe()
+        self.io.held_reference = Mock(return_value=('instance', 1, 2, 3, ()))
+        with patch.object(PreparedReplay, 'create', side_effect=AssertionError('refit')):
+            self.engine.prepare_replay(motion, self.now, prepared=prepared)
+        self.io.held_reference.assert_called_once()
+        self.assertEqual(self.engine.replay.motion, motion)
+        self.assertFalse(self.engine.lease_id or self.sent)
+
+    def test_worker_certified_replay_rechecks_revision_and_expiry(self):
+        from bindu_execution.delegated_position import PreparedReplay
+        motion = self.prepared(held=True)
+        prepared = PreparedReplay.create(motion, self.profile)
+        self.engine.revision += 1
+        with self.assertRaisesRegex(Rejected, 'STALE_REVISION'):
+            self.engine.prepare_replay(motion, self.now, prepared=prepared)
+        self.engine.revision = motion.expected_revision
+        self.now += .251
+        self.observe()
+        with self.assertRaisesRegex(RuntimeError, 'SOURCE_COMMAND_EXPIRED'):
+            self.engine.prepare_replay(motion, self.now, prepared=prepared)
+        self.assertFalse(self.engine.lease_id or self.sent or self.engine.replay)
+
+    def test_worker_certified_replay_does_not_bypass_stale_held_feedback(self):
+        from bindu_execution.delegated_position import PreparedReplay
+        motion = self.prepared(held=True)
+        prepared = PreparedReplay.create(motion, self.profile)
+        self.io.held_reference = Mock(side_effect=RuntimeError('SNOWBOT_PDO_NOT_ADVANCING'))
+        with self.assertRaisesRegex(RuntimeError, 'PDO_NOT_ADVANCING'):
+            self.engine.prepare_replay(motion, self.now, prepared=prepared)
+        self.assertFalse(self.engine.lease_id or self.sent or self.engine.replay)
+
     def test_replay_frozen_sample_cannot_complete_takeover_window(self):
         motion = self.prepared(); self.engine.submit(motion, self.now)
         self.io.read_feedback = lambda now, dt: self.io.last_feedback
@@ -179,7 +215,7 @@ class SnowbotAdapterTests(unittest.TestCase):
         motion = self.prepared()
         path = ROOT/'src/integration/bindu_runtime/bindu_runtime/execution_node.py'
         cls = next(n for n in ast.parse(path.read_text()).body if getattr(n, 'name', '') == 'ExecutionNode')
-        methods = [n for n in cls.body if getattr(n, 'name', '') in ('accept', 'lease', 'control')]
+        methods = [n for n in cls.body if getattr(n, 'name', '') in ('decode_motion', 'accept', 'lease', 'control')]
         seconds = lambda stamp: stamp.sec+stamp.nanosec*1e-9
         stamp = lambda t: S(sec=int(t*1e9)//1_000_000_000, nanosec=int(t*1e9)%1_000_000_000)
         ns = dict(Motion=Motion, Rejected=Rejected, seconds=seconds, stamp=stamp,
@@ -188,6 +224,7 @@ class SnowbotAdapterTests(unittest.TestCase):
         node = S(engine=self.engine, robot_io=self.io, profile=self.profile, closing=False,
                  runtime_mode='real', now=lambda: self.now, accepted_pub=Mock())
         node.accept = lambda msg: ns['accept'](node, msg)
+        node.decode_motion = lambda msg: ns['decode_motion'](node, msg)
         def message(m):
             return S(**dict(command_id=m.command_id, task_id=m.task_id, observation_id=m.observation_id,
                 runtime_mode=m.runtime_mode, schema_version=m.schema_version, mode=m.mode,
