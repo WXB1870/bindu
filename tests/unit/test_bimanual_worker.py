@@ -11,6 +11,41 @@ from bindu_kinematics.bimanual_worker import BimanualWorker
 
 
 class WorkerReceiptTests(unittest.TestCase):
+    def test_reference_reset_is_bound_to_the_existing_execution_instance_and_epoch(self):
+        source=Path(__file__).resolve().parents[2]/'src/integration/bindu_runtime/bindu_runtime/bimanual_tool_node.py'
+        node=next(n for n in ast.parse(source.read_text()).body if isinstance(n,ast.ClassDef) and n.name=='BimanualToolNode')
+        method=next(n for n in node.body if getattr(n,'name','')=='reset_grasp_reference')
+        scope={};exec(compile(ast.Module(body=[method],type_ignores=[]),str(source),'exec'),scope)
+        owner=SimpleNamespace(state=SimpleNamespace(instance_id='execution',lease_epoch=4),busy=False,
+            worker=SimpleNamespace(reset_grasp_reference=Mock()),preflight_token=-3,
+            preflight_status='ready',preflight_mode='bimanual_tool',preflight_grasp='right_axial')
+        for instance,epoch in (('previous',4),('execution',3),('execution',5)):
+            reply=scope['reset_grasp_reference'](owner,SimpleNamespace(execution_instance_id=instance,epoch=epoch),SimpleNamespace())
+            self.assertFalse(reply.ok)
+        owner.worker.reset_grasp_reference.assert_not_called()
+        request=SimpleNamespace(execution_instance_id='execution',epoch=4)
+        owner.busy=True
+        self.assertFalse(scope['reset_grasp_reference'](owner,request,SimpleNamespace()).ok)
+        owner.busy=False
+        self.assertTrue(scope['reset_grasp_reference'](owner,request,SimpleNamespace()).ok)
+        self.assertEqual(owner.preflight_status,'')
+        self.assertEqual(owner.preflight_token,-4)
+        owner.state.lease_epoch=6
+        self.assertFalse(scope['reset_grasp_reference'](owner,request,SimpleNamespace()).ok)
+        owner.worker.reset_grasp_reference.assert_called_once()
+
+    def test_preparation_reference_reset_waits_for_next_admitted_request(self):
+        worker=self.worker()
+        worker.reset_grasp_reference()
+        self.assertFalse(worker.submit('capture',1,{}))
+        self.assertTrue(worker.reset_grasp_pending)
+        worker.busy=False
+        self.assertTrue(worker.submit('preflight_capture',2,{}))
+        self.assertTrue(worker.requests.get_nowait()[-1])
+        worker.busy=False
+        self.assertTrue(worker.submit('capture',3,{}))
+        self.assertFalse(worker.requests.get_nowait()[-1])
+
     def test_continuous_axial_does_not_request_six_dimensional_prediction(self):
         from bindu_contracts.teleoperation import tool_grasp_mode
         source=Path(__file__).resolve().parents[2]/'src/integration/bindu_runtime/bindu_runtime/bimanual_tool_node.py'
@@ -27,9 +62,9 @@ class WorkerReceiptTests(unittest.TestCase):
     def test_executed_sample_belongs_only_to_its_solve_and_is_cleared_on_failure(self):
         from bindu_kinematics.bimanual_worker import _run
         requests,results=queue.Queue(),queue.Queue();observed=[]
-        requests.put(('solve',1,{},None,[],.01,'rigid',None,(.13,)))
-        requests.put(('solve',2,{},None,[],.01,'rigid',None))
-        requests.put(('capture',3,{},None,None,None,'rigid',None,(.99,)))
+        requests.put(('solve',1,{},None,[],.01,'rigid',None,(.13,),False))
+        requests.put(('solve',2,{},None,[],.01,'rigid',None,None,False))
+        requests.put(('capture',3,{},None,None,None,'rigid',None,(.99,),False))
         requests.put(None)
         solver=SimpleNamespace(last_geometry_step=None,last_constraint=None,last_timing=None,close=Mock())
         def solve(*args,**kwargs):
@@ -50,9 +85,9 @@ class WorkerReceiptTests(unittest.TestCase):
         from bindu_kinematics.bimanual_worker import _run
         requests,results=queue.Queue(),queue.Queue()
         requests.put(('gripper_body_path',1,{'arm':0.,'finger':0.},
-                      {'finger':.1},None,None,'rigid',None))
+                      {'finger':.1},None,None,'rigid',None,None,False))
         requests.put(('gripper_body_path',2,{'arm':0.,'finger':0.},
-                      {'finger':2.},None,None,'rigid',None))
+                      {'finger':2.},None,None,'rigid',None,None,False))
         requests.put(None)
         solver=SimpleNamespace(tool=np.eye(4),model_names=('arm','finger'),names=('arm',),
                                capture=Mock(),close=Mock())
@@ -78,6 +113,7 @@ class WorkerReceiptTests(unittest.TestCase):
         worker.requests, worker.results = queue.Queue(1), queue.Queue(2)
         worker.process = SimpleNamespace(is_alive=lambda:True)
         worker.ready, worker.busy = ready, busy
+        worker.reset_grasp_pending = False
         worker.error = ''
         worker.failure = ''
         worker.diagnostic = None
@@ -174,8 +210,8 @@ class WorkerReceiptTests(unittest.TestCase):
     def test_worker_errors_transport_diagnostics_and_never_reuse_previous_constraint(self):
         from bindu_kinematics.bimanual_worker import _run
         requests,results=queue.Queue(),queue.Queue()
-        requests.put(('solve',7,{},None,[],.01,'rigid',None))
-        requests.put(('capture',8,{},None,None,None,'rigid',None))
+        requests.put(('solve',7,{},None,[],.01,'rigid',None,None,False))
+        requests.put(('capture',8,{},None,None,None,'rigid',None,None,False))
         requests.put(None)
         solver=SimpleNamespace(last_constraint=None,last_timing={'stage':'measured'},close=Mock())
         def solve(*args,**kw):
@@ -202,8 +238,8 @@ class WorkerReceiptTests(unittest.TestCase):
     def test_readiness_preserves_rigid_grasp_but_leased_independent_capture_ends_it(self):
         from bindu_kinematics.bimanual_worker import _run
         requests,results=queue.Queue(),queue.Queue()
-        requests.put(('independent_capture',-1,{},None,None,None,'rigid',None))
-        requests.put(('capture',1,{},None,None,None,'independent:1',None))
+        requests.put(('independent_capture',-1,{},None,None,None,'rigid',None,None,False))
+        requests.put(('capture',1,{},None,None,None,'independent:1',None,None,False))
         requests.put(None)
         solver=SimpleNamespace(capture_independent=Mock(return_value=[]),close=Mock())
         with patch('bindu_kinematics.bimanual.BimanualQP',return_value=solver), \
@@ -217,8 +253,8 @@ class WorkerReceiptTests(unittest.TestCase):
     def test_tool_readiness_previews_grasp_but_actual_capture_commits_it(self):
         from bindu_kinematics.bimanual_worker import _run
         requests,results=queue.Queue(),queue.Queue()
-        requests.put(('preflight_capture',-1,{},None,None,None,'rigid',None))
-        requests.put(('capture',1,{},None,None,None,'rigid',None))
+        requests.put(('preflight_capture',-1,{},None,None,None,'rigid',None,None,False))
+        requests.put(('capture',1,{},None,None,None,'rigid',None,None,False))
         requests.put(None)
         solver=SimpleNamespace(capture=Mock(return_value=[]),close=Mock())
         with patch('bindu_kinematics.bimanual.BimanualQP',return_value=solver), \
