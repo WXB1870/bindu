@@ -4,6 +4,8 @@ Bindu 是基于 ROS 2 的模块化机器人控制系统，面向遥操作与移�
 
 Bindu提供硬件无关的机器人能力、共享执行契约和运行装配。Snowbot是基于Bindu的双臂遥操作应用，专属操作流程、场景参数和现场资料在独立的[Snowbot仓库](https://github.com/WXB1870/snowbot)维护，可复用能力与接口在Bindu维护。
 
+两仓只维护 `main` 与 `xavier/session-v3-position-impedance`：前者保留现有架构供真机部署，后者承载通信链路与分层重构，验证后再考虑替换。共享修复先进入 `main`；分工见 [Snowbot README](https://github.com/WXB1870/snowbot)。
+
 ## Snowbot 应用入口
 
 Snowbot 型号实现、模型与运行配方集中在独立的 [Snowbot 仓库](https://github.com/WXB1870/snowbot)：`snowbot_bringup` 管装配与配置，`snowbot_description` 管模型，`snowbot_hardware` 管厂商协议，`snowbot_teleop` 管扫雪操作流程。Bindu 保留公共契约、求解、执行和通用节点；原 Snowbot Python 模块仅保留兼容转发。Snowbot统一入口自动获取锁定的Bindu并构建两仓与厂商底层；获取、编译、配置和日常启动统一见[Snowbot部署与运行](https://github.com/WXB1870/snowbot/blob/main/运行与验证.md#首次准备与构建)。
@@ -21,9 +23,9 @@ Snowbot 型号实现、模型与运行配方集中在独立的 [Snowbot 仓库](
 
 ## 实机版本基准
 
-两仓默认行为以2026-10-28最后部署到118的兼容版`df2645a`及其配套底层、现场配置为对照；旧单仓源码保留在`xavier/deploy-grasp-waist-118-20261028`。当前跟踪／双臂回零采用用户确认的较宽口径，与历史部署有明确差异；具体数值及维护位置统一见Snowbot运行指南的[现场配置](https://github.com/WXB1870/snowbot/blob/main/运行与验证.md#首次现场配置)。新机器人从Snowbot统一入口获取锁定的Bindu并构建完整系统，命令及验收边界见[Snowbot运行指南](https://github.com/WXB1870/snowbot/blob/main/运行与验证.md)。
+两仓历史兼容基线为2026-10-28部署到118的版本`df2645a`及其配套底层、现场配置为对照；旧单仓源码保留在`xavier/deploy-grasp-waist-118-20261028`。当前跟踪／双臂回零采用用户确认的较宽口径，与历史部署有明确差异；具体数值及维护位置统一见Snowbot运行指南的[现场配置](https://github.com/WXB1870/snowbot/blob/main/运行与验证.md#首次现场配置)。新机器人从Snowbot统一入口获取锁定的Bindu并构建完整系统，命令及验收边界见[Snowbot运行指南](https://github.com/WXB1870/snowbot/blob/main/运行与验证.md)。
 
-姿态优化列为未实现项，单独保留在两仓的`xavier/posture-optimization`开发分支，不作为已部署能力。
+姿态优化仍列为未实现项；两仓旧 `xavier/posture-optimization` 仅保留历史参考，不再作为维护分支或已部署能力。
 
 ## 项目结构
 
