@@ -7,7 +7,7 @@ in-flight solve, submission, lease and bounded cleanup.
 import json
 import math
 import time
-from bindu_contracts.teleoperation import reference_tracking_budget
+from bindu_contracts.teleoperation import reference_tracking_budget, joint_reference_limits
 from bindu_teleoperation.bimanual_session import BimanualSession, ToolPoseSession, AcceptedReference
 from bindu_teleoperation.independent_session import IndependentArmsSession
 from bindu_interfaces.action import TeleopSession as TeleopAction
@@ -416,6 +416,7 @@ async def run_session(self, goal):
                         limit = float(self.cfg.get("max_reference_error", 0.15))
                         if not math.isfinite(limit) or limit <= 0:
                             raise RuntimeError("BIMANUAL_REFERENCE_LIMIT_CONFIG")
+                        hard_limits = joint_reference_limits(self.names, limit, self.cfg.get("joint_reference_error_limits", {}))
                         leads = [abs(q - measured[n]) for n, q in zip(self.names, positions)]
                         executed = None
                         # No servo trajectory exists before the first accepted
@@ -433,8 +434,9 @@ async def run_session(self, goal):
                         reference_lead, budgets = reference_tracking_budget(
                             work_reference,
                             tuple(measured[n] for n in self.names),
-                            limit,
+                            max(hard_limits),
                             executed=executed,
+                            target_limit=self.cfg.get("max_target_lead_error", limit),
                         )
                         admission = dict(
                             feedback_stamp=seconds(s.feedback_stamp),
@@ -451,10 +453,12 @@ async def run_session(self, goal):
                             worst_candidate_joint=self.names[
                                 max(range(len(leads)), key=leads.__getitem__)
                             ],
-                            reserve_rad=0.8 * limit,
-                            hard_limit_rad=limit,
+                            reserve_rad=0.8 * self.cfg.get("max_target_lead_error", limit),
+                            hard_limit_rad=max(hard_limits),
+                            joint_hard_limits_rad=dict(zip(self.names, hard_limits)),
                         )
-                        if reference_lead > limit:
+                        tracking = work_reference if executed is None else executed
+                        if any(abs(q-measured[n]) > bound for n,q,bound in zip(self.names, tracking, hard_limits)):
                             kind, value = "error", "BIMANUAL_REFERENCE_TRACKING_ERROR"
                         elif any(lead > budget + 1e-9 for lead, budget in zip(leads, budgets)):
                             kind, value = "error", "BIMANUAL_RESULT_FEEDBACK_CHANGED"

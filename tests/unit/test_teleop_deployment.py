@@ -128,7 +128,7 @@ from bindu_runtime.simulation_devices import SimulationDevices,PhysicsJoints,Phy
         with tempfile.TemporaryDirectory() as tmp:
             parameters=Path(tmp)/'parameters.json'
             parameters.write_text(json.dumps({'execution':{'target_stream_brake_lead_s':.1}}))
-            actions=namespace['assemble'](dict(runtime_mode='real',position_protocol='session_v3',
+            actions=namespace['assemble'](dict(runtime_mode='real',
                                               parameters_config=str(parameters)))
             self.assertEqual(actions[0]['parameters'][0]['target_stream_brake_lead_s'],.1)
 
@@ -233,7 +233,7 @@ class DeploymentTests(unittest.TestCase):
             recipe['arguments']['target_stream_brake_lead_s']=.12
             recipe['arguments']['position_protocol']='session_v1'
             path.write_text(json.dumps(recipe))
-            with self.assertRaisesRegex(ValueError,'TARGET_LIMITS_REQUIRE_TARGET_STREAM'):
+            with self.assertRaisesRegex(ValueError,'POSITION_PROTOCOL_REMOVED'):
                 load_deployment(path,SHARE)
 
     def test_target_dynamic_limits_accept_numeric_recipe_and_reject_invalid_or_wrong_mode(self):
@@ -253,7 +253,7 @@ class DeploymentTests(unittest.TestCase):
                     path.write_text(json.dumps(bad))
                     with self.subTest(key=key,invalid=invalid),self.assertRaisesRegex(ValueError,'TARGET_DYNAMIC_LIMIT'):
                         load_deployment(path,SHARE)
-            for key,value in (('position_protocol','session_v1'),('runtime_mode','simulation')):
+            for key,value in (('runtime_mode','simulation'),):
                 bad=json.loads(json.dumps(recipe));bad['arguments'][key]=value
                 path.write_text(json.dumps(bad))
                 with self.assertRaisesRegex(ValueError,'TARGET_LIMITS_REQUIRE_TARGET_STREAM'):
@@ -264,23 +264,28 @@ class DeploymentTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path=Path(tmp)/'deploy.json';path.write_text(json.dumps(recipe))
             _,args=load_deployment(path,SHARE)
-            self.assertEqual(args['position_protocol'],'session_v3')
+            self.assertNotIn('position_protocol',args)
             self.assertEqual(args['command_enabled'],'false')
             for key,value in (('trajectory_lead_ms',60.),('trajectory_fast_receipt',True),
                               ('position_protocol','session_v2'),('execution_mode','impedance')):
                 bad=json.loads(json.dumps(recipe));bad['arguments'][key]=value
                 path.write_text(json.dumps(bad))
                 with self.subTest(key=key),self.assertRaises(ValueError):load_deployment(path,SHARE)
-    def test_position_recipe_rejects_impedance_for_every_protocol(self):
+    def test_protocol_selectors_are_rejected_and_execution_mode_remains_separate(self):
         recipe=dict(schema_version=2,robot_launch='snowbot_adapter.launch.py',arguments=dict(
-            runtime_mode='real',device_backend='snowbot_vendor',execution_mode='impedance'))
+            runtime_mode='real',device_backend='snowbot_vendor'))
         with tempfile.TemporaryDirectory() as tmp:
             path=Path(tmp)/'deploy.json'
-            for protocol in ('legacy_guard','session_v1','session_v3'):
+            for protocol in ('legacy_guard','session_v1','session_v2','session_v3'):
                 recipe['arguments']['position_protocol']=protocol
                 path.write_text(json.dumps(recipe))
-                with self.subTest(protocol=protocol),self.assertRaisesRegex(ValueError,'SNOWBOT_EXECUTION_MODE'):
+                with self.subTest(protocol=protocol),self.assertRaisesRegex(ValueError,'POSITION_PROTOCOL_REMOVED'):
                     load_deployment(path,SHARE)
+            del recipe['arguments']['position_protocol']
+            recipe['arguments']['execution_mode']='impedance'
+            path.write_text(json.dumps(recipe))
+            with self.assertRaisesRegex(ValueError,'SNOWBOT_EXECUTION_MODE'):
+                load_deployment(path,SHARE)
 
     def test_gripper_loader_rejects_cross_mode_configuration(self):
         from snowbot_hardware.parameters import load_mode_config

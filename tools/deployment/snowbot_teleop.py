@@ -58,7 +58,7 @@ def preflight(path, *, diagnostics=True):
 
 
 def startup_lock(args):
-    from snowbot_bringup.teleop.run_vr import startup_lock as acquire
+    from snowbot_bringup.runtime.run_vr import startup_lock as acquire
     return acquire(os.environ.get('ROS_DOMAIN_ID', '0'), args['namespace'], inherit=True)
 
 

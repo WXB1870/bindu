@@ -4,6 +4,6 @@ import sys
 
 if __name__ == "__main__":
     from runpy import run_module
-    run_module('snowbot_bringup.teleop.snowbot_waist_test', run_name="__main__")
+    run_module('snowbot_bringup.runtime.snowbot_waist_test', run_name="__main__")
 else:
-    sys.modules[__name__] = import_module('snowbot_bringup.teleop.snowbot_waist_test')
+    sys.modules[__name__] = import_module('snowbot_bringup.runtime.snowbot_waist_test')

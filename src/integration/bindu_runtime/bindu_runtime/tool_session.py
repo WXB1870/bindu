@@ -84,17 +84,9 @@ class ToolSession:
         parameter(
             node, "execution_mode", "position", descriptor=ParameterDescriptor(read_only=True)
         )
-        parameter(
-            node,
-            "position_protocol",
-            "legacy_guard",
-            descriptor=ParameterDescriptor(read_only=True),
-        )
-        self.trajectory_reference = (
-            not self.simulation
-            and position_contract
-            and node.get_parameter("position_protocol").value == "session_v3"
-        )
+        if "position_protocol" in node._parameter_overrides:
+            raise ValueError("SNOWBOT_POSITION_PROTOCOL_REMOVED: session_v3 is fixed; remove position_protocol")
+        self.trajectory_reference = not self.simulation and position_contract
         if type(self.cfg.get("rigid_reference_prediction", False)) is not bool:
             raise ValueError("RIGID_REFERENCE_CONFIG")
         from .teleop_deployment import apply_execution_tracking
