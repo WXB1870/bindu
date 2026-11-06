@@ -212,10 +212,7 @@ class InitialCollisionRecoveryTests(unittest.TestCase):
         check=make_collision_checker(description/recipe['display_urdf'],recipe,conservative_convex=True,
                                      tool_present=False,validation_only=True)
         names=list(feedback);start=np.array([feedback[n] for n in names])
-        # Keep the recorded recovery destination independent of daily A routing.
-        example=package_share('snowbot_bringup')/'config/examples/snowbot/bimanual_snowbot_shovel.json'
-        prepared=json.loads(example.read_text())['demo']['initial_positions_rad']
-        end=np.array([prepared.get(n,feedback[n]) for n in names])
+        end=np.array([pico['prepare_positions_rad'][n] if n not in ('head_joint_1','head_joint_2','arm_l_joint_8','arm_r_joint_8') else feedback[n] for n in names])
         count=int(np.ceil(np.max(abs(end-start))/.001))
         samples=[dict(t=float(f),q=dict(zip(names,start+f*(end-start))),tool=np.eye(4)) for f in np.linspace(0,1,count+1)]
         with self.assertRaisesRegex(ValueError,'SELF_COLLISION'):
@@ -237,7 +234,7 @@ class LoadedPreparePathTests(unittest.TestCase):
         solver.handle=1;solver.model_names=['joint'];solver.nq=1
         solver.limits={'joint':(-1.,1.)};solver.collision_step=.01
         solver.grasp_position_tolerance=.001;solver.grasp_rotation_tolerance=.01
-        solver.grasp_reference=np.eye(4);solver.capture=Mock();solver.grasp_mode='rigid'
+        solver.grasp_reference=np.eye(4);solver.capture=Mock()
         solver._ptr=lambda value:value
         def relative(handle,q,nq,out):
             out[:]=np.eye(4);out[0,3]=relative_shift(q[0]);return 1
@@ -507,16 +504,16 @@ class CandidateGeometryBacktracking(unittest.TestCase):
     def setUpClass(cls):
         cls.config=load_tool_config(package_share("snowbot_bringup")/'config/robots/snowbot/bimanual_snowbot_real.json')
         cls.config['urdf']=str(package_share("snowbot_description")/'urdf/snowbot_control.urdf')
+        cls.config['demo']['max_grasp_penetration_m']=.0005
+        # These historical collision fixtures exercise the optional contact
+        # checker even when the deployed recipe exempts shaft/gripper contact.
+        cls.config['demo']['check_grasp_contacts']=True
         # Freeze the origin-task semantics of these historical fault fixtures.
         cls.config['tool_tracking_point_in_tool_m']=[0.,0.,0.]
         cls.config.pop('coupled_locked_joints',None)
         cls.profile=Profile.load(package_share("snowbot_bringup")/'config/robots/snowbot/snowbot_real_position.json')
         recorded=json.loads((ROOT/'tests/config/teleoperation/snowbot_candidate_steps.json').read_text())
-        # Keep the original long-tool geometry with these recorded fault inputs.
         cls.config.update(recorded['recorded_config'])
-        # The recorded fault probe deliberately uses 0.5 mm contact allowance.
-        cls.config['demo']['max_grasp_penetration_m']=.0005
-        cls.config['demo']['check_grasp_contacts']=True
         # Preserve the original geometry fixtures independently of live thresholds.
         cls.config['grasp_position_tolerance_m']=.01
         cls.config['grasp_rotation_tolerance_rad']=.02
@@ -532,35 +529,23 @@ class CandidateGeometryBacktracking(unittest.TestCase):
     def step(self,qp,case):
         return qp.solve(case['feedback'],case['target'],reference=case['reference'],dt=case['dt'],target_stamp=case['target_stamp'])
 
-    def test_recorded_candidates_backtrack_only_invalid_full_steps(self):
+    def test_three_recorded_rejections_become_valid_common_half_steps(self):
         for case in self.cases:
             with self.subTest(dt=case['dt']):
                 before=self.solver(case,False);raw=[];original=before.check_path
                 def record(feedback,*path):
                     raw.append(np.array(path[0]).copy());return original(feedback,*path)
-                rejected=False
                 try:
-                    # Inputs are frozen; an updated QP may propose a safe full
-                    # step. The direct geometry check is the feasibility oracle.
-                    try:
-                        with patch.object(before,'check_path',side_effect=record):
-                            full,_=self.step(before,case)
-                    except ValueError as exc:
-                        self.assertTrue(str(exc).startswith('GRASP_PENETRATION'),str(exc))
-                        rejected=True
-                        self.assertFalse(before.captured)
-                    else:
-                        np.testing.assert_allclose(full,raw[0],atol=1e-10)
-                        self.assertTrue(before.captured)
+                    with patch.object(before,'check_path',side_effect=record),self.assertRaisesRegex(ValueError,'GRASP_PENETRATION'):
+                        self.step(before,case)
+                    self.assertFalse(before.captured)
                 finally:before.close()
                 after=self.solver(case)
                 try:
                     positions,metrics=self.step(after,case);reference=np.array(case['reference'])
-                    scale=.5 if rejected else 1.
-                    np.testing.assert_allclose(np.array(positions)-reference,scale*(raw[0]-reference),atol=1e-8)
+                    np.testing.assert_allclose(np.array(positions)-reference,.5*(raw[0]-reference),atol=1e-8)
                     self.assertTrue(after.captured)
-                    if rejected:self.assertEqual(after.last_geometry_step['scale'],scale)
-                    else:self.assertIsNone(after.last_geometry_step)
+                    self.assertEqual(after.last_geometry_step['scale'],.5)
                     self.assertGreater(np.max(np.abs(np.array(positions)-reference)),.001)
                     after.check_path(case['feedback'],positions,reference)
                     self.assertTrue(np.isfinite(metrics).all())

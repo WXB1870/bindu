@@ -161,13 +161,11 @@ from bindu_runtime.simulation_devices import SimulationDevices,PhysicsJoints,Phy
             context['parameters_config']=str(parameters)
             actions=namespace['assemble'](context)
             nodes={item['executable']:item['parameters'][0] for item in actions if 'executable' in item}
-            self.assertNotIn('teleop_tool',nodes)
-            self.assertNotIn('teleop_mode',nodes)
-            self.assertTrue(nodes['pico_control']['position_contract'])
-            for name in ('pico_control','snowbot_adapter'):
+            for name in ('teleop_tool','pico_control','snowbot_adapter'):
                 self.assertEqual(nodes[name]['parameters_config'],str(parameters))
             self.assertNotIn('target_stream_brake_lead_s',nodes['snowbot_adapter'])
-            self.assertIs(nodes['pico_control']['position_contract'],True)
+            for name in ('teleop_tool','pico_control'):
+                self.assertIs(nodes[name]['position_contract'],True)
             context['target_stream_brake_lead_s']='.12'
             with self.assertRaisesRegex(ValueError,'SNOWBOT_BRAKE_LEAD_MOVED'):
                 namespace['assemble'](context)
@@ -180,7 +178,8 @@ from bindu_runtime.simulation_devices import SimulationDevices,PhysicsJoints,Phy
             actions=namespace['assemble'](simulation)
             nodes={item['executable']:item['parameters'][0] for item in actions if 'executable' in item}
             self.assertIn('snowbot_position_sim',nodes)
-            self.assertIs(nodes['pico_control']['position_contract'],True)
+            for name in ('teleop_tool','pico_control'):
+                self.assertIs(nodes[name]['position_contract'],True)
             simulation['pico_simulation_demo']='true'
             with self.assertRaisesRegex(ValueError,'PICO_DEMO_REQUIRES'):
                 namespace['assemble'](simulation)

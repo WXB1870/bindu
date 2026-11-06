@@ -25,11 +25,9 @@ from bindu_hardware.robot_io.system import RobotIO
 from bindu_teleoperation.bimanual_session import AcceptedReference, BimanualSession, ToolPoseSession, ToolPause
 from bindu_teleoperation.independent_session import IndependentArmsSession
 from bindu_runtime.stop_evidence import stop_feedback_matches
-from bindu_runtime.execution_client import wait_for
-from bindu_runtime.session_operation import LeaseRejection, SessionResult
 
 
-SOURCE = Path(__file__).resolve().parents[2]/'src/integration/bindu_runtime/bindu_runtime/tool_session.py'
+SOURCE = Path(__file__).resolve().parents[2]/'src/integration/bindu_runtime/bindu_runtime/bimanual_tool_node.py'
 
 
 class Rig:
@@ -91,19 +89,14 @@ class Rig:
                 super().accept(*args)
                 self.commits.append((rig.clock,self.positions,self.sampled_at))
         tree = ast.parse(SOURCE.read_text())
-        node = next(n for n in tree.body if isinstance(n,ast.ClassDef) and n.name=='ToolSession')
-        follow = ast.parse(SOURCE.with_name('tool_follow.py').read_text())
-        execute = next(n for n in follow.body if getattr(n, 'name', '') == 'run_session')
-        execute.name = 'execute'
-        node.body = [n for n in node.body if getattr(n, 'name', '') != 'execute'] + [execute]
-        names = {'execute','solution_report_due','goal','check','startup_input_ready','wait','begin_stop','stop','stop_pending','execution_revision','cleanup_event'}
+        node = next(n for n in tree.body if isinstance(n,ast.ClassDef) and n.name=='BimanualToolNode')
+        names = {'execute','goal','check','startup_input_ready','wait','begin_stop','stop','stop_pending','execution_revision','cleanup_event'}
         methods = [n for n in node.body if getattr(n,'name','') in names]
         namespace = dict(time=S(monotonic=lambda:self.steady),json=json,math=__import__('math'),
             __name__='bindu_runtime.bimanual_tool_node',__package__='bindu_runtime',
             reference_tracking_budget=reference_tracking_budget,
-            stop_feedback_matches=stop_feedback_matches, wait_for=wait_for,
-            LeaseRejection=LeaseRejection, SessionResult=SessionResult,
             joint_reference_limits=joint_reference_limits,
+            stop_feedback_matches=stop_feedback_matches,
             WORKER_POLL_PERIOD=next(ast.literal_eval(n.value) for n in tree.body
                 if isinstance(n,ast.Assign) and any(isinstance(t,ast.Name) and
                     t.id=='WORKER_POLL_PERIOD' for t in n.targets)),
@@ -128,8 +121,6 @@ class Rig:
         node.input_source,node.require_recording='vr',False
         node.independent_enabled=True
         node.trajectory_reference=False
-        node.detailed_diagnostics=True
-        node.next_solution_report=0.
         node.worker_error=''
         node.worker=S(ready=True,busy=False,diagnostic=None,submit=self.solve)
         node.frames={}
@@ -284,17 +275,6 @@ class Rig:
 
 
 class BimanualTransactions(unittest.IsolatedAsyncioTestCase):
-
-    async def test_routine_telemetry_is_sampled_without_reducing_accepted_targets(self):
-        rig = Rig(control_step=.005, steady_step=.005)
-        rig.node.detailed_diagnostics = False
-        rig.node.next_solution_report = 0.
-        result = await rig.node.execute(rig.goal)
-        self.assertTrue(result.success, result.code)
-        reports = [event for event in rig.events if event[0] == 'BIMANUAL_QP_RESULT']
-        self.assertGreater(len(rig.commands), len(reports))
-        self.assertLessEqual(rig.goal.publish_feedback.call_count, 15)
-
     async def test_restart_waits_for_new_pair_instead_of_consuming_old_stop_projection(self):
         rig=Rig();original=rig.update
         def update():

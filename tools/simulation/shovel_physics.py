@@ -12,14 +12,12 @@ import numpy as np
 from scipy.spatial.transform import Rotation
 
 
-
-
 def skew(v):
     x, y, z = v
     return np.array([[0., -z, y], [z, 0., -x], [-y, x, 0.]])
 
 
-from snowbot_bringup.simulation.physics import ActuatorResponse, MeasuredJointVelocity, joint_drive_parameters, wooden_parts, compound_mass
+from snowbot_bringup.simulation.physics import MeasuredJointVelocity, joint_drive_parameters, wooden_parts, compound_mass
 
 
 

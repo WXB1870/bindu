@@ -29,7 +29,7 @@ class GraspReferenceLifetimeTests(unittest.TestCase):
         s.expected_relative=np.eye(4);s.rigid_grasp_q=s.rigid_grasp_reference=None
         s.reference_kinematics=True;s.max_reference_error=.15
         s.grasp_position_tolerance=.01;s.grasp_rotation_tolerance=.02
-        s.axial=s.left_axial=None;s.tool=np.eye(4);s.collision_check=None;s.tracking_point=np.zeros(3)
+        s.axial=None;s.tool=np.eye(4);s.collision_check=None;s.tracking_point=np.zeros(3)
         s.native_config=NS['NativeConfig']();s.coupled_locked_joints=()
         s.shared_motion_weight=0.;s.limit_avoidance=(0.,0.)
         def relative(handle,q,n,out):
@@ -244,7 +244,7 @@ class ShaftContactBandTests(unittest.TestCase):
         shape=lambda radius,length:S(radius=radius,length=length)
         for check_contacts in (False,True):
             namespace=dict(np=np,names=['hand','base'],ends=np.array(self.ends),radius=.018,
-                grasp_penetration=.005,geometry_kind='rod',has_pan=False,shaft_reference=np.zeros(3),handle_queries=[],
+                grasp_penetration=.005,geometry_kind='rod',has_pan=False,
                 recipe={'left_grip_in_tool_m':[0.,0.,0.]},shaft_axis=np.array([1.,0.,0.]),
                 check_grasp_contacts=check_contacts,contact_endpoint_tolerance=.1,
                 _shaft_contact_span=_shaft_contact_span,fcl=S(Cylinder=shape,Capsule=shape))
@@ -270,7 +270,7 @@ class UnheldGraspPolicyTests(unittest.TestCase):
         s.tracking=True;s.feedforward=False;s.max_reference_error=.15
         s.names=('joint',);s.model_names=s.names;s.nq=1
         s.posture_policy=None;s.limits={'joint':(-1.,1.)};s.speed={'joint':1.}
-        s.grasp_mode='rigid';s.grasp_reference=np.eye(4);s.measured_rigid_grasp=True;s.left_axial=None
+        s.grasp_mode='rigid';s.grasp_reference=np.eye(4);s.measured_rigid_grasp=True
         s.expected_relative=np.eye(4);s.grasp_position_tolerance=.01;s.grasp_rotation_tolerance=.02
         s._q=lambda feedback:np.array([feedback['joint']]);s._ptr=lambda x:x
         relative=np.eye(4);relative[0,3]=distance

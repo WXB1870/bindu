@@ -180,10 +180,8 @@ class IndependentNativeTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError,'SELF_COLLISION'):
                     solver.check_independent_path(case['feedback'],larger,reference)
 
-    def test_zero_can_capture_measured_axial_tool_and_independent_arms(self):
-        self.assertEqual(self.solver.cfg['grasp_reference_source'],'measured_axial')
-        self.solver.capture(self.feedback)
-        self.assertEqual(self.solver.grasp_mode,'right_axial')
+    def test_zero_can_capture_normally_but_tool_grasp_still_rejects(self):
+        with self.assertRaisesRegex(ValueError,'BIMANUAL_GRASP_POSE'):self.solver.capture(self.feedback)
         poses=self.solver.capture_independent(self.feedback)
         self.assertEqual(poses.shape,(2,4,4))
         out,_=self.solver.solve_independent(self.feedback,poses,active_mask=1,
@@ -229,7 +227,7 @@ class IndependentNativeTests(unittest.TestCase):
         np.testing.assert_allclose(reference[:nshared],0.,atol=1e-12)
         np.testing.assert_allclose(reference[nshared+nleft:],0.,atol=1e-12)
         invalid=dict(self.feedback);name=solver.names[0]
-        invalid[name]=profile.limits[name][1]+solver.measured_limit_tolerance+.001
+        invalid[name]=profile.limits[name][1]+.001
         reference=np.array([invalid[n] for n in solver.names]);reference[0]-=.002
         with self.assertRaisesRegex(ValueError,'MEASURED_POSITION_LIMIT'):
             solver.solve_independent(invalid,nominal,active_mask=1,reference=reference,dt=.01)
@@ -300,7 +298,7 @@ class IndependentNativeTests(unittest.TestCase):
             self.assertGreater(np.max(np.abs(np.asarray(out)-held)),1e-6)
         with self.assertRaisesRegex(ValueError,'REFERENCE_TRACKING_ERROR'):
             solver.capture_independent(measured,reference=held+.2)
-        invalid=dict(measured);invalid['arm_l_joint_1']=profile.limits['arm_l_joint_1'][0]-solver.measured_limit_tolerance-.001
+        invalid=dict(measured);invalid['arm_l_joint_1']=profile.limits['arm_l_joint_1'][0]-.001
         with self.assertRaisesRegex(ValueError,'MEASURED_POSITION_LIMIT'):
             solver.capture_independent(invalid,reference=[invalid[n] for n in solver.names])
         solver.empty_collision_check=lambda _:(_ for _ in ()).throw(ValueError('SELF_COLLISION'))

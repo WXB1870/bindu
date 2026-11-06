@@ -136,11 +136,7 @@ def coupling_metrics(samples, config, captures):
         if i<0:continue
         left=transform(sample['flanges'][config['left_frame']]);right=transform(sample['flanges'][config['right_frame']])
         relative=np.linalg.inv(left) @ right
-        if i!=last_capture:
-            reference=relative.copy();last_capture=i
-            if config.get('grasp_reference_source') in ('measured_rigid','measured_axial'):
-                nominal_point=(np.linalg.inv(mount) @ reference @ np.r_[point,1.])[:3]
-                axis=mount[:3,:3].T @ reference[:3,:3] @ right_axis
+        if i!=last_capture:reference=relative.copy();last_capture=i
         observed.add(i)
         tool=left @ mount
         position=float(np.linalg.norm((np.linalg.inv(tool) @ right @ np.r_[point,1.])[:3]-nominal_point))

@@ -164,30 +164,6 @@ class ReplayPayloadTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,'SOURCE_AMBIGUOUS'):dataset(root,101.)
 
 
-    def test_missing_capture_requires_explicit_reanchor_and_recorded_source_binding(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root=Path(directory)
-            with (root/'vr-raw.jsonl').open('w') as output:
-                for source in ('headset','other'):
-                    for side in ('left','right'):
-                        output.write(json.dumps(dict(data=packet(2,side,100.1,source)))+'\n')
-            (root/'vr-health.jsonl').write_text('')
-            capture=dict(input_seq=1,input_stamp=100.,input_source_id='headset:coordinator')
-            (root/'runtime-events.jsonl').write_text(json.dumps(dict(data=dict(stamp=100.,
-                state='BIMANUAL_CAPTURED',code=json.dumps(capture))))+'\n')
-            bindings={'headset:coordinator':'headset'}
-            with self.assertRaisesRegex(ValueError,'CAPTURE_INPUT_MISSING'):
-                dataset(root,101.,source_bindings=bindings)
-            with self.assertRaisesRegex(ValueError,'CAPTURE_INPUT_MISSING'):
-                dataset(root,101.,reanchor_missing_capture=True)
-            segments,_=dataset(root,101.,source_bindings=bindings,reanchor_missing_capture=True)
-            segment=segments[0]
-            self.assertTrue(segment['capture_input_missing'])
-            self.assertEqual(segment['capture']['input_seq'],1)
-            self.assertEqual(segment['replay_baseline_input_seq'],2)
-            self.assertEqual(segment['pairs'][0][0]['source_id'],'headset')
-
-
 class CaptureCliTests(unittest.TestCase):
     def test_replay_cli_reports_a_failed_segment_with_nonzero_exit_status(self):
         from tests.replay import replay_vr
@@ -233,7 +209,7 @@ class CaptureCliTests(unittest.TestCase):
                     'MotionCommand','GripperState','TeleopModeState')}),
                 'bindu_runtime.common':S(EVENT_QOS=object()),
                 'bindu_runtime.robot_setup':S(RobotSetup=S(load=lambda path:robot)),
-                'snowbot_bringup.visualization.snowbot_errors':S(EndEffectorErrors=lambda *a:S(sample=lambda *a:{}),pinocchio_fk=lambda *a:None),
+                'tools.teleop.snowbot_errors':S(EndEffectorErrors=lambda *a:S(sample=lambda *a:{}),pinocchio_fk=lambda *a:None),
                 'rosidl_runtime_py.convert':S(message_to_ordereddict=lambda message:message)}
             args=S(robot_config=config,run_id='run',runtime_mode='simulation',device_backend='kinematic',
                 state_file=None,trace_file=root/'diagnostics.jsonl',namespace='fixture',duration=0.,record_inputs=True)
@@ -264,25 +240,6 @@ class CaptureCliTests(unittest.TestCase):
 
 
 class ReplayMappingTests(unittest.TestCase):
-    def test_coupling_metrics_use_each_measured_capture_as_the_reference(self):
-        import numpy as np
-        from bindu_kinematics.tool_geometry import coupling_metrics
-        identity=np.eye(4)
-        samples=[]
-        for t,x in ((0.,.8),(1.,.81),(2.,.5)):
-            right=identity.copy();right[0,3]=x
-            samples.append(dict(t=t,flanges={'left':identity.ravel(),'right':right.ravel()}))
-        cfg=dict(left_frame='left',right_frame='right',left_to_tool=identity.ravel(),
-            right_to_tool=identity.ravel(),grasp_reference_source='measured_axial',
-            right_axial_grasp=dict(axis_in_tool=[0.,0.,1.],grip_in_right_flange_m=[0.,0.,0.]),
-            grasp_rotation_tolerance_rad=.05,demo=dict(acceptance=dict(max_grip_error_m=.02)))
-        # Only flange decoding is replaced; the production metric owns capture scopes.
-        module=S(BimanualQP=S(_transform=lambda value:np.asarray(value).reshape(4,4)))
-        with patch.dict(sys.modules,{'bindu_kinematics.bimanual':module}):
-            result=coupling_metrics(samples,cfg,[dict(t=0.,mode='right_axial'),dict(t=2.,mode='right_axial')])
-        self.assertTrue(result['passed'])
-        self.assertAlmostEqual(result['modes']['right_axial']['max_grip_position_m'],.01)
-
     def test_actual_sessions_keep_targets_heading_and_freshness_after_clock_rebase(self):
         import numpy as np
         from dataclasses import replace

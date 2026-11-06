@@ -66,7 +66,7 @@ class TimingSummaries(unittest.TestCase):
         # Execute production launch/assembly/receiver code with inert launch,
         # ROS and process boundaries. No listener or control node is started.
         from tools.teleop.run_vr import commands
-        from bindu_runtime.teleop_deployment import TARGET_STREAM_LIMIT_DEFAULTS, target_stream_limits, execution_backend, position_contract_for
+        from bindu_runtime.teleop_deployment import TARGET_STREAM_LIMIT_DEFAULTS, target_stream_limits
         runtime=ROOT/'src/integration/bindu_runtime'
         def load_definition(path,name,namespace):
             source=ast.parse(path.read_text())
@@ -94,7 +94,7 @@ class TimingSummaries(unittest.TestCase):
         robot.tool_config=config/selection['teleop']['tool']
         assembly=load_definition(package_share('snowbot_bringup')/'snowbot_bringup/assembly.py','assemble',
             dict(Path=Path,json=json,TARGET_STREAM_LIMIT_DEFAULTS=TARGET_STREAM_LIMIT_DEFAULTS,
-                 target_stream_limits=target_stream_limits,execution_backend=execution_backend,position_contract_for=position_contract_for,LaunchConfiguration=Configuration,ParameterValue=Parameter,
+                 target_stream_limits=target_stream_limits,LaunchConfiguration=Configuration,ParameterValue=Parameter,
                  IfCondition=lambda v:v,LogInfo=lambda **kw:kw,Node=lambda **kw:kw,
                  RobotSetup=S(load=lambda *args,**kw:robot),resolve_mode=lambda mode:mode))
         launch=load_definition(package_share('snowbot_bringup')/'launch/robot_teleop.launch.py','generate_launch_description',
@@ -122,7 +122,7 @@ class TimingSummaries(unittest.TestCase):
                 self.assertIs(nodes['execution']['parameters'][0].get('command_enabled',False),False)
                 class RuntimeBoundary:
                     def __init__(self,*args,**kw):self.simulation=True;self.runtime_mode='simulation'
-                    def declare_parameter(self,key,value,**kw):return S(value=params.setdefault(key,value))
+                    def declare_parameter(self,key,value,**kw):params.setdefault(key,value)
                     def get_parameter(self,key):return S(value=params.get(key,''))
                     def create_publisher(self,*args):return S()
                     def create_timer(self,*args):return S()
@@ -144,21 +144,19 @@ class TimingSummaries(unittest.TestCase):
     def test_coordinator_gap_labels_ros_clock_separately_from_monotonic(self):
         from bindu_contracts.teleoperation import VRFrame
         from snowbot_teleop.control import PicoControl,PicoFeedback,PICO_MAPPING
-        path=package_share('snowbot_teleop')/'snowbot_teleop/application.py'
-        node=next(n for n in ast.parse(path.read_text()).body if isinstance(n,ast.ClassDef) and n.name=='PicoApplication')
+        path=package_share('snowbot_teleop')/'snowbot_teleop/node.py'
+        node=next(n for n in ast.parse(path.read_text()).body if isinstance(n,ast.ClassDef) and n.name=='PicoNode')
         method=next(n for n in node.body if getattr(n,'name','')=='on_frame')
         clock=S(ros=100.,mono=10.)
-        namespace=dict(time=S(monotonic=lambda:clock.mono),json=json,seconds=lambda x:x,copy=__import__('copy').copy,
+        namespace=dict(time=S(monotonic=lambda:clock.mono),json=json,seconds=lambda x:x,
                        VRFrame=VRFrame,VRInput=lambda **kw:S(**kw),PICO_MAPPING=PICO_MAPPING)
         exec(compile(ast.Module(body=[method],type_ignores=[]),str(path),'exec'),namespace)
         events=[];projected=[]
-        from snowbot_hardware.parameters import load_parameters
-        owner=S(matches_mode=lambda m:True,frames={},last_pair_at=None,base=None,runtime_parameters=load_parameters(),
+        owner=S(matches_mode=lambda m:True,frames={},last_pair_at=None,base=None,
                 now=lambda:clock.ros,event=lambda *v:events.append(v),
                 control=PicoControl(),feedback=lambda:PicoFeedback(clock.ros,True,('closed','closed')),
-                last_prepare_check=None,release_until=0.,projected=S(publish=projected.append,get_subscription_count=lambda:1),gripper_projected=S(publish=lambda _:None),
-                instance_id='offline',position_contract=True,handoff_complete=True,independent_grippers=False,
-                tool=S(on_frame=lambda _:None),publish_mode=lambda:None)
+                last_prepare_check=None,release_until=0.,projected=S(publish=projected.append),
+                instance_id='offline',position_contract=True,handoff_complete=True)
         def pair(seq):
             for side in ('left','right'):
                 message=S(source_id='source',seq=seq,stamp=clock.ros,side=side,
@@ -187,8 +185,8 @@ class TimingSummaries(unittest.TestCase):
         outgoing=projected[-2]
         self.assertEqual(outgoing.trigger,1.)
         self.assertEqual(list(outgoing.button_edges),[0]*6+[1,0])
-        path=ROOT/'src/integration/bindu_runtime/bindu_runtime/tool_session.py'
-        definition=next(n for n in ast.parse(path.read_text()).body if isinstance(n,ast.ClassDef) and n.name=='ToolSession')
+        path=ROOT/'src/integration/bindu_runtime/bindu_runtime/bimanual_tool_node.py'
+        definition=next(n for n in ast.parse(path.read_text()).body if isinstance(n,ast.ClassDef) and n.name=='BimanualToolNode')
         method=next(n for n in definition.body if getattr(n,'name','')=='on_frame')
         exec(compile(ast.Module(body=[method],type_ignores=[]),str(path),'exec'),namespace)
         tool=S(matches_mode=lambda m:True,frames={},simulation=False,busy=True,
@@ -306,10 +304,7 @@ class VuerPipeline(unittest.IsolatedAsyncioTestCase):
             def publish(msg):published.append(msg);clock.value+=RECORDED_GAP/2
             node.publisher=S(publish=publish);node.emit_health=reports.append
             clock.value=10.2
-            # Both queue ends use the same injected clock, unlike real Mac
-            # Python 3.9 subprocesses whose monotonic epochs may differ.
-            with patch('bindu_teleoperation.vr.receiver.sys.platform','linux'):
-                node.poll()
+            node.poll()
             summary=next(r for r in reports if r['stage']=='input_pipeline')
             self.assertAlmostEqual(summary['maxima']['ros_poll_callback']['seconds'],RECORDED_GAP)
             self.assertAlmostEqual(summary['maxima']['frame_queue_wait']['seconds'],.2)

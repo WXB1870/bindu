@@ -286,7 +286,7 @@ class DualArmFilterTests(unittest.TestCase):
                        replace(right,seq=right.seq+1,stamp=1.10),1.10)
         self.assertEqual(session.active_mask,2)
         self.assertIsNone(session.target)
-        session=BimanualSession(dict(self.cfg,grasp_reference_source='configured'),1,0.);home=self.engage(session)
+        session=self.session();home=self.engage(session)
         left,right=self.feed(session,1.09)
         session.ingest(replace(left,seq=left.seq+1),
                        replace(right,seq=right.seq+1,virtual_grip=True),1.09)
