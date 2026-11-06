@@ -14,6 +14,9 @@ from snowbot_teleop.replay import (
 )
 
 
+TIMING = dict(period_s=.02, command_ttl_s=.25, renewal_period_s=.5)
+
+
 class FakePort:
     def __init__(self, plan):
         self.plan, self.now, self.sent, self.released = plan, 0., [], False
@@ -24,28 +27,54 @@ class FakePort:
         self.acquired_at = None
     def steady(self): return self.now
     def ros(self): return 100.+self.now+self.clock_shift
-    def feedback_stamp(self): return 100.+self.now
     def elapsed(self): return 0. if self.acquired_at is None else self.now-self.acquired_at
     def wait_until(self, due):
         self.now = max(self.now, due)
         if self.late: self.now += .1
-    def check(self, owned):
+    def prepare(self, plan):
+        if self.acquired_at is not None: raise AssertionError('preparation owns a lease')
+    def outcome(self):
         if self.fail_after is not None and len(self.sent) >= self.fail_after:
             raise RuntimeError('STALE_FEEDBACK')
-        q = self.plan.sample(self.elapsed())
-        return dict(zip(NAMES, q)), dict.fromkeys(NAMES, 0.)
+        if self.sent and self.elapsed() >= self.plan.duration+.2:
+            return dict(completed=True, final=True, measured_arrival_confirmed=True,
+                nominal_arrival_confirmed=False, measured_end_error_rad={}, error=None,
+                details=[], stop_confirmed=True)
+        return None
     def acquire(self):
         self.acquired_at = self.now
         if self.acquire_failure: raise RuntimeError('ACQUIRE_ACK_TIMEOUT')
     def renew(self): pass
-    def send(self, q, source): self.sent.append((self.now, source, tuple(q)))
-    def release_and_confirm_stop(self):
+    def send(self, source): self.sent.append((self.now, source, ()))
+    def finish(self):
         self.released = True
-        return True
-    def arrival_tolerance(self, name): return .002
+        return (dict(completed=True, final=True, measured_arrival_confirmed=True,
+                     nominal_arrival_confirmed=False, measured_end_error_rad={}, error=None,
+                     details=[], stop_confirmed=True) if self.elapsed() >= self.plan.duration+.2 else
+                dict(completed=False, final=True, measured_arrival_confirmed=False,
+                     nominal_arrival_confirmed=False, measured_end_error_rad=None, error=None,
+                     details=[], stop_confirmed=True))
 
 
 class PrimitiveReplayTests(unittest.TestCase):
+    def test_prepared_waist_lead_preserves_the_original_piecewise_curve(self):
+        from bindu_contracts.contracts import Motion
+        from bindu_execution.delegated_position import PreparedReplay
+        from bindu_execution.interpolation import PreparedSegment
+        axes = tuple((0., 0., 0., .01, .01, .01) for _ in NAMES)
+        plan = Replay((0., 1.), ((0.,)*16, (.01,)*16), NAMES, 'tool', 'kin', .5, .2,
+                      curves=((0., 1., 1., 0., axes),))
+        knots = plan.trajectory_knots()
+        motion = Motion('curve', '', 0, 'profile', 'task', '', 'prepared_trajectory', '', 0., .25,
+            names=NAMES, offsets=tuple(k[0] for k in knots), points=tuple(k[1] for k in knots),
+            velocities=tuple(k[2] for k in knots), accelerations=tuple(k[3] for k in knots))
+        profile = S(limits=dict.fromkeys(NAMES, (-1., 1.)), speed=lambda n: 1.,
+                    acceleration=lambda n: 4., jerk=lambda n: 50.)
+        prepared = PreparedReplay.create(motion, profile)
+        curve = PreparedSegment.from_description(profile, NAMES, prepared.description)
+        for t in (0., .1, .2, .7, 1.4, 2., 2.1, 2.2):
+            self.assertTrue(all(abs(a-b) < 1e-12 for a,b in zip(curve.sample(t).q, plan.sample(t))))
+
     def plan(self, speed=1.):
         return Replay((0., .02, .04), ((0.,)*16, (.001,)*16, (.002,)*16),
                       NAMES, 'g099-curved', 'hash', speed)
@@ -53,7 +82,7 @@ class PrimitiveReplayTests(unittest.TestCase):
     def test_completion_waits_for_measured_arrival_and_releases(self):
         p = self.plan()
         port = FakePort(p)
-        r = run_replay(p, port)
+        r = run_replay(p, port, timing=TIMING)
         self.assertTrue(r['completed'] and r['measured_arrival_confirmed'] and r['stop_confirmed'])
         self.assertTrue(port.released)
         self.assertGreaterEqual(port.now, p.duration+.2)
@@ -65,7 +94,7 @@ class PrimitiveReplayTests(unittest.TestCase):
         port = FakePort(p)
         port.fail_after = 1
         with self.assertRaises(RuntimeError) as e:
-            run_replay(p, port)
+            run_replay(p, port, timing=TIMING)
         result = json.loads(str(e.exception))
         self.assertFalse(result['completed'])
         self.assertTrue(result['stop_confirmed'] and port.released)
@@ -83,7 +112,7 @@ class PrimitiveReplayTests(unittest.TestCase):
                     if port.acquired_at is not None: port.clock_shift = .3
                 port.wait_until = shifted
             with self.assertRaisesRegex(RuntimeError, 'STREAM_LATE|CLOCK_CHANGED'):
-                run_replay(p, port)
+                run_replay(p, port, timing=TIMING)
             self.assertFalse(port.sent)
             self.assertTrue(port.released)
 
@@ -95,7 +124,7 @@ class PrimitiveReplayTests(unittest.TestCase):
             wait(due)
             if port.acquired_at is not None and not port.sent: port.now += .06
         port.wait_until = delayed
-        self.assertTrue(run_replay(p, port)['completed'])
+        self.assertTrue(run_replay(p, port, timing=TIMING)['completed'])
         self.assertEqual(port.sent[0][1], 100.+port.acquired_at)
         self.assertTrue(all(t-(source-100.) < .25 for t,source,_ in port.sent))
 
@@ -104,7 +133,7 @@ class PrimitiveReplayTests(unittest.TestCase):
         port = FakePort(p)
         port.acquire_failure = True
         with self.assertRaisesRegex(RuntimeError, 'ACQUIRE_ACK_TIMEOUT'):
-            run_replay(p, port)
+            run_replay(p, port, timing=TIMING)
         self.assertTrue(port.released)
 
     def test_slower_sampling_keeps_the_path(self):
@@ -347,7 +376,7 @@ class PrimitiveTransitionTests(unittest.TestCase):
                             self.assertEqual(p.sample(t+1.),a.points[-1])
                             self.assertEqual(a.points[-1],b.points[0])
                             t+=p.hold_s
-                        self.assertTrue(run_replay(p,FakePort(p))['completed'])
+                        self.assertTrue(run_replay(p,FakePort(p),timing=TIMING)['completed'])
 
     def test_unknown_start_is_rejected_before_execution(self):
         from snowbot_teleop.replay import plan_from_current
@@ -355,6 +384,9 @@ class PrimitiveTransitionTests(unittest.TestCase):
             path,m=self.fixture(Path(d))
             with self.assertRaisesRegex(RuntimeError,'UNKNOWN_START'):
                 plan_from_current(path,'Push',dict.fromkeys(NAMES,.8))
+            for tolerance in (float('nan'), float('inf'), 0., -1.):
+                with self.assertRaisesRegex(ValueError, 'START_TOLERANCE'):
+                    plan_from_current(path, 'Push', dict.fromkeys(NAMES, .8), tolerance=tolerance)
 
 
 class InteractiveReplayTests(unittest.TestCase):
@@ -372,12 +404,13 @@ class InteractiveReplayTests(unittest.TestCase):
                 else:
                     manifest['backend_ready'] = flag
                 library.write_text(json.dumps(manifest))
-                with patch.object(module, 'execute') as execute, redirect_stderr(StringIO()):
+                with patch.object(module, 'execute') as execute, patch.object(module, 'plan_from_current') as planner, redirect_stderr(StringIO()):
                     module.main(['--library', str(library), '--action', 'Push',
                                  '--from-node', 'Push:start', '--execute',
                                  '--tool-id', 'g099-curved', '--output', str(root/'run.jsonl')])
                 execute.assert_called_once()
-                self.assertEqual(execute.call_args.args[1].route, ('Push',))
+                self.assertEqual(execute.call_args.args[0].action, 'Push')
+                planner.assert_not_called()  # Planning waits for the actual executor snapshot.
 
     def test_staged_menu_executes_actions_and_returns_with_separate_logs(self):
         from contextlib import redirect_stdout
@@ -451,7 +484,7 @@ class EmptyPrepareTests(unittest.TestCase):
         plan.validate_profile(self.robot.profile)
         with self.assertRaisesRegex(ValueError,'POSITION_LIMIT'):
             replace(plan,empty_prepare=False).validate_profile(self.robot.profile)
-        result=run_replay(plan,FakePort(plan))
+        result=run_replay(plan,FakePort(plan),timing=TIMING)
         self.assertTrue(result['completed'] and result['stop_confirmed'])
 
     def test_collision_or_missing_measured_context_prevents_preparation(self):
@@ -502,16 +535,6 @@ class EmptyPrepareTests(unittest.TestCase):
                                     for row in plan.points for n,q in zip(NAMES,row)))
                 self.assertTrue(all(a[joint]>=b[joint] for a,b in
                     zip((x['q'] for x in samples),(x['q'] for x in samples[1:]))))
-                port=FakePort(plan);check=port.check
-                port.nominal_reference=lambda:dict(zip(NAMES,plan.sample(port.now)))
-                def compliant(owned):
-                    q,v=check(owned);q[joint]+=excursion
-                    return q,v
-                port.check=compliant
-                result=run_replay(plan,port,execution_mode='impedance')
-                self.assertTrue(result['completed'] and result['stop_confirmed'])
-                self.assertTrue(all(self.robot.profile.limits[joint][0]<=q[NAMES.index(joint)]<=0.
-                                    for _,_,q in port.sent))
 
     def test_limit_recovery_rejects_larger_excursion_or_unconfirmed_reference(self):
         from unittest.mock import Mock,patch
@@ -562,7 +585,6 @@ class PrepareGripperTests(unittest.TestCase):
 
 
 class ImpedancePrimitiveReplayTests(unittest.TestCase):
-
     def test_impedance_uses_existing_named_tracking_limits(self):
         from snowbot_teleop.replay import replay_follow_limits
         cfg=dict(reference_kinematics=True,max_reference_error=.15,
@@ -572,87 +594,6 @@ class ImpedancePrimitiveReplayTests(unittest.TestCase):
         limits=replay_follow_limits(cfg,'impedance')
         self.assertEqual(limits['body_joint_1'],.15)
         self.assertEqual(limits['arm_l_joint_1'],.25)
-
-    def test_compliant_displacement_never_moves_the_nominal_target(self):
-        class CompliantPort(FakePort):
-            def check(self,owned):
-                q,v=super().check(owned)
-                if owned and self.sent and self.elapsed()<.04:
-                    for n in NAMES[2:]:q[n]+=.2
-                return q,v
-        p=Replay((0.,.02,.04),((0.,)*16,(.001,)*16,(.002,)*16),
-                 NAMES,'tool','kin',1.)
-        port=CompliantPort(p)
-        self.assertTrue(run_replay(p,port)['completed'])
-        self.assertTrue(all(q==p.sample(t-port.acquired_at) for t,_,q in port.sent))
-
-
-    def test_steady_compliance_uses_nominal_start_and_arrival(self):
-        class Port(FakePort):
-            offset=.2
-            def check(self,owned):
-                q,v=super().check(owned)
-                for n in NAMES[2:]:q[n]+=self.offset
-                return q,v
-            def nominal_reference(self):return dict(zip(NAMES,self.plan.sample(self.elapsed())))
-        p=Replay((0.,.02,.04),((0.,)*16,(.001,)*16,(.002,)*16),NAMES,'t','k',1.)
-        port=Port(p);result=run_replay(p,port,execution_mode='impedance')
-        self.assertTrue(result['completed'] and result['nominal_arrival_confirmed'] and result['stop_confirmed'])
-        self.assertFalse(result['measured_arrival_confirmed'])
-        self.assertTrue(all(q==p.sample(t-port.acquired_at) for t,_,q in port.sent))
-
-    def test_loss_of_nominal_reference_cancels_and_confirms_stop(self):
-        class Port(FakePort):
-            def nominal_reference(self):
-                if self.elapsed()>=self.plan.duration:raise RuntimeError('NOMINAL_REFERENCE_STALE')
-                return dict(zip(NAMES,self.plan.sample(self.elapsed())))
-        p=Replay((0.,.02),((0.,)*16,(.001,)*16),NAMES,'t','k',1.)
-        port=Port(p)
-        with self.assertRaisesRegex(RuntimeError,'NOMINAL_REFERENCE_STALE'):
-            run_replay(p,port,execution_mode='impedance')
-        self.assertTrue(port.released)
-
-    def test_held_and_sampled_reference_authentication_and_freshness(self):
-        import ast,math
-        import snowbot_bringup.runtime.snowbot_primitive_replay as module
-        from bindu_runtime.stop_evidence import sampled_nominal_reference
-        tree=ast.parse(Path(module.__file__).read_text())
-        operation=next(n for n in tree.body if getattr(n,'name','')=='execute')
-        cls=next(n for n in operation.body if isinstance(n,ast.ClassDef) and n.name=='Port')
-        state=S(lease_active=False,lease_epoch=4,revision=7)
-        held=dict(instance_id='exec',profile_hash='hash',lease_id='',epoch=4,revision=7,
-                  stamp=100.,boot_id=55,session=2,sequence=3,positions=dict.fromkeys(NAMES,0.))
-        future=S(done=lambda:True,result=lambda:S(success=True,message=json.dumps(held)))
-        ns=dict(latest={'state':(state,0.)},NAMES=NAMES,math=math,json=json,
-                robot=S(profile=S(digest='hash',limits=dict.fromkeys(NAMES,(-1,1)))),
-                tool_config={'feedback_max_age':.2},Trigger=S(Request=lambda:None),
-                holds=S(service_is_ready=lambda:True,call_async=lambda req:future),
-                wait=lambda predicate,timeout:self.assertTrue(predicate()),
-                sampled_nominal_reference=sampled_nominal_reference)
-        exec(compile(ast.Module(body=[cls],type_ignores=[]),str(module.__file__),'exec'),ns)
-        port=ns['Port']();port.instance='exec';port.boot=55;port.ros=lambda:100.;port.steady=lambda:0.
-        self.assertEqual(port.nominal_reference(),held['positions'])
-        held['boot_id']=99
-        with self.assertRaisesRegex(RuntimeError,'HELD_REFERENCE_IDENTITY'):port.nominal_reference()
-        held['boot_id']=55;held['positions']=dict.fromkeys(NAMES,.1)
-        with self.assertRaisesRegex(RuntimeError,'HELD_REFERENCE_CHANGED'):port.nominal_reference()
-        port.lease=S(lease_id='lease',epoch=5);port.commanded=True
-        state.lease_active=True;state.lease_epoch=5
-        state.reference=S(header=S(stamp=S(sec=100,nanosec=0)),name=list(NAMES),position=[.1]*16)
-        self.assertEqual(port.nominal_reference(),dict.fromkeys(NAMES,.1))
-        state.reference.header.stamp.sec=99
-        with self.assertRaisesRegex(RuntimeError,'REFERENCE_UNAVAILABLE'):port.nominal_reference()
-
-
-    def test_short_nominal_hold_waits_for_first_servo_sample_without_stalling_targets(self):
-        class Port(FakePort):
-            def nominal_reference(self):
-                return None if self.sent and self.elapsed()<.08 else dict(zip(NAMES,self.plan.sample(self.elapsed())))
-        p=Replay((0.,.02),((0.,)*16,(0.,)*16),NAMES,'t','k',1.)
-        port=Port(p);result=run_replay(p,port,execution_mode='impedance')
-        self.assertTrue(result['completed'] and result['nominal_arrival_confirmed'])
-        self.assertGreaterEqual(port.now,.28)
-        self.assertTrue(all(abs(b[0]-a[0]-.02)<1e-8 for a,b in zip(port.sent,port.sent[1:])))
 
 if __name__ == '__main__':
     unittest.main()

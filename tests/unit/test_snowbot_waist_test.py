@@ -224,7 +224,7 @@ class WaistTests(unittest.TestCase):
 
     def test_sine_cli_preview_is_offline_and_records_signal_parameters(self):
         result = subprocess.run([sys.executable, '-m', 'tools.teleop.snowbot_waist_test',
-                                 '--waveform', 'sine', '--frequency', '.2', '--cycles', '5'],
+                                 '--waveform', 'sine', '--degrees', '1', '--frequency', '.2', '--cycles', '5'],
                                 cwd=Path(__file__).resolve().parents[2], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         data = json.loads(result.stdout)
@@ -236,7 +236,7 @@ class WaistTests(unittest.TestCase):
         self.assertFalse(data['starts_driver'])
 
     def test_signal_limits_and_rest_at_every_boundary(self):
-        for degrees, speed in ((3., .05), (3., .1), (3., .25), (20., .25)):
+        for degrees, speed in ((3., .05), (3., .1), (3., .25), (20., .25), (45., .1)):
             plan = make_plan(degrees, speed, .5, 162.)
             previous = plan.sample(0.)
             step = .001
@@ -396,7 +396,7 @@ class WaistTests(unittest.TestCase):
         self.assertFalse(result['physical_units_verified'])
         self.assertFalse(result['starts_driver'])
         self.assertEqual(result['axis'], 'body_joint_1')
-        self.assertEqual(result['degrees'], 1.)
+        self.assertEqual(result['degrees'], 45.)
         self.assertEqual(result['requested_speed'], .1)
         self.assertEqual(result['requested_acceleration'], .5)
         self.assertLessEqual(result['target_peak_speed'], .1)

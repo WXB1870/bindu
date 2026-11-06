@@ -12,8 +12,8 @@ from bindu_kinematics.bimanual_worker import BimanualWorker
 
 class WorkerReceiptTests(unittest.TestCase):
     def test_reference_reset_is_bound_to_the_existing_execution_instance_and_epoch(self):
-        source=Path(__file__).resolve().parents[2]/'src/integration/bindu_runtime/bindu_runtime/bimanual_tool_node.py'
-        node=next(n for n in ast.parse(source.read_text()).body if isinstance(n,ast.ClassDef) and n.name=='BimanualToolNode')
+        source=Path(__file__).resolve().parents[2]/'src/integration/bindu_runtime/bindu_runtime/tool_session.py'
+        node=next(n for n in ast.parse(source.read_text()).body if isinstance(n,ast.ClassDef) and n.name=='ToolSession')
         method=next(n for n in node.body if getattr(n,'name','')=='reset_grasp_reference')
         scope={};exec(compile(ast.Module(body=[method],type_ignores=[]),str(source),'exec'),scope)
         owner=SimpleNamespace(state=SimpleNamespace(instance_id='execution',lease_epoch=4),busy=False,
@@ -48,7 +48,7 @@ class WorkerReceiptTests(unittest.TestCase):
 
     def test_continuous_axial_does_not_request_six_dimensional_prediction(self):
         from bindu_contracts.teleoperation import tool_grasp_mode
-        source=Path(__file__).resolve().parents[2]/'src/integration/bindu_runtime/bindu_runtime/bimanual_tool_node.py'
+        source=Path(__file__).resolve().parents[2]/'src/integration/bindu_runtime/bindu_runtime/tool_follow.py'
         keyword=next(n for n in ast.walk(ast.parse(source.read_text()))
                      if isinstance(n,ast.keyword) and n.arg=='rigid_reference')
         expression=compile(ast.Expression(body=keyword.value),str(source),'eval')
@@ -72,7 +72,7 @@ class WorkerReceiptTests(unittest.TestCase):
             raise ValueError('EXPECTED_REJECTION')
         solver.solve=solve
         solver.capture=lambda *args,**kw:observed.append(solver.execution_reference)
-        with patch('bindu_kinematics.bimanual.BimanualQP',return_value=solver), \
+        with patch.dict('sys.modules', {'bindu_kinematics.bimanual': SimpleNamespace(BimanualQP=Mock(return_value=solver))}), \
                 patch('bindu_kinematics.bimanual_worker.gc.collect'), \
                 patch('bindu_kinematics.bimanual_worker.gc.freeze'):
             _run({},None,requests,results)
@@ -187,14 +187,19 @@ class WorkerReceiptTests(unittest.TestCase):
             self.poll(worker, 50.24)
 
     def test_runtime_fault_emits_once_and_continues_waking_stop_waiters(self):
-        source = Path(__file__).resolve().parents[2]/'src/integration/bindu_runtime/bindu_runtime/bimanual_tool_node.py'
+        source = Path(__file__).resolve().parents[2]/'src/integration/bindu_runtime/bindu_runtime/tool_session.py'
         node = next(n for n in ast.parse(source.read_text()).body
-                    if isinstance(n, ast.ClassDef) and n.name == 'BimanualToolNode')
+                    if isinstance(n, ast.ClassDef) and n.name == 'ToolSession')
         method = next(n for n in node.body if getattr(n, 'name', '') == 'poll_worker')
         namespace = {}
         exec(compile(ast.Module(body=[method], type_ignores=[]), str(source), 'exec'), namespace)
+        wrapper = source.with_name('bimanual_tool_node.py')
+        node = next(n for n in ast.parse(wrapper.read_text()).body if isinstance(n, ast.ClassDef) and n.name == 'BimanualToolNode')
+        tick = next(n for n in node.body if getattr(n, 'name', '') == 'tick')
+        exec(compile(ast.Module(body=[tick], type_ignores=[]), str(wrapper), 'exec'), namespace)
         worker = self.worker()
         owner = SimpleNamespace(waiters=set(), worker_error='', worker=worker, event=Mock())
+        owner.session = SimpleNamespace(poll_worker=lambda:namespace['poll_worker'](owner))
         with patch('bindu_kinematics.bimanual_worker.time.monotonic', return_value=10.24):
             namespace['poll_worker'](owner)
             worker.results.put(('result', 7, 'late'))
@@ -202,7 +207,7 @@ class WorkerReceiptTests(unittest.TestCase):
                 waiter = Mock()
                 waiter.done.return_value = False
                 owner.waiters = {waiter}
-                namespace['poll_worker'](owner)
+                namespace['tick'](owner)
                 waiter.set_result.assert_called_once_with(None)
         owner.event.assert_called_once_with('BIMANUAL_WORKER_FAILED', 'BIMANUAL_WORKER_TIMEOUT')
         self.assertEqual(worker.results.qsize(), 1)
@@ -220,7 +225,7 @@ class WorkerReceiptTests(unittest.TestCase):
             raise ValueError('BIMANUAL_MEASURED_GRASP_ERROR')
         solver.solve=solve
         solver.capture=Mock(side_effect=ValueError('UNKNOWN_CAPTURE_FAILURE'))
-        with patch('bindu_kinematics.bimanual.BimanualQP',return_value=solver),                patch('bindu_kinematics.bimanual_worker.gc.collect'),                patch('bindu_kinematics.bimanual_worker.gc.freeze'):
+        with patch.dict('sys.modules', {'bindu_kinematics.bimanual': SimpleNamespace(BimanualQP=Mock(return_value=solver))}),                patch('bindu_kinematics.bimanual_worker.gc.collect'),                patch('bindu_kinematics.bimanual_worker.gc.freeze'):
             _run({},None,requests,results)
         self.assertEqual(results.get_nowait(),('ready',0,None))
         first,reply=results.get_nowait(),results.get_nowait()
@@ -242,7 +247,7 @@ class WorkerReceiptTests(unittest.TestCase):
         requests.put(('capture',1,{},None,None,None,'independent:1',None,None,False))
         requests.put(None)
         solver=SimpleNamespace(capture_independent=Mock(return_value=[]),close=Mock())
-        with patch('bindu_kinematics.bimanual.BimanualQP',return_value=solver), \
+        with patch.dict('sys.modules', {'bindu_kinematics.bimanual': SimpleNamespace(BimanualQP=Mock(return_value=solver))}), \
                 patch('bindu_kinematics.bimanual_worker.gc.collect'), \
                 patch('bindu_kinematics.bimanual_worker.gc.freeze'):
             _run({},None,requests,results)
@@ -257,7 +262,7 @@ class WorkerReceiptTests(unittest.TestCase):
         requests.put(('capture',1,{},None,None,None,'rigid',None,None,False))
         requests.put(None)
         solver=SimpleNamespace(capture=Mock(return_value=[]),close=Mock())
-        with patch('bindu_kinematics.bimanual.BimanualQP',return_value=solver), \
+        with patch.dict('sys.modules', {'bindu_kinematics.bimanual': SimpleNamespace(BimanualQP=Mock(return_value=solver))}), \
                 patch('bindu_kinematics.bimanual_worker.gc.collect'), \
                 patch('bindu_kinematics.bimanual_worker.gc.freeze'):
             _run({},None,requests,results)
@@ -267,9 +272,9 @@ class WorkerReceiptTests(unittest.TestCase):
             unittest.mock.call({},'rigid',reference=None)])
 
     def test_mode_readiness_dispatches_preview_with_fresh_feedback(self):
-        source=Path(__file__).resolve().parents[2]/'src/integration/bindu_runtime/bindu_runtime/bimanual_tool_node.py'
+        source=Path(__file__).resolve().parents[2]/'src/integration/bindu_runtime/bindu_runtime/tool_session.py'
         node=next(n for n in ast.parse(source.read_text()).body
-                  if isinstance(n,ast.ClassDef) and n.name=='BimanualToolNode')
+                  if isinstance(n,ast.ClassDef) and n.name=='ToolSession')
         method=next(n for n in node.body if getattr(n,'name','')=='preflight')
         namespace={'seconds':lambda stamp:stamp}
         exec(compile(ast.Module(body=[method],type_ignores=[]),str(source),'exec'),namespace)

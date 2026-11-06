@@ -34,7 +34,7 @@ class PositionSessionTests(unittest.TestCase):
             self.health.state(layer, S(header=S(stamp=S(sec=10, nanosec=0)), layer=layer,
                 startup_complete=True, feedback_ready=True, instance_id=12, wire_version=5, reference_mode=2,
                 control_source='topic' if layer == 'upper' else 'position',
-                stop_policy='disable_no_load' if layer == 'servo' else 'servo_owned'))
+                stop_policy='disable_no_load' if layer == 'servo' else 'servo_owned', reason=''))
         self.health.observe(observation())
         self.now += .001
         self.steady += .001
@@ -263,11 +263,11 @@ class PositionSessionTests(unittest.TestCase):
         clock = [1.]
         node = S(get_publishers_info_by_topic=Mock(return_value=['owner']))
         graph = GraphSnapshot(node, lambda: clock[0])
-        for _ in range(10): self.assertEqual(graph.count_publishers('/command'), 1)
+        for _ in range(10): self.assertEqual(len(graph.get_publishers_info_by_topic('/observation')), 1)
         node.get_publishers_info_by_topic.assert_called_once()
         node.get_publishers_info_by_topic.return_value = ['owner', 'conflict']
         clock[0] += .101
-        self.assertEqual(graph.count_publishers('/command'), 2)
+        self.assertEqual(len(graph.get_publishers_info_by_topic('/observation')), 2)
 
 
 class PauseHandoffTests(unittest.TestCase):
@@ -313,7 +313,7 @@ class PauseHandoffTests(unittest.TestCase):
         for layer in ('upper', 'middle', 'servo'):
             d.health.state(layer, S(header=observation(self.now).header, layer=layer, instance_id=12,
                 startup_complete=True, feedback_ready=True, wire_version=5, reference_mode=2, control_source='topic' if layer=='upper' else 'position',
-                stop_policy='measured_hold'))
+                stop_policy='measured_hold', reason=''))
         msg = observation(self.now, pdo_sample=self.sample,
                           position=[self.q[n] for n in SLOTS], speed=[velocity]*20)
         if waist_velocity is not None: msg.speed[18:] = [waist_velocity]*2
@@ -626,6 +626,16 @@ class RealResourceTests(unittest.TestCase):
 
 class TargetWireTests(unittest.TestCase):
     """Production binding with synthetic messages; no ROS or device access."""
+    def test_receiver_discovery_keeps_physical_health_but_not_command_readiness(self):
+        from snowbot_hardware.position_session import PositionSessionDevices
+        state = self.d.health.states['upper'][1]
+        state.reason = 'command_source_discovering'
+        self.d.health.require(CONTROL_GROUPS, acquiring=True)
+        with self.assertRaisesRegex(RuntimeError, 'COMMAND_ENDPOINT:upper:command_source_discovering'):
+            PositionSessionDevices.check_ready(self.d, CONTROL_GROUPS)
+        state.reason = ''
+        PositionSessionDevices.check_ready(self.d, CONTROL_GROUPS)
+
     def test_prepared_curve_wire_order_heartbeats_and_pause_keep_source_contract(self):
         from bindu_contracts.contracts import Motion
         from bindu_execution.delegated_position import PreparedReplay
@@ -635,9 +645,10 @@ class TargetWireTests(unittest.TestCase):
         zero = (0.,)*16
         motion = Motion('curve','lease',3,self.rig.profile.digest,'test','',
             'prepared_trajectory','',self.rig.now,.2,names=names,points=(before,after),
-            offsets=(.12,1.12),velocities=(zero,zero),accelerations=(zero,zero))
+            offsets=(0.,1.),velocities=(zero,zero),accelerations=(zero,zero))
         prepared = PreparedReplay.create(motion,self.rig.profile)
         self.d.io.prepared_replay = prepared
+        self.d.prepare_replay(prepared)
         first = self.send('curve',mode='prepared_trajectory',names=names)
         self.assertEqual(first.trajectory.version,4)
         self.assertEqual(first.trajectory.control_count,[6]*16)
@@ -762,6 +773,13 @@ class TargetWireTests(unittest.TestCase):
         self.assertEqual(value['positions'],dict(zip(CONTROL_NAMES,hold)))
         self.assertNotEqual(value['positions'][CONTROL_NAMES[0]],self.rig.q[CONTROL_NAMES[0]])
         obs=self.d.health.observation
+        unchanged = list(obs.hold_position)
+        obs.hold_position = list(unchanged)
+        obs.hold_position[0] += .01
+        changed = self.d.read_held_reference(None, S())
+        self.assertFalse(changed.success)
+        self.assertIn('HELD_REFERENCE_CHANGED', changed.message)
+        obs.hold_position = unchanged
         for field,bad in [('boot_id',999),('session',999),('command_sequence',999),
                           ('trajectory_phase',3),('hold_valid',False)]:
             before=getattr(obs,field);setattr(obs,field,bad)
@@ -1245,6 +1263,7 @@ class TargetWireTests(unittest.TestCase):
             create_subscription=Mock(), create_publisher=Mock(), create_service=Mock())
         modules['std_srvs.srv']=S(Trigger=object)
         with patch.dict('sys.modules', modules):
+            node.profile_path = str(package_share('snowbot_bringup')/'config/robots/snowbot/snowbot_real_position.json')
             created = PositionSessionDevices(node, self.rig.profile)
         qos=node.create_subscription.call_args_list[0].args[3]
         self.assertEqual(qos.depth,1)
@@ -1787,22 +1806,15 @@ class DelayedFeedbackPauseTests(unittest.TestCase):
                 self.assertEqual(set(self.d.io.stop_failures), CONTROL_GROUPS)
                 self.assertIsNone(self.d.io.confirmed_stop_targets())
 
-    def test_pause_retains_endpoint_and_competing_publisher_checks(self):
-        for conflict in ('legacy', 'duplicate', 'endpoint'):
-            with self.subTest(conflict=conflict):
-                self.setUp()
-                self.delay_following()
-                if conflict == 'endpoint':
-                    self.d.identity.side_effect = RuntimeError('endpoint mismatch')
-                else:
-                    self.d.node.count_publishers = lambda topic: (
-                        2 if conflict == 'duplicate' and topic == '/bindu/position/command'
-                        else int(topic == '/bindu/position/command' or
-                                 (conflict == 'legacy' and topic == '/joint_position_cmd')))
-                count = self.d.publishers['arms'].publish.call_count
-                self.d.io.stop()
-                self.assertEqual(self.d.publishers['arms'].publish.call_count, count)
-                self.assertTrue(self.d.io.stop_failures)
+    def test_pause_sends_once_without_repeating_receiver_graph_checks(self):
+        self.delay_following()
+        self.d.health.states['upper'][1].reason = 'command_source_discovering'
+        self.d.identity.side_effect = AssertionError('sender repeated receiver authentication')
+        self.d.graph = S(count_publishers=lambda topic: (_ for _ in ()).throw(AssertionError('sender graph scan')))
+        count = self.d.publishers['arms'].publish.call_count
+        self.d.io.stop()
+        self.assertEqual(self.d.publishers['arms'].publish.call_count, count+1)
+        self.assertIsNone(self.d.io.confirmed_stop_targets())
 
     def test_stop_without_owned_targets_does_not_publish_or_enable(self):
         self.d.io.stop()

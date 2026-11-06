@@ -23,38 +23,271 @@ CONFIG = package_share('snowbot_bringup')/'config'
 
 
 class SnowbotAdapterTests(unittest.TestCase):
-    def test_prepared_replay_heartbeats_keep_one_validated_curve_and_source_deadlines(self):
+    def prepared(self, *, held=False, mode='position'):
+        self.engine.steady = lambda: self.now
         self.io.supports_prepared_replay = True
         self.io.source_motion = None
-        lease, epoch = self.acquire()
+        self.io.execution_mode = mode
+        self.io.held_reference = lambda: ('instance', 1, 2, 3, ())
+        from snowbot_hardware.session import SourceEnvelope
+        self.io.validate_motion = SourceEnvelope.validate_motion
+        self.io.prepare_replay = lambda prepared: None
+        self.io.check_health = lambda *a, **k: None
+        self.io.check_ready = lambda *a, **k: None
+        self.io.stop_confirmation_max_gap = .04
+        self.io.stop_requires_arrival = False
+        self.io.stop_confirmation_window = .1
+        self.io.replay_timing = dict(period_s=.02, command_ttl_s=.25, renewal_period_s=.5,
+            start_lead_s=.12, completion_timeout_s=6., settle_time_s=.1, velocity_tolerance_rad_s=.01)
+        self.io.replay_position_tolerances = dict.fromkeys(self.q, math.radians(2))
         names = tuple(n for group in ('left_arm', 'right_arm') for n in GROUPS[group])
-        q0 = tuple(self.q[n] for n in names)
-        q1 = (q0[0]+.01, *q0[1:])
+        first = tuple(self.q[n] for n in names)
+        final = (first[0]+.01, *first[1:])
         zero = (0.,)*len(names)
-        motion = Motion('curve', lease, epoch, self.profile.digest, 'test', '',
-            'prepared_trajectory', '', self.now, .25, names=names, offsets=(.12, 1.12),
-            points=(q0,q1), velocities=(zero,zero), accelerations=(zero,zero),
-            schema_version=2, resource_groups=('left_arm','right_arm'), runtime_mode='real')
-        self.engine.submit(motion,self.now)
-        prepared = self.io.prepared_replay
+        return Motion('curve', '', 0, self.profile.digest, 'test', 'instance' if held else '',
+            'prepared_trajectory'+('_impedance' if mode == 'impedance' else ''), '', self.now, .25, names=names, offsets=(0., 1.),
+            points=(first, final), velocities=(zero,zero), accelerations=(zero,zero),
+            expected_revision=self.engine.revision, schema_version=2,
+            resource_groups=('left_arm','right_arm'), runtime_mode='real')
+
+    def take_replay(self, motion):
+        with self.assertRaisesRegex(Rejected, 'WAIT_REST'):
+            self.engine.acquire_replay('test', motion.resource_groups, self.now)
+        for _ in range(6):
+            self.now += .02
+            self.observe()
+            try:
+                return self.engine.acquire_replay('test', motion.resource_groups, self.now)
+            except Rejected as exc:
+                self.assertTrue(str(exc).startswith('WAIT_REST'))
+        self.fail('fresh stationary samples did not authorize takeover')
+
+    def beat(self, motion, lease, epoch, identity='beat'):
+        return replace(motion, command_id=identity, observation_id=motion.command_id,
+            lease_id=lease, epoch=epoch, stamp=self.now, mode='trajectory_heartbeat',
+            expected_revision=0, points=(), offsets=(), velocities=(), accelerations=())
+
+    def test_prepared_replay_heartbeats_keep_one_validated_curve_and_source_deadlines(self):
+        motion = self.prepared()
+        self.engine.submit(motion, self.now)
+        self.assertFalse(self.engine.lease_id or self.sent)
+        prepared = self.engine.replay
         from bindu_execution.interpolation import PreparedSegment
-        curve = PreparedSegment.from_description(self.profile,names,prepared.description)
-        # Independent quintic expectation, not an endpoint-only equality.
-        self.assertAlmostEqual(curve.sample(.25).q[0]-q0[0], .01*.103515625)
+        curve = PreparedSegment.from_description(self.profile, motion.names, prepared.description)
+        self.assertAlmostEqual(curve.sample(.25).q[0]-motion.points[0][0], .01*.103515625)
         self.assertAlmostEqual(curve.sample(.25).v[0], .01*1.0546875)
-        self.now += .02
-        heartbeat = replace(motion, command_id='beat', observation_id='curve', stamp=self.now,
-                            mode='trajectory_heartbeat',points=(),offsets=(),velocities=(),accelerations=())
-        with patch('bindu_execution.delegated_position.PreparedReplay.create',side_effect=AssertionError('refit')):
-            self.engine.submit(heartbeat,self.now)
-        self.assertIs(self.io.prepared_replay,prepared)
-        self.assertIs(self.io.source_motion,heartbeat)
-        with self.assertRaisesRegex(Rejected,'IDENTITY'):
-            self.engine.submit(replace(heartbeat,command_id='bad',observation_id='other'),self.now)
-        self.assertEqual(self.engine.active.command_id,'beat')
-        with self.assertRaisesRegex(Rejected,'VENDOR_TARGET_TIME|EXPIRED|STALE|INVALID_LEASE'):
-            self.engine.submit(replace(heartbeat,command_id='late'),self.now+.25)
-        self.assertFalse(self.engine.lease_id)  # Tick/watchdog revokes the expired source.
+        lease, epoch = self.take_replay(motion)
+        heartbeat = self.beat(motion, lease, epoch)
+        with patch('bindu_execution.delegated_position.PreparedReplay.create', side_effect=AssertionError('refit')):
+            self.engine.submit(heartbeat, self.now)
+        bound = self.io.prepared_replay
+        self.assertEqual(bound.description, prepared.description)
+        self.assertAlmostEqual(bound.effective, heartbeat.stamp+.12)
+        self.assertEqual(self.io.source_motion.mode, 'prepared_trajectory')
+        self.now += .02; self.observe()
+        next_beat = self.beat(motion, lease, epoch, 'next')
+        self.engine.submit(next_beat, self.now)
+        self.assertIs(self.io.prepared_replay, bound)
+        self.assertIs(self.io.source_motion, next_beat)
+        with self.assertRaisesRegex(Rejected, 'VENDOR_TARGET_TIME'):
+            self.engine.submit(replace(next_beat, command_id='long', valid_for=.4), self.now)
+        with self.assertRaisesRegex(Rejected, 'IDENTITY'):
+            self.engine.submit(replace(next_beat, command_id='bad', observation_id='other'), self.now)
+        with self.assertRaisesRegex(Rejected, 'TIME|EXPIRED|STALE|INVALID_LEASE'):
+            self.engine.submit(replace(next_beat, command_id='late'), self.now+.25)
+        for _ in range(14):
+            self.now += .02; self.observe(); self.engine.tick(self.now)
+        self.assertFalse(self.engine.lease_id)
+
+    def test_replay_takeover_waits_through_second_swing_and_repeated_feedback(self):
+        motion = self.prepared(); self.engine.submit(motion, self.now)
+        self.engine.io.replay_timing['completion_timeout_s'] = .3
+        began = self.now
+        for i in range(16):
+            self.now = began+(i+1)*.02
+            self.v['arm_l_joint_1'] = .02 if .08 <= self.now-began < .24 else 0.
+            self.observe()
+            with self.assertRaisesRegex(Rejected, 'WAIT_REST|REPLAY_NOT_SETTLED'):
+                self.engine.acquire_replay('test', motion.resource_groups, self.now)
+        self.assertFalse(self.engine.lease_id or self.sent)
+        self.assertAlmostEqual(self.engine.replay_wait[0], began+.02)
+        # A repeated request never buys another six seconds.
+        with self.assertRaisesRegex(Rejected, 'REPLAY_NOT_SETTLED'):
+            self.engine.acquire_replay('test', motion.resource_groups, self.now+.01)
+
+    def test_replay_reference_is_authenticated_before_lease_and_rechecked_at_takeover(self):
+        motion = self.prepared(held=True)
+        held = ('instance', 1, 2, 3, (('arm_l_joint_1', 0.),))
+        self.io.held_reference = lambda: held
+        with self.assertRaisesRegex(Rejected, 'REFERENCE_INSTANCE_CHANGED'):
+            self.engine.submit(replace(motion, observation_id='previous-executor'), self.now)
+        self.engine.submit(motion, self.now)
+        held = ('instance', 2, 2, 3, (('arm_l_joint_1', 0.),))
+        with self.assertRaisesRegex(Rejected, 'HELD_REFERENCE_CHANGED'):
+            self.engine.acquire_replay('test', motion.resource_groups, self.now)
+        self.assertFalse(self.engine.lease_id or self.sent)
+
+    def test_replay_frozen_sample_cannot_complete_takeover_window(self):
+        motion = self.prepared(); self.engine.submit(motion, self.now)
+        self.io.read_feedback = lambda now, dt: self.io.last_feedback
+        for _ in range(20):
+            self.now += .02
+            with self.assertRaisesRegex(Rejected, 'WAIT_REST'):
+                self.engine.acquire_replay('test', motion.resource_groups, self.now)
+        self.assertFalse(self.engine.lease_id or self.sent)
+
+    def test_replay_wrong_backend_mode_is_rejected_before_lease(self):
+        motion = self.prepared()
+        with self.assertRaisesRegex(Rejected, 'EXECUTION_MODE_MISMATCH'):
+            self.engine.submit(replace(motion, mode='prepared_trajectory_impedance'), self.now)
+        self.assertFalse(self.engine.lease_id or self.sent)
+
+    def test_missing_nominal_reference_expires_arrival_without_claiming_completion(self):
+        motion = self.prepared(held=True, mode='impedance')
+        self.io.replay_timing['completion_timeout_s'] = .14
+        self.io.sampled_reference = lambda: (self.now, {}, {}, {})
+        self.engine.submit(motion, self.now)
+        lease, epoch = self.take_replay(motion)
+        self.engine.submit(self.beat(motion, lease, epoch), self.now)
+        end = self.engine.replay.effective+motion.offsets[-1]
+        step = 0
+        while not self.engine.replay_result['final'] and self.now < end+.5:
+            step += 1; self.now += .02; self.observe()
+            if self.engine.stopping:
+                self.engine.tick(self.now)
+            else:
+                try:
+                    self.engine.submit(self.beat(motion, lease, epoch, 'next'+str(step)), self.now)
+                except Rejected as exc:
+                    self.assertEqual(str(exc), 'INVALID_LEASE')
+                    self.assertEqual(self.engine.stopping[1], 'REPLAY_ARRIVAL_UNCONFIRMED')
+        result = self.engine.replay_result
+        self.assertEqual(result['error'], 'REPLAY_ARRIVAL_UNCONFIRMED')
+        self.assertTrue(result['stop_confirmed'])
+        self.assertFalse(result['completed'] or result['nominal_arrival_confirmed'])
+
+    def test_replay_cancel_before_first_heartbeat_is_final_without_device_command(self):
+        motion = self.prepared(); self.engine.submit(motion, self.now)
+        lease, epoch = self.take_replay(motion)
+        result = self.engine.replay_status(lease, epoch, self.now, stop=True)
+        self.assertTrue(result['final'] and result['stop_confirmed'])
+        self.assertFalse(result['completed'] or self.sent or self.engine.lease_id)
+
+    def test_replay_service_credentials_allow_one_stop_and_final_query_after_revocation(self):
+        import ast
+        from bindu_contracts.runtime_mode import command_mode
+        motion = self.prepared()
+        path = ROOT/'src/integration/bindu_runtime/bindu_runtime/execution_node.py'
+        cls = next(n for n in ast.parse(path.read_text()).body if getattr(n, 'name', '') == 'ExecutionNode')
+        methods = [n for n in cls.body if getattr(n, 'name', '') in ('accept', 'lease', 'control')]
+        seconds = lambda stamp: stamp.sec+stamp.nanosec*1e-9
+        stamp = lambda t: S(sec=int(t*1e9)//1_000_000_000, nanosec=int(t*1e9)%1_000_000_000)
+        ns = dict(Motion=Motion, Rejected=Rejected, seconds=seconds, stamp=stamp,
+                  command_mode=command_mode, json=json)
+        exec(compile(ast.Module(body=methods, type_ignores=[]), str(path), 'exec'), ns)
+        node = S(engine=self.engine, robot_io=self.io, profile=self.profile, closing=False,
+                 runtime_mode='real', now=lambda: self.now, accepted_pub=Mock())
+        node.accept = lambda msg: ns['accept'](node, msg)
+        def message(m):
+            return S(**dict(command_id=m.command_id, task_id=m.task_id, observation_id=m.observation_id,
+                runtime_mode=m.runtime_mode, schema_version=m.schema_version, mode=m.mode,
+                lease_id=m.lease_id, epoch=m.epoch, profile_hash=m.profile_hash, stamp=stamp(m.stamp),
+                valid_for=m.valid_for, duration=m.duration, joint_names=m.names, positions=m.positions,
+                resource_group=m.group, resource_groups=m.resource_groups, rigid_reference=m.rigid_reference,
+                expected_revision=m.expected_revision,
+                velocity=S(linear=S(x=0., y=0., z=0.), angular=S(x=0., y=0., z=0.)),
+                points=[S(positions=q, velocities=v, accelerations=a, effort=[], time_from_start=stamp(t))
+                        for t,q,v,a in zip(m.offsets, m.points, m.velocities, m.accelerations)]))
+        node.accept(message(motion))
+        ready = ns['lease'](node, S(operation='ready', resources=motion.resource_groups), S())
+        self.assertTrue(ready.ok)
+        self.assertEqual(json.loads(ready.code)['period_s'], .02)
+        request = S(operation='acquire_replay', owner='test', resources=motion.resource_groups)
+        reply = ns['lease'](node, request, S())
+        self.assertFalse(reply.ok)
+        self.assertTrue(reply.code.startswith('WAIT_REST'))
+        for _ in range(6):
+            self.now += .02; self.observe(); reply = ns['lease'](node, request, S())
+            if reply.ok: break
+        self.assertTrue(reply.ok)
+        lease, epoch = reply.lease_id, reply.epoch
+        self.assertEqual(ns['lease'](node, S(operation='ready', resources=motion.resource_groups), S()).code, 'BUSY')
+        node.accept(message(self.beat(motion, lease, epoch)))
+        self.engine.tick(self.now)
+        request = S(operation='replay_stop', lease_id=lease, epoch=epoch)
+        reply = ns['control'](node, request, S())
+        self.assertTrue(reply.ok)
+        self.assertFalse(json.loads(reply.code)['final'])
+        deadline = self.engine.stop_deadline
+        again = ns['control'](node, request, S())
+        self.assertEqual(self.engine.stop_deadline, deadline)
+        for _ in range(8):
+            self.now += .02; self.observe(); self.engine.tick(self.now)
+        request.operation = 'replay_result'
+        reply = ns['control'](node, request, S())
+        result = json.loads(reply.code)
+        self.assertTrue(result['final'] and result['stop_confirmed'])
+        self.assertFalse(self.engine.lease_id or result['completed'])
+        request.epoch += 1
+        self.assertFalse(ns['control'](node, request, S()).ok)
+
+    def test_replay_nominal_arrival_keeps_measured_compliance_distinct_and_waits_for_stop(self):
+        for mode in ('position', 'impedance'):
+            with self.subTest(mode=mode):
+                self.setUp()
+                motion = self.prepared(held=mode == 'impedance', mode=mode)
+                self.engine.submit(motion, self.now)
+                lease, epoch = self.take_replay(motion)
+                self.engine.submit(self.beat(motion, lease, epoch), self.now)
+                end = self.engine.replay.effective+1.
+                final = dict(zip(motion.names, motion.points[-1]))
+                self.io.sampled_reference = lambda: (self.now, final, {}, {})
+                index = 0
+                while not self.engine.replay_result['final'] and self.now < end+.5:
+                    self.now += .02; index += 1
+                    self.q.update(final)
+                    if mode == 'impedance': self.q['arm_l_joint_1'] += .08
+                    self.observe()
+                    if not self.engine.stopping:
+                        try:
+                            self.engine.submit(self.beat(motion, lease, epoch, 'beat'+str(index)), self.now)
+                        except Rejected as exc:
+                            self.assertEqual(str(exc), 'INVALID_LEASE')
+                            self.assertEqual(self.engine.stopping[1], 'REPLAY_COMPLETED')
+                    else:
+                        self.engine.tick(self.now)
+                result = self.engine.replay_result
+                self.assertEqual(result['nominal_arrival_confirmed'], mode == 'impedance')
+                self.assertEqual(result['measured_arrival_confirmed'], mode == 'position')
+                self.assertTrue(result['final'] and result['stop_confirmed'] and result['completed'])
+                next_lease, next_epoch = self.engine.acquire('next', motion.resource_groups, 2., self.now)
+                follow = Motion('follow', next_lease, next_epoch, self.profile.digest, 'next', '',
+                    'joint_target', '', self.now, .25, names=motion.names,
+                    positions=tuple(self.q[n] for n in motion.names), schema_version=2,
+                    resource_groups=motion.resource_groups, runtime_mode='real')
+                self.engine.submit(follow, self.now)
+                self.now += .02; self.observe(); self.engine.tick(self.now)
+                self.assertEqual(self.engine.active.command_id, 'follow')
+                self.engine.replay_status(lease, epoch, self.now, stop=True)
+                self.assertEqual(self.engine.active.command_id, 'follow')
+
+    def test_replay_stop_failure_preserves_command_timeout_and_original_budget(self):
+        motion = self.prepared(); self.engine.submit(motion, self.now)
+        lease, epoch = self.take_replay(motion)
+        self.engine.submit(self.beat(motion, lease, epoch), self.now)
+        self.engine.tick(self.now)
+        self.v['arm_l_joint_1'] = .03
+        for _ in range(14):
+            self.now += .02; self.observe(); self.engine.tick(self.now)
+        self.assertEqual(self.engine.stopping[1], 'COMMAND_TIMEOUT')
+        deadline = self.engine.stop_deadline
+        self.engine.replay_status(lease, epoch, self.now, stop=True)
+        self.assertEqual(self.engine.stop_deadline, deadline)
+        self.now = deadline
+        self.observe(); self.engine.tick(self.now)
+        result = self.engine.replay_result
+        self.assertTrue(result['error'].startswith('COMMAND_TIMEOUT;STOP_UNCONFIRMED'), result)
+        self.assertFalse(result['stop_confirmed'] or result['completed'])
 
     def setUp(self):
         self.profile = Profile.load(package_share("snowbot_bringup")/'config/examples/snowbot/snowbot_vendor_position.json')

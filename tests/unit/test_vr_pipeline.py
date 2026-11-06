@@ -144,8 +144,8 @@ class TimingSummaries(unittest.TestCase):
     def test_coordinator_gap_labels_ros_clock_separately_from_monotonic(self):
         from bindu_contracts.teleoperation import VRFrame
         from snowbot_teleop.control import PicoControl,PicoFeedback,PICO_MAPPING
-        path=package_share('snowbot_teleop')/'snowbot_teleop/node.py'
-        node=next(n for n in ast.parse(path.read_text()).body if isinstance(n,ast.ClassDef) and n.name=='PicoNode')
+        path=package_share('snowbot_teleop')/'snowbot_teleop/application.py'
+        node=next(n for n in ast.parse(path.read_text()).body if isinstance(n,ast.ClassDef) and n.name=='PicoApplication')
         method=next(n for n in node.body if getattr(n,'name','')=='on_frame')
         clock=S(ros=100.,mono=10.)
         namespace=dict(time=S(monotonic=lambda:clock.mono),json=json,seconds=lambda x:x,copy=__import__('copy').copy,
@@ -156,8 +156,9 @@ class TimingSummaries(unittest.TestCase):
         owner=S(matches_mode=lambda m:True,frames={},last_pair_at=None,base=None,runtime_parameters=load_parameters(),
                 now=lambda:clock.ros,event=lambda *v:events.append(v),
                 control=PicoControl(),feedback=lambda:PicoFeedback(clock.ros,True,('closed','closed')),
-                last_prepare_check=None,release_until=0.,projected=S(publish=projected.append),gripper_projected=S(publish=lambda _:None),
-                instance_id='offline',position_contract=True,handoff_complete=True,independent_grippers=False)
+                last_prepare_check=None,release_until=0.,projected=S(publish=projected.append,get_subscription_count=lambda:1),gripper_projected=S(publish=lambda _:None),
+                instance_id='offline',position_contract=True,handoff_complete=True,independent_grippers=False,
+                tool=S(on_frame=lambda _:None),publish_mode=lambda:None)
         def pair(seq):
             for side in ('left','right'):
                 message=S(source_id='source',seq=seq,stamp=clock.ros,side=side,
@@ -186,8 +187,8 @@ class TimingSummaries(unittest.TestCase):
         outgoing=projected[-2]
         self.assertEqual(outgoing.trigger,1.)
         self.assertEqual(list(outgoing.button_edges),[0]*6+[1,0])
-        path=ROOT/'src/integration/bindu_runtime/bindu_runtime/bimanual_tool_node.py'
-        definition=next(n for n in ast.parse(path.read_text()).body if isinstance(n,ast.ClassDef) and n.name=='BimanualToolNode')
+        path=ROOT/'src/integration/bindu_runtime/bindu_runtime/tool_session.py'
+        definition=next(n for n in ast.parse(path.read_text()).body if isinstance(n,ast.ClassDef) and n.name=='ToolSession')
         method=next(n for n in definition.body if getattr(n,'name','')=='on_frame')
         exec(compile(ast.Module(body=[method],type_ignores=[]),str(path),'exec'),namespace)
         tool=S(matches_mode=lambda m:True,frames={},simulation=False,busy=True,
@@ -305,7 +306,10 @@ class VuerPipeline(unittest.IsolatedAsyncioTestCase):
             def publish(msg):published.append(msg);clock.value+=RECORDED_GAP/2
             node.publisher=S(publish=publish);node.emit_health=reports.append
             clock.value=10.2
-            node.poll()
+            # Both queue ends use the same injected clock, unlike real Mac
+            # Python 3.9 subprocesses whose monotonic epochs may differ.
+            with patch('bindu_teleoperation.vr.receiver.sys.platform','linux'):
+                node.poll()
             summary=next(r for r in reports if r['stage']=='input_pipeline')
             self.assertAlmostEqual(summary['maxima']['ros_poll_callback']['seconds'],RECORDED_GAP)
             self.assertAlmostEqual(summary['maxima']['frame_queue_wait']['seconds'],.2)

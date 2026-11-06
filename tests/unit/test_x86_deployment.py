@@ -6,6 +6,7 @@ from contextlib import redirect_stdout, redirect_stderr
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 from types import SimpleNamespace as NS
 import unittest
@@ -62,7 +63,12 @@ class X86DeploymentTests(unittest.TestCase):
         for release, version, distro in [('22.04', (3, 10), 'humble'), ('24.04', (3, 12), 'jazzy')]:
             info = dict(ID='ubuntu', VERSION_ID=release)
             self.assertEqual(x86_real.target_distro(info, 'x86_64', version), distro)
-            for machine, python in [('aarch64', version), ('x86_64', (3, 11))]:
+            if release == '22.04':
+                self.assertEqual(x86_real.target_distro(info, 'aarch64', version), distro)
+            else:
+                with self.assertRaises(ValueError):
+                    x86_real.target_distro(info, 'aarch64', version)
+            for machine, python in [('armv7l', version), ('x86_64', (3, 11)), ('aarch64', (3, 11))]:
                 with self.assertRaises(ValueError):
                     x86_real.target_distro(info, machine, python)
         with self.assertRaises(ValueError):
@@ -452,6 +458,16 @@ class RuntimeCheckTests(unittest.TestCase):
 
 
 class CspInstallTests(unittest.TestCase):
+    def test_legacy_module_cli_preserves_help_and_argument_errors(self):
+        env = dict(os.environ, PYTHONPATH=os.pathsep.join(sys.path))
+        for arguments, code in ((['--help'], 0), ([], 2)):
+            with self.subTest(arguments=arguments):
+                result = subprocess.run(
+                    [sys.executable, '-m', 'tools.deployment.runtime_check', *arguments],
+                    cwd=x86_real.ROOT, env=env, capture_output=True, text=True)
+                self.assertEqual(result.returncode, code)
+                self.assertIn('--vendor-workspace', result.stdout+result.stderr)
+
     def fixture(self, root):
         fields = {k: v[0] for k, v in runtime_check.CSP_DIAGNOSTIC_FIELDS.items()}
         prefixes = {k: root/'install'/k for k in
