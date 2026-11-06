@@ -7,8 +7,15 @@ in-flight solve, submission, lease and bounded cleanup.
 import json
 import math
 import time
-from bindu_contracts.teleoperation import reference_tracking_budget, joint_reference_limits
-from bindu_teleoperation.bimanual_session import BimanualSession, ToolPoseSession, AcceptedReference
+from bindu_contracts.teleoperation import (
+    reference_tracking_budget,
+    joint_reference_limits,
+)
+from bindu_teleoperation.bimanual_session import (
+    BimanualSession,
+    ToolPoseSession,
+    AcceptedReference,
+)
 from bindu_teleoperation.independent_session import IndependentArmsSession
 from bindu_interfaces.action import TeleopSession as TeleopAction
 from bindu_interfaces.msg import MotionCommand
@@ -115,7 +122,9 @@ async def run_session(self, goal):
         stopped = False
         acquisition_epoch = self.state.lease_epoch
         acquisition = self.lease_client.call_async(
-            Lease.Request(operation="acquire", owner=session.identity, resources=list(self.groups))
+            Lease.Request(
+                operation="acquire", owner=session.identity, resources=list(self.groups)
+            )
         )
         lease = await self.wait(acquisition)
         if not lease.ok:
@@ -165,7 +174,9 @@ async def run_session(self, goal):
                     "tracking_feedback": self.cfg.get("tracking_feedback", "measured"),
                     "vr_tool_mapping": self.cfg.get("vr_tool_mapping", "legacy_wrist"),
                     "pose_filter": (
-                        self.cfg.get("pose_filter") if self.input_source == "vr" else None
+                        self.cfg.get("pose_filter")
+                        if self.input_source == "vr"
+                        else None
                     ),
                     "pose_filter_space": (
                         (
@@ -177,7 +188,9 @@ async def run_session(self, goal):
                         else None
                     ),
                     "mapping_frame": "robot_base",
-                    "geometry_kind": self.cfg.get("demo", {}).get("geometry_kind", "shovel"),
+                    "geometry_kind": self.cfg.get("demo", {}).get(
+                        "geometry_kind", "shovel"
+                    ),
                     "max_integration_interval": reference.max_interval,
                     "max_sample_gap": reference.max_sample_gap,
                     "right_axial_grasp": bool(session.axial),
@@ -225,7 +238,9 @@ async def run_session(self, goal):
                     raise RuntimeError("LEASE_RENEW_TIMEOUT")
             if now >= next_renewal and renewal is None:
                 renewal = self.lease_client.call_async(
-                    Lease.Request(operation="renew", lease_id=lease.lease_id, epoch=lease.epoch)
+                    Lease.Request(
+                        operation="renew", lease_id=lease.lease_id, epoch=lease.epoch
+                    )
                 )
                 renewal_at, next_renewal = now, now + 0.3
             if self.pause_control.phase == "pausing":
@@ -260,15 +275,22 @@ async def run_session(self, goal):
                 frame_stamp = (
                     (self.tool_frame.stamp if self.tool_frame else float("-inf"))
                     if self.input_source == "tool_pose"
-                    else min((f.stamp for f in self.frames.values()), default=float("-inf"))
+                    else min(
+                        (f.stamp for f in self.frames.values()), default=float("-inf")
+                    )
                 )
                 frame_seq = (
                     (self.tool_frame.seq if self.tool_frame else -1)
                     if self.input_source == "tool_pose"
                     else min((f.seq for f in self.frames.values()), default=-1)
                 )
-                if frame_seq <= session.seq or not self.pause_control.accepts(frame_stamp):
-                    if self.now() - self.pause_control.resume_after > self.cfg["input_max_age"]:
+                if frame_seq <= session.seq or not self.pause_control.accepts(
+                    frame_stamp
+                ):
+                    if (
+                        self.now() - self.pause_control.resume_after
+                        > self.cfg["input_max_age"]
+                    ):
                         raise RuntimeError("TOOL_RESUME_INPUT_TIMEOUT")
                     await self.pause()
                     continue
@@ -341,15 +363,23 @@ async def run_session(self, goal):
                     reply = pending.result()
                     if not reply.accepted:
                         raise RuntimeError(reply.code)
-                    if not work_stamp <= self.now() < work_stamp + self.cfg["command_max_age"]:
+                    if (
+                        not work_stamp
+                        <= self.now()
+                        < work_stamp + self.cfg["command_max_age"]
+                    ):
                         raise RuntimeError("BIMANUAL_SUBMIT_EXPIRED")
                     reference.accept(*pending_reference)
-                    reference_deadline = work_sampled_monotonic + reference.max_sample_gap
+                    reference_deadline = (
+                        work_sampled_monotonic + reference.max_sample_gap
+                    )
                     end_deferral("software_acceptance")
                     submit_revision = max(submit_revision, reply.revision)
                     if self.trajectory_reference:
                         trajectory_bootstrap = False
-                        trajectory_reference_deadline = time.monotonic() + reference.max_sample_gap
+                        trajectory_reference_deadline = (
+                            time.monotonic() + reference.max_sample_gap
+                        )
                     self.event(
                         "BIMANUAL_SUBMIT_TIMING",
                         json.dumps(
@@ -389,7 +419,9 @@ async def run_session(self, goal):
                             "BIMANUAL_GEOMETRY_STEP",
                             json.dumps(
                                 dict(
-                                    geometry, input_seq=work_seq, control_sampled_at=work_sampled_at
+                                    geometry,
+                                    input_seq=work_seq,
+                                    control_sampled_at=work_sampled_at,
                                 )
                             ),
                             goal.request.task_id,
@@ -416,13 +448,21 @@ async def run_session(self, goal):
                         limit = float(self.cfg.get("max_reference_error", 0.15))
                         if not math.isfinite(limit) or limit <= 0:
                             raise RuntimeError("BIMANUAL_REFERENCE_LIMIT_CONFIG")
-                        hard_limits = joint_reference_limits(self.names, limit, self.cfg.get("joint_reference_error_limits", {}))
-                        leads = [abs(q - measured[n]) for n, q in zip(self.names, positions)]
+                        hard_limits = joint_reference_limits(
+                            self.names,
+                            limit,
+                            self.cfg.get("joint_reference_error_limits", {}),
+                        )
+                        leads = [
+                            abs(q - measured[n]) for n, q in zip(self.names, positions)
+                        ]
                         executed = None
                         # No servo trajectory exists before the first accepted
                         # target; use the authenticated hold/goal guard once.
                         if self.trajectory_reference and not trajectory_bootstrap:
-                            from bindu_runtime.stop_evidence import sampled_nominal_reference
+                            from bindu_runtime.stop_evidence import (
+                                sampled_nominal_reference,
+                            )
 
                             executed, _ = sampled_nominal_reference(
                                 s,
@@ -444,23 +484,32 @@ async def run_session(self, goal):
                             candidate_lead_rad=max(leads),
                             reference_lead_rad=reference_lead,
                             reference_basis=(
-                                "executed" if executed is not None else "accepted_target"
+                                "executed"
+                                if executed is not None
+                                else "accepted_target"
                             ),
                             target_lead_rad=max(
-                                abs(q - measured[n]) for n, q in zip(self.names, work_reference)
+                                abs(q - measured[n])
+                                for n, q in zip(self.names, work_reference)
                             ),
                             candidate_budget_rad=list(budgets),
                             worst_candidate_joint=self.names[
                                 max(range(len(leads)), key=leads.__getitem__)
                             ],
-                            reserve_rad=0.8 * self.cfg.get("max_target_lead_error", limit),
+                            reserve_rad=0.8
+                            * self.cfg.get("max_target_lead_error", limit),
                             hard_limit_rad=max(hard_limits),
                             joint_hard_limits_rad=dict(zip(self.names, hard_limits)),
                         )
                         tracking = work_reference if executed is None else executed
-                        if any(abs(q-measured[n]) > bound for n,q,bound in zip(self.names, tracking, hard_limits)):
+                        if any(
+                            abs(q - measured[n]) > bound
+                            for n, q, bound in zip(self.names, tracking, hard_limits)
+                        ):
                             kind, value = "error", "BIMANUAL_REFERENCE_TRACKING_ERROR"
-                        elif any(lead > budget + 1e-9 for lead, budget in zip(leads, budgets)):
+                        elif any(
+                            lead > budget + 1e-9 for lead, budget in zip(leads, budgets)
+                        ):
                             kind, value = "error", "BIMANUAL_RESULT_FEEDBACK_CHANGED"
                     if kind == "error":
                         if awaiting == "solve" and value in (
@@ -477,10 +526,16 @@ async def run_session(self, goal):
                                 or s.state == "FAILED"
                                 and s.command_id.startswith(session.identity + "_")
                             ):
-                                raise RuntimeError("BIMANUAL_SOLVE_DEFERRED_UNCONFIRMED")
+                                raise RuntimeError(
+                                    "BIMANUAL_SOLVE_DEFERRED_UNCONFIRMED"
+                                )
                             if (
-                                not 0 <= self.now() - work_sampled_at <= reference.max_interval
-                                or not 0 <= now - work_sampled_monotonic <= reference.max_interval
+                                not 0
+                                <= self.now() - work_sampled_at
+                                <= reference.max_interval
+                                or not 0
+                                <= now - work_sampled_monotonic
+                                <= reference.max_interval
                             ):
                                 raise RuntimeError("BIMANUAL_RESULT_STALE")
                             if reference_deadline is None or now >= reference_deadline:
@@ -541,8 +596,12 @@ async def run_session(self, goal):
                                     "operation": awaiting,
                                     "input_seq": work_seq,
                                     "input_stamp": work_stamp,
-                                    "constraint": geometry.get("constraint") if geometry else None,
-                                    "timing": geometry.get("timing") if geometry else None,
+                                    "constraint": (
+                                        geometry.get("constraint") if geometry else None
+                                    ),
+                                    "timing": (
+                                        geometry.get("timing") if geometry else None
+                                    ),
                                     "control_sampled_at": work_sampled_at,
                                     "integration_dt": work_dt,
                                     "sample_gap_s": work_gap,
@@ -559,7 +618,11 @@ async def run_session(self, goal):
                         )
                         raise RuntimeError(value)
                     if awaiting == "capture":
-                        if not 0 <= self.now() - work_sampled_at <= reference.max_sample_gap:
+                        if (
+                            not 0
+                            <= self.now() - work_sampled_at
+                            <= reference.max_sample_gap
+                        ):
                             raise RuntimeError("BIMANUAL_CAPTURE_STALE")
                         session.capture(value)
                         # No motion was submitted while capturing. Start the
@@ -578,7 +641,9 @@ async def run_session(self, goal):
                                         "measured_grasp_policy", "enforce"
                                     ),
                                     "feedback": work_feedback,
-                                    "capture_reference": dict(zip(self.names, work_positions)),
+                                    "capture_reference": dict(
+                                        zip(self.names, work_positions)
+                                    ),
                                     "capture_basis": (
                                         "confirmed_hold"
                                         if work_reference is not None
@@ -618,7 +683,11 @@ async def run_session(self, goal):
                                     ),
                                     "controller_anchors": (
                                         [
-                                            value.tolist() if value is not None else None
+                                            (
+                                                value.tolist()
+                                                if value is not None
+                                                else None
+                                            )
                                             for value in session.anchors
                                         ]
                                         if isinstance(session, IndependentArmsSession)
@@ -626,7 +695,11 @@ async def run_session(self, goal):
                                     ),
                                     "robot_anchors": (
                                         [
-                                            value.tolist() if value is not None else None
+                                            (
+                                                value.tolist()
+                                                if value is not None
+                                                else None
+                                            )
                                             for value in session.robot_anchors
                                         ]
                                         if isinstance(session, IndependentArmsSession)
@@ -654,7 +727,9 @@ async def run_session(self, goal):
                                         if isinstance(session, IndependentArmsSession)
                                         else getattr(session, "heading_input", None)
                                     ),
-                                    "grasp_continuation": getattr(session, "resumed_grasp", False),
+                                    "grasp_continuation": getattr(
+                                        session, "resumed_grasp", False
+                                    ),
                                 }
                             ),
                             goal.request.task_id,
@@ -667,7 +742,11 @@ async def run_session(self, goal):
                             work_stamp >= self.now() - self.cfg["command_max_age"]
                             and pending is None
                         ):
-                            if not 0 <= self.now() - work_sampled_at <= reference.max_interval:
+                            if (
+                                not 0
+                                <= self.now() - work_sampled_at
+                                <= reference.max_interval
+                            ):
                                 raise RuntimeError("BIMANUAL_RESULT_STALE")
                             positions, metrics = value
                             command = MotionCommand(
@@ -689,7 +768,9 @@ async def run_session(self, goal):
                                 positions=list(positions),
                                 rigid_reference=(
                                     self.trajectory_reference
-                                    and self.cfg.get("rigid_reference_prediction", False)
+                                    and self.cfg.get(
+                                        "rigid_reference_prediction", False
+                                    )
                                     and mode.mode == "bimanual_tool"
                                     and session.grasp_mode == "rigid"
                                 ),
@@ -705,7 +786,11 @@ async def run_session(self, goal):
                                     json.dumps(
                                         {
                                             "solve_us": metrics[0],
-                                            "timing": geometry.get("timing") if geometry else None,
+                                            "timing": (
+                                                geometry.get("timing")
+                                                if geometry
+                                                else None
+                                            ),
                                             "geometry_step": (
                                                 geometry
                                                 if geometry and geometry["scale"] < 1.0
@@ -713,15 +798,21 @@ async def run_session(self, goal):
                                             ),
                                             "relative_error": (
                                                 None
-                                                if isinstance(session, IndependentArmsSession)
+                                                if isinstance(
+                                                    session, IndependentArmsSession
+                                                )
                                                 else metrics[1]
                                             ),
                                             "relative_error_source": (
                                                 None
-                                                if isinstance(session, IndependentArmsSession)
+                                                if isinstance(
+                                                    session, IndependentArmsSession
+                                                )
                                                 else (
                                                     "accepted_reference"
-                                                    if self.cfg.get("reference_kinematics")
+                                                    if self.cfg.get(
+                                                        "reference_kinematics"
+                                                    )
                                                     else "measured"
                                                 )
                                             ),
@@ -740,7 +831,8 @@ async def run_session(self, goal):
                                             "sample_gap_s": work_gap,
                                             "control_sampled_at": work_sampled_at,
                                             "result_received_at": self.now(),
-                                            "result_age_s": self.now() - work_sampled_at,
+                                            "result_age_s": self.now()
+                                            - work_sampled_at,
                                             "joint_names": self.names,
                                             "positions": positions,
                                             "reference": work_reference,
@@ -777,7 +869,9 @@ async def run_session(self, goal):
                     # Wait for real input; never relabel its timestamp.
                     await self.pause()
                     continue
-                gap = sampled_at - reference.sampled_at if operation == "solve" else None
+                gap = (
+                    sampled_at - reference.sampled_at if operation == "solve" else None
+                )
                 if gap is not None and gap > 0.08:
                     self.event(
                         "BIMANUAL_SAMPLE_GAP",
@@ -793,18 +887,25 @@ async def run_session(self, goal):
                                 "input_stamp": session.stamp,
                                 "input_age_s": sampled_at - session.stamp,
                                 "feedback_stamp": seconds(s.feedback_stamp),
-                                "feedback_age_s": sampled_at - seconds(s.feedback_stamp),
+                                "feedback_age_s": sampled_at
+                                - seconds(s.feedback_stamp),
                                 "will_reject": gap > reference.max_sample_gap,
                             }
                         ),
                         goal.request.task_id,
                     )
                 execution_sample = None
-                if operation == "solve" and self.trajectory_reference and not trajectory_bootstrap:
+                if (
+                    operation == "solve"
+                    and self.trajectory_reference
+                    and not trajectory_bootstrap
+                ):
                     from bindu_runtime.stop_evidence import sampled_nominal_reference
 
                     if trajectory_reference_deadline is None:
-                        trajectory_reference_deadline = time.monotonic() + reference.max_sample_gap
+                        trajectory_reference_deadline = (
+                            time.monotonic() + reference.max_sample_gap
+                        )
                     sample = sampled_nominal_reference(
                         s,
                         self.names,
@@ -824,7 +925,9 @@ async def run_session(self, goal):
                         or actual_stamp >= sampled_at
                     ):
                         if time.monotonic() >= trajectory_reference_deadline:
-                            raise RuntimeError("SNOWBOT_TRAJECTORY_REFERENCE_NOT_ADVANCING")
+                            raise RuntimeError(
+                                "SNOWBOT_TRAJECTORY_REFERENCE_NOT_ADVANCING"
+                            )
                         await self.pause()
                         continue
                     # Keep integrating from accepted goals. Replacing them with
@@ -834,14 +937,20 @@ async def run_session(self, goal):
                     # QP measured tracking/geometry and device limits stay active.
                     trajectory_sample_at = actual_stamp
                     trajectory_reference_deadline = None
-                    execution_sample = dict(positions=actual, stamp=actual_stamp, epoch=lease.epoch)
-                baseline, dt = reference.step(sampled_at) if operation == "solve" else (None, None)
+                    execution_sample = dict(
+                        positions=actual, stamp=actual_stamp, epoch=lease.epoch
+                    )
+                baseline, dt = (
+                    reference.step(sampled_at) if operation == "solve" else (None, None)
+                )
                 if operation == "capture" and self.trajectory_reference:
                     baseline = await self.held_reference(lease, submit_revision)
                     # The request yields: use current measured feedback and
                     # retain all normal input/feedback checks before capture.
                     self.check()
-                    measured = dict(zip(self.state.joints.name, self.state.joints.position))
+                    measured = dict(
+                        zip(self.state.joints.name, self.state.joints.position)
+                    )
                     sampled_at = self.now()
                     sampled_monotonic = time.monotonic()
                 if self.worker.submit(
@@ -854,7 +963,9 @@ async def run_session(self, goal):
                     grasp_mode=session.grasp_mode,
                     target_stamp=session.stamp,
                     execution_reference=(
-                        execution_sample["positions"] if execution_sample is not None else None
+                        execution_sample["positions"]
+                        if execution_sample is not None
+                        else None
                     ),
                 ):
                     awaiting = operation
@@ -870,7 +981,9 @@ async def run_session(self, goal):
                     work_feedback, work_reference = measured, baseline
                     work_execution_reference = execution_sample
                     work_target = (
-                        None if session.target is None else session.target.ravel().tolist()
+                        None
+                        if session.target is None
+                        else session.target.ravel().tolist()
                     )
             feedback_mode = (
                 "capturing"
@@ -884,7 +997,9 @@ async def run_session(self, goal):
             if feedback_mode != last_feedback_mode or now >= next_feedback_at:
                 goal.publish_feedback(
                     TeleopAction.Feedback(
-                        session_id=session.identity, mode=feedback_mode, accepted_commands=accepted
+                        session_id=session.identity,
+                        mode=feedback_mode,
+                        accepted_commands=accepted,
                     )
                 )
                 last_feedback_mode = feedback_mode
@@ -912,9 +1027,15 @@ async def run_session(self, goal):
             try:
                 end_deferral("session_ended")
             except Exception as exc:
-                if getattr(result, "code", "") in ("", "TELEOP_SESSION_COMPLETE", "CANCELED"):
+                if getattr(result, "code", "") in (
+                    "",
+                    "TELEOP_SESSION_COMPLETE",
+                    "CANCELED",
+                ):
                     result.code = "BIMANUAL_DIAGNOSTIC_FAILED:" + str(exc)
-                self.cleanup_event("BIMANUAL_DIAGNOSTIC_FAILED", str(exc), goal.request.task_id)
+                self.cleanup_event(
+                    "BIMANUAL_DIAGNOSTIC_FAILED", str(exc), goal.request.task_id
+                )
         finally:
             try:
                 if acquisition is not None and lease is None:
@@ -948,7 +1069,9 @@ async def run_session(self, goal):
                         )
             except Exception as exc:
                 stopped = False
-                self.cleanup_event("BIMANUAL_CLEANUP_FAILED", str(exc), goal.request.task_id)
+                self.cleanup_event(
+                    "BIMANUAL_CLEANUP_FAILED", str(exc), goal.request.task_id
+                )
             finally:
                 stopped = stopped and not getattr(self, "stop_unconfirmed", False)
                 if not stopped:
@@ -967,7 +1090,11 @@ async def run_session(self, goal):
             self.cleanup_event(
                 "BIMANUAL_ENDED",
                 json.dumps(
-                    {"session_id": session.identity, "code": result.code, "accepted": accepted}
+                    {
+                        "session_id": session.identity,
+                        "code": result.code,
+                        "accepted": accepted,
+                    }
                 ),
                 goal.request.task_id,
             )

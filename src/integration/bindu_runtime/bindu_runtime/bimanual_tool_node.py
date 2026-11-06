@@ -8,6 +8,7 @@ from rclpy.callback_groups import ReentrantCallbackGroup, MutuallyExclusiveCallb
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
 from rclpy.task import Future
 from std_srvs.srv import Trigger, SetBool
+from bindu_interfaces.srv import ResetToolReference
 from bindu_interfaces.action import TeleopSession as TeleopAction
 from bindu_interfaces.msg import VRInput, RecorderHealth, TeleopModeState, ToolPoseInput
 from .common import RuntimeNode, spin
@@ -40,15 +41,24 @@ class BimanualToolNode(RuntimeNode):
             callback_group=MutuallyExclusiveCallbackGroup(),
         )
         if session.require_recording:
-            self.create_subscription(RecorderHealth, "recorder/health", session.on_health, 5)
+            self.create_subscription(
+                RecorderHealth, "recorder/health", session.on_health, 5
+            )
         qos = QoSProfile(
             depth=1,
             reliability=ReliabilityPolicy.RELIABLE,
             durability=DurabilityPolicy.TRANSIENT_LOCAL,
         )
-        self.create_subscription(TeleopModeState, "teleop/mode_state", self.on_mode, qos)
+        self.create_subscription(
+            TeleopModeState, "teleop/mode_state", self.on_mode, qos
+        )
         self.create_timer(WORKER_POLL_PERIOD, self.tick)
         self.create_service(Trigger, "teleop/tool_ready", session.ready)
+        self.create_service(
+            ResetToolReference,
+            "teleop/tool_reference_reset",
+            session.reset_grasp_reference,
+        )
         if session.independent_enabled:
             self.create_service(Trigger, "teleop/arms_ready", session.arms_ready)
         self.create_service(SetBool, "teleop/tool_pause", session.request_pause)
@@ -70,7 +80,9 @@ class BimanualToolNode(RuntimeNode):
         code = result.code
         if result.lease_rejection is not None:
             # Preserve the standalone Action wire format at the ROS boundary.
-            code = "BIMANUAL_LEASE_NOT_ACQUIRED:" + json.dumps(asdict(result.lease_rejection))
+            code = "BIMANUAL_LEASE_NOT_ACQUIRED:" + json.dumps(
+                asdict(result.lease_rejection)
+            )
             if "STOP_UNCONFIRMED" in result.code:
                 code += ":STOP_UNCONFIRMED"
         return TeleopAction.Result(

@@ -43,14 +43,23 @@ class ToolSession:
         self.get_logger = node.get_logger
         self.matches_mode = node.matches_mode
         self.yield_control = yield_control
-        parameter(node, "require_recording", True, descriptor=ParameterDescriptor(read_only=True))
+        parameter(
+            node,
+            "require_recording",
+            True,
+            descriptor=ParameterDescriptor(read_only=True),
+        )
         self.require_recording = node.get_parameter("require_recording").value
         self.detailed_diagnostics = parameter(node, "detailed_diagnostics", False).value
         self.next_solution_report = 0.0
         share = Path(get_package_share_directory("bindu_runtime"))
-        parameter(node, "tool_config", str(share / "config/robots/g1/bimanual_g1_sim.json"))
         parameter(
-            node, "model_root", str(Path(get_package_share_directory("bindu_description")) / "urdf")
+            node, "tool_config", str(share / "config/robots/g1/bimanual_g1_sim.json")
+        )
+        parameter(
+            node,
+            "model_root",
+            str(Path(get_package_share_directory("bindu_description")) / "urdf"),
         )
         self.cfg = load_tool_config(Path(node.get_parameter("tool_config").value))
         if tool_config_loader is not None:
@@ -72,20 +81,36 @@ class ToolSession:
             self.cfg.get("pair_max_skew_s", 0.02),
             descriptor=ParameterDescriptor(read_only=True),
         ).value
-        if not math.isfinite(self.cfg["pair_max_skew_s"]) or self.cfg["pair_max_skew_s"] <= 0:
+        if (
+            not math.isfinite(self.cfg["pair_max_skew_s"])
+            or self.cfg["pair_max_skew_s"] <= 0
+        ):
             raise ValueError("VR_PAIR_MAX_SKEW")
         if (
-            not 0 <= self.cfg["grip_release_threshold"] < self.cfg["grip_press_threshold"] <= 1
+            not 0
+            <= self.cfg["grip_release_threshold"]
+            < self.cfg["grip_press_threshold"]
+            <= 1
             or not 0 <= self.cfg["trigger_release_threshold"] < 1
         ):
             raise ValueError("VR_INPUT_THRESHOLDS")
-        parameter(node, "position_contract", False)
+        parameter(
+            node,
+            "position_contract",
+            False,
+            descriptor=ParameterDescriptor(read_only=True),
+        )
         position_contract = node.get_parameter("position_contract").value
         parameter(
-            node, "execution_mode", "position", descriptor=ParameterDescriptor(read_only=True)
+            node,
+            "execution_mode",
+            "position",
+            descriptor=ParameterDescriptor(read_only=True),
         )
         if "position_protocol" in node._parameter_overrides:
-            raise ValueError("SNOWBOT_POSITION_PROTOCOL_REMOVED: session_v3 is fixed; remove position_protocol")
+            raise ValueError(
+                "SNOWBOT_POSITION_PROTOCOL_REMOVED: session_v3 is fixed; remove position_protocol"
+            )
         self.trajectory_reference = not self.simulation and position_contract
         if type(self.cfg.get("rigid_reference_prediction", False)) is not bool:
             raise ValueError("RIGID_REFERENCE_CONFIG")
@@ -94,11 +119,11 @@ class ToolSession:
         self.cfg = apply_execution_tracking(
             self.cfg,
             node.get_parameter("execution_mode").value,
-            real=not self.simulation,
-            position_contract=position_contract,
             trajectory_reference=self.trajectory_reference,
         )
-        parameter(node, "gripper_config", "", descriptor=ParameterDescriptor(read_only=True))
+        parameter(
+            node, "gripper_config", "", descriptor=ParameterDescriptor(read_only=True)
+        )
         gripper_path = node.get_parameter("gripper_config").value
         self.gripper_cfg = None
         self.gripper_joints = {}
@@ -117,11 +142,16 @@ class ToolSession:
             "configured_tool_geometry",
         ):
             raise ValueError("BIMANUAL_CONFIG_RUNTIME_MODE_MISMATCH")
-        if not self.simulation and self.cfg.get("collision_scope") != "configured_tool_geometry":
+        if (
+            not self.simulation
+            and self.cfg.get("collision_scope") != "configured_tool_geometry"
+        ):
             raise ValueError("BIMANUAL_REAL_REQUIRES_CONFIGURED_GEOMETRY")
         urdf = Path(self.cfg["urdf"])
         self.cfg["urdf"] = str(
-            urdf if urdf.is_absolute() else Path(node.get_parameter("model_root").value) / urdf
+            urdf
+            if urdf.is_absolute()
+            else Path(node.get_parameter("model_root").value) / urdf
         )
         parameter(node, "input_source", "vr")
         self.input_source = node.get_parameter("input_source").value
@@ -132,14 +162,17 @@ class ToolSession:
         parameter(node, "tool_ground_policy", "configured")
         ground_policy = node.get_parameter("tool_ground_policy").value
         if ground_policy not in ("configured", "report_only") or (
-            ground_policy == "report_only" and (not self.simulation or self.input_source != "vr")
+            ground_policy == "report_only"
+            and (not self.simulation or self.input_source != "vr")
         ):
             raise ValueError("BIMANUAL_GROUND_POLICY_OVERRIDE")
         if ground_policy == "report_only":
             self.cfg["demo"]["acceptance"]["ground_policy"] = "report_only"
         parameter(node, "simulation_demo", False)
         demo = node.get_parameter("simulation_demo").value
-        if type(demo) is not bool or (demo and (not self.simulation or self.input_source != "vr")):
+        if type(demo) is not bool or (
+            demo and (not self.simulation or self.input_source != "vr")
+        ):
             raise ValueError("PICO_DEMO_REQUIRES_KINEMATIC_SIMULATION")
         if demo:
             from bindu_teleoperation.simulation_fixture import short_rod_config
@@ -147,7 +180,8 @@ class ToolSession:
             self.cfg = short_rod_config(self.cfg)
         if (
             self.cfg.get(
-                "integration_max_sample_gap", self.cfg.get("max_integration_interval", 0.1)
+                "integration_max_sample_gap",
+                self.cfg.get("max_integration_interval", 0.1),
             )
             > self.cfg["input_max_age"]
         ):
@@ -183,7 +217,9 @@ class ToolSession:
         self.lease_client = execution.leases
         self.submit_client = execution.submit
         self.control_client = execution.control
-        self.held_reference_client = execution.held_reference if self.trajectory_reference else None
+        self.held_reference_client = (
+            execution.held_reference if self.trajectory_reference else None
+        )
 
     @property
     def state(self):
@@ -191,6 +227,28 @@ class ToolSession:
 
     def close(self):
         self.worker.close()
+
+    def reset_grasp_reference(self, request, reply):
+        state = self.state
+        if (
+            state is None
+            or state.instance_id != request.execution_instance_id
+            or state.lease_epoch < request.epoch
+        ):
+            reply.ok, reply.code = False, "BIMANUAL_REFERENCE_STATE_PENDING"
+            return reply
+        if state.lease_epoch != request.epoch:
+            reply.ok, reply.code = False, "BIMANUAL_REFERENCE_SCOPE_CHANGED"
+            return reply
+        if self.busy:
+            reply.ok, reply.code = False, "BIMANUAL_SESSION_ACTIVE"
+            return reply
+        self.worker.reset_grasp_reference()
+        self.preflight_token -= 1
+        self.preflight_status = ""
+        self.preflight_mode = self.preflight_grasp = None
+        reply.ok, reply.code = True, "GRASP_REFERENCE_RESET_QUEUED"
+        return reply
 
     def request_pause(self, request, reply):
         if not self.busy:
@@ -206,10 +264,19 @@ class ToolSession:
         event = (
             "BIMANUAL_PAUSED"
             if self.pause_control.phase == "paused"
-            else "BIMANUAL_PAUSE_REQUESTED" if request.data else "BIMANUAL_RESUME_REQUESTED"
+            else (
+                "BIMANUAL_PAUSE_REQUESTED"
+                if request.data
+                else "BIMANUAL_RESUME_REQUESTED"
+            )
         )
         self.event(
-            event, "STOP_CONFIRMED" if event == "BIMANUAL_PAUSED" else self.pause_control.phase
+            event,
+            (
+                "STOP_CONFIRMED"
+                if event == "BIMANUAL_PAUSED"
+                else self.pause_control.phase
+            ),
         )
         return reply
 
@@ -228,7 +295,9 @@ class ToolSession:
             or s is None
             or s.profile_hash != self.profile.digest
             or s.simulated != self.simulation
-            or not 0 <= self.now() - seconds(s.feedback_stamp) <= self.cfg["feedback_max_age"]
+            or not 0
+            <= self.now() - seconds(s.feedback_stamp)
+            <= self.cfg["feedback_max_age"]
         ):
             return False
         q = dict(zip(s.joints.name, s.joints.position))
@@ -238,7 +307,9 @@ class ToolSession:
             and n in v
             and math.isfinite(q[n])
             and math.isfinite(v[n])
-            and abs(q[n] - cfg["grippers"][side]["virtual" if side == "right" else "closed"])
+            and abs(
+                q[n] - cfg["grippers"][side]["virtual" if side == "right" else "closed"]
+            )
             <= cfg["position_tolerance"]
             and abs(v[n]) <= cfg["velocity_tolerance"]
             for side, n in self.gripper_joints.items()
@@ -291,7 +362,9 @@ class ToolSession:
                 edges,
                 msg.virtual_grip,
                 head_pose=tuple(getattr(msg, "head_pose", ())),
-                head_stamp=seconds(msg.head_stamp) if getattr(msg, "head_pose", ()) else 0.0,
+                head_stamp=(
+                    seconds(msg.head_stamp) if getattr(msg, "head_pose", ()) else 0.0
+                ),
                 head_age_s=getattr(msg, "head_age_s", 0.0),
                 head_source_id=getattr(msg, "head_source_id", ""),
                 head_seq=int(getattr(msg, "head_seq", 0)),
@@ -360,7 +433,8 @@ class ToolSession:
         reason = (
             "BIMANUAL_EXECUTION_STOP_UNCONFIRMED"
             if getattr(self, "stop_unconfirmed", False)
-            else self.worker_error or ("" if self.worker.ready else "BIMANUAL_WORKER_NOT_READY")
+            else self.worker_error
+            or ("" if self.worker.ready else "BIMANUAL_WORKER_NOT_READY")
         )
         s = self.state
         if not reason and (
@@ -368,7 +442,9 @@ class ToolSession:
             or s is None
             or s.profile_hash != self.profile.digest
             or s.simulated != self.simulation
-            or not 0 <= self.now() - seconds(s.feedback_stamp) <= self.cfg["feedback_max_age"]
+            or not 0
+            <= self.now() - seconds(s.feedback_stamp)
+            <= self.cfg["feedback_max_age"]
         ):
             reason = "BIMANUAL_PREFLIGHT_FEEDBACK"
         if not reason:
@@ -404,9 +480,13 @@ class ToolSession:
                 measured = dict(zip(s.joints.name, s.joints.position))
                 self.preflight_token -= 1
                 operation = (
-                    "independent_capture" if mode == "independent_arms" else "preflight_capture"
+                    "independent_capture"
+                    if mode == "independent_arms"
+                    else "preflight_capture"
                 )
-                if self.worker.submit(operation, self.preflight_token, measured, grasp_mode=grasp):
+                if self.worker.submit(
+                    operation, self.preflight_token, measured, grasp_mode=grasp
+                ):
                     self.preflight_status = "pending"
                     self.preflight_at = self.now()
                 reason = "BIMANUAL_PREFLIGHT_PENDING"
@@ -448,13 +528,17 @@ class ToolSession:
             or len(s.joints.name) != len(s.joints.position)
             or len(s.joints.name) != len(s.joints.velocity)
             or len(set(s.joints.name)) != len(s.joints.name)
-            or not all(math.isfinite(q) for q in (*s.joints.position, *s.joints.velocity))
+            or not all(
+                math.isfinite(q) for q in (*s.joints.position, *s.joints.velocity)
+            )
             or not set(self.names) <= set(s.joints.name)
         ):
             raise RuntimeError("BIMANUAL_FEEDBACK_INVALID")
         measured = dict(zip(s.joints.name, s.joints.position))
         if any(
-            not self.profile.limits[n][0] - 1e-9 <= measured[n] <= self.profile.limits[n][1] + 1e-9
+            not self.profile.limits[n][0] - 1e-9
+            <= measured[n]
+            <= self.profile.limits[n][1] + 1e-9
             for n in self.names
         ):
             raise RuntimeError("BIMANUAL_MEASURED_POSITION_LIMIT")
@@ -519,7 +603,11 @@ class ToolSession:
 
     async def wait(self, future, timeout=0.7):
         return await wait_for(
-            future, self.pause, timeout, "BIMANUAL_SERVICE_TIMEOUT", clock=time.monotonic
+            future,
+            self.pause,
+            timeout,
+            "BIMANUAL_SERVICE_TIMEOUT",
+            clock=time.monotonic,
         )
 
     def begin_stop(self, lease, release=False):
@@ -530,7 +618,9 @@ class ToolSession:
         deadline = time.monotonic() + self.profile.stop_timeout + 0.5
         if release:
             future = self.lease_client.call_async(
-                Lease.Request(operation="release", lease_id=lease.lease_id, epoch=lease.epoch)
+                Lease.Request(
+                    operation="release", lease_id=lease.lease_id, epoch=lease.epoch
+                )
             )
         else:
             future = self.control_client.call_async(
@@ -556,14 +646,18 @@ class ToolSession:
                 and s.profile_hash == self.profile.digest
                 and s.simulated == self.simulation
                 and s.revision >= minimum
-                and 0 <= self.now() - seconds(s.feedback_stamp) <= self.cfg["feedback_max_age"]
+                and 0
+                <= self.now() - seconds(s.feedback_stamp)
+                <= self.cfg["feedback_max_age"]
             ):
                 return s.revision
             await self.pause()
         raise RuntimeError("BIMANUAL_EXECUTION_REVISION_UNAVAILABLE")
 
     async def held_reference(self, lease, revision):
-        reply = await self.wait(self.held_reference_client.call_async(Trigger.Request()))
+        reply = await self.wait(
+            self.held_reference_client.call_async(Trigger.Request())
+        )
         if not reply.success:
             raise RuntimeError(reply.message)
         data = json.loads(reply.message)
@@ -596,7 +690,9 @@ class ToolSession:
         if not await self.stop(lease, request=request):
             return False, accepted, revision
         # Require the stop's newer state, never a delayed pre-stop snapshot.
-        revision = await self.execution_revision(lease, revision + 1, instance_id=request[3])
+        revision = await self.execution_revision(
+            lease, revision + 1, instance_id=request[3]
+        )
         if rejection:
             raise RuntimeError(rejection)
         return True, accepted, revision
@@ -608,7 +704,9 @@ class ToolSession:
         except Exception as exc:
             self.diagnostic_error = name + ":" + type(exc).__name__ + ":" + str(exc)
             try:
-                self.get_logger().warning(self.diagnostic_error, throttle_duration_sec=5.0)
+                self.get_logger().warning(
+                    self.diagnostic_error, throttle_duration_sec=5.0
+                )
             except Exception:
                 pass  # The retained field remains inspectable if logging also fails.
 
@@ -619,7 +717,9 @@ class ToolSession:
         revoked_epoch = None
         reason = "DEADLINE_EXPIRED"
         try:
-            future, requested, deadline, instance_id = request or self.begin_stop(lease, release)
+            future, requested, deadline, instance_id = request or self.begin_stop(
+                lease, release
+            )
             reply = await self.wait(future)
             if not reply.ok:
                 # A timeout may already have revoked this lease and begun braking.
@@ -637,7 +737,9 @@ class ToolSession:
             next_renewal = time.monotonic()
             while time.monotonic() < deadline:
                 s = self.state
-                if s and ("EMERGENCY_STOP" in s.code or s.code == "STOP_FEEDBACK_TIMEOUT"):
+                if s and (
+                    "EMERGENCY_STOP" in s.code or s.code == "STOP_FEEDBACK_TIMEOUT"
+                ):
                     raise RuntimeError("BIMANUAL_EXECUTION_STOP_FAILED:" + s.code)
                 if revoked_epoch is not None and not (
                     s
@@ -680,10 +782,16 @@ class ToolSession:
                     and s.simulated == self.simulation
                     and s.state != "FAILED"
                     and not s.stop_failures
-                    and 0 <= self.now() - seconds(s.feedback_stamp) < self.cfg["feedback_max_age"]
+                    and 0
+                    <= self.now() - seconds(s.feedback_stamp)
+                    < self.cfg["feedback_max_age"]
                 ):
                     renewal = self.lease_client.call_async(
-                        Lease.Request(operation="renew", lease_id=lease.lease_id, epoch=lease.epoch)
+                        Lease.Request(
+                            operation="renew",
+                            lease_id=lease.lease_id,
+                            epoch=lease.epoch,
+                        )
                     )
                     renewed = await self.wait(
                         renewal, min(0.7, max(0.0, deadline - time.monotonic()))
@@ -694,7 +802,9 @@ class ToolSession:
                         and renewed.epoch == lease.epoch
                         and renewed.profile_hash == self.profile.digest
                     ):
-                        raise RuntimeError("BIMANUAL_STOP_RENEW_REJECTED:" + renewed.code)
+                        raise RuntimeError(
+                            "BIMANUAL_STOP_RENEW_REJECTED:" + renewed.code
+                        )
                     next_renewal = time.monotonic() + 0.3
                 await self.pause()
         except Exception as exc:

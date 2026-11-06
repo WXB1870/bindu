@@ -235,7 +235,7 @@ class IndependentNativeTests(unittest.TestCase):
 
     def test_target_stream_fixed_input_does_not_integrate_measured_offset(self):
         from bindu_runtime.teleop_deployment import apply_execution_tracking
-        cfg=apply_execution_tracking(self.cfg,real=True,position_contract=True,trajectory_reference=True)
+        cfg=apply_execution_tracking(self.cfg,trajectory_reference=True)
         profile=Profile.load(package_share("snowbot_bringup")/'config/robots/snowbot/snowbot_real_position.json')
         solver=BimanualQP(cfg,profile);self.addCleanup(solver.close)
         solver.empty_collision_check=self.solver.empty_collision_check
@@ -275,7 +275,7 @@ class IndependentNativeTests(unittest.TestCase):
 
     def test_recapture_preserves_held_reference_with_stationary_measured_offset(self):
         from bindu_runtime.teleop_deployment import apply_execution_tracking
-        cfg=apply_execution_tracking(self.cfg,real=True,position_contract=True,trajectory_reference=True)
+        cfg=apply_execution_tracking(self.cfg,trajectory_reference=True)
         profile=Profile.load(package_share("snowbot_bringup")/'config/robots/snowbot/snowbot_real_position.json')
         solver=BimanualQP(cfg,profile);self.addCleanup(solver.close)
         solver.empty_collision_check=self.solver.empty_collision_check

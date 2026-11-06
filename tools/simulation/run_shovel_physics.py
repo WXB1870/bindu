@@ -136,11 +136,38 @@ def simulate(app, args, motion, cfg):
     source['initial_native_acceleration_m_s2' if contact_grasp else 'freefall_acceleration_m_s2'] = freefall_acceleration.tolist()
     dt, settle = cfg['physics_dt_s'], cfg['settle_s']
     warmup = cfg.get('control_warmup_s',0.) if args.closed_loop else 0.
-    duration = min(args.duration, times[-1]) if args.duration is not None else times[-1]
+    duration = times[-1]
+    if args.duration is not None:
+        duration = args.duration if args.impedance_binary else min(args.duration, times[-1])
     online = None
     responses = []
     mode = 'rigid'
     qref = plan[0].copy()
+    impedance = None
+    impedance_rows = []
+    if args.impedance_binary:
+        from tools.simulation.shovel_control import ImpedanceClient
+        from bindu_contracts.teleoperation import joint_reference_limits
+        impedance = ImpedanceClient(args,motion,source_config,qref,names,hand_offsets)
+        arm_indices_imp = [names.index(n) for n in impedance.arm_names]
+        joint_error_limits=np.array(joint_reference_limits(names,cfg['max_joint_error_rad'],
+            cfg['joint_reference_error_limits']))
+        kp,kd = body.get_articulation_controller().get_gains()
+        kp,kd = np.array(kp).reshape(-1),np.array(kd).reshape(-1)
+        kp[arm_indices_imp] = kd[arm_indices_imp] = 0.
+        body.get_articulation_controller().set_gains(kp,kd)
+        actual_gains = body.get_articulation_controller().get_gains()
+        if any(np.any(np.asarray(g).reshape(-1)[arm_indices_imp] != 0.) for g in actual_gains):
+            raise ValueError('IMPEDANCE_POSITION_DRIVE_NOT_ZERO')
+        source['impedance_arm_drive_gains'] = {'kp':kp[arm_indices_imp].tolist(),'kd':kd[arm_indices_imp].tolist()}
+        source['impedance_binary_sha256'] = digest(args.impedance_binary)
+        source['impedance_config_sha256'] = digest(args.impedance_config)
+        source['impedance_model_sha256'] = digest(source_config['urdf'])
+        source['impedance_client_sha256'] = digest(ROOT/'tools/simulation/shovel_control.py')
+        source['impedance_reference_policy_sha256'] = digest(args.impedance_reference_config)
+        source['joint_reference_error_limits_rad'] = dict(zip(names,joint_error_limits.tolist()))
+        source['max_target_lead_error_rad'] = cfg['max_target_lead_error_rad']
+        (output/'impedance_setup.json').write_text(json.dumps(source,indent=2)+'\n')
     next_control = 0.
     stopped_since = None
     input_path = args.motion.parent/'tool_inputs.json'
@@ -197,6 +224,8 @@ def simulate(app, args, motion, cfg):
             elapsed = step*dt
             control_t = round(max(0., elapsed-settle),9)
             t = round(control_t-warmup,9)
+            if impedance:
+                t = round(elapsed-settle,9)
             if recorder and 0. <= t <= duration and recorder.due(t):
                 recorder.capture(world, t)
             q = body.get_joint_positions()
@@ -211,11 +240,13 @@ def simulate(app, args, motion, cfg):
                         stopped_since = t if stopped_since is None else stopped_since
                     else:
                         stopped_since = None
-            elif not online:
+            elif not online and not impedance:
                 qref = np.array([np.interp(t, times, plan[:, j]) for j in range(len(names))])
                 mode = next(k['mode'] for k in reversed(recipe['grasp_schedule']) if t+1e-9 >= k['t'])
-            if getattr(args, 'grasp_test', None) == 'hold':
+            if getattr(args, 'grasp_test', None) == 'hold' or impedance:
                 qref = plan[0].copy()
+            if impedance:
+                mode = 'rigid'
             if contact_grasp:
                 settings = cfg['contact_grasp']
                 released = getattr(args, 'grasp_test', None) == 'release' and t >= 1.
@@ -236,7 +267,7 @@ def simulate(app, args, motion, cfg):
             hands = [tf @ np.array(mount) for tf, mount in zip(transforms[:2], source['flange_from_physical_body'])]
             velocities = view.get_velocities()
             coms = np.array([tf[:3, 3]+tf[:3, :3] @ offset for tf, offset in zip(transforms, com_local)])
-            if not online:
+            if not online and not impedance:
                 mode = next(k['mode'] for k in reversed(recipe['grasp_schedule']) if t+1e-9 >= k['t'])
             if mode != previous_mode and mode == 'rigid':
                 # Re-lock the current physical relative angle, no pose write.
@@ -289,7 +320,23 @@ def simulate(app, args, motion, cfg):
             applied_torques = np.vstack(([-tau+np.cross(point-com, -f)
                 for f, tau, point, com in zip(forces, torques, points, coms[:2])],
                 decomposition['net_torque']))
-            if not contact_grasp:
+            external_force = np.zeros(3)
+            if impedance:
+                measured_qd = encoder_velocity.update(elapsed,q,qd) if source['feedback_velocity_source']=='position_difference' else qd
+                torque,dx,tcp = impedance.update(dt,q,measured_qd,sensor_readings)
+                # Match session_v3's final PT gains in software, with no hidden PhysX drive.
+                torque = np.array(torque)+1.*(qref[arm_indices_imp]-q[arm_indices_imp])-.2*measured_qd[arm_indices_imp]
+                effort_limits = np.array(source['drive_effort_limits_nm'])[arm_indices_imp]
+                clipped = np.clip(torque,-effort_limits,effort_limits)
+                body.apply_action(ArticulationAction(joint_efforts=clipped,joint_indices=np.array(arm_indices_imp)))
+                # Smooth fixed-world horizontal 10 N pulse; known external load at tool COM.
+                ramp = min(max((t-1.)/.25,0.),1.,max((3.-t)/.25,0.))
+                external_force[0] = 10.*ramp
+                impedance_rows.append(np.r_[t,external_force,clipped,np.array(dx),np.array(tcp),float(np.any(clipped != torque))])
+            if not contact_grasp or impedance:
+                if contact_grasp:
+                    applied_forces[:] = 0.; applied_torques[:] = 0.
+                applied_forces[2] += external_force
                 view.apply_forces_and_torques_at_pos(forces=applied_forces.astype(np.float32),
                     torques=applied_torques.astype(np.float32), positions=coms.astype(np.float32), is_global=True)
             joint_error = float(np.max(abs(q-qref)))
@@ -300,9 +347,17 @@ def simulate(app, args, motion, cfg):
             if contact_grasp:
                 arm_indices = [i for i,n in enumerate(names) if n not in cfg['contact_grasp']['closed_positions_rad']]
                 joint_error = float(np.max(abs(q[arm_indices]-qref[arm_indices])))
+            joint_violation=joint_error>cfg['max_joint_error_rad']
+            if impedance:
+                checked=arm_indices if contact_grasp else list(range(len(names)))
+                joint_violation=bool(np.any(abs(q[checked]-qref[checked])>joint_error_limits[checked]))
             diagnostic_release = getattr(args, 'grasp_test', None) == 'release'
-            if joint_error > cfg['max_joint_error_rad'] or (not diagnostic_release and max(errors) > cfg['max_grip_error_m']):
-                raise ValueError(f'PHYSICS_TRACKING_LOST:t={t:.4f},grip={max(errors)},joint={joint_error}')
+            if joint_violation or (not diagnostic_release and max(errors) > cfg['max_grip_error_m']):
+                detail=''
+                if impedance:
+                    worst=max(checked,key=lambda j:abs(q[j]-qref[j])/joint_error_limits[j])
+                    detail=f',worst_joint={names[worst]},error={abs(q[worst]-qref[worst])},limit={joint_error_limits[worst]}'
+                raise ValueError(f'PHYSICS_TRACKING_LOST:t={t:.4f},elapsed={elapsed:.4f},grip={max(errors)},joint={joint_error}{detail}')
             native_before = SimulationManager.get_num_physics_steps()
             step_started = time.monotonic()
             world.step(render=False)
@@ -332,7 +387,7 @@ def simulate(app, args, motion, cfg):
                 forces, torques, points, gap = grasp_contact_wrenches(contacts, transforms[2], tool_offsets, coms[2], dt)
                 minimum_contact_separation = min(minimum_contact_separation, gap)
                 decomposition = internal_wrench(forces, torques, points, coms[2])
-            balance = decomposition['net_force']+cf+np.array([0., 0., -9.81*source['mass_kg']])
+            balance = decomposition['net_force']+cf+external_force+np.array([0., 0., -9.81*source['mass_kg']])
             residual = np.linalg.norm(source['mass_kg']*(next_velocity[:3]-velocities[2, :3])/dt-balance)
             max_step_residual = max(max_step_residual, float(residual))
             if elapsed >= settle-1 and elapsed < settle:
@@ -352,6 +407,10 @@ def simulate(app, args, motion, cfg):
     finally:
         if online:
             online.close()
+        if impedance:
+            impedance.close()
+        if impedance_rows:
+            np.savez_compressed(output/'impedance.npz',samples=np.array(impedance_rows),arm_names=impedance.arm_names)
         if rows:
             np.savez_compressed(npz_path, samples=np.array(rows), joint_names=names)
         if recorder:
@@ -455,6 +514,25 @@ def simulate(app, args, motion, cfg):
         result['controller']['outcome'] = ('expected_stop_unconfirmed' if expected_unconfirmed else 'completed') if control_ok else 'failed'
         if not control_ok:
             result['status'] = status = 'failed_control'
+    if impedance:
+        imp = np.array(impedance_rows)
+        baseline = data[(data[:,0]>=.5)&(data[:,0]<1.),29:32].mean(axis=0)
+        loaded = data[(data[:,0]>=2.5)&(data[:,0]<2.75),29:32].mean(axis=0)
+        recovered = data[data[:,0]>=duration-.5,29:32].mean(axis=0)
+        result['controller_mode'] = 'actual_cpp_impedance_torque_fixed_nominal'
+        result['impedance'] = dict(stiffness_scale=args.impedance_stiffness_scale,
+            joint_hard_limits_rad=source['joint_reference_error_limits_rad'],
+            max_target_lead_error_rad=cfg['max_target_lead_error_rad'],
+            force_pulse={'world_axis':'x','peak_n':10.,'ramp_s':.25,'start_s':1.,'end_s':3.},
+            loaded_displacement_m=(loaded-baseline).tolist(), recovery_residual_m=(recovered-baseline).tolist(),
+            peak_commanded_torque_nm=dict(zip(impedance.arm_names,np.max(abs(imp[:,4:18]),axis=0).tolist())),
+            peak_tcp_translation_error_m=np.max(np.linalg.norm(imp[:,18:30].reshape(-1,2,6)[:,:,:3],axis=2),axis=0).tolist(),
+            clipped_steps=int(imp[:,-1].sum()), samples_sha256=digest(output/'impedance.npz'),
+            verdict_scope='existing physics balance/tracking checks only; recovery precision, robustness and hardware acceptance are not established')
+        result['assumptions']['control'] = 'actual prepared C++ impedance controller; measured joints/virtual local FT at physics dt; fixed nominal, no upper session transport'
+        result['assumptions']['impedance_calibration'] = 'same model gravity scaling 1; no LuGre or payload feedforward; sensor at FT frame, TCP at grasp; PT gains 1/.2; stiffness scaled, damping scaled by sqrt(scale)'
+        if not np.isfinite(np.r_[loaded,recovered]).all():
+            result['status'] = status = 'failed_impedance_window'
     (output/'result.json').write_text(json.dumps(result, indent=2)+'\n')
     world.stage.GetRootLayer().Export(str(output/'scene.usda'))
     print('RESULT', json.dumps(result), flush=True)
@@ -637,8 +715,22 @@ def main():
     parser.add_argument('--video-fps', type=int, default=20, help='Recording rate; must divide the physics step grid (default 20)')
     parser.add_argument('--grasp-test', choices=('hold','release'), help='Static contact diagnostic; release opens both jaws at t=1 s')
     parser.add_argument('--grasp-model', choices=('contact','proxy'), help='Explicit contact model or legacy spring comparison')
+    parser.add_argument('--impedance-binary',type=Path,help='Simulation-only C++ stdio torque bridge; fixed nominal force/release experiment')
+    parser.add_argument('--impedance-prefix',type=Path,help='Numeric runtime prefix, isolated from Kit libraries')
+    parser.add_argument('--impedance-config',type=Path,help='Selected original impedance YAML; hardware file is never modified')
+    parser.add_argument('--impedance-reference-config',type=Path,
+        default=package_share('snowbot_bringup')/'config/robots/snowbot/bimanual_snowbot_real.json',
+        help='Reuse the production named impedance reference bounds; no ROS nodes are started')
+    parser.add_argument('--impedance-stiffness-scale',type=float,default=1.)
     # Kit portable arguments are supplied by an isolated SDK launcher.
     args, kit_args = parser.parse_known_args()
+    if args.impedance_binary:
+        if args.closed_loop or args.replay_controls or args.grasp_test or not args.impedance_prefix or not args.impedance_config:
+            parser.error('impedance requires prefix/config and fixed nominal mode without QP/replay/grasp diagnostics')
+        if args.duration is None or args.duration < 5. or not np.isfinite(args.impedance_stiffness_scale) or args.impedance_stiffness_scale <= 0.:
+            parser.error('impedance requires duration >=5 s and positive finite stiffness scale')
+        for name in ('impedance_binary','impedance_prefix','impedance_config','impedance_reference_config'):
+            setattr(args,name,getattr(args,name).resolve())
     if args.replay_start and not args.replay_controls:
         parser.error('--replay-start requires --replay-controls')
     if args.replay_controls and (not args.gui or args.closed_loop or args.record_video or args.grasp_test):
@@ -661,6 +753,10 @@ def main():
     if args.wrench_stop_at is not None and not args.load_feedback:
         parser.error('wrench faults require --load-feedback')
     cfg = json.loads(args.config.read_text())
+    if args.impedance_binary:
+        # Separate the hanging tool from ground support. Load the actual tracking
+        # policy below, after physics-case overrides, without changing gains.
+        cfg['diagnostic_ground_drop_m'] = .3
     if args.grasp_model:
         cfg['grasp_model'] = args.grasp_model
     validate_grasp_config(cfg)
@@ -678,6 +774,15 @@ def main():
         raise ValueError('SIMULATION_CASE_REQUIRED')
     override = cfg.pop('cases')[args.case]
     cfg.update({k:v for k,v in override.items() if k not in ('density_kg_m3', 'grip_stiffness_scale')})
+    if args.impedance_binary:
+        for package in ('shared/bindu_contracts','integration/bindu_runtime'):
+            sys.path.insert(0,str(ROOT/'src'/package))
+        from bindu_runtime.teleop_deployment import apply_execution_tracking
+        policy=apply_execution_tracking(json.loads(args.impedance_reference_config.read_text()),
+            'impedance',trajectory_reference=True)
+        cfg['max_joint_error_rad']=policy['max_reference_error']
+        cfg['joint_reference_error_limits']=policy.get('joint_reference_error_limits',{})
+        cfg['max_target_lead_error_rad']=policy.get('max_target_lead_error',policy['max_reference_error'])
     frame_steps = 1/(args.video_fps*cfg['physics_dt_s'])
     if args.record_video and not np.isclose(frame_steps, round(frame_steps)):
         parser.error('video frame interval must be an integer number of physics steps')
@@ -697,6 +802,8 @@ def main():
     snapshots = args.output/'sources';snapshots.mkdir()
     for path in (Path(__file__),ROOT/'tools/simulation/shovel_physics.py',args.config):
         (snapshots/path.name).write_bytes(path.read_bytes())
+    if args.impedance_binary:
+        (snapshots/'impedance-reference.json').write_bytes(args.impedance_reference_config.read_bytes())
     if args.record_video:
         (snapshots/'shovel_video.py').write_bytes((ROOT/'tools/simulation/shovel_video.py').read_bytes())
     from isaacsim import SimulationApp

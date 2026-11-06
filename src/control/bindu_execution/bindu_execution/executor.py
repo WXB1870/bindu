@@ -187,6 +187,10 @@ class Executor:
 
     def fail_stop(self, now, code):
         motion = self.active or (self.stopping[0] if self.stopping else None)
+        if self.stopping and self.stopping[1] not in ('CANCELED', 'REPLAY_COMPLETED'):
+            original = self.stopping[1]
+            if code != original:
+                code = original+';'+code
         self.stop_fault = code
         if not self.io.stop_failures:
             self.io.stop_failures = ('stop_feedback',)

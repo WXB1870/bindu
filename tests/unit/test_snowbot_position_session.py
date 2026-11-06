@@ -34,7 +34,7 @@ class PositionSessionTests(unittest.TestCase):
             self.health.state(layer, S(header=S(stamp=S(sec=10, nanosec=0)), layer=layer,
                 startup_complete=True, feedback_ready=True, instance_id=12, wire_version=5, reference_mode=2,
                 control_source='topic' if layer == 'upper' else 'position',
-                stop_policy='disable_no_load' if layer == 'servo' else 'servo_owned'))
+                stop_policy='disable_no_load' if layer == 'servo' else 'servo_owned', reason=''))
         self.health.observe(observation())
         self.now += .001
         self.steady += .001
@@ -263,11 +263,11 @@ class PositionSessionTests(unittest.TestCase):
         clock = [1.]
         node = S(get_publishers_info_by_topic=Mock(return_value=['owner']))
         graph = GraphSnapshot(node, lambda: clock[0])
-        for _ in range(10): self.assertEqual(graph.count_publishers('/command'), 1)
+        for _ in range(10): self.assertEqual(len(graph.get_publishers_info_by_topic('/observation')), 1)
         node.get_publishers_info_by_topic.assert_called_once()
         node.get_publishers_info_by_topic.return_value = ['owner', 'conflict']
         clock[0] += .101
-        self.assertEqual(graph.count_publishers('/command'), 2)
+        self.assertEqual(len(graph.get_publishers_info_by_topic('/observation')), 2)
 
 
 class PauseHandoffTests(unittest.TestCase):
@@ -284,6 +284,8 @@ class PauseHandoffTests(unittest.TestCase):
         self.q['arm_l_joint_2'], self.q['arm_r_joint_2'] = .2, -.2
         self.q['body_joint_1'], self.q['body_joint_2'] = .12, -.08
         self.devices = d = PositionSessionDevices.__new__(PositionSessionDevices)
+        from snowbot_hardware.parameters import load_parameters
+        d.runtime_parameters = load_parameters()
         d.node = S(now=lambda: self.now)
         d.graph = d.node  # GraphSnapshot is exercised separately with a controllable clock.
         d.health = SessionHealth(lambda: self.now, lambda: self.steady)
@@ -311,7 +313,7 @@ class PauseHandoffTests(unittest.TestCase):
         for layer in ('upper', 'middle', 'servo'):
             d.health.state(layer, S(header=observation(self.now).header, layer=layer, instance_id=12,
                 startup_complete=True, feedback_ready=True, wire_version=5, reference_mode=2, control_source='topic' if layer=='upper' else 'position',
-                stop_policy='measured_hold'))
+                stop_policy='measured_hold', reason=''))
         msg = observation(self.now, pdo_sample=self.sample,
                           position=[self.q[n] for n in SLOTS], speed=[velocity]*20)
         if waist_velocity is not None: msg.speed[18:] = [waist_velocity]*2
@@ -624,6 +626,16 @@ class RealResourceTests(unittest.TestCase):
 
 class TargetWireTests(unittest.TestCase):
     """Production binding with synthetic messages; no ROS or device access."""
+    def test_receiver_discovery_keeps_physical_health_but_not_command_readiness(self):
+        from snowbot_hardware.position_session import PositionSessionDevices
+        state = self.d.health.states['upper'][1]
+        state.reason = 'command_source_discovering'
+        self.d.health.require(CONTROL_GROUPS, acquiring=True)
+        with self.assertRaisesRegex(RuntimeError, 'COMMAND_ENDPOINT:upper:command_source_discovering'):
+            PositionSessionDevices.check_ready(self.d, CONTROL_GROUPS)
+        state.reason = ''
+        PositionSessionDevices.check_ready(self.d, CONTROL_GROUPS)
+
     def test_prepared_curve_wire_order_heartbeats_and_pause_keep_source_contract(self):
         from bindu_contracts.contracts import Motion
         from bindu_execution.delegated_position import PreparedReplay
@@ -633,9 +645,10 @@ class TargetWireTests(unittest.TestCase):
         zero = (0.,)*16
         motion = Motion('curve','lease',3,self.rig.profile.digest,'test','',
             'prepared_trajectory','',self.rig.now,.2,names=names,points=(before,after),
-            offsets=(.12,1.12),velocities=(zero,zero),accelerations=(zero,zero))
+            offsets=(0.,1.),velocities=(zero,zero),accelerations=(zero,zero))
         prepared = PreparedReplay.create(motion,self.rig.profile)
         self.d.io.prepared_replay = prepared
+        self.d.prepare_replay(prepared)
         first = self.send('curve',mode='prepared_trajectory',names=names)
         self.assertEqual(first.trajectory.version,4)
         self.assertEqual(first.trajectory.control_count,[6]*16)
@@ -760,6 +773,13 @@ class TargetWireTests(unittest.TestCase):
         self.assertEqual(value['positions'],dict(zip(CONTROL_NAMES,hold)))
         self.assertNotEqual(value['positions'][CONTROL_NAMES[0]],self.rig.q[CONTROL_NAMES[0]])
         obs=self.d.health.observation
+        unchanged = list(obs.hold_position)
+        obs.hold_position = list(unchanged)
+        obs.hold_position[0] += .01
+        changed = self.d.read_held_reference(None, S())
+        self.assertFalse(changed.success)
+        self.assertIn('HELD_REFERENCE_CHANGED', changed.message)
+        obs.hold_position = unchanged
         for field,bad in [('boot_id',999),('session',999),('command_sequence',999),
                           ('trajectory_phase',3),('hold_valid',False)]:
             before=getattr(obs,field);setattr(obs,field,bad)
@@ -1036,7 +1056,7 @@ class TargetWireTests(unittest.TestCase):
 
     def test_configured_braking_lead_keeps_original_source_deadline(self):
         self.production_readiness()
-        self.d.trajectory_limits['target_stream_brake_lead_s'] = .1
+        self.d.runtime_parameters['execution']['target_stream_brake_lead_s'] = .1
         motion = self.source_motion()
         engine = self.rig.engine
         engine.submit(motion, self.rig.now); engine.tick(self.rig.now)
@@ -1238,11 +1258,12 @@ class TargetWireTests(unittest.TestCase):
         def declare(key, default, descriptor):
             descriptors[key] = descriptor; parameters.setdefault(key, default)
             return S(value=parameters[key])
-        node = S(runtime_mode='real', snowbot_execution_mode='position', snowbot_reference_mode=2,
+        node = S(runtime_mode='real', snowbot_execution_mode='position', snowbot_reference_mode=2, _parameter_overrides={},
             now=lambda: 10., declare_parameter=declare, get_parameter=lambda key: S(value=parameters[key]),
             create_subscription=Mock(), create_publisher=Mock(), create_service=Mock())
         modules['std_srvs.srv']=S(Trigger=object)
         with patch.dict('sys.modules', modules):
+            node.profile_path = str(package_share('snowbot_bringup')/'config/robots/snowbot/snowbot_real_position.json')
             created = PositionSessionDevices(node, self.rig.profile)
         qos=node.create_subscription.call_args_list[0].args[3]
         self.assertEqual(qos.depth,1)
@@ -1260,7 +1281,9 @@ class TargetWireTests(unittest.TestCase):
         self.assertNotIn('trajectory_fast_receipt', descriptors)
         self.assertIn('/bindu/position/servo_receipt', [call.args[1] for call in node.create_subscription.call_args_list])
         self.assertEqual(created.trajectory_limits, dict(trajectory_max_velocity=.25,
-            trajectory_max_acceleration=.5, trajectory_max_jerk=162., target_stream_brake_lead_s=.12))
+            trajectory_max_acceleration=.5, trajectory_max_jerk=162.))
+        self.assertNotIn('target_stream_brake_lead_s', descriptors)
+        self.assertEqual(created.runtime_parameters['execution']['target_stream_brake_lead_s'], .12)
         for key in created.trajectory_limits:
             self.assertTrue(descriptors[key].read_only)
         parameters.update(trajectory_max_velocity=.4, trajectory_max_acceleration=.8,
@@ -1268,13 +1291,16 @@ class TargetWireTests(unittest.TestCase):
         with patch.dict('sys.modules', modules):
             configured = PositionSessionDevices(node, self.rig.profile)
             self.assertEqual(configured.trajectory_limits, dict(trajectory_max_velocity=.4,
-                trajectory_max_acceleration=.8, trajectory_max_jerk=259.2, target_stream_brake_lead_s=.12))
+                trajectory_max_acceleration=.8, trajectory_max_jerk=259.2))
             for key in configured.trajectory_limits:
                 for invalid in (0., -1., float('nan'), float('inf'), True):
                     parameters[key] = invalid
                     with self.subTest(key=key, invalid=invalid), self.assertRaisesRegex(ValueError, 'TARGET_DYNAMIC_LIMIT'):
                         PositionSessionDevices(node, self.rig.profile)
                 parameters[key] = configured.trajectory_limits[key]
+            node._parameter_overrides['target_stream_brake_lead_s']=.12
+            with self.assertRaisesRegex(ValueError,'BRAKE_LEAD_MOVED'):
+                PositionSessionDevices(node,self.rig.profile)
         node.create_publisher.assert_not_called()
 
     def test_configurable_limits_preserve_each_axis_profile_and_pause_deadline(self):
@@ -1572,6 +1598,27 @@ class TargetWireTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'PDO_NOT_ADVANCING'):
             self.d.check_health(CONTROL_GROUPS)
 
+    def test_previous_stopped_session_waits_for_takeover_without_masking_new_fault(self):
+        stopped=dict(session_reason=6,hold_valid=False,trajectory_phase=0,
+                     reference_valid=False,output_valid=False)
+        self.held_feedback(**stopped)
+        self.d.new_session()
+        first=self.send()
+        self.d.check_health(CONTROL_GROUPS)
+        self.d.receive_receipt(self.receipt(first))
+        self.held_feedback(**stopped)
+        self.d.check_health(CONTROL_GROUPS)
+        self.assertEqual(self.d.applied_sequence,0)
+        for change in (dict(session_reason=5),dict(session=first.meta.session),
+                       dict(command_sequence=3),dict(status=[0x2f]*20)):
+            self.held_feedback(**(stopped|change))
+            with self.assertRaises(RuntimeError):self.d.check_health(CONTROL_GROUPS)
+        self.held_feedback(**stopped)
+        self.rig.now=first.meta.expires_at_ns*1e-9
+        self.held_feedback(**stopped)
+        with self.assertRaisesRegex(RuntimeError,'SESSION_STOPPED:6'):
+            self.d.check_health(CONTROL_GROUPS)
+
     def test_handoff_deadline_is_original_takeover_even_after_ack_and_new_targets(self):
         for acknowledged in (False, True):
             with self.subTest(acknowledged=acknowledged):
@@ -1759,22 +1806,15 @@ class DelayedFeedbackPauseTests(unittest.TestCase):
                 self.assertEqual(set(self.d.io.stop_failures), CONTROL_GROUPS)
                 self.assertIsNone(self.d.io.confirmed_stop_targets())
 
-    def test_pause_retains_endpoint_and_competing_publisher_checks(self):
-        for conflict in ('legacy', 'duplicate', 'endpoint'):
-            with self.subTest(conflict=conflict):
-                self.setUp()
-                self.delay_following()
-                if conflict == 'endpoint':
-                    self.d.identity.side_effect = RuntimeError('endpoint mismatch')
-                else:
-                    self.d.node.count_publishers = lambda topic: (
-                        2 if conflict == 'duplicate' and topic == '/bindu/position/command'
-                        else int(topic == '/bindu/position/command' or
-                                 (conflict == 'legacy' and topic == '/joint_position_cmd')))
-                count = self.d.publishers['arms'].publish.call_count
-                self.d.io.stop()
-                self.assertEqual(self.d.publishers['arms'].publish.call_count, count)
-                self.assertTrue(self.d.io.stop_failures)
+    def test_pause_sends_once_without_repeating_receiver_graph_checks(self):
+        self.delay_following()
+        self.d.health.states['upper'][1].reason = 'command_source_discovering'
+        self.d.identity.side_effect = AssertionError('sender repeated receiver authentication')
+        self.d.graph = S(count_publishers=lambda topic: (_ for _ in ()).throw(AssertionError('sender graph scan')))
+        count = self.d.publishers['arms'].publish.call_count
+        self.d.io.stop()
+        self.assertEqual(self.d.publishers['arms'].publish.call_count, count+1)
+        self.assertIsNone(self.d.io.confirmed_stop_targets())
 
     def test_stop_without_owned_targets_does_not_publish_or_enable(self):
         self.d.io.stop()

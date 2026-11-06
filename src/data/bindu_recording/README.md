@@ -36,7 +36,7 @@ ros2 run bindu_runtime recorder --ros-args -r __ns:=/bindu_sim \
 - 记录范围为实际收到的消息，“丢弃为零”仅描述记录器本地队列；上游完整性需结合源端序号核对。
 - 当前不是完整训练数据处理、质检或回放系统；模式一致性检查由 ROS 记录节点完成。
 
-腰臂轨迹沿用现有记录链路：`execution/accepted`完整保存`MotionCommand`的目标、关节顺序、原时间和有效期；`execution/state`完整保存执行参考、实测、来源时间及命令／任务身份；`events`完整保存`RuntimeEvent`。节点按消息字段自动序列化，无需为轨迹重复定义一套日志消息。`ExecutionState.reference`记录执行层发布的参考；servo当前生效参考与最终硬件输出由底层对应字段记录。
+腰臂轨迹沿用现有记录链路：`execution/accepted`完整保存`MotionCommand`的目标、关节顺序、原时间和有效期；`execution/state`完整保存执行参考、实测、来源时间及命令／任务身份；`events`完整保存`RuntimeEvent`。节点按消息字段自动序列化，无需为轨迹或可选阻抗重复定义一套日志消息。`ExecutionState.reference`记录执行层发布的参考；servo当前生效参考与最终硬件输出由底层对应字段记录。
 
 Snowbot补充PDO观察由非实时显示进程中的`PdoObserver`接收，经已有`FaultWindow`与`DiagnosticWriter`保存故障及停止前后窗口。总线健康时，执行状态或事件中的`STOPPING`、显式暂停请求和`STOP_UNCONFIRMED`也触发采集。窗口保留同一消息的`boot_id`／`pdo_sample`、会话／命令序号、实测、固定保持回执，以及可选的`wrench`／`sensor_valid_mask`／`sensor_data_no`／`sensor_age`；缺失字段保持缺失，数值不由日志端补齐或推算。`received_ros`／`received_monotonic`是观察进程的接收时间，消息`header.stamp`（保存为`stamp`）是发布时刻，`pdo_age`及各臂`sensor_age`保留源端报告的采样年龄。窗口落盘外层时间记录本次接收，可能晚于原接收时间；设备采样时间使用源时间字段。力样本完整性与现场标定仍需核对传感器采样号、有效位和标定数据。
 

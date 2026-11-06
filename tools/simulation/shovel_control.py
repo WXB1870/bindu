@@ -19,6 +19,61 @@ from tools import ROOT
 LOADED_SOURCE = Path(__file__).read_bytes()
 
 
+class ImpedanceClient:
+    """Synchronous measured-state/torque IPC; never loads Pinocchio into Kit."""
+    names = ([f'arm_{s}_joint_{j}' for s in ('l','r') for j in range(1,9)]+
+             [f'{s}_joint_{j}' for s in ('head','body') for j in (1,2)])
+    arm_names = [f'arm_{s}_joint_{j}' for s in ('l','r') for j in range(1,8)]
+
+    def __init__(self, args, motion, config, qref, names, offsets):
+        self.order = [names.index(n) for n in self.names]
+        self.stderr = (args.output/'impedance.stderr.log').open('w')
+        env = os.environ.copy()
+        for key in ('PYTHONPATH','PYTHONHOME','LD_PRELOAD','CONDA_PREFIX','VIRTUAL_ENV'):
+            env.pop(key,None)
+        env['LD_LIBRARY_PATH'] = str(args.impedance_prefix/'lib')
+        env['OPENBLAS_NUM_THREADS'] = env['OMP_NUM_THREADS'] = '1'
+        command = [str(args.impedance_binary),config['urdf'],str(args.impedance_config),
+                   str(args.impedance_stiffness_scale),motion['left_frame'],motion['right_frame'],
+                   *[str(v) for offset in offsets for v in offset]]
+        self.proc = subprocess.Popen(command,stdin=subprocess.PIPE,stdout=subprocess.PIPE,
+                                     stderr=self.stderr,bufsize=0,env=env)
+        try:
+            self._write([qref[i] for i in self.order])
+            self._read('READY')
+        except BaseException:
+            self.close()
+            raise
+
+    def _write(self, values):
+        self.proc.stdin.write((' '.join(format(float(v),'.17g') for v in values)+'\n').encode())
+
+    def _read(self, prefix):
+        while select.select([self.proc.stdout],[],[],30.)[0]:
+            line = self.proc.stdout.readline().decode().strip()
+            if not line:
+                raise RuntimeError('IMPEDANCE_BRIDGE_EXIT: see impedance.stderr.log')
+            if line.split()[0] == prefix:
+                return line.split()[1:]
+        raise RuntimeError('IMPEDANCE_BRIDGE_TIMEOUT')
+
+    def update(self, dt, q, dq, wrenches):
+        self._write([dt,*[q[i] for i in self.order],*[dq[i] for i in self.order],
+                     *wrenches['left']['wrench'],*wrenches['right']['wrench']])
+        values = list(map(float,self._read('TORQUE')))
+        if len(values) != 32:
+            raise RuntimeError('IMPEDANCE_BRIDGE_LAYOUT')
+        return values[:14],values[14:26],values[26:]
+
+    def close(self):
+        self.proc.stdin.close()
+        try:
+            self.proc.wait(timeout=5.)
+        except subprocess.TimeoutExpired:
+            self.proc.kill(); self.proc.wait()
+        self.stderr.close()
+
+
 class ControlClient:
     def __init__(self, config, output, feedback=None):
         self.output = Path(output)

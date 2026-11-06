@@ -20,6 +20,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/GripperState.msg"
   "srv/SubmitMotion.srv"
   "srv/ControlExecution.srv"
+  "srv/ResetToolReference.srv"
   "srv/LocateObject.srv"
   "srv/InjectFault.srv"
   "msg/PiObservation.msg"
