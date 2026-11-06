@@ -705,6 +705,7 @@ class IndependentInputHandoffTests(unittest.TestCase):
 
 class NativeGripperTests(unittest.TestCase):
     def test_single_gripper_health_ignores_unowned_arm_and_partner_faults(self):
+        from snowbot_hardware.protocol import GraphSnapshot
         from snowbot_hardware.session import SessionHealth
         from tests.unit.test_snowbot_position_session import observation
         health=SessionHealth(lambda:10., lambda:1., execution_mode='impedance')
@@ -717,10 +718,27 @@ class NativeGripperTests(unittest.TestCase):
         ns=dict(MASKS={'left':1<<7,'right':1<<15},SIDES=SIDES)
         exec(compile(ast.Module(body=[method],type_ignores=[]),str(source),'exec'),ns)
         reader=S(node_namespace='/',node_name='servo_node',topic_type='std_msgs/msg/Float64MultiArray')
-        graph=S(count_publishers=Mock(return_value=1),get_subscriptions_info_by_topic=Mock(return_value=[reader]))
+        clock=[1.]
+        node=S(get_publishers_info_by_topic=Mock(return_value=[object()]),
+               get_subscriptions_info_by_topic=Mock(return_value=[reader]))
+        graph=GraphSnapshot(node,lambda:clock[0])
         devices=S(health=health,graph=graph,receivers={'head':'/servo_node'})
         runtime=S(session_protocol=True,devices=devices,core=S(feedback_sides=lambda:{'left'}),
                   topics={'left':'/left'},publishers={'left':object()})
+        for _ in range(10):self.assertEqual(ns['health'](runtime)['sample'],2)
+        node.get_publishers_info_by_topic.assert_called_once_with('/left')
+        node.get_subscriptions_info_by_topic.assert_called_once_with('/left')
+        node.get_publishers_info_by_topic.return_value=[object(),object()]
+        clock[0]+=.101
+        with self.assertRaisesRegex(RuntimeError,'GRIPPER_COMMAND_PUBLISHER_CONFLICT:left'):
+            ns['health'](runtime)
+        node.get_publishers_info_by_topic.return_value=[object()]
+        node.get_subscriptions_info_by_topic.return_value=[]
+        clock[0]+=.101
+        with self.assertRaisesRegex(RuntimeError,'GRIPPER_RECEIVER_UNAVAILABLE:left'):
+            ns['health'](runtime)
+        node.get_subscriptions_info_by_topic.return_value=[reader]
+        clock[0]+=.101
         self.assertEqual(ns['health'](runtime)['sample'],2)
         health.observation.status[7] |= 8
         with self.assertRaisesRegex(RuntimeError,'GRIPPER_DRIVER_FAULT:left'):
