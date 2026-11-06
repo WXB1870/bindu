@@ -4,7 +4,7 @@ Bindu 是基于 ROS 2 的模块化机器人控制系统，面向遥操作与移�
 
 Bindu提供硬件无关的机器人能力、共享执行契约和运行装配。Snowbot是基于Bindu的双臂遥操作应用，专属操作流程、场景参数和现场资料在独立的[Snowbot仓库](https://github.com/WXB1870/snowbot)维护，可复用能力与接口在Bindu维护。
 
-两仓只维护 `main` 与 `xavier/session-v3-position-impedance`：前者保留现有架构供真机部署，后者承载通信链路与分层重构，验证后再考虑替换。共享修复先进入 `main`；分工见 [Snowbot README](https://github.com/WXB1870/snowbot)。
+Bindu 只维护 `main`，公共契约、会话组件和通用修复在此收敛。Snowbot 维护 `main` 与 `xavier/session-v3-position-impedance`，分别用于现有架构的真机部署和通信／分层重构候选；两条应用分支各自通过 `dependencies.repos` 固定 Bindu 提交，框架 main 前进不自动升级部署版本。分工见 [Snowbot README](https://github.com/WXB1870/snowbot)。
 
 ## Snowbot 应用入口
 
