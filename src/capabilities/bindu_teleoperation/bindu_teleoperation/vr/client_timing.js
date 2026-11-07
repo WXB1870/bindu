@@ -1,9 +1,30 @@
-/* Add local timing to the existing MessagePack envelope. No extra connection,
- * heartbeat, or control timestamp changes. Viewer samples come from WebXR,
+/* Add diagnostic timing to the existing MessagePack envelope. One HTTP HEAD
+ * probe per five seconds; no extra control heartbeat or timestamp changes.
+ * Viewer samples come from WebXR,
  * in the exact reference space used to sample the tracked controller ray. */
 (() => {
   'use strict';
   const encoder = new TextEncoder(), sockets = new WeakMap();
+  let activeSocket = null, httpProbe = null, probing = false, probeSequence = 0;
+  // A small HEAD response measures this browser's path to the VR service,
+  // including tunnels, without comparing clocks on different machines.
+  setInterval(async () => {
+    if (!activeSocket || activeSocket.readyState !== WebSocket.OPEN || probing) return;
+    probing = true;
+    const started = performance.now(), sequence = ++probeSequence, abort = new AbortController();
+    const timeout = setTimeout(() => abort.abort(), 4000);
+    let outcome;
+    try {
+      const response = await fetch(`/static/client-timing.js?probe=${sequence}`,
+        {method: 'HEAD', cache: 'no-store', signal: abort.signal});
+      outcome = response.ok ? 'completed' : 'http_error';
+    } catch (error) { outcome = abort.signal.aborted ? 'timeout' : 'exception'; }
+    finally {
+      clearTimeout(timeout);
+      httpProbe = {seq: sequence, elapsed_ms: performance.now() - started, outcome};
+      probing = false;
+    }
+  }, 5000);
   let loopMax = 0, rafMax = 0, xrMax = 0, longMax = 0, longCount = 0;
   let lastRaf = null, lastXr = null, xrVisibility = 'unavailable';
   let due = performance.now() + 50;
@@ -125,7 +146,7 @@
             buffered_bytes: this.bufferedAmount, loop_max_ms: loopMax, raf_max_ms: rafMax,
             xr_max_ms: xrMax, long_task_max_ms: longMax, long_task_count: longCount,
             page_visibility: document.visibilityState, xr_visibility: xrVisibility,
-            previous_send: state.completed || null};
+            previous_send: state.completed || null, http_probe: httpProbe};
           const fields = [['bindu_timing', timing]];
           if (heads.size) fields.push(['bindu_head', {version: 1, samples: Array.from(heads.values(), head =>
             ({seq: head.seq, frame_id: head.frameId, tracking_id: head.trackingId, frame_time_ms: head.frameTime,
@@ -137,7 +158,7 @@
           outgoing = new Uint8Array(header.length + b.length - offset + extra.length);
           outgoing.set(header); outgoing.set(b.subarray(offset), header.length);
           outgoing.set(extra, header.length + b.length - offset);
-          state.last = now; sockets.set(this, state);
+          state.last = now; sockets.set(this, state); activeSocket = this;
           probe = {state, seq: state.seq, started: now};
           loopMax = rafMax = xrMax = longMax = 0;
         }

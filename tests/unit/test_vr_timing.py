@@ -232,6 +232,52 @@ class ControllerWebSocketTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ControllerTimingTests(unittest.TestCase):
+    def test_http_round_trip_is_diagnostic_only_and_reported_once_per_probe(self):
+        probe=ControllerTiming();value=sample(1000.)
+        value['http_probe']=dict(seq=1,elapsed_ms=500.,outcome='completed')
+        first=probe.observe(value,50.,10.,'source',1)
+        self.assertEqual(first['browser_http_probe'],value['http_probe'])
+        repeated=probe.observe(value,50.1,10.1,'source',2)
+        self.assertNotIn('browser_http_probe',repeated)
+        self.assertEqual(repeated['stamp'],50.1)
+        self.assertIn('browser_http_probe',probe.observe(value,51.,11.,'new-source',3))
+        value['http_probe']=dict(seq=2,elapsed_ms=float('nan'),outcome='completed')
+        self.assertNotIn('browser_http_probe',probe.observe(value,52.,12.,'new-source',4))
+
+    @unittest.skipUnless(shutil.which('node'), 'Node required for browser wire test')
+    def test_http_probe_is_five_second_head_only_one_inflight_and_does_not_block_send(self):
+        import base64,msgpack
+        wire=base64.b64encode(msgpack.packb(dict(etype='CONTROLLER_MOVE',value={}))).decode()
+        harness=r'''
+const fs=require('fs'),vm=require('vm');let now=1000,packets=[],timers={},deadlines=[],requests=[],resolve,reject;
+class Socket {static OPEN=1;constructor(){this.readyState=1;this.bufferedAmount=0;}
+ send(b){packets.push(Buffer.from(b).toString('base64'));return 'sent';}}
+class Abort {constructor(){this.signal={aborted:false};}abort(){this.signal.aborted=true;reject(Error('aborted'));}}
+const ctx={TextEncoder,Uint8Array,DataView,ArrayBuffer,WeakMap,WebSocket:Socket,AbortController:Abort,
+ performance:{now:()=>now},Date,document:{visibilityState:'visible'},
+ setInterval:(callback,ms)=>{timers[ms]=callback;},setTimeout:(cb,ms)=>{deadlines.push([cb,ms]);},clearTimeout:()=>{},
+ fetch:(url,options)=>{requests.push({url,method:options.method,cache:options.cache});
+  return new Promise((ok,bad)=>{resolve=ok;reject=bad;});},window:{requestAnimationFrame:()=>{}}};
+vm.createContext(ctx);vm.runInContext(fs.readFileSync(process.argv[1],'utf8'),ctx);
+(async()=>{
+ await timers[5000]();const socket=new Socket(),data=Uint8Array.from(Buffer.from(process.argv[2],'base64'));
+ socket.send(data);const pending=timers[5000]();await timers[5000]();const inFlight=requests.length;
+ const returned=socket.send(data);now=1500;resolve({ok:true});await pending;socket.send(data);
+ const stalled=timers[5000]();now=5500;deadlines[1][0]();await stalled;socket.send(data);
+ process.stdout.write(JSON.stringify({requests,inFlight,returned,packets,timeouts:deadlines.map(x=>x[1])}));
+})().catch(error=>{process.stderr.write(String(error));process.exitCode=1;});
+'''
+        result=subprocess.run(['node','-e',harness,str(SCRIPT),wire],check=True,capture_output=True,text=True)
+        data=json.loads(result.stdout)
+        self.assertEqual(data['inFlight'],1);self.assertEqual(data['returned'],'sent')
+        self.assertEqual(len(data['requests']),2)
+        self.assertTrue(all(r['method']=='HEAD' and r['cache']=='no-store' for r in data['requests']))
+        self.assertEqual(data['timeouts'],[4000,4000])
+        packets=[msgpack.unpackb(base64.b64decode(p),raw=False) for p in data['packets']]
+        self.assertTrue(all(p['etype']=='CONTROLLER_MOVE' and p['value']=={} for p in packets))
+        self.assertEqual(packets[2]['bindu_timing']['http_probe'],dict(seq=1,elapsed_ms=500.,outcome='completed'))
+        self.assertEqual(packets[3]['bindu_timing']['http_probe'],dict(seq=2,elapsed_ms=4000.,outcome='timeout'))
+
     def test_gap_window_is_bounded_preserves_burst_and_resets_on_source_change(self):
         probe=ControllerTiming();window=TransportWindow()
         for seq in range(1,101):

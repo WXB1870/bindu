@@ -111,6 +111,7 @@ class InputPipelineTiming:
 class ControllerTiming:
     def __init__(self):
         self.previous = None
+        self.http_probe = None
 
     def observe(self, value, received_at, received_monotonic, source_id, seq):
         report = dict(stage='controller_timing', stamp=received_at, source_id=source_id, seq=seq,
@@ -132,6 +133,14 @@ class ControllerTiming:
                     and math.isfinite(previous_send[k]) and previous_send[k]>=0 for k in fields) and (
                     previous_send['seq']<value['seq']):
                 report['client']['previous_send']={k:previous_send[k] for k in fields}
+            probe=value.get('http_probe')
+            if isinstance(probe,dict) and all(type(probe.get(k)) in (int,float)
+                    and math.isfinite(probe[k]) and probe[k]>=0 for k in ('seq','elapsed_ms')) and (
+                    probe.get('outcome') in ('completed','http_error','timeout','exception')):
+                identity=(source_id,probe['seq'])
+                if self.http_probe != identity:
+                    report['browser_http_probe']={k:probe[k] for k in ('seq','elapsed_ms','outcome')}
+                    self.http_probe=identity
         previous = self.previous
         if previous and previous[0] == source_id:
             report['server_controller_interval_s'] = received_monotonic - previous[1]
