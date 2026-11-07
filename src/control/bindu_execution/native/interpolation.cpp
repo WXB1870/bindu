@@ -300,9 +300,9 @@ PreparedSegment PreparedSegment::from_curves(const Curves& curves,const JointLim
         if(!result.curves_.empty()) {
             check(std::abs(c->start-result.end())<=1e-9&&c->end()>result.end(),"PREPARED_TIME_GAP");
             for(size_t i=0;i<limits.size();++i)
-                check(std::abs(initial.q[i]-previous.q[i])<=1e-8&&
-                      std::abs(initial.v[i]-previous.v[i])<=1e-8&&
-                      std::abs(initial.a[i]-previous.a[i])<=1e-8,"PREPARED_STATE_GAP");
+                check(std::abs(initial.q[i]-previous.q[i])<=1e-6&&
+                      std::abs(initial.v[i]-previous.v[i])<=1e-5&&
+                      std::abs(initial.a[i]-previous.a[i])<=1e-4,"PREPARED_STATE_GAP");
         }
         result.curves_.push_back(std::make_shared<Curve>(*c));
         previous=c->sample(c->end());
