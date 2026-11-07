@@ -465,6 +465,8 @@ def make_collision_checker(urdf, recipe, conservative_convex=False, *, tool_pres
 
     def set_contact_centers(centers):
         nonlocal contacts, tool_parts, body_queries, body_indices, part_indices
+        if not tool_present:
+            return
         if not set(centers).issubset(contacts):
             raise ValueError('UNKNOWN_SHAFT_CONTACT_LINK')
         updated={name:dict(band,center_m=centers.get(name,band['center_m']))

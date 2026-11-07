@@ -138,6 +138,8 @@ class ShovelGeometryTests(unittest.TestCase):
         recipe=copy.deepcopy(self.recipe);recipe.pop('receiving_bin',None)
         recipe['geometry_kind']='none'
         check=geometry.make_collision_checker(self.urdf,recipe,validation_only=True)
+        check.set_contact_centers({name:recipe['shaft_from_left_grip_m'][0]-.2
+                                   for name in recipe['shaft_contacts']})
         with (patch.object(fcl,'Transform3s',side_effect=AssertionError('unused distance poses')),
                 patch.object(pin,'computeCollisions',wraps=pin.computeCollisions) as compute):
             self.assertTrue(check([self.sample])['validation_only'])
