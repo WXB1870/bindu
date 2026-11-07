@@ -19,7 +19,7 @@ class AcceptedReference:
         if not math.isfinite(self.max_interval) or not 0 < self.max_interval <= .1:
             raise ValueError('BIMANUAL_INTEGRATION_INTERVAL_CONFIG')
         self.max_sample_gap = self.max_interval if max_sample_gap is None else float(max_sample_gap)
-        if not math.isfinite(self.max_sample_gap) or not self.max_interval <= self.max_sample_gap <= .25:
+        if not math.isfinite(self.max_sample_gap) or not self.max_interval <= self.max_sample_gap <= .6:
             raise ValueError('BIMANUAL_SAMPLE_GAP_CONFIG')
         self.reset()
 

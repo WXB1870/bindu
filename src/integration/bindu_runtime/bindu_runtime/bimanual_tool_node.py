@@ -775,8 +775,14 @@ class BimanualToolNode(RuntimeNode):
                             # target; use the authenticated hold/goal guard once.
                             if self.trajectory_reference and not trajectory_bootstrap:
                                 from bindu_runtime.stop_evidence import sampled_nominal_reference
-                                executed,_=sampled_nominal_reference(s,self.names,lease.epoch,self.now(),
-                                    min(.1,self.cfg['feedback_max_age']))
+                                sample=sampled_nominal_reference(s,self.names,lease.epoch,self.now(),
+                                    min(.1,self.cfg['feedback_max_age']),wait_until=trajectory_reference_deadline,
+                                    steady_now=time.monotonic())
+                                if sample is None:
+                                    awaiting=''
+                                    await self.pause()
+                                    continue
+                                executed,_=sample
                             reference_lead,budgets=reference_tracking_budget(work_reference,
                                 tuple(measured[n] for n in self.names),max(hard_limits),executed=executed,
                                 target_limit=self.cfg.get('max_target_lead_error',limit))

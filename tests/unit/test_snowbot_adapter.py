@@ -454,6 +454,18 @@ class SnowbotAdapterTests(unittest.TestCase):
         self.now += .21
         with self.assertRaisesRegex(Rejected, 'FEEDBACK_UNAVAILABLE'): self.acquire()
 
+    def test_command_rejection_does_not_freeze_measured_feedback(self):
+        self.io.targets={n:self.q[n] for n in GROUPS['left_arm']}
+        self.io.check_health=Mock(side_effect=RuntimeError('SNOWBOT_TARGET_REJECTED:PREPARED_STATE_GAP'))
+        self.now+=.01
+        self.q['arm_l_joint_1']+=.001
+        self.observe()
+        feedback=self.io.read_feedback(self.now,.01)
+        self.assertEqual(feedback.stamp,self.now)
+        self.assertEqual(feedback.positions['arm_l_joint_1'],self.q['arm_l_joint_1'])
+        with self.assertRaisesRegex(RuntimeError,'TARGET_REJECTED'):
+            self.io.write_joints(dict(self.io.targets))
+
     def test_invalid_old_future_and_nonfinite_feedback_invalidates_capture(self):
         for delta in (-1., 1., 0.):
             with self.assertRaises(ValueError): self.observe(stamp=self.now+delta)

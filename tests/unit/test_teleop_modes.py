@@ -84,7 +84,7 @@ class AcceptedReferenceTests(unittest.TestCase):
                 ref.step(when)
         self.assertEqual(ref.positions,(.21,))
         with self.assertRaisesRegex(ValueError,'SAMPLE_GAP_CONFIG'):
-            AcceptedReference(.1,max_sample_gap=.3)
+            AcceptedReference(.1,max_sample_gap=.61)
 
 
 class ModeTests(unittest.TestCase):
