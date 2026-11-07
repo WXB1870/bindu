@@ -349,8 +349,9 @@ def make_collision_checker(urdf, recipe, conservative_convex=False, *, tool_pres
     floor_clearance = float(recipe['acceptance']['min_ground_clearance_m'])
     ground_policy=recipe['acceptance'].get('ground_policy','required')
     geometry_kind=recipe.get('geometry_kind','shovel')
-    if geometry_kind not in ('shovel','rod'):
+    if geometry_kind not in ('shovel','rod','none'):
         raise ValueError('INVALID_TOOL_GEOMETRY_KIND')
+    tool_present=tool_present and geometry_kind!='none'
     has_pan=geometry_kind=='shovel'
     if ground_policy not in ('required','report_only','disabled'):
         raise ValueError('INVALID_GROUND_POLICY')

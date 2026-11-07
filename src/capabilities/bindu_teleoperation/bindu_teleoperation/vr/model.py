@@ -41,6 +41,9 @@ def prepare_model(source, static_root, tool_config=None, *, short_rod=False):
             from ..simulation_fixture import short_rod_config
             cfg=short_rod_config(cfg)
         recipe=cfg['demo']
+        if recipe.get('geometry_kind')=='none':
+            shutil.copyfile(static_root/'snowbot.urdf',static_root/'snowbot-tool.urdf')
+            return '/static/snowbot.urdf'
         mount=np.array(cfg['left_to_tool']).reshape(4,4);r=mount[:3,:3]
         link=ET.SubElement(tree.getroot(),'link',name='bindu_virtual_tool')
         joint=ET.SubElement(tree.getroot(),'joint',name='bindu_virtual_tool_mount',type='fixed')

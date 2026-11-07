@@ -136,13 +136,14 @@ class ShovelGeometryTests(unittest.TestCase):
         import coal as fcl
         from bindu_kinematics import tool_geometry as geometry
         recipe=copy.deepcopy(self.recipe);recipe.pop('receiving_bin',None)
-        check=geometry.make_collision_checker(self.urdf,recipe,tool_present=False,validation_only=True)
+        recipe['geometry_kind']='none'
+        check=geometry.make_collision_checker(self.urdf,recipe,validation_only=True)
         with (patch.object(fcl,'Transform3s',side_effect=AssertionError('unused distance poses')),
                 patch.object(pin,'computeCollisions',wraps=pin.computeCollisions) as compute):
             self.assertTrue(check([self.sample])['validation_only'])
             self.assertEqual(compute.call_count,1)
         recipe['ground']['z_in_base_m']=0.
-        check=geometry.make_collision_checker(self.urdf,recipe,tool_present=False,validation_only=True)
+        check=geometry.make_collision_checker(self.urdf,recipe,validation_only=True)
         with self.assertRaisesRegex(ValueError,'GROUND_SUPPORT_MISMATCH'):check([self.sample])
 
     def right_roll(self,angle):
@@ -165,35 +166,17 @@ class ShovelGeometryTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,'INVALID_TOOL_TRACKING'):
                 tracking_acceptance(recipe,value,.1)
 
-    def test_deployed_tool_geometry_extends_ten_cm_beyond_both_grips_and_matches_display(self):
+    def test_real_recipe_has_no_obsolete_virtual_rod_in_display(self):
         import tempfile,xml.etree.ElementTree as ET
         from bindu_teleoperation.vr.model import prepare_model
-        from bindu_kinematics.tool_geometry import make_collision_checker
         path=package_share("snowbot_bringup")/'config/robots/snowbot/bimanual_snowbot_real.json'
-        cfg=json.loads(path.read_text());recipe=cfg['demo']
-        grips=[(np.linalg.inv(np.array(cfg[side+'_to_tool']).reshape(4,4)) @
-                np.r_[recipe.get(side+'_grip_offset_m',recipe['grip_offset_m']),1.])[:3]
-               for side in ('left','right')]
-        axis=np.array(recipe['shaft_axis_in_tool']);ends=np.array(recipe['shaft_from_left_grip_m'])
-        np.testing.assert_allclose(grips[0]-grips[1],axis*.34,atol=1e-12)
-        self.assertAlmostEqual(ends[1],.1);self.assertAlmostEqual(-ends[0]-.34,.1)
+        self.assertEqual(json.loads(path.read_text())['demo']['geometry_kind'],'none')
         with tempfile.TemporaryDirectory() as directory:
             prepare_model(self.urdf,directory,path)
-            link=ET.parse(Path(directory)/'snowbot-tool.urdf').find("link[@name='bindu_virtual_tool']")
-            visuals=link.findall('visual');self.assertEqual(len(visuals),1)
-            shape=visuals[0].find('geometry/cylinder')
-            self.assertAlmostEqual(float(shape.get('length')),.54)
-            center=np.fromstring(visuals[0].find('origin').get('xyz'),sep=' ')
-            np.testing.assert_allclose(center,grips[0]+axis*np.mean(ends),atol=1e-12)
-        # A legacy pan covering the robot must never remain as hidden geometry.
-        recipe['left_grip_in_tool_m']=grips[0].tolist();recipe['pan_size_m']=[100.,100.,100.]
-        report=make_collision_checker(self.urdf,recipe,conservative_convex=True)([self.sample])
-        self.assertEqual(report['geometry_kind'],'rod')
-        self.assertNotIn('PAN',json.dumps(report['failures']))
-        invalid=copy.deepcopy(recipe)
-        invalid['shaft_contacts']['arm_l_link_7']['half_length_m']=.101+recipe.get('shaft_contact_endpoint_tolerance_m',0.)
-        with self.assertRaisesRegex(ValueError,'INVALID_SHAFT_CONTACT_BAND'):
-            make_collision_checker(self.urdf,invalid,conservative_convex=True)
+            for name in ('snowbot.urdf','snowbot-tool.urdf'):
+                model=ET.parse(Path(directory)/name)
+                self.assertIsNone(model.find("link[@name='bindu_virtual_tool']"))
+                self.assertIsNone(model.find("joint[@name='bindu_virtual_tool_mount']"))
 
     def test_short_rod_uses_grip_midpoint_and_does_not_keep_hidden_pan_collision(self):
         from bindu_teleoperation.simulation_fixture import short_rod_config
