@@ -109,7 +109,7 @@ class PositionSessionTests(unittest.TestCase):
 
     def test_target_stream_ttl_uses_original_source_and_never_extends_short_commands(self):
         for stamp in (10., 1_792_567_890.1234567):
-            for valid_for, ttl in ((.15, 150_000_000), (.4, 400_000_000), (.8, 800_000_000), (1., 800_000_000)):
+            for valid_for, ttl in ((.15, 150_000_000), (.8, 800_000_000), (1.5, 1_500_000_000), (2., 1_500_000_000)):
                 with self.subTest(stamp=stamp, valid_for=valid_for):
                     self.now = stamp+.1
                     source = SourceEnvelope(11, lambda: self.now)
@@ -120,7 +120,7 @@ class PositionSessionTests(unittest.TestCase):
                     self.now += .02
                     self.assertIsNone(source.command(motion))
                     self.assertEqual(source.sequence, 1)
-                    self.now = stamp+min(valid_for, .8)
+                    self.now = stamp+min(valid_for, 1.5)
                     with self.assertRaisesRegex(RuntimeError, 'EXPIRED'):
                         source.command(self.motion(command_id='new-id-same-old-source',
                                                    stamp=stamp, valid_for=valid_for))

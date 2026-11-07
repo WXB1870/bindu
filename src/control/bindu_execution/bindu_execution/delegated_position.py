@@ -284,7 +284,7 @@ class DelegatedPositionExecutor(Executor):
             raise Rejected('REPLAY_REQUIRES_HEARTBEAT')
         if motion.mode != 'joint_target':
             raise Rejected('VENDOR_REQUIRES_UNTIMED_JOINT_TARGET')
-        if motion.stamp > now or motion.valid_for > .8:
+        if motion.stamp > now or motion.valid_for > 1.5:
             raise Rejected('VENDOR_TARGET_TIME')
         validate = getattr(self.io, 'validate_motion', None)
         if validate is not None:

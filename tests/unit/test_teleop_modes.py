@@ -83,8 +83,13 @@ class AcceptedReferenceTests(unittest.TestCase):
             with self.subTest(when=when),self.assertRaisesRegex(ValueError,'INTEGRATION_INTERVAL'):
                 ref.step(when)
         self.assertEqual(ref.positions,(.21,))
+        relaxed=AcceptedReference(.1,max_sample_gap=1.)
+        relaxed.capture([.2],1.)
+        self.assertAlmostEqual(relaxed.step(1.9)[1],.1)
+        with self.assertRaisesRegex(ValueError,'INTEGRATION_INTERVAL'):
+            relaxed.step(2.01)
         with self.assertRaisesRegex(ValueError,'SAMPLE_GAP_CONFIG'):
-            AcceptedReference(.1,max_sample_gap=.61)
+            AcceptedReference(.1,max_sample_gap=1.01)
 
 
 class ModeTests(unittest.TestCase):
