@@ -776,7 +776,7 @@ class BimanualToolNode(RuntimeNode):
                             if self.trajectory_reference and not trajectory_bootstrap:
                                 from bindu_runtime.stop_evidence import sampled_nominal_reference
                                 sample=sampled_nominal_reference(s,self.names,lease.epoch,self.now(),
-                                    min(.1,self.cfg['feedback_max_age']),wait_until=trajectory_reference_deadline,
+                                    self.cfg['feedback_max_age'],wait_until=trajectory_reference_deadline,
                                     steady_now=time.monotonic())
                                 if sample is None:
                                     awaiting=''
@@ -964,7 +964,7 @@ class BimanualToolNode(RuntimeNode):
                         if trajectory_reference_deadline is None:
                             trajectory_reference_deadline=time.monotonic()+reference.max_sample_gap
                         sample=sampled_nominal_reference(s,self.names,lease.epoch,sampled_at,
-                            min(.1,self.cfg['feedback_max_age']),wait_until=trajectory_reference_deadline,
+                            self.cfg['feedback_max_age'],wait_until=trajectory_reference_deadline,
                             steady_now=time.monotonic())
                         if sample is None:
                             await self.pause()

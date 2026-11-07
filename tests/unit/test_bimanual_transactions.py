@@ -751,7 +751,7 @@ class BimanualTransactions(unittest.IsolatedAsyncioTestCase):
 
     async def test_short_reference_delay_discards_candidate_and_resumes_on_fresh_sample(self):
         rig=self.empty_bootstrap_rig()
-        rig.node.cfg.update(feedback_max_age=.6,command_max_age=.8,integration_max_sample_gap=.6)
+        rig.node.cfg.update(input_max_age=.5,feedback_max_age=.2,command_max_age=.8,integration_max_sample_gap=.5)
         solve,update=rig.solve,rig.update
         delayed_until=None
         def delay_reference():
@@ -762,7 +762,7 @@ class BimanualTransactions(unittest.IsolatedAsyncioTestCase):
             nonlocal delayed_until
             result=solve(operation,*args,**kwargs)
             if operation=='solve' and delayed_until is None:
-                delayed_until=rig.clock+.48
+                delayed_until=rig.clock+.4
                 delay_reference()
             return result
         def delayed_update():
@@ -776,6 +776,24 @@ class BimanualTransactions(unittest.IsolatedAsyncioTestCase):
         self.assertGreaterEqual(rig.clock,delayed_until)
         self.assertFalse(rig.engine.lease_id)
         self.assertFalse(rig.engine.lease_id)
+
+    async def test_reference_uses_configured_200ms_age_in_solve_and_admission(self):
+        for age,accepted in ((.15,True),(.201,False)):
+            with self.subTest(age=age):
+                rig=self.empty_bootstrap_rig()
+                rig.node.cfg.update(input_max_age=.5,feedback_max_age=.2,command_max_age=.8,integration_max_sample_gap=.5)
+                update=rig.update
+                def delayed_reference():
+                    update()
+                    if rig.node.state.reference.name:
+                        at=rig.clock-age
+                        rig.node.state.reference.header.stamp=S(sec=int(at),nanosec=round((at-int(at))*1e9))
+                rig.update=delayed_reference
+                result=await rig.run()
+                if accepted:self.assertGreaterEqual(len(rig.commands),2,result.code)
+                else:
+                    self.assertEqual(len(rig.commands),1,result.code)
+                    self.assertIn('SNOWBOT_TRAJECTORY_REFERENCE_UNAVAILABLE',result.code)
 
     async def test_current_reference_beyond_hard_guard_is_not_deferred(self):
         rig=self.recorded_result_rig(latest=.151)
