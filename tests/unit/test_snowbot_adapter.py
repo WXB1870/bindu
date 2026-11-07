@@ -495,13 +495,25 @@ class SnowbotAdapterTests(unittest.TestCase):
         self.assertIsNone(self.engine.active)
 
     def test_joint_target_time_modes_and_ttl_fail_closed(self):
-        for changes in ({'mode':'finite_trajectory'}, {'stamp':10.01}, {'valid_for':.5},
+        for changes in ({'mode':'finite_trajectory'}, {'stamp':10.01}, {'valid_for':.801},
                         {'stamp':9.}, {'profile_hash':'wrong'}, {'epoch':999}):
             with self.subTest(changes=changes):
                 self.setUp()
                 motion = self.command(**changes)
                 with self.assertRaises(Rejected): self.engine.submit(motion, self.now)
                 self.assertFalse(self.sent)
+
+    def test_joint_target_800ms_preserves_original_source_time(self):
+        from snowbot_hardware.session import SourceEnvelope
+        self.io.validate_motion=SourceEnvelope.validate_motion
+        self.io.source_motion=None
+        motion=self.command(valid_for=.8)
+        self.engine.submit(motion,self.now)
+        self.tick()
+        self.assertTrue(self.sent)
+        self.assertIs(self.io.source_motion,motion)
+        self.assertEqual(self.engine.active.stamp,motion.stamp)
+        self.assertEqual(self.engine.active.valid_for,.8)
 
     def test_stop_waits_for_new_measured_rest_and_fences_commands(self):
         motion = self.command(); self.engine.submit(motion, self.now); self.tick()
