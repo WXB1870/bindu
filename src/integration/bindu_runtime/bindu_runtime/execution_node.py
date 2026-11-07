@@ -113,19 +113,24 @@ class ExecutionNode(RuntimeNode):
             return self.submit(request, reply)
         from bindu_execution.delegated_position import PreparedReplay
         began = time.monotonic()
-        validation_ms = await_ms = commit_ms = None
+        decode_ms = validation_ms = validation_cpu_ms = await_ms = commit_ms = None
         m = request.command
+        request_age_ms = (self.now()-seconds(m.stamp))*1000
         try:
             motion = self.decode_motion(m)
+            decode_ms = (time.monotonic()-began)*1000
             self.get_logger().info('REPLAY_PREPARE_BEGIN:'+json.dumps(dict(
                 command_id=motion.command_id, points=len(motion.points),
+                request_age_ms=request_age_ms, decode_ms=decode_ms,
                 feedback_age_ms=(self.now()-self.engine.feedback.stamp)*1000)))
             executor = self.executor
             ready = Future(executor=executor)
             def certify():
                 started = time.monotonic()
+                cpu_started = time.thread_time()
                 prepared = PreparedReplay.create(motion, self.profile)
-                return prepared, (time.monotonic()-started)*1000
+                return (prepared, (time.monotonic()-started)*1000,
+                        (time.thread_time()-cpu_started)*1000)
             def completed(work):
                 try:
                     ready.set_result(work.result())
@@ -134,7 +139,7 @@ class ExecutionNode(RuntimeNode):
                 executor.wake()
             waiting = time.monotonic()
             self.replay_worker.submit(certify).add_done_callback(completed)
-            prepared, validation_ms = await ready
+            prepared, validation_ms, validation_cpu_ms = await ready
             committing = time.monotonic()
             await_ms = (committing-waiting)*1000
             # accept/decode checks shutdown again; prepare_replay rechecks the
@@ -147,7 +152,8 @@ class ExecutionNode(RuntimeNode):
             reply.accepted, reply.code = False, str(exc)
             self.event('REJECTED', reply.code, m.task_id, m.command_id, m.observation_id)
         detail = json.dumps(dict(command_id=m.command_id, accepted=reply.accepted,
-            code=reply.code, validation_ms=validation_ms,
+            code=reply.code, request_age_ms=request_age_ms, decode_ms=decode_ms,
+            validation_ms=validation_ms, validation_cpu_ms=validation_cpu_ms,
             await_ms=await_ms, commit_ms=commit_ms,
             total_ms=(time.monotonic()-began)*1000,
             feedback_age_ms=(self.now()-self.engine.feedback.stamp)*1000))

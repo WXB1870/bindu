@@ -201,6 +201,8 @@ def prepared_feedback_scenario(profile):
         assert probe.accepted_pub.publish.call_count == 1
         detail = json.loads(probe.event.call_args.args[1])
         assert detail['validation_ms'] >= 60 and detail['feedback_age_ms'] < 40
+        assert detail['decode_ms'] >= 0 and detail['request_age_ms'] >= 0
+        assert 0 <= detail['validation_cpu_ms'] < detail['validation_ms']/2
         return dict(passed=True, feedback_ticks=len(ticks), **detail)
     finally:
         probe.closing = True
