@@ -865,11 +865,15 @@ class SnowbotStopDiagnosticTests(unittest.TestCase):
         node=module.SnowbotAdapter.__new__(module.SnowbotAdapter)
         node.engine=self.engine;node.snowbot_devices=S(health=self.health)
         node.now=lambda:self.now;node.event=Mock()
+        node.get_logger=Mock(return_value=Mock())
         node.record_stop_check()
         for _ in range(51):
             self.feed();self.engine.feedback.stamp=self.now
             node.record_stop_check()
         self.assertEqual(node.event.call_count,2)
+        self.assertEqual(node.get_logger().warn.call_count,2)
+        self.assertEqual(json.loads(node.get_logger().warn.call_args.args[0].split(' ',1)[1]),
+                         json.loads(node.event.call_args.args[1]))
         self.obs.hold_valid=False
         node.record_stop_check()
         self.assertEqual(node.event.call_count,3)
