@@ -114,6 +114,8 @@ class BimanualToolNode(RuntimeNode):
         self.state=self.health=self.mode_state=None
         self.busy=False
         self.stop_unconfirmed=False
+        self.stop_barrier=None
+        self.unresolved_acquisition=None
         self.diagnostic_error=''
         self.execution_instance_id=''
         self.grasp_continuation=None
@@ -140,6 +142,7 @@ class BimanualToolNode(RuntimeNode):
         self.create_timer(WORKER_POLL_PERIOD,self.poll_worker)
         self.create_service(Trigger,'teleop/tool_ready',self.ready)
         self.create_service(ResetToolReference,'teleop/tool_reference_reset',self.reset_grasp_reference)
+        self.create_service(ResetToolReference,'teleop/tool_recover',self.recover,callback_group=group)
         if self.independent_enabled:self.create_service(Trigger,'teleop/arms_ready',self.arms_ready)
         self.create_service(SetBool,'teleop/tool_pause',self.request_pause)
         self.server=ActionServer(self,TeleopAction,'teleop/tool_session',
@@ -162,6 +165,61 @@ class BimanualToolNode(RuntimeNode):
         self.preflight_status=''
         self.preflight_mode=self.preflight_grasp=None
         reply.ok,reply.code=True,'GRASP_REFERENCE_RESET_QUEUED'
+        return reply
+
+    def recovery_evidence(self,request):
+        s=self.state
+        if s is None or s.instance_id!=request.execution_instance_id or s.lease_epoch!=request.epoch:
+            raise RuntimeError('BIMANUAL_RECOVERY_SCOPE_CHANGED')
+        barrier=self.stop_barrier if self.stop_unconfirmed else None
+        if self.unresolved_acquisition is not None:
+            future,instance_id,requested=self.unresolved_acquisition
+            if future is None or not future.done():raise RuntimeError('BIMANUAL_RECOVERY_OWNERSHIP_UNRESOLVED')
+            grant=future.result()
+            if grant.profile_hash!=self.profile.digest or (not grant.ok and grant.lease_id):
+                raise RuntimeError('BIMANUAL_RECOVERY_OWNERSHIP_UNRESOLVED')
+            barrier=dict(instance_id=instance_id,epoch=grant.epoch+int(grant.ok),
+                         lease_active=False,requested=requested)
+        if barrier is None:
+            barrier=dict(instance_id=request.execution_instance_id,epoch=request.epoch,
+                         lease_active=False,requested=seconds(s.feedback_stamp))
+        if (barrier['lease_active'] or not stop_feedback_matches(s,**barrier,
+                profile_hash=self.profile.digest,simulated=self.simulation,
+                now=self.now(),max_age=self.cfg['feedback_max_age'],
+                at_rest=lambda joints:joints_at_rest(joints,self.names,self.profile.feedback_tolerances.get('joint_velocity',.01))) or
+                s.state not in ('READY','CANCELED','SUCCEEDED') and
+                not (s.state=='FAILED' and s.code=='DEVICE_FEEDBACK_ERROR' and not self.stop_unconfirmed)):
+            raise RuntimeError('BIMANUAL_RECOVERY_STOP_NOT_CONFIRMED:'+s.code)
+
+    async def recover(self,request,reply):
+        if self.busy:
+            reply.ok,reply.code=False,'BIMANUAL_SESSION_ACTIVE'
+            return reply
+        self.busy=True
+        try:
+            self.recovery_evidence(request)
+            if self.worker_error or self.worker.failure:
+                checkpoint=self.worker.grasp_checkpoint
+                self.worker.close()
+                self.worker=BimanualWorker(self.cfg,self.profile,grasp_checkpoint=checkpoint)
+                self.worker_error=''
+            # A new session must capture fresh input, never consume a previous result.
+            self.preflight_token-=1
+            self.preflight_status=''
+            self.preflight_mode=self.preflight_grasp=None
+            self.grasp_continuation=None
+            while not self.worker.ready or self.worker.busy:
+                if self.worker_error:raise RuntimeError(self.worker_error)
+                await self.pause()
+            self.worker_result=None
+            self.recovery_evidence(request)
+            self.stop_unconfirmed=False
+            self.stop_barrier=self.unresolved_acquisition=None
+            reply.ok,reply.code=True,'RECOVERED_TO_STANDBY'
+        except Exception as exc:
+            reply.ok,reply.code=False,str(exc)
+        finally:
+            self.busy=False
         return reply
 
     def request_pause(self,request,reply):
@@ -314,7 +372,8 @@ class BimanualToolNode(RuntimeNode):
                 not set(self.names)<=set(s.joints.name)):
             raise RuntimeError('BIMANUAL_FEEDBACK_INVALID')
         measured=dict(zip(s.joints.name,s.joints.position))
-        if any(not self.profile.limits[n][0]-1e-9<=measured[n]<=self.profile.limits[n][1]+1e-9
+        tolerance=self.cfg.get('measured_joint_limit_tolerance_rad',0.)
+        if any(not self.profile.limits[n][0]-tolerance-1e-9<=measured[n]<=self.profile.limits[n][1]+tolerance+1e-9
                for n in self.names):
             raise RuntimeError('BIMANUAL_MEASURED_POSITION_LIMIT')
         if getattr(self,'require_recording',True) and (self.health is None or not self.health.ready or not 0 <= now-seconds(self.health.stamp)<.75):
@@ -468,6 +527,8 @@ class BimanualToolNode(RuntimeNode):
                         lease_active=not release,profile_hash=self.profile.digest,simulated=self.simulation,
                         requested=requested,now=self.now(),max_age=self.cfg['feedback_max_age'],
                         at_rest=lambda joints:joints_at_rest(joints,self.names,self.profile.feedback_tolerances.get('joint_velocity',.01))):
+                    self.stop_barrier=dict(instance_id=instance_id,epoch=expected_epoch,
+                                           lease_active=not release,requested=requested)
                     return True
                 # Waiting for a hold suspends the session's normal renewal
                 # loop. Keep only that still-owned lease alive while braking;
@@ -489,6 +550,8 @@ class BimanualToolNode(RuntimeNode):
         except Exception as exc:
             reason=type(exc).__name__+':'+str(exc) if not isinstance(exc,RuntimeError) else str(exc)
         self.stop_unconfirmed=True
+        self.stop_barrier=dict(instance_id=instance_id,epoch=expected_epoch,
+                               lease_active=not release,requested=requested)
         s=self.state
         self.cleanup_event('BIMANUAL_STOP_UNCONFIRMED',json.dumps({
             'reason':reason,
@@ -565,9 +628,12 @@ class BimanualToolNode(RuntimeNode):
             # Even a transport exception may follow request dispatch.
             stopped=False
             acquisition_epoch=self.state.lease_epoch
+            startup_requested=self.now()
+            self.unresolved_acquisition=(None,self.execution_instance_id,startup_requested)
             acquisition=self.lease_client.call_async(Lease.Request(operation='acquire',
                 owner=session.identity,resources=list(self.groups)))
             lease=await self.wait(acquisition)
+            self.unresolved_acquisition=None
             if not lease.ok:
                 stopped=True  # Explicit rejection did not grant this session control.
                 raise RuntimeError(rejected_acquisition_code(lease))
@@ -801,7 +867,8 @@ class BimanualToolNode(RuntimeNode):
                             elif any(lead>budget+1e-9 for lead,budget in zip(leads,budgets)):
                                 kind,value='error','BIMANUAL_RESULT_FEEDBACK_CHANGED'
                         if kind=='error':
-                            if awaiting=='solve' and value in ('BIMANUAL_QP_DEFERRED','BIMANUAL_RESULT_FEEDBACK_CHANGED'):
+                            if awaiting=='solve' and (value in ('BIMANUAL_QP_DEFERRED','BIMANUAL_RESULT_FEEDBACK_CHANGED') or
+                                                     value.startswith('BIMANUAL_QP_TIMEOUT:')):
                                 # A deferred candidate is not device stop evidence.
                                 # The previously accepted motion may still run
                                 # under its original interface/expiry. Nothing
@@ -1039,11 +1106,13 @@ class BimanualToolNode(RuntimeNode):
                         stopped=False
                         try:
                             lease=await self.wait(acquisition)
+                            self.unresolved_acquisition=None
                             stopped=not lease.ok
                             if stopped:
                                 code=rejected_acquisition_code(lease)
                                 if code.startswith('BIMANUAL_LEASE_NOT_ACQUIRED:'):result.code=code
                         except Exception as exc:
+                            self.unresolved_acquisition=(acquisition,self.execution_instance_id,startup_requested)
                             self.cleanup_event('BIMANUAL_LEASE_UNCONFIRMED',
                                 session.identity+':'+str(exc),goal.request.task_id)
                     if lease is not None and lease.ok:

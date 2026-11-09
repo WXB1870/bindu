@@ -177,7 +177,131 @@ class GroundLiftTests(unittest.TestCase):
             scope['ground_recovery_status'](owner,{'joint':.1},np.array([.4]))
 
 
+class ToolRecoveryTests(unittest.IsolatedAsyncioTestCase):
+    def test_measured_entry_reuses_existing_tolerance_without_widening_target_limits(self):
+        import math
+        source=Path(__file__).resolve().parents[2]/'src/integration/bindu_runtime/bindu_runtime/bimanual_tool_node.py'
+        node=next(n for n in ast.parse(source.read_text()).body if isinstance(n,ast.ClassDef) and n.name=='BimanualToolNode')
+        method=next(n for n in node.body if getattr(n,'name','')=='check')
+        scope=dict(math=math,seconds=lambda v:v,MODE_STATE_MAX_AGE=1.)
+        exec(compile(ast.Module(body=[method],type_ignores=[]),str(source),'exec'),scope)
+        joints=SimpleNamespace(name=['joint'],position=[1.19],velocity=[0.])
+        profile=SimpleNamespace(digest='profile',limits={'joint':(-1.,1.)})
+        owner=SimpleNamespace(stop_unconfirmed=False,now=lambda:10.,profile=profile,independent_enabled=True,
+            mode_state=SimpleNamespace(profile_hash='profile',phase='READY',mode='bimanual_tool',stamp=9.99),
+            worker_error='',worker=SimpleNamespace(ready=True),simulation=False,
+            cfg=dict(feedback_max_age=.5,measured_joint_limit_tolerance_rad=.2),names=('joint',),
+            state=SimpleNamespace(profile_hash='profile',simulated=False,feedback_stamp=9.99,stop_failures=[],joints=joints),
+            require_recording=False,tool_frame=None,input_source='vr',frames={})
+        scope['check'](owner,False)
+        self.assertEqual(profile.limits['joint'],(-1.,1.))
+        joints.position=[1.21]
+        with self.assertRaisesRegex(RuntimeError,'BIMANUAL_MEASURED_POSITION_LIMIT'):scope['check'](owner,False)
+
+    def owner(self):
+        from bindu_runtime.stop_evidence import stop_feedback_matches
+        source=Path(__file__).resolve().parents[2]/'src/integration/bindu_runtime/bindu_runtime/bimanual_tool_node.py'
+        node=next(n for n in ast.parse(source.read_text()).body if isinstance(n,ast.ClassDef) and n.name=='BimanualToolNode')
+        methods=[n for n in node.body if getattr(n,'name','') in ('recovery_evidence','recover')]
+        scope=dict(stop_feedback_matches=stop_feedback_matches,seconds=lambda v:v,
+            joints_at_rest=lambda joints,names,tol:len(joints.velocity)==len(names) and all(abs(v)<=tol for v in joints.velocity))
+        cls=ast.ClassDef(name='Actual',bases=[],keywords=[],body=methods,decorator_list=[])
+        exec(compile(ast.fix_missing_locations(ast.Module(body=[cls],type_ignores=[])),str(source),'exec'),scope)
+        owner=scope['Actual']();owner.now=lambda:10.
+        owner.state=SimpleNamespace(instance_id='executor',lease_epoch=4,lease_active=False,
+            profile_hash='profile',simulated=False,state='CANCELED',code='CANCELED',stop_failures=[],
+            feedback_stamp=9.99,reference=SimpleNamespace(name=[]),joints=SimpleNamespace(velocity=[0.]))
+        owner.cfg={'feedback_max_age':.5};owner.profile=SimpleNamespace(digest='profile',feedback_tolerances={})
+        owner.simulation=False;owner.names=('joint',);owner.busy=False
+        owner.stop_unconfirmed=True
+        owner.stop_barrier=dict(instance_id='executor',epoch=4,lease_active=False,requested=9.8)
+        owner.unresolved_acquisition=None
+        owner.worker=SimpleNamespace(failure='BIMANUAL_WORKER_TIMEOUT',grasp_checkpoint=([.1],[[1]],None),close=Mock())
+        owner.worker_error='BIMANUAL_WORKER_TIMEOUT';owner.worker_result=('result',17,'old')
+        owner.preflight_token=-3;owner.grasp_continuation='old'
+        self.factory=Mock(return_value=SimpleNamespace(ready=True,busy=False,failure=''))
+        scope['BimanualWorker']=self.factory
+        return owner,SimpleNamespace(execution_instance_id='executor',epoch=4)
+
+    async def test_b_rechecks_stop_rebuilds_only_failed_worker_and_drops_old_work(self):
+        owner,request=self.owner();old=owner.worker;barrier=dict(owner.stop_barrier)
+        reply=await owner.recover(request,SimpleNamespace())
+        self.assertTrue(reply.ok);self.assertEqual(reply.code,'RECOVERED_TO_STANDBY')
+        self.assertFalse(owner.stop_unconfirmed);self.assertEqual(owner.worker_error,'')
+        old.close.assert_called_once()
+        self.assertEqual(self.factory.call_args.kwargs,{'grasp_checkpoint':old.grasp_checkpoint})
+        self.assertIsNone(owner.worker_result);self.assertIsNone(owner.grasp_continuation)
+        self.assertEqual(barrier['requested'],9.8)  # Original timeout evidence is untouched.
+        self.factory.reset_mock()
+        self.assertTrue((await owner.recover(request,SimpleNamespace())).ok)
+        self.factory.assert_not_called()
+
+    async def test_persistent_fault_owner_or_invalid_stop_blocks_without_restarting(self):
+        for change in ({'lease_active':True},{'lease_epoch':5},{'feedback_stamp':9.0},
+                       {'stop_failures':['driver']},{'state':'STOPPING'},
+                       {'state':'FAILED','code':'DRIVE_FAULT'},{'code':'EMERGENCY_STOP'}):
+            with self.subTest(change=change):
+                owner,request=self.owner()
+                for key,value in change.items():setattr(owner.state,key,value)
+                reply=await owner.recover(request,SimpleNamespace())
+                self.assertFalse(reply.ok);self.assertTrue(owner.stop_unconfirmed)
+                self.factory.assert_not_called();owner.worker.close.assert_not_called()
+
+    async def test_unknown_acquisition_requires_exact_settled_reply_and_matching_epoch(self):
+        owner,request=self.owner();future=Mock();future.done.return_value=False
+        owner.unresolved_acquisition=(future,'executor',9.8)
+        self.assertFalse((await owner.recover(request,SimpleNamespace())).ok)
+        future.done.return_value=True
+        future.result.return_value=SimpleNamespace(ok=True,epoch=3,profile_hash='profile')
+        self.assertTrue((await owner.recover(request,SimpleNamespace())).ok)
+        owner,request=self.owner();owner.unresolved_acquisition=(future,'executor',9.8)
+        future.result.return_value.epoch=4
+        self.assertFalse((await owner.recover(request,SimpleNamespace())).ok)
+        owner,request=self.owner();owner.unresolved_acquisition=(future,'executor',9.8)
+        future.result.return_value=SimpleNamespace(ok=False,epoch=4,lease_id='',profile_hash='profile')
+        self.assertTrue((await owner.recover(request,SimpleNamespace())).ok)
+
+    async def test_changed_owner_while_worker_restarts_does_not_clear_stop_latch(self):
+        owner,request=self.owner()
+        self.factory.return_value.ready=False
+        async def pause():
+            owner.worker.ready=True
+            owner.state.lease_epoch+=1
+        owner.pause=pause
+        reply=await owner.recover(request,SimpleNamespace())
+        self.assertFalse(reply.ok);self.assertTrue(owner.stop_unconfirmed)
+
+
 class WorkerReceiptTests(unittest.TestCase):
+    def test_restart_checkpoint_keeps_original_grasp_and_timeout_is_a_request_error(self):
+        import sys
+        from bindu_kinematics.bimanual_worker import _run
+        checkpoint=([.1],[[1.]],None)
+        solver=SimpleNamespace(close=Mock(),last_geometry_step=None,last_constraint=None,last_timing=None)
+        observed=[]
+        def capture(*args,**kwargs):
+            observed.append((solver.rigid_grasp_q,solver.rigid_grasp_reference))
+            return []
+        solver.capture=capture
+        solver.solve=Mock(side_effect=TimeoutError('ONE_SAMPLE_TIMEOUT'))
+        requests,results=queue.Queue(),queue.Queue()
+        requests.put(('solve',1,{},None,None,.01,'rigid',None,None,False))
+        requests.put(('capture',2,{},None,None,None,'rigid',None,None,False))
+        requests.put(None)
+        with patch.dict(sys.modules,{'bindu_kinematics.bimanual':SimpleNamespace(BimanualQP=lambda *a:solver)}), \
+                patch('bindu_kinematics.bimanual_worker.gc.collect'),patch('bindu_kinematics.bimanual_worker.gc.freeze'):
+            _run({},None,requests,results,grasp_checkpoint=checkpoint)
+        replies=list(results.queue)
+        self.assertIn(('error',1,'ONE_SAMPLE_TIMEOUT'),replies)
+        self.assertFalse(any(item[0]=='fatal' for item in replies))
+        self.assertEqual(observed,[(checkpoint[0],checkpoint[1])])
+        worker=self.worker();worker.results.put(('grasp',2,checkpoint));worker.results.put(('result',2,[]))
+        self.assertEqual(self.poll(worker,10.1),('result',2,[]))
+        self.assertEqual(worker.grasp_checkpoint,checkpoint)
+        worker.reset_grasp_reference();worker.results.put(('grasp',1,checkpoint))
+        self.poll(worker,10.1)
+        self.assertIsNone(worker.grasp_checkpoint)
+
     def test_reference_reset_is_bound_to_the_existing_execution_instance_and_epoch(self):
         source=Path(__file__).resolve().parents[2]/'src/integration/bindu_runtime/bindu_runtime/bimanual_tool_node.py'
         node=next(n for n in ast.parse(source.read_text()).body if isinstance(n,ast.ClassDef) and n.name=='BimanualToolNode')
@@ -233,7 +357,8 @@ class WorkerReceiptTests(unittest.TestCase):
         requests.put(('solve',2,{},None,[],.01,'rigid',None,None,False))
         requests.put(('capture',3,{},None,None,None,'rigid',None,(.99,),False))
         requests.put(None)
-        solver=SimpleNamespace(last_geometry_step=None,last_constraint=None,last_timing=None,close=Mock())
+        solver=SimpleNamespace(last_geometry_step=None,last_constraint=None,last_timing=None,
+                               rigid_grasp_q=None,rigid_grasp_reference=None,close=Mock())
         def solve(*args,**kwargs):
             observed.append(solver.execution_reference)
             raise ValueError('EXPECTED_REJECTION')
@@ -281,6 +406,7 @@ class WorkerReceiptTests(unittest.TestCase):
         worker.process = SimpleNamespace(is_alive=lambda:True)
         worker.ready, worker.busy = ready, busy
         worker.reset_grasp_pending = False
+        worker.grasp_checkpoint = None
         worker.error = ''
         worker.failure = ''
         worker.diagnostic = None
@@ -408,7 +534,8 @@ class WorkerReceiptTests(unittest.TestCase):
         requests.put(('independent_capture',-1,{},None,None,None,'rigid',None,None,False))
         requests.put(('capture',1,{},None,None,None,'independent:1',None,None,False))
         requests.put(None)
-        solver=SimpleNamespace(capture_independent=Mock(return_value=[]),close=Mock())
+        solver=SimpleNamespace(capture_independent=Mock(return_value=[]),rigid_grasp_q=None,
+                               rigid_grasp_reference=None,close=Mock())
         with patch('bindu_kinematics.bimanual.BimanualQP',return_value=solver), \
                 patch('bindu_kinematics.bimanual_worker.gc.collect'), \
                 patch('bindu_kinematics.bimanual_worker.gc.freeze'):
@@ -423,12 +550,14 @@ class WorkerReceiptTests(unittest.TestCase):
         requests.put(('preflight_capture',-1,{},None,None,None,'rigid',None,None,False))
         requests.put(('capture',1,{},None,None,None,'rigid',None,None,False))
         requests.put(None)
-        solver=SimpleNamespace(capture=Mock(return_value=[]),close=Mock())
+        solver=SimpleNamespace(capture=Mock(return_value=[]),rigid_grasp_q=None,
+                               rigid_grasp_reference=None,close=Mock())
         with patch('bindu_kinematics.bimanual.BimanualQP',return_value=solver), \
                 patch('bindu_kinematics.bimanual_worker.gc.collect'), \
                 patch('bindu_kinematics.bimanual_worker.gc.freeze'):
             _run({},None,requests,results)
-        self.assertEqual(list(results.queue),[('ready',0,None),('result',-1,[]),('result',1,[])])
+        self.assertEqual(list(results.queue),[('ready',0,None),('result',-1,[]),
+                                             ('grasp',1,(None,None,None)),('result',1,[])])
         self.assertEqual(solver.capture.call_args_list,[
             unittest.mock.call({},'rigid',reference=None,commit_grasp=False),
             unittest.mock.call({},'rigid',reference=None)])

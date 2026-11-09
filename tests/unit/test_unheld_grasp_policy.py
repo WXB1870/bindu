@@ -29,7 +29,7 @@ class GraspReferenceLifetimeTests(unittest.TestCase):
         s.expected_relative=np.eye(4);s.rigid_grasp_q=s.rigid_grasp_reference=None
         s.reference_kinematics=True;s.max_reference_error=.15
         s.grasp_position_tolerance=.01;s.grasp_rotation_tolerance=.02
-        s.axial=None;s.tool=np.eye(4);s.collision_check=None;s.tracking_point=np.zeros(3)
+        s.axial=s.left_axial=None;s.tool=np.eye(4);s.collision_check=None;s.tracking_point=np.zeros(3)
         s.native_config=NS['NativeConfig']();s.coupled_locked_joints=()
         s.shared_motion_weight=0.;s.limit_avoidance=(0.,0.)
         def relative(handle,q,n,out):
@@ -81,6 +81,25 @@ class GraspReferenceLifetimeTests(unittest.TestCase):
             np.testing.assert_array_equal(s.rigid_grasp_reference,original)
         s.capture({'joint':0.},commit_grasp=False)
         np.testing.assert_array_equal(s.rigid_grasp_reference,original)
+
+    def test_rebuilt_worker_does_not_recapture_a_drifted_pose_as_the_correct_grasp(self):
+        import queue
+        import sys
+        from bindu_kinematics.bimanual_worker import _run
+        original=self.solver();original.capture({'joint':0.})
+        checkpoint=(original.rigid_grasp_q.copy(),original.rigid_grasp_reference.copy(),None)
+        rebuilt=self.solver()
+        requests,results=queue.Queue(),queue.Queue()
+        requests.put(('capture',1,{'joint':.024},None,None,None,'rigid',None,None,False))
+        requests.put(('capture',2,{'joint':0.},None,None,None,'rigid',None,None,False))
+        requests.put(None)
+        with patch.dict(sys.modules,{'bindu_kinematics.bimanual':S(BimanualQP=lambda *a:rebuilt)}), \
+                patch('bindu_kinematics.bimanual_worker.gc.collect'),patch('bindu_kinematics.bimanual_worker.gc.freeze'):
+            _run({},None,requests,results,grasp_checkpoint=checkpoint)
+        replies=list(results.queue)
+        self.assertIn(('error',1,'BIMANUAL_GRASP_POSE'),replies)
+        self.assertTrue(any(kind=='result' and token==2 for kind,token,_ in replies))
+        np.testing.assert_array_equal(rebuilt.rigid_grasp_reference,checkpoint[1])
 
     def test_failed_preview_does_not_latch_or_erase_a_grasp(self):
         s=self.solver()

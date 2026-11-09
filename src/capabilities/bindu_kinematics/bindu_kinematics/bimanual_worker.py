@@ -54,12 +54,14 @@ def prepare_limit_exit_target(profile, names, feedback, reference, target, reser
     return result
 
 
-def _run(config, profile, requests, results, preload_path_checks=False):
+def _run(config, profile, requests, results, preload_path_checks=False, grasp_checkpoint=None):
     solver = None
     try:
         import numpy as np
         from .bimanual import BimanualQP
         solver=BimanualQP(config,profile)
+        if grasp_checkpoint is not None:
+            solver.rigid_grasp_q,solver.rigid_grasp_reference,solver.posture_reference=grasp_checkpoint
         path_checks={}
         def path_check(loaded):
             if loaded not in path_checks:
@@ -180,8 +182,11 @@ def _run(config, profile, requests, results, preload_path_checks=False):
                     diagnostic=dict(getattr(solver,'last_geometry_step',None) or {'scale':1.},
                                     timing=getattr(solver,'last_timing',None))
                     results.put(('diagnostic',token,diagnostic))
+                elif operation in ('capture','independent_capture'):
+                    results.put(('grasp',token,(solver.rigid_grasp_q,solver.rigid_grasp_reference,
+                                               getattr(solver,'posture_reference',None))))
                 results.put(('result',token,value))
-            except (ValueError,RuntimeError) as exc:
+            except (ValueError,RuntimeError,TimeoutError) as exc:
                 results.put(('diagnostic',token,dict(scale=1.,operation=operation,
                     constraint=getattr(solver,'last_constraint',None),
                     timing=getattr(solver,'last_timing',None) if operation=='solve' else None)))
@@ -196,16 +201,17 @@ def _run(config, profile, requests, results, preload_path_checks=False):
 
 
 class BimanualWorker:
-    def __init__(self,config,profile,*,preload_path_checks=False):
+    def __init__(self,config,profile,*,preload_path_checks=False,grasp_checkpoint=None):
         self.timeout=float(config.get('worker_timeout', config['solve_timeout_us']*1e-6+.2))
         self.startup_timeout=float(config.get('worker_startup_timeout',30.))
         if not all(math.isfinite(v) and v > 0 for v in (self.timeout,self.startup_timeout)):
             raise ValueError('BIMANUAL_WORKER_TIMEOUT_CONFIG')
         ctx=mp.get_context('spawn')
         self.requests,self.results=ctx.Queue(maxsize=1),ctx.Queue(maxsize=2)
-        self.process=ctx.Process(target=_run,args=(config,profile,self.requests,self.results,preload_path_checks),daemon=True)
+        self.process=ctx.Process(target=_run,args=(config,profile,self.requests,self.results,preload_path_checks,grasp_checkpoint),daemon=True)
         self.ready=self.busy=False
         self.reset_grasp_pending=False
+        self.grasp_checkpoint=grasp_checkpoint
         self.error=''
         self.failure=''
         self.diagnostic=None
@@ -227,6 +233,7 @@ class BimanualWorker:
     def reset_grasp_reference(self):
         """End an explicit preparation scope before the next worker request."""
         self.reset_grasp_pending=True
+        self.grasp_checkpoint=None
 
     def poll(self):
         if getattr(self,'failure',''): raise RuntimeError(self.failure)
@@ -245,6 +252,8 @@ class BimanualWorker:
             if kind == 'ready': self.ready=True
             elif kind == 'fatal': self.error=value
             elif kind == 'diagnostic': self.diagnostic=(token,value)
+            elif kind == 'grasp':
+                if not self.reset_grasp_pending:self.grasp_checkpoint=value
             else:
                 self.busy=False
                 item=(kind,token,value)

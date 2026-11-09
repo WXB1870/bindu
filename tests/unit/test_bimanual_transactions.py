@@ -829,6 +829,19 @@ class BimanualTransactions(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(summaries[0]['count'],1)
         self.assertEqual(summaries[0]['outcome'],'software_acceptance')
 
+    async def test_one_qp_timeout_skips_the_sample_and_continuous_timeouts_keep_original_deadline(self):
+        timeout='BIMANUAL_QP_TIMEOUT:native'
+        rig=Rig(solve_errors=[timeout]);result=await rig.run()
+        self.assertTrue(result.success,result.code)
+        first,second=rig.solve_attempts[:2]
+        self.assertGreater(second[2],first[2]);self.assertGreater(second[4],first[4])
+        self.assertFalse(any(c.command_id.endswith('_'+str(first[1])) for c in rig.commands))
+        rig=Rig(solve_errors=[timeout]*100);result=await rig.run()
+        self.assertIn(result.code.split(':')[0],('BIMANUAL_INTEGRATION_INTERVAL',
+            'BIMANUAL_SOLVE_DEFERRED_TIMEOUT','BIMANUAL_SOLVE_DEFERRED_LIMIT'))
+        self.assertFalse(rig.commands);self.assertFalse(rig.references[0].commits)
+        self.assertFalse(rig.engine.lease_id)
+
     async def test_continuous_guarded_failures_stop_with_existing_reference_budget(self):
         rig=Rig(solve_errors=['BIMANUAL_QP_DEFERRED']*100)
         result=await rig.run()
@@ -910,7 +923,7 @@ class BimanualTransactions(unittest.IsolatedAsyncioTestCase):
 
     async def test_unsafe_or_unknown_solver_failure_is_not_deferred(self):
         for error in ('BIMANUAL_QP:joint bounds infeasible','BIMANUAL_NONFINITE_RESULT',
-                      'BIMANUAL_QP_TIMEOUT:native','SELF_COLLISION:arm',
+                      'SELF_COLLISION:arm',
                       'BIMANUAL_QP_DEFERRED:unknown'):
             with self.subTest(error=error):
                 rig=Rig(solve_errors=[error]);result=await rig.run()
