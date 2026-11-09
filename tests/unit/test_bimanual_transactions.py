@@ -825,6 +825,8 @@ class BimanualTransactions(unittest.IsolatedAsyncioTestCase):
         for error, path in ((None, 'candidate'), ('BIMANUAL_QP_DEFERRED', 'deferred')):
             with self.subTest(path=path):
                 rig = Rig(solve_errors=[error])
+                if path == 'candidate':
+                    rig.node.cfg['integration_max_sample_gap'] = .1
                 submit = rig.node.worker.submit
                 def delay_result(operation, token, *args, **kwargs):
                     accepted = submit(operation, token, *args, **kwargs)
@@ -848,6 +850,36 @@ class BimanualTransactions(unittest.IsolatedAsyncioTestCase):
                 self.assertAlmostEqual(report['solve_span']['polled_monotonic']-
                                        report['solve_span']['finished_monotonic'], .104)
                 self.assertFalse(rig.commands)
+
+    async def test_stale_candidate_retries_new_input_within_the_original_reference_budget(self):
+        for repeated in (False, True):
+            with self.subTest(repeated=repeated):
+                rig = Rig()
+                submit = rig.node.worker.submit
+                def delay_candidate(operation, token, *args, **kwargs):
+                    ok = submit(operation, token, *args, **kwargs)
+                    if operation == 'solve' and (repeated or len(rig.solve_attempts) == 1):
+                        rig.clock += .09
+                        rig.steady += .09
+                    return ok
+                rig.node.worker.submit = delay_candidate
+                result = await rig.run()
+                discarded = [json.loads(e[1]) for e in rig.events if e[0] == 'BIMANUAL_RESULT_DISCARDED']
+                self.assertEqual(len(discarded), 1, result.code)
+                first, second = rig.solve_attempts[:2]
+                self.assertEqual(discarded[0]['token'], first[1])
+                self.assertGreater(second[2], first[2])
+                self.assertEqual(second[3], first[3])
+                self.assertFalse(any(c.command_id.endswith('_'+str(first[1])) for c in rig.commands))
+                if repeated:
+                    self.assertEqual(result.code, 'BIMANUAL_RESULT_STALE')
+                    self.assertFalse(rig.commands)
+                    self.assertFalse(rig.references[0].commits)
+                else:
+                    self.assertTrue(result.success, result.code)
+                    self.assertTrue(rig.commands[0].command_id.endswith('_'+str(second[1])))
+                    self.assertTrue(rig.references[0].commits)
+                self.assertFalse(rig.engine.lease_id)
 
     async def test_one_guarded_iteration_failure_keeps_reference_and_uses_only_new_input(self):
         rig=Rig(solve_errors=['BIMANUAL_QP_DEFERRED'])

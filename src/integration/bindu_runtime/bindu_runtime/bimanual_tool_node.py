@@ -600,8 +600,14 @@ class BimanualToolNode(RuntimeNode):
         last_grasp_generation=0
         deferral=None
         reference_deadline=None
-        def stale_result(checked_ros, path):
-            self.event('BIMANUAL_RESULT_STALE', json.dumps(dict(
+        retrying_stale = False
+        def retry_budget_open(checked_ros):
+            return (reference_deadline is not None and time.monotonic() < reference_deadline
+                    and 0 < checked_ros-reference.sampled_at <= reference.max_sample_gap)
+
+        def report_stale_result(checked_ros, path, *, discarded=False):
+            event = 'BIMANUAL_RESULT_DISCARDED' if discarded else 'BIMANUAL_RESULT_STALE'
+            self.event(event, json.dumps(dict(
                 session_id=session.identity, token=token, input_seq=work_seq, path=path,
                 worker_outcome=value if kind=='error' else 'result', limit_s=reference.max_interval,
                 sampled_ros=work_sampled_at, checked_ros=checked_ros,
@@ -609,10 +615,10 @@ class BimanualToolNode(RuntimeNode):
                 loop_monotonic=now, checked_monotonic=time.monotonic(),
                 solve_span=geometry.get('solve_span') if geometry else None,
                 feedback_stamp_ros=seconds(s.feedback_stamp))), goal.request.task_id)
-            return RuntimeError('BIMANUAL_RESULT_STALE')
 
         def end_deferral(outcome):
-            nonlocal deferral
+            nonlocal deferral, retrying_stale
+            retrying_stale = False
             if deferral is not None:
                 self.event('BIMANUAL_SOLVE_DEFERRED_END',json.dumps(dict(deferral,
                     outcome=outcome,duration_s=time.monotonic()-deferral['started_at'],
@@ -703,6 +709,8 @@ class BimanualToolNode(RuntimeNode):
                 if (pending is not None and self.pause_control.phase!='pausing' and
                         now-pending_at>.7):
                     raise RuntimeError('BIMANUAL_SUBMIT_TIMEOUT')
+                if retrying_stale and not retry_budget_open(self.now()):
+                    raise RuntimeError('BIMANUAL_RESULT_STALE')
                 if deferral is not None and now>=reference_deadline:
                     raise RuntimeError('BIMANUAL_SOLVE_DEFERRED_TIMEOUT')
                 if renewal is not None:
@@ -901,7 +909,8 @@ class BimanualToolNode(RuntimeNode):
                                 checked_ros = self.now()
                                 if (not 0<=checked_ros-work_sampled_at<=reference.max_interval or
                                         not 0<=now-work_sampled_monotonic<=reference.max_interval):
-                                    raise stale_result(checked_ros, 'deferred')
+                                    report_stale_result(checked_ros, 'deferred')
+                                    raise RuntimeError('BIMANUAL_RESULT_STALE')
                                 if reference_deadline is None or now>=reference_deadline:
                                     raise RuntimeError('BIMANUAL_SOLVE_DEFERRED_TIMEOUT')
                                 if deferral is None:
@@ -984,8 +993,21 @@ class BimanualToolNode(RuntimeNode):
                             # Discarded results never advance the accepted reference.
                             if (work_stamp >= self.now()-self.cfg['command_max_age'] and pending is None):
                                 checked_ros = self.now()
-                                if not 0 <= checked_ros-work_sampled_at <= reference.max_interval:
-                                    raise stale_result(checked_ros, 'candidate')
+                                age = checked_ros-work_sampled_at
+                                if not 0 <= age <= reference.max_interval:
+                                    discard = (age > reference.max_interval and not retrying_stale
+                                               and s.state != 'STOPPING' and retry_budget_open(checked_ros))
+                                    report_stale_result(checked_ros, 'candidate', discarded=discard)
+                                    if not discard:
+                                        raise RuntimeError('BIMANUAL_RESULT_STALE')
+                                    # Keep work_seq and the last accepted reference. Only a new
+                                    # input may start another solve within the original deadline.
+                                    retrying_stale = True
+                                    awaiting = ''
+                                    await self.pause()
+                                    continue
+                                if retrying_stale and not retry_budget_open(checked_ros):
+                                    raise RuntimeError('BIMANUAL_RESULT_STALE')
                                 positions,metrics=value
                                 command=MotionCommand(schema_version=2, runtime_mode=self.runtime_mode,
                                     command_id=session.identity+'_'+str(token),
