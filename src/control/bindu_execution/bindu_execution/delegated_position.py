@@ -316,7 +316,7 @@ class DelegatedPositionExecutor(Executor):
             return
         if self.stopping and not emergency:
             return
-        if self.stopping and self.stopping[1] not in ('CANCELED', 'REPLAY_COMPLETED'):
+        if self.stopping and self.stopping[1] not in ('CANCELED', 'REPLAY_COMPLETED', 'POWERED_HOLD'):
             code = self.stopping[1]
         # Keep both original budgets across repeated faults and clock changes.
         if not self.stopping:
@@ -374,14 +374,17 @@ class DelegatedPositionExecutor(Executor):
         if arrival_names is not None and not set(arrival_names) <= set(self.reference_names):
             self.fail_stop(now, 'STOP_REFERENCE_INVALID')
             return
-        resting = all(n in self.feedback.positions and math.isfinite(self.feedback.positions[n])
-                      and self.joint_at_rest(n) for n in self.reference_names)
+        # A powered-hold handoff confirms the device has adopted its fixed
+        # PAUSE target. Only the normal stop path certifies measured rest.
+        powered_hold = code == 'POWERED_HOLD' and confirm is not None
+        feedback_ok = all(n in self.feedback.positions and math.isfinite(self.feedback.positions[n])
+                          and (powered_hold or self.joint_at_rest(n)) for n in self.reference_names)
         arrived = (self.feedback.stamp > self.io.stop_requested_at and
-                   0 <= now-self.feedback.stamp <= .2 and resting and
+                   0 <= now-self.feedback.stamp <= .2 and feedback_ok and
                    self.references_arrived(arrival_names,
-                       position_tolerances=self.profile.stop_position_tolerances))
+                       position_tolerances=self.profile.stop_position_tolerances, require_rest=not powered_hold))
         window = getattr(self.io, 'stop_confirmation_window', 0.)
-        if arrived and window:
+        if arrived and window and not powered_hold:
             positions = {n: self.feedback.positions[n] for n in self.reference_names}
             previous = self.stop_rest_window
             tolerance = self.profile.feedback_tolerances.get('joint_position', 1e-5)
@@ -402,4 +405,4 @@ class DelegatedPositionExecutor(Executor):
             self.io.stop_targets.clear()
             self.stopping = self.reference = None
             self.reference_names = ()
-            self.emit(now, motion, 'SUCCEEDED' if code == 'REPLAY_COMPLETED' else 'CANCELED' if code == 'CANCELED' else 'FAILED', code)
+            self.emit(now, motion, 'SUCCEEDED' if code in ('REPLAY_COMPLETED', 'POWERED_HOLD') else 'CANCELED' if code == 'CANCELED' else 'FAILED', code)

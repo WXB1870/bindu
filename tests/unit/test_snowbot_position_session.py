@@ -754,16 +754,37 @@ class TargetWireTests(unittest.TestCase):
         pause = self.start_powered_hold()
         self.assertEqual(pause.meta.operation, 2)
         hold = [self.rig.q[n] for n in CONTROL_NAMES]
-        for _ in range(24):
-            self.update_target_feedback(hold=hold, reference_mode=2, segment_id=pause.meta.sequence,
-                trajectory_phase=4, hold_basis=0, reference_valid=True, output_valid=True)
-            self.rig.engine.tick(self.rig.now)
-            self.d.advance_startup_hold(self.rig.engine)
+        self.update_target_feedback()
+        self.rig.engine.tick(self.rig.now)
+        self.d.advance_startup_hold(self.rig.engine)
+        self.assertEqual(self.d.startup_hold_state, 'stopping')
+        self.update_target_feedback(hold=hold)
+        self.rig.engine.tick(self.rig.now)
+        self.d.advance_startup_hold(self.rig.engine)
         self.assertEqual(self.d.startup_hold_state, 'ready')
         self.assertIsNone(self.rig.engine.stopping)
         self.assertEqual(self.d.publishers['arms'].publish.call_count, 2)
         for _ in range(10): self.d.advance_startup_hold(self.rig.engine)
         self.assertEqual(self.d.publishers['arms'].publish.call_count, 2)
+
+    def test_startup_hold_accepts_residual_speed_only_on_valid_pause_ack(self):
+        self.start_powered_hold()
+        hold = [self.rig.q[n] for n in CONTROL_NAMES]
+        for valid in (False, True):
+            self.update_target_feedback(hold=hold, velocity=.014, hold_valid=valid)
+            self.rig.engine.tick(self.rig.now)
+            self.d.advance_startup_hold(self.rig.engine)
+            self.assertEqual(self.d.startup_hold_state, 'ready' if valid else 'stopping')
+        event = self.rig.engine.results[self.d.startup_motion.command_id]
+        self.assertEqual((event.state, event.code), ('SUCCEEDED', 'POWERED_HOLD'))
+
+    def test_shutdown_during_startup_hold_still_requires_measured_rest(self):
+        self.start_powered_hold()
+        self.rig.engine.halt(self.rig.now, 'SHUTDOWN', revoke=True, emergency=True)
+        hold = [self.rig.q[n] for n in CONTROL_NAMES]
+        self.update_target_feedback(hold=hold, velocity=.014)
+        self.rig.engine.tick(self.rig.now)
+        self.assertEqual(self.rig.engine.stopping[1], 'SHUTDOWN')
 
     def test_read_held_reference_survives_new_lease_without_publishing(self):
         pause=self.start_powered_hold()
