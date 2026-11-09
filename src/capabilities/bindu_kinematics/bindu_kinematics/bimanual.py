@@ -38,6 +38,10 @@ def check_abi(lib):
 class BimanualQP:
     def __init__(self, config, profile):
         self.cfg = config
+        self.ground_lift = None
+        if config.get('ground_recovery') is not None:
+            from .tool_geometry import GroundLift
+            self.ground_lift = GroundLift(config['ground_recovery'])
         self.captured = False
         self.execution_reference = None  # Per-request servo sample, supplied only by the runtime worker.
         # Original held sample, also retained for measured axial point/axis checks.
@@ -626,8 +630,7 @@ class BimanualQP:
         return limited,accepted_scale
 
     def ground_recovery_status(self, feedback, reference):
-        from .tool_geometry import GroundLift
-        lift = GroundLift(self.cfg['ground_recovery'])
+        lift = self.ground_lift
         measured = np.array([feedback[n] for n in self.names])
         self._check_measured_limits(measured)
         if np.any(np.abs(reference-measured)>self._reference_error_limits()):

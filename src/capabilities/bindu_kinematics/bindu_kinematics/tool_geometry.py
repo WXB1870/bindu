@@ -180,9 +180,8 @@ class GroundLift:
         self.points = np.c_[config['points_in_left_flange_m'], np.ones(len(config['points_in_left_flange_m']))]
         self.floor = config['ground_z_m']
         if (self.points.shape[1] != 4 or not np.isfinite(self.points).all() or
-                not np.isfinite(self.floor) or not 0 < config['lift_m'] <= .1 or
-                not 0 < config['max_speed_m_s'] <= .05 or
-                not 0 < config['max_joint_speed_rad_s'] <= .1):
+                not np.isfinite([self.floor,config['lift_m'],config['max_speed_m_s'],config['max_joint_speed_rad_s']]).all() or
+                min(config['lift_m'],config['max_speed_m_s'],config['max_joint_speed_rad_s']) <= 0):
             raise ValueError('GROUND_RECOVERY_CONFIG')
 
     def height(self, left):
@@ -217,7 +216,7 @@ class GroundLift:
             q[active] = np.clip(q[active]+step, bounds[active, 0], bounds[active, 1])
         if np.max(np.abs(residual(q))) >= 1e-4:
             raise ValueError('GROUND_RECOVERY_IK_FAILED')
-        before = self.height(original[0]);previous = before;previous_poses = original;maximum_slope = 0.
+        previous = self.height(original[0]);previous_poses = original;maximum_slope = 0.
         count = max(50, int(np.ceil(np.max(np.abs(q-start))/.001)))
         for fraction in np.linspace(0., 1., count+1):
             poses = fk(start+fraction*(q-start))
@@ -237,8 +236,7 @@ class GroundLift:
         check_path(start, q)
         duration = max(5., 1.875*maximum_slope/self.config['max_speed_m_s'],
                        1.875*float(np.max(np.abs(q-start)))/self.config['max_joint_speed_rad_s'])
-        return dict(positions=q.tolist(), start=start.tolist(), duration_s=duration,
-                    planned_height_m=previous, reference_height_m=before)
+        return dict(positions=q.tolist(), duration_s=duration)
 
 
 def bin_boxes(recipe):

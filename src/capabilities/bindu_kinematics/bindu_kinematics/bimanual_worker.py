@@ -77,7 +77,7 @@ def _run(config, profile, requests, results, preload_path_checks=False):
             # query contexts before ready; each request still checks its fresh
             # measured start and complete proposed path, including grip meshes.
             path_check(False);path_check(True)
-        if config.get('independent_arms_enabled'):
+        if config.get('independent_arms_enabled') or config.get('ground_recovery'):
             solver.independent_abi()
             solver.empty_collision_check=path_check(False)
         # This is the private spawned child, never the caller's interpreter.

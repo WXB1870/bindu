@@ -90,24 +90,35 @@ class GroundLiftTests(unittest.TestCase):
         solver=SimpleNamespace(last_constraint=None,last_timing=None,close=Mock(),
             plan_ground_recovery=Mock(return_value={'positions':[.1]}),
             ground_recovery_status=Mock(return_value=(None,None,{'height_m':.03})),
-            rigid_grasp_q=np.array([.3]),rigid_grasp_reference=np.eye(4))
+            rigid_grasp_q=np.array([.3]),rigid_grasp_reference=np.eye(4),tool=np.eye(4),independent_abi=Mock())
+        checker=Mock(return_value=None)
+        def plan(*args):
+            solver.empty_collision_check([])
+            return {'positions':[.1]}
+        solver.plan_ground_recovery.side_effect=plan
+        config=dict(ground_recovery=self.config(),urdf='/model/control.urdf',
+                    demo=dict(grip_offset_m=[0.,0.,0.],display_urdf='display.urdf'))
         requests,results=queue.Queue(),queue.Queue()
         for operation,token in (('ground_recovery_path',7),('ground_recovery_status',8)):
             requests.put((operation,token,{'q':.2},None,[.3],None,'rigid',None,None,False))
         requests.put(None)
         with patch.dict(sys.modules,{'bindu_kinematics.bimanual':SimpleNamespace(BimanualQP=lambda *a:solver)}),\
+                patch('bindu_kinematics.tool_geometry.make_collision_checker',return_value=checker) as create,\
                 patch('bindu_kinematics.bimanual_worker.gc.collect'),patch('bindu_kinematics.bimanual_worker.gc.freeze'):
-            _run({},None,requests,results)
+            _run(config,None,requests,results)
         self.assertEqual(results.get_nowait(),('ready',0,None))
         records=[]
         while not results.empty():records.append(results.get_nowait())
         self.assertIn(('result',7,{'positions':[.1]}),records)
         self.assertIn(('result',8,{'height_m':.03}),records)
+        self.assertIs(solver.empty_collision_check,checker)
+        self.assertIs(create.call_args.kwargs['tool_present'],False)
         np.testing.assert_array_equal(solver.rigid_grasp_reference,np.eye(4))
         np.testing.assert_array_equal(solver.rigid_grasp_q,[.3])
 
     def test_measured_axial_monitor_keeps_the_existing_free_roll_semantics(self):
         import numpy as np
+        from bindu_kinematics.tool_geometry import GroundLift
         source=Path(__file__).resolve().parents[2]/'src/capabilities/bindu_kinematics/bindu_kinematics/bimanual.py'
         tree=ast.parse(source.read_text());node=next(n for n in tree.body if getattr(n,'name','')=='BimanualQP')
         method=next(n for n in node.body if getattr(n,'name','')=='ground_recovery_status')
@@ -116,7 +127,7 @@ class GroundLiftTests(unittest.TestCase):
         def poses(handle,q,n,left,right):
             left[:]=np.eye(4);right[:]=np.eye(4);right[0,3]=.4
             return True
-        owner=SimpleNamespace(cfg=dict(ground_recovery=self.config(),grasp_reference_source='measured_axial'),
+        owner=SimpleNamespace(cfg=dict(grasp_reference_source='measured_axial'),ground_lift=GroundLift(self.config()),
             names=('joint',),model_names=('joint',),nq=1,handle=object(),
             _check_measured_limits=Mock(),_reference_error_limits=lambda:np.array([.25]),
             independent_abi=Mock(),_q=lambda feedback:np.array([feedback['joint']]),_ptr=lambda value:value,
