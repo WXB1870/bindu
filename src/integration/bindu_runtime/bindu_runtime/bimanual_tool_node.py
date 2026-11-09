@@ -539,13 +539,13 @@ class BimanualToolNode(RuntimeNode):
                         s.simulated==self.simulation and s.state!='FAILED' and
                         not s.stop_failures and
                         0<=self.now()-seconds(s.feedback_stamp)<self.cfg['feedback_max_age']):
+                    next_renewal=time.monotonic()+self.cfg.get('stop_renewal_period_s',.3)
                     renewal=self.lease_client.call_async(Lease.Request(operation='renew',
                         lease_id=lease.lease_id,epoch=lease.epoch))
-                    renewed=await self.wait(renewal,min(.7,max(0.,deadline-time.monotonic())))
+                    renewed=await self.wait(renewal,min(self.cfg.get('lease_renewal_timeout_s',.7),max(0.,deadline-time.monotonic())))
                     if not (renewed.ok and renewed.lease_id==lease.lease_id and
                             renewed.epoch==lease.epoch and renewed.profile_hash==self.profile.digest):
                         raise RuntimeError('BIMANUAL_STOP_RENEW_REJECTED:'+renewed.code)
-                    next_renewal=time.monotonic()+.3
                 await self.pause()
         except Exception as exc:
             reason=type(exc).__name__+':'+str(exc) if not isinstance(exc,RuntimeError) else str(exc)
@@ -697,11 +697,11 @@ class BimanualToolNode(RuntimeNode):
                     if renewal.done():
                         if not renewal.result().ok: raise RuntimeError('LEASE_RENEW_FAILED')
                         renewal=None
-                    elif now-renewal_at>.7: raise RuntimeError('LEASE_RENEW_TIMEOUT')
+                    elif now-renewal_at>self.cfg.get('lease_renewal_timeout_s',.7): raise RuntimeError('LEASE_RENEW_TIMEOUT')
                 if now>=next_renewal and renewal is None:
                     renewal=self.lease_client.call_async(Lease.Request(operation='renew',
                         lease_id=lease.lease_id,epoch=lease.epoch))
-                    renewal_at,next_renewal=now,now+.3
+                    renewal_at,next_renewal=now,now+self.cfg.get('lease_renewal_period_s',.3)
                 if self.pause_control.phase == 'pausing':
                     end_deferral('intent_interrupted')
                     worker_token+=1
