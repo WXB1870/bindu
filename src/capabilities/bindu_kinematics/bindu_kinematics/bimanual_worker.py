@@ -193,6 +193,8 @@ def _run(config, profile, requests, results, preload_path_checks=False, grasp_ch
                 results.put(('error',token,str(exc)))
             finally:
                 solver.execution_reference=None
+    except KeyboardInterrupt:
+        return
     except Exception as exc:
         results.put(('fatal',0,type(exc).__name__+': '+str(exc)))
     finally:

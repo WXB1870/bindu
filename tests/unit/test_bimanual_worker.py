@@ -273,6 +273,20 @@ class ToolRecoveryTests(unittest.IsolatedAsyncioTestCase):
 
 
 class WorkerReceiptTests(unittest.TestCase):
+    def test_child_interrupt_is_quiet_and_unexpected_queue_failure_stays_fatal(self):
+        from bindu_kinematics.bimanual_worker import _run
+        for error,tail in ((KeyboardInterrupt(),[]),
+                           (RuntimeError('queue failure'),[('fatal',0,'RuntimeError: queue failure')])):
+            with self.subTest(error=type(error).__name__):
+                requests=Mock();requests.get.side_effect=error
+                results=queue.Queue();solver=SimpleNamespace(close=Mock())
+                with patch('bindu_kinematics.bimanual.BimanualQP',return_value=solver), \
+                        patch('bindu_kinematics.bimanual_worker.gc.collect'), \
+                        patch('bindu_kinematics.bimanual_worker.gc.freeze'):
+                    _run({},None,requests,results)
+                self.assertEqual(list(results.queue),[('ready',0,None),*tail])
+                solver.close.assert_called_once()
+
     def test_restart_checkpoint_keeps_original_grasp_and_timeout_is_a_request_error(self):
         import sys
         from bindu_kinematics.bimanual_worker import _run

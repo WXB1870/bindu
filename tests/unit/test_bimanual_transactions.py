@@ -100,7 +100,7 @@ class Rig:
             WORKER_POLL_PERIOD=next(ast.literal_eval(n.value) for n in tree.body
                 if isinstance(n,ast.Assign) and any(isinstance(t,ast.Name) and
                     t.id=='WORKER_POLL_PERIOD' for t in n.targets)),
-            seconds=lambda x:x,stamp=lambda x:x,MODE_STATE_MAX_AGE=.5,
+            seconds=lambda x:x if isinstance(x,(int,float)) else x.sec+x.nanosec*1e-9,stamp=lambda x:x,MODE_STATE_MAX_AGE=.5,
             AcceptedReference=Reference,BimanualSession=BimanualSession,
             ToolPoseSession=ToolPoseSession,IndependentArmsSession=IndependentArmsSession,ToolPause=ToolPause,
             TeleopAction=S(Result=lambda **kw:S(**kw),Feedback=lambda **kw:S(**kw)),
@@ -750,32 +750,33 @@ class BimanualTransactions(unittest.IsolatedAsyncioTestCase):
         self.assertIn('SNOWBOT_TRAJECTORY_REFERENCE_UNAVAILABLE',result.code)
 
     async def test_short_reference_delay_discards_candidate_and_resumes_on_fresh_sample(self):
-        rig=self.empty_bootstrap_rig()
-        rig.node.cfg.update(input_max_age=.5,feedback_max_age=.2,command_max_age=.8,integration_max_sample_gap=.5)
-        solve,update=rig.solve,rig.update
-        delayed_until=None
-        def delay_reference():
-            if delayed_until is not None and rig.clock<delayed_until:
-                at=rig.clock-.3
-                rig.node.state.reference.header.stamp=S(sec=int(at),nanosec=round((at-int(at))*1e9))
-        def delayed_solve(operation,*args,**kwargs):
-            nonlocal delayed_until
-            result=solve(operation,*args,**kwargs)
-            if operation=='solve' and delayed_until is None:
-                delayed_until=rig.clock+.4
-                delay_reference()
-            return result
-        def delayed_update():
-            update()
-            delay_reference()
-        rig.node.worker.submit=delayed_solve
-        rig.update=delayed_update
-        result=await rig.run()
-        self.assertGreaterEqual(len(rig.commands),2,result.code)
-        self.assertGreaterEqual(len(rig.solve_attempts),2)
-        self.assertGreaterEqual(rig.clock,delayed_until)
-        self.assertFalse(rig.engine.lease_id)
-        self.assertFalse(rig.engine.lease_id)
+        for accepted_before_delay in (0,1):
+            with self.subTest(accepted_before_delay=accepted_before_delay):
+                rig=self.empty_bootstrap_rig()
+                rig.node.cfg.update(input_max_age=.5,feedback_max_age=.2,command_max_age=.8,integration_max_sample_gap=.5)
+                solve,update=rig.solve,rig.update
+                delayed_until=None
+                def delay_reference():
+                    if delayed_until is not None and rig.clock<delayed_until:
+                        at=rig.clock-.3
+                        rig.node.state.reference.header.stamp=S(sec=int(at),nanosec=round((at-int(at))*1e9))
+                def delayed_solve(operation,*args,**kwargs):
+                    nonlocal delayed_until
+                    result=solve(operation,*args,**kwargs)
+                    if operation=='solve' and len(rig.commands)>=accepted_before_delay and delayed_until is None:
+                        delayed_until=rig.clock+(.4 if accepted_before_delay==0 else .2)
+                        delay_reference()
+                    return result
+                def delayed_update():
+                    update()
+                    delay_reference()
+                rig.node.worker.submit=delayed_solve
+                rig.update=delayed_update
+                result=await rig.run()
+                self.assertGreaterEqual(len(rig.commands),2,result.code)
+                self.assertGreaterEqual(len(rig.solve_attempts),2)
+                self.assertGreaterEqual(rig.clock,delayed_until)
+                self.assertFalse(rig.engine.lease_id)
 
     async def test_reference_uses_configured_200ms_age_in_solve_and_admission(self):
         for age,accepted in ((.15,True),(.201,False)):

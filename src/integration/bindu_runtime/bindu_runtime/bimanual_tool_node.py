@@ -841,10 +841,17 @@ class BimanualToolNode(RuntimeNode):
                             # target; use the authenticated hold/goal guard once.
                             if self.trajectory_reference and not trajectory_bootstrap:
                                 from bindu_runtime.stop_evidence import sampled_nominal_reference
+                                if trajectory_reference_deadline is None:
+                                    trajectory_reference_deadline=reference_deadline
                                 sample=sampled_nominal_reference(s,self.names,lease.epoch,self.now(),
                                     self.cfg['feedback_max_age'],wait_until=trajectory_reference_deadline,
                                     steady_now=time.monotonic())
                                 if sample is None:
+                                    self.event('BIMANUAL_REFERENCE_WAIT',json.dumps(dict(
+                                        stage='admission',reference_stamp=seconds(s.reference.header.stamp),
+                                        reference_age_s=self.now()-seconds(s.reference.header.stamp),
+                                        reference_count=len(s.reference.name),expected_count=len(self.names),
+                                        remaining_s=trajectory_reference_deadline-time.monotonic())),goal.request.task_id)
                                     awaiting=''
                                     await self.pause()
                                     continue
