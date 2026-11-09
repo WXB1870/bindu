@@ -158,7 +158,7 @@ class Rig:
             event=S(state='STOPPING',code=code,command_id=motion.command_id if motion else '')
         elif self.engine.active:
             event=S(state='RUNNING',code='OK',command_id=self.engine.active.command_id)
-        state=S(instance_id='executor',profile_hash=self.profile.digest,simulated=True,
+        state=S(stamp=self.clock,instance_id='executor',profile_hash=self.profile.digest,simulated=True,
             feedback_stamp=fb.stamp,lease_epoch=self.engine.epoch,lease_active=bool(self.engine.lease_id),
             revision=self.engine.revision,state=event.state,code=event.code,command_id=event.command_id,
             reference=S(name=list(self.engine.reference_names)),stop_failures=list(self.io.stop_failures),
@@ -777,6 +777,11 @@ class BimanualTransactions(unittest.IsolatedAsyncioTestCase):
                 self.assertGreaterEqual(len(rig.solve_attempts),2)
                 self.assertGreaterEqual(rig.clock,delayed_until)
                 self.assertFalse(rig.engine.lease_id)
+                if accepted_before_delay:
+                    waits=[json.loads(e[1]) for e in rig.events if e[0]=='BIMANUAL_REFERENCE_WAIT']
+                    self.assertTrue(waits)
+                    self.assertTrue(all(w['stage']=='admission' and 0<w['remaining_s']<=.5 for w in waits))
+                    self.assertTrue(all('state_age_s' in w and 'reference_age_s' in w for w in waits))
 
     async def test_reference_uses_configured_200ms_age_in_solve_and_admission(self):
         for age,accepted in ((.15,True),(.201,False)):

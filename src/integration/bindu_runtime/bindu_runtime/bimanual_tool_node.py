@@ -848,7 +848,10 @@ class BimanualToolNode(RuntimeNode):
                                     steady_now=time.monotonic())
                                 if sample is None:
                                     self.event('BIMANUAL_REFERENCE_WAIT',json.dumps(dict(
-                                        stage='admission',reference_stamp=seconds(s.reference.header.stamp),
+                                        stage='admission',input_seq=work_seq,lease_epoch=lease.epoch,
+                                        state_stamp=seconds(s.stamp),state_age_s=self.now()-seconds(s.stamp),
+                                        feedback_age_s=self.now()-seconds(s.feedback_stamp),
+                                        reference_stamp=seconds(s.reference.header.stamp),
                                         reference_age_s=self.now()-seconds(s.reference.header.stamp),
                                         reference_count=len(s.reference.name),expected_count=len(self.names),
                                         remaining_s=trajectory_reference_deadline-time.monotonic())),goal.request.task_id)
