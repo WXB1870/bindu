@@ -341,7 +341,7 @@ def main():
     run_execution(ExecutionNode)
 
 
-def run_execution(factory):
+def run_execution(factory, *, executor_factory=SingleThreadedExecutor):
     """Keep DDS alive for a bounded stop handshake on SIGINT and SIGTERM."""
     rclpy.init(signal_handler_options=SignalHandlerOptions.NO)
     requested = False
@@ -352,7 +352,7 @@ def run_execution(factory):
         if node is not None:
             node.closing = True  # Fence callbacks as soon as the signal arrives.
     previous = {s: signal.signal(s, request_shutdown) for s in (signal.SIGINT, signal.SIGTERM)}
-    executor = SingleThreadedExecutor()
+    executor = executor_factory()
     try:
         node = factory()
         executor.add_node(node)
