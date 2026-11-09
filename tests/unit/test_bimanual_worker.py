@@ -62,13 +62,13 @@ class GroundLiftTests(unittest.TestCase):
                 return cache[link]
             return np.array([frame('arm_l_ft_sensor'),frame('arm_r_ft_sensor')])
         lift=GroundLift(self.config());check=Mock()
-        self.assertLessEqual(lift.height(fk(start)[0]),lift.config['near_ground_m'])
+        self.assertLessEqual(lift.height(fk(start)[0]),.02)
         self.assertGreaterEqual(lift.height(fk(start)[0]),-.03)
         plan=lift.plan(start,bounds,list(range(2,len(start))),fk,check)
         target=np.array(plan['positions']);np.testing.assert_array_equal(target[:2],start[:2])
         np.testing.assert_allclose(fk(target)[:,:3,3]-fk(start)[:,:3,3],[[0,0,.05],[0,0,.05]],atol=1e-4)
         self.assertTrue(np.all(target>=bounds[:,0]) and np.all(target<=bounds[:,1]))
-        self.assertGreaterEqual(plan['duration_s'],5.)
+        self.assertLessEqual(1.875*np.max(np.abs(target-start))/plan['duration_s'],lift.config['max_joint_speed_rad_s']+1e-9)
         check.assert_called_once()
         with self.assertRaisesRegex(ValueError,'BODY_COLLISION'):
             lift.plan(start,bounds,list(range(2,len(start))),fk,Mock(side_effect=ValueError('BODY_COLLISION')))
@@ -82,6 +82,35 @@ class GroundLiftTests(unittest.TestCase):
             return poses
         with self.assertRaisesRegex(ValueError,'IK_FAILED'):
             lift.plan(np.zeros(2),np.array([[0.,.01],[0.,.01]]),[0,1],fk,Mock())
+
+    def test_height_is_reported_without_blocking_manual_lift(self):
+        import numpy as np
+        source=Path(__file__).resolve().parents[2]/'src/capabilities/bindu_kinematics/bindu_kinematics/bimanual.py'
+        tree=ast.parse(source.read_text());node=next(n for n in tree.body if getattr(n,'name','')=='BimanualQP')
+        method=next(n for n in node.body if getattr(n,'name','')=='plan_ground_recovery')
+        scope={'np':np};exec(compile(ast.Module(body=[method],type_ignores=[]),str(source),'exec'),scope)
+        for height in (.3,-.3):
+            lift=SimpleNamespace(plan=Mock(return_value={'positions':[.05,.05],'duration_s':5.}))
+            status={'height_m':height}
+            owner=SimpleNamespace(ground_recovery_status=lambda *a:(lift,object(),status),
+                names=('left','right'),shared_names=(),coupled_locked_joints=(),
+                limits={'left':(-1.,1.),'right':(-1.,1.)},posture_policy=None,check_independent_path=Mock())
+            result=scope['plan_ground_recovery'](owner,{'left':0.,'right':0.},np.zeros(2))
+            self.assertEqual(result['initial']['height_m'],height)
+            lift.plan.call_args.args[-1](np.zeros(2),np.array(result['positions']))
+            owner.check_independent_path.assert_called_once()
+
+    def test_configured_speed_controls_duration_without_a_hidden_five_second_floor(self):
+        import numpy as np
+        from bindu_kinematics.tool_geometry import GroundLift
+        def fk(q):
+            poses=np.array([np.eye(4),np.eye(4)]);poses[0,2,3]=q[0];poses[1,2,3]=q[1]
+            return poses
+        config=self.config();bounds=np.array([[-1.,1.],[-1.,1.]])
+        slow=GroundLift(config).plan(np.zeros(2),bounds,[0,1],fk,Mock())
+        faster=GroundLift(dict(config,max_speed_m_s=.05,max_joint_speed_rad_s=.1)).plan(np.zeros(2),bounds,[0,1],fk,Mock())
+        self.assertGreater(slow['duration_s'],4.5);self.assertLess(slow['duration_s'],5.)
+        self.assertLess(faster['duration_s'],2.)
 
     def test_worker_ground_requests_keep_tokens_and_do_not_reset_the_grasp(self):
         import sys

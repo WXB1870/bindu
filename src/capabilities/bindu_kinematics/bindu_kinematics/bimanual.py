@@ -655,9 +655,6 @@ class BimanualQP:
     def plan_ground_recovery(self, feedback, reference):
         reference = np.asarray(reference,dtype=float)
         lift, fk, status = self.ground_recovery_status(feedback,reference)
-        if status['height_m'] > lift.config['near_ground_m']:
-            self._reject_constraint('GROUND_RECOVERY_NOT_NEAR_GROUND',height_m=status['height_m'],
-                near_ground_m=lift.config['near_ground_m'],tool_id=lift.config['tool_id'])
         active = [i for i,n in enumerate(self.names) if n not in self.shared_names and
                   n not in self.coupled_locked_joints]
         bounds = np.array([self.limits[n] for n in self.names])

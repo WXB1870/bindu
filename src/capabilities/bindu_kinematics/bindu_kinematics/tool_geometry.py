@@ -169,7 +169,7 @@ def pan_corners(recipe):
 
 
 class GroundLift:
-    """Geometric contact suspicion and an explicitly requested common upward step.
+    """Model height reporting and an explicitly requested common upward step.
 
     Height uses the same transformed-point minimum as GroundTargetLimit on the
     ground-limit branch. Points are in the replay tool's mounting flange frame;
@@ -234,7 +234,7 @@ class GroundLift:
             previous_poses = poses
             previous = height
         check_path(start, q)
-        duration = max(5., 1.875*maximum_slope/self.config['max_speed_m_s'],
+        duration = max(1.875*maximum_slope/self.config['max_speed_m_s'],
                        1.875*float(np.max(np.abs(q-start)))/self.config['max_joint_speed_rad_s'])
         return dict(positions=q.tolist(), duration_s=duration)
 
