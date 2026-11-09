@@ -33,6 +33,10 @@ def hud_spec(view):
     if mode == 'DISPLAY_STALE':
         spec.update(state='lost', status='状态未知', tone='danger',grip='握持未知')
         notice('状态反馈已中断', '停止状态未确认，请查看电脑操作台')
+    elif mode == 'ground_recovery':
+        spec.update(status='触地抬升中',action='按住 X · 松开停止 · Y 停止')
+        guide=view.get('operator_guide')
+        if guide:notice(guide['title'],guide['detail'])
     elif mode == 'locked':
         spec.update(state='lost' if input_fault else 'stopped',
                     status='已停止 · 锁定' if confirmed else '停止未确认', tone='danger')
@@ -65,6 +69,9 @@ def hud_spec(view):
         if view.get('recovery_required') and view.get('fault_active'):
             notice('设备／采样异常 · 锁定','保持松握；查看电脑端首故障与停止协议，需现场排查')
             spec['action']='Y 保持停止'
+        elif confirmed and view.get('ground_recovery_candidate') and not view.get('stop_failure'):
+            notice('可请求触地抬升复核','确认触地后松开侧握和扳机，长按 X；抬升后 B 复核')
+            spec['action']='长按 X 抬升 · B 复核'
     elif mode in ('checking','DISPLAY_WAITING'):
         spec.update(status='连接检查',grip='工具')
         notice('等待手柄与关节反馈', '保持双侧握松开，等待连接就绪')

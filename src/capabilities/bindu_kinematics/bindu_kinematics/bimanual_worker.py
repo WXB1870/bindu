@@ -57,6 +57,7 @@ def prepare_limit_exit_target(profile, names, feedback, reference, target, reser
 def _run(config, profile, requests, results, preload_path_checks=False):
     solver = None
     try:
+        import numpy as np
         from .bimanual import BimanualQP
         solver=BimanualQP(config,profile)
         path_checks={}
@@ -96,7 +97,11 @@ def _run(config, profile, requests, results, preload_path_checks=False):
             try:
                 solver.last_constraint=solver.last_timing=None
                 independent=isinstance(grasp_mode,str) and grasp_mode.startswith('independent:')
-                if operation=='independent_capture':
+                if operation=='ground_recovery_path':
+                    value=solver.plan_ground_recovery(feedback,np.asarray(reference,dtype=float))
+                elif operation=='ground_recovery_status':
+                    _,_,value=solver.ground_recovery_status(feedback,np.asarray(reference,dtype=float))
+                elif operation=='independent_capture':
                     value=solver.capture_independent(feedback,reference=reference,preserve_rigid_grasp=True)
                 elif operation=='preflight_capture':
                     value=solver.capture(feedback,grasp_mode,reference=reference,commit_grasp=False)

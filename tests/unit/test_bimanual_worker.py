@@ -10,6 +10,126 @@ from unittest.mock import Mock, patch
 from bindu_kinematics.bimanual_worker import BimanualWorker
 
 
+class GroundLiftTests(unittest.TestCase):
+    def config(self):
+        import json
+        path=package_share('snowbot_bringup')/'config/robots/snowbot/bimanual_snowbot_real.json'
+        return json.loads(path.read_text())['ground_recovery']
+
+    def test_replay_geometry_height_and_relative_error_use_the_actual_flange_mount(self):
+        import numpy as np
+        from bindu_kinematics.tool_geometry import GroundLift
+        config=self.config();lift=GroundLift(config)
+        poses=np.array([np.eye(4),np.eye(4)]);poses[1,0,3]=.42
+        poses[:,2,3]=.1
+        shifted=poses.copy();shifted[:,2,3]+=.05
+        self.assertAlmostEqual(lift.height(shifted[0])-lift.height(poses[0]),.05)
+        self.assertEqual(lift.relative_error(shifted,poses),(0.,0.))
+        shifted[1,0,3]+=.01
+        self.assertAlmostEqual(lift.relative_error(shifted,poses)[0],.01)
+        self.assertEqual(config['tool_id'],'g099-curved')
+        self.assertGreater(max(np.linalg.norm(p) for p in config['points_in_left_flange_m']),1.)
+
+    def test_actual_replay_start_common_upward_path_freezes_waist_and_preserves_pose(self):
+        import json
+        import numpy as np
+        import xml.etree.ElementTree as ET
+        from scipy.spatial.transform import Rotation
+        from bindu_kinematics.tool_geometry import GroundLift
+        from snowbot_hardware.session import REPLAY_NAMES
+        root=ET.parse(package_share('snowbot_description')/'urdf/snowbot_control.urdf')
+        joints={j.find('child').get('link'):j for j in root.findall('joint')}
+        names=list(REPLAY_NAMES)
+        manifest=json.loads((package_share('snowbot_bringup')/'config/robots/snowbot/primitive-library/manifest.json').read_text())
+        start=np.array(manifest['nodes'][manifest['home_node']])
+        limits={j.get('name'):(float(j.find('limit').get('lower')),float(j.find('limit').get('upper')))
+                for j in joints.values() if j.find('limit') is not None and j.get('type')=='revolute'}
+        bounds=np.array([limits[n] for n in names])
+        def fk(q):
+            values=dict(zip(names,q));cache={}
+            def frame(link):
+                if link in cache:return cache[link]
+                if link not in joints:return np.eye(4)
+                joint=joints[link];origin=joint.find('origin');local=np.eye(4)
+                if origin is not None:
+                    local[:3,3]=np.fromstring(origin.get('xyz','0 0 0'),sep=' ')
+                    local[:3,:3]=Rotation.from_euler('xyz',np.fromstring(origin.get('rpy','0 0 0'),sep=' ')).as_matrix()
+                if joint.get('type')=='revolute':
+                    axis=np.fromstring(joint.find('axis').get('xyz'),sep=' ')
+                    rotate=np.eye(4);rotate[:3,:3]=Rotation.from_rotvec(axis*values.get(joint.get('name'),0.)).as_matrix()
+                    local=local@rotate
+                cache[link]=frame(joint.find('parent').get('link'))@local
+                return cache[link]
+            return np.array([frame('arm_l_ft_sensor'),frame('arm_r_ft_sensor')])
+        lift=GroundLift(self.config());check=Mock()
+        self.assertLessEqual(lift.height(fk(start)[0]),lift.config['near_ground_m'])
+        self.assertGreaterEqual(lift.height(fk(start)[0]),-.03)
+        plan=lift.plan(start,bounds,list(range(2,len(start))),fk,check)
+        target=np.array(plan['positions']);np.testing.assert_array_equal(target[:2],start[:2])
+        np.testing.assert_allclose(fk(target)[:,:3,3]-fk(start)[:,:3,3],[[0,0,.05],[0,0,.05]],atol=1e-4)
+        self.assertTrue(np.all(target>=bounds[:,0]) and np.all(target<=bounds[:,1]))
+        self.assertGreaterEqual(plan['duration_s'],5.)
+        check.assert_called_once()
+        with self.assertRaisesRegex(ValueError,'BODY_COLLISION'):
+            lift.plan(start,bounds,list(range(2,len(start))),fk,Mock(side_effect=ValueError('BODY_COLLISION')))
+
+    def test_unreachable_upward_step_is_rejected_before_any_path_is_returned(self):
+        import numpy as np
+        from bindu_kinematics.tool_geometry import GroundLift
+        lift=GroundLift(self.config())
+        def fk(q):
+            poses=np.array([np.eye(4),np.eye(4)]);poses[0,2,3]=q[0];poses[1,2,3]=q[1]
+            return poses
+        with self.assertRaisesRegex(ValueError,'IK_FAILED'):
+            lift.plan(np.zeros(2),np.array([[0.,.01],[0.,.01]]),[0,1],fk,Mock())
+
+    def test_worker_ground_requests_keep_tokens_and_do_not_reset_the_grasp(self):
+        import sys
+        import numpy as np
+        from bindu_kinematics.bimanual_worker import _run
+        solver=SimpleNamespace(last_constraint=None,last_timing=None,close=Mock(),
+            plan_ground_recovery=Mock(return_value={'positions':[.1]}),
+            ground_recovery_status=Mock(return_value=(None,None,{'height_m':.03})),
+            rigid_grasp_q=np.array([.3]),rigid_grasp_reference=np.eye(4))
+        requests,results=queue.Queue(),queue.Queue()
+        for operation,token in (('ground_recovery_path',7),('ground_recovery_status',8)):
+            requests.put((operation,token,{'q':.2},None,[.3],None,'rigid',None,None,False))
+        requests.put(None)
+        with patch.dict(sys.modules,{'bindu_kinematics.bimanual':SimpleNamespace(BimanualQP=lambda *a:solver)}),\
+                patch('bindu_kinematics.bimanual_worker.gc.collect'),patch('bindu_kinematics.bimanual_worker.gc.freeze'):
+            _run({},None,requests,results)
+        self.assertEqual(results.get_nowait(),('ready',0,None))
+        records=[]
+        while not results.empty():records.append(results.get_nowait())
+        self.assertIn(('result',7,{'positions':[.1]}),records)
+        self.assertIn(('result',8,{'height_m':.03}),records)
+        np.testing.assert_array_equal(solver.rigid_grasp_reference,np.eye(4))
+        np.testing.assert_array_equal(solver.rigid_grasp_q,[.3])
+
+    def test_measured_axial_monitor_keeps_the_existing_free_roll_semantics(self):
+        import numpy as np
+        source=Path(__file__).resolve().parents[2]/'src/capabilities/bindu_kinematics/bindu_kinematics/bimanual.py'
+        tree=ast.parse(source.read_text());node=next(n for n in tree.body if getattr(n,'name','')=='BimanualQP')
+        method=next(n for n in node.body if getattr(n,'name','')=='ground_recovery_status')
+        scope={'np':np,'__package__':'bindu_kinematics'}
+        exec(compile(ast.Module(body=[method],type_ignores=[]),str(source),'exec'),scope)
+        def poses(handle,q,n,left,right):
+            left[:]=np.eye(4);right[:]=np.eye(4);right[0,3]=.4
+            return True
+        owner=SimpleNamespace(cfg=dict(ground_recovery=self.config(),grasp_reference_source='measured_axial'),
+            names=('joint',),model_names=('joint',),nq=1,handle=object(),
+            _check_measured_limits=Mock(),_reference_error_limits=lambda:np.array([.25]),
+            independent_abi=Mock(),_q=lambda feedback:np.array([feedback['joint']]),_ptr=lambda value:value,
+            lib=SimpleNamespace(bq_flange_poses=poses),_axial_grip_error=Mock(return_value=(.03,.04)))
+        _,_,status=scope['ground_recovery_status'](owner,{'joint':.1},np.array([.2]))
+        owner._axial_grip_error.assert_called_once()
+        self.assertEqual(status['relative_position_error_m'],.03)
+        self.assertEqual(status['relative_rotation_error_rad'],.04)
+        owner._check_measured_limits.assert_called_once()
+        with self.assertRaisesRegex(ValueError,'REFERENCE_TRACKING_ERROR'):
+            scope['ground_recovery_status'](owner,{'joint':.1},np.array([.4]))
+
+
 class WorkerReceiptTests(unittest.TestCase):
     def test_reference_reset_is_bound_to_the_existing_execution_instance_and_epoch(self):
         source=Path(__file__).resolve().parents[2]/'src/integration/bindu_runtime/bindu_runtime/bimanual_tool_node.py'

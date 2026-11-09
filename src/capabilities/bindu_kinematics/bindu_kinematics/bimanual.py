@@ -625,6 +625,50 @@ class BimanualQP:
             search_limited_by_budget=budget_limited)
         return limited,accepted_scale
 
+    def ground_recovery_status(self, feedback, reference):
+        from .tool_geometry import GroundLift
+        lift = GroundLift(self.cfg['ground_recovery'])
+        measured = np.array([feedback[n] for n in self.names])
+        self._check_measured_limits(measured)
+        if np.any(np.abs(reference-measured)>self._reference_error_limits()):
+            raise ValueError('BIMANUAL_REFERENCE_TRACKING_ERROR')
+        self.independent_abi()
+        base = self._q(feedback)
+        def fk(values):
+            q = base.copy();q[[self.model_names.index(n) for n in self.names]] = values
+            poses = np.empty((2,4,4),dtype=np.float64)
+            if not self.lib.bq_flange_poses(self.handle,self._ptr(q),self.nq,
+                    self._ptr(poses[0]),self._ptr(poses[1])):
+                raise ValueError('GROUND_RECOVERY_FK:'+self._error())
+            return poses
+        actual, nominal = fk(measured), fk(reference)
+        distance, angle = lift.relative_error(actual, nominal)
+        if self.cfg.get('grasp_reference_source')=='measured_axial':
+            distance,angle=self._axial_grip_error(np.linalg.inv(actual[0]) @ actual[1],
+                                                np.linalg.inv(nominal[0]) @ nominal[1])
+        return lift, fk, dict(height_m=lift.height(actual[0]),
+            relative_position_error_m=float(distance),relative_rotation_error_rad=float(angle))
+
+    def plan_ground_recovery(self, feedback, reference):
+        reference = np.asarray(reference,dtype=float)
+        lift, fk, status = self.ground_recovery_status(feedback,reference)
+        if status['height_m'] > lift.config['near_ground_m']:
+            self._reject_constraint('GROUND_RECOVERY_NOT_NEAR_GROUND',height_m=status['height_m'],
+                near_ground_m=lift.config['near_ground_m'],tool_id=lift.config['tool_id'])
+        active = [i for i,n in enumerate(self.names) if n not in self.shared_names and
+                  n not in self.coupled_locked_joints]
+        bounds = np.array([self.limits[n] for n in self.names])
+        if self.posture_policy is not None:
+            bounds[:,0] = np.maximum(bounds[:,0],self.posture_lower)
+            bounds[:,1] = np.minimum(bounds[:,1],self.posture_upper)
+        if np.any(reference<bounds[:,0]) or np.any(reference>bounds[:,1]):
+            raise ValueError('GROUND_RECOVERY_REFERENCE_LIMIT')
+        result = lift.plan(reference,bounds,active,fk,
+                           lambda start,end:self.check_independent_path(feedback,start,end))
+        result['measured_start'] = [feedback[n] for n in self.names]
+        result['initial'] = status
+        return result
+
     def check_loaded_prepare(self, feedback, targets):
         """Validate a proposed joint path with the tool and captured grasp.
 

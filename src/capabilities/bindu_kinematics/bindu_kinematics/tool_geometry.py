@@ -168,6 +168,79 @@ def pan_corners(recipe):
                      for x in (-1,1) for y in (-1,1) for z in (-1,1)])
 
 
+class GroundLift:
+    """Geometric contact suspicion and an explicitly requested common upward step.
+
+    Height uses the same transformed-point minimum as GroundTargetLimit on the
+    ground-limit branch. Points are in the replay tool's mounting flange frame;
+    they never enter the normal tool collision or grasp-reference configuration.
+    """
+    def __init__(self, config):
+        self.config = config
+        self.points = np.c_[config['points_in_left_flange_m'], np.ones(len(config['points_in_left_flange_m']))]
+        self.floor = config['ground_z_m']
+        if (self.points.shape[1] != 4 or not np.isfinite(self.points).all() or
+                not np.isfinite(self.floor) or not 0 < config['lift_m'] <= .1 or
+                not 0 < config['max_speed_m_s'] <= .05 or
+                not 0 < config['max_joint_speed_rad_s'] <= .1):
+            raise ValueError('GROUND_RECOVERY_CONFIG')
+
+    def height(self, left):
+        return float((self.points @ left.T)[:, 2].min()-self.floor)
+
+    @staticmethod
+    def relative_error(poses, reference):
+        relative = np.linalg.inv(poses[0]) @ poses[1]
+        original = np.linalg.inv(reference[0]) @ reference[1]
+        error = np.linalg.inv(original) @ relative
+        return (float(np.linalg.norm(error[:3, 3])),
+                float(np.arccos(np.clip((np.trace(error[:3, :3])-1.)/2., -1., 1.))))
+
+    def plan(self, start, bounds, active, fk, check_path):
+        original = fk(start)
+        goal = original.copy();goal[:, 2, 3] += self.config['lift_m']
+        def residual(q):
+            poses = fk(q)
+            return np.concatenate([np.r_[target[:3, 3]-pose[:3, 3],
+                .5*sum((np.cross(pose[:3, j], target[:3, j]) for j in range(3)), np.zeros(3))]
+                for pose, target in zip(poses, goal)])
+        q = start.copy()
+        for _ in range(80):
+            error = residual(q)
+            if np.max(np.abs(error)) < 1e-5:break
+            columns = []
+            for j in active:
+                probe = q.copy();probe[j] += 1e-6
+                columns.append((residual(probe)-error)/1e-6)
+            step = np.linalg.lstsq(np.asarray(columns).T, -error, rcond=1e-5)[0]
+            step *= min(1., .02/max(1e-12, float(np.max(np.abs(step)))))
+            q[active] = np.clip(q[active]+step, bounds[active, 0], bounds[active, 1])
+        if np.max(np.abs(residual(q))) >= 1e-4:
+            raise ValueError('GROUND_RECOVERY_IK_FAILED')
+        before = self.height(original[0]);previous = before;previous_poses = original;maximum_slope = 0.
+        count = max(50, int(np.ceil(np.max(np.abs(q-start))/.001)))
+        for fraction in np.linspace(0., 1., count+1):
+            poses = fk(start+fraction*(q-start))
+            distance, angle = self.relative_error(poses, original)
+            height = self.height(poses[0])
+            rotation = max(float(np.arccos(np.clip((np.trace(a[:3,:3].T @ b[:3,:3])-1.)/2.,-1.,1.)))
+                           for a,b in zip(original,poses))
+            if (distance > self.config['relative_position_margin_m'] or
+                    angle > self.config['relative_rotation_margin_rad'] or height < previous-.0001 or
+                    rotation > self.config['relative_rotation_margin_rad'] or
+                    np.max(np.abs(poses[:, :2, 3]-original[:, :2, 3])) > .002):
+                raise ValueError('GROUND_RECOVERY_PATH_NOT_UPWARD_COUPLED')
+            maximum_slope = max(maximum_slope,float(np.max(np.linalg.norm(
+                poses[:,:3,3]-previous_poses[:,:3,3],axis=1)))*count)
+            previous_poses = poses
+            previous = height
+        check_path(start, q)
+        duration = max(5., 1.875*maximum_slope/self.config['max_speed_m_s'],
+                       1.875*float(np.max(np.abs(q-start)))/self.config['max_joint_speed_rad_s'])
+        return dict(positions=q.tolist(), start=start.tolist(), duration_s=duration,
+                    planned_height_m=previous, reference_height_m=before)
+
+
 def bin_boxes(recipe):
     """Return (name, full size, world center) for four walls and the floor."""
     if 'receiving_bin' not in recipe:
