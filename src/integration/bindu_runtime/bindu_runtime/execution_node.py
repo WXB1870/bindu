@@ -2,6 +2,8 @@ import os
 import json
 import signal
 import time
+import resource
+import threading
 from concurrent.futures import ThreadPoolExecutor
 import rclpy
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
@@ -212,11 +214,18 @@ class ExecutionNode(RuntimeNode):
         return reply
 
     def tick(self):
+        usage = resource.getrusage(resource.RUSAGE_THREAD)
+        self.previous_runtime_tick_timing = getattr(self, 'runtime_tick_timing', None)
+        self.runtime_tick_timing = dict(started_monotonic=time.monotonic(),
+            started_cpu=time.thread_time(), tid=threading.get_native_id(),
+            nvcsw=usage.ru_nvcsw, nivcsw=usage.ru_nivcsw, points=[])
         now = self.now()
         self.engine.tick(now)
+        self.record_tick_phase('engine')
         while self.engine.events:
             self.last_event = e = self.engine.events.popleft()
             self.event(e.state, e.code, e.task_id, e.command_id, e.observation_id)
+        self.record_tick_phase('events')
         fb = self.engine.feedback
         active = self.engine.active
         # Before the first ownership grant, a recovered startup read failure
@@ -295,7 +304,16 @@ class ExecutionNode(RuntimeNode):
                 msg.state, msg.code = 'FAILED', 'REPLAY_NOT_SETTLED'
         if msg.missing_feedback_groups and msg.state == 'IDLE':
             msg.code = 'FEEDBACK_INCOMPLETE:'+','.join(msg.missing_feedback_groups)
+        self.record_tick_phase('state_ready')
         self.state_pub.publish(msg)
+        self.record_tick_phase('state_published')
+
+    def record_tick_phase(self, phase):
+        timing = self.runtime_tick_timing
+        usage = resource.getrusage(resource.RUSAGE_THREAD)
+        timing['points'].append((phase, (time.monotonic()-timing['started_monotonic'])*1000,
+            (time.thread_time()-timing['started_cpu'])*1000,
+            usage.ru_nvcsw-timing['nvcsw'], usage.ru_nivcsw-timing['nivcsw']))
 
     def destroy_node(self):
         if not self.closing:

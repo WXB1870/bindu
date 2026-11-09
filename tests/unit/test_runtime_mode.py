@@ -2,6 +2,7 @@
 from bindu_contracts.resources import package_share
 from tests.support.paths import ROOT
 import importlib.util
+import json
 from collections import deque
 from dataclasses import replace
 from pathlib import Path
@@ -118,6 +119,13 @@ class RuntimeModeTests(unittest.TestCase):
         node.runtime_mode='simulation';node.device_backend='external_simulation'
         node.state_pub=Mock();node.last_event=None
         with patch.object(node,'now',return_value=10.):node.tick()
+        timing=node.runtime_tick_timing
+        self.assertEqual([p[0] for p in timing['points']],
+                         ['engine','events','state_ready','state_published'])
+        self.assertTrue(all(p[1]>=p[2]>=0 and p[3]>=0 and p[4]>=0 for p in timing['points']))
+        json.dumps(timing,allow_nan=False)
+        with patch.object(node,'now',return_value=10.):node.tick()
+        self.assertIs(node.previous_runtime_tick_timing,timing)
         state=node.state_pub.publish.call_args.args[0]
         self.assertEqual(list(state.joints.velocity),[])
         self.assertEqual(list(state.reference.name),[])
