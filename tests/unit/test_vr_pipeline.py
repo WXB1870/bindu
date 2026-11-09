@@ -208,6 +208,35 @@ class TimingSummaries(unittest.TestCase):
 
         self.assertAlmostEqual(data['monotonic_interval_s'],RECORDED_GAP)
 
+    def test_projection_converts_numpy_trigger_edges_to_ros_list_integers(self):
+        from copy import copy
+        path=package_share('snowbot_teleop')/'snowbot_teleop/node.py'
+        node=next(n for n in ast.parse(path.read_text()).body if isinstance(n,ast.ClassDef) and n.name=='PicoNode')
+        method=next(n for n in node.body if getattr(n,'name','')=='on_frame')
+        projection=next(n for n in method.body if isinstance(n,ast.For))
+        frames=[];grippers=[]
+        def message(**fields):
+            self.assertTrue(all(isinstance(v,int) for v in fields['button_edges']))
+            return S(**fields)
+        owner=S(control=S(teleop_mode='independent_arms',squeeze_released=(True,True),
+                          phase='following',virtual=False,fault_active=False,
+                          stop_failure=None,recovery_required=''),
+                instance_id='offline',position_contract=True,handoff_complete=True,
+                independent_grippers=True,projected=S(publish=frames.append),
+                gripper_projected=S(publish=grippers.append))
+        maximum=2**64-1
+        def hand(side):
+            return S(stamp=1.,source_id='source',runtime_mode='simulation',seq=1,
+                     side=side,pose=tuple(np.eye(4).ravel()),grip=.8,trigger=.7,
+                     valid=True,clutch_seq=0,mapping='pico',buttons=63,stop=False,
+                     button_edges=np.array([5]*6+[maximum,maximum-1],dtype=np.uint64),
+                     stick=(0.,0.))
+        namespace=dict(self=owner,a=hand('left'),b=hand('right'),allowed=True,
+                       VRInput=message,PICO_MAPPING='pico',copy=copy)
+        exec(compile(ast.Module(body=[projection],type_ignores=[]),str(path),'exec'),namespace)
+        self.assertEqual([m.button_edges for m in frames],[[0]*6+[maximum,maximum-1]]*2)
+        self.assertEqual([m.button_edges for m in grippers],[m.button_edges for m in frames])
+
     def test_diagnostic_stages_do_not_suppress_each_other_or_clock_anomaly(self):
         sampler=DiagnosticSampler()
         for stage in ('controller_timing','websocket_handler','ros_input_publish',
