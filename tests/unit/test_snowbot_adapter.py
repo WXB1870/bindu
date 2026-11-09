@@ -902,6 +902,31 @@ class SnowbotStopDiagnosticTests(unittest.TestCase):
 
 
 class SnowbotRosBindingTests(unittest.TestCase):
+    def test_first_device_fault_is_logged_without_a_pending_stop(self):
+        class Base:
+            event=Mock()
+        spec=importlib.util.spec_from_file_location('bindu_runtime._offline_fault_adapter',
+            package_share('snowbot_hardware')/'snowbot_hardware/adapter.py')
+        module=importlib.util.module_from_spec(spec)
+        with patch.dict(sys.modules,{'rcl_interfaces':S(),'rcl_interfaces.msg':S(ParameterDescriptor=object),
+                'bindu_runtime.execution_node':S(ExecutionNode=Base,run_execution=lambda _:None)}):
+            spec.loader.exec_module(module)
+        node=module.SnowbotAdapter.__new__(module.SnowbotAdapter)
+        node.get_logger=Mock(return_value=Mock())
+        node.snowbot_devices=S(health=S(observation_diagnostic=lambda:dict(pdo_sample=111407)),
+                               startup_timing=dict(points=[dict(phase='submitted')]))
+        for _ in range(3):node.event('DEVICE_COMMAND_DETAIL','SNOWBOT_PDO_STALE','startup_hold','cmd1')
+        node.get_logger().warn.assert_called_once()
+        payload=json.loads(node.get_logger().warn.call_args.args[0].split(' ',1)[1])
+        self.assertEqual(payload['feedback_callbacks']['pdo_sample'],111407)
+        self.assertEqual(payload['snapshot_at'],'event_emission')
+        self.assertEqual(payload['startup_timing']['points'][0]['phase'],'submitted')
+        self.assertEqual(Base.event.call_count,3)
+        node.event('ACCEPTED','OK','startup_hold','cmd1')
+        self.assertEqual(node.get_logger().warn.call_count,1)
+        node.event('DEVICE_COMMAND_DETAIL','SNOWBOT_PDO_STALE','startup_hold','cmd2')
+        self.assertEqual(node.get_logger().warn.call_count,2)
+
     def test_stop_diagnostic_serializes_actual_ros_numeric_array_comparisons(self):
         import numpy as np
         case=SnowbotStopDiagnosticTests();case.setUp()
