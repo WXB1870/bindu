@@ -105,9 +105,9 @@ class BaseTeleop:
         def axis(value,sign=-1):
             return 0. if abs(value) < self.cfg['deadzone'] else sign*value
         self.target = (axis(left.stick[1],self.cfg['linear_axis_sign'])*self.cfg['max_linear_m_s'],
-                       axis(right.stick[0])*self.cfg['max_angular_rad_s'])
+                       axis(left.stick[0])*self.cfg['max_angular_rad_s'])
         self.neutral = (abs(left.stick[1]) < self.cfg['deadzone'] and
-                        abs(right.stick[0]) < self.cfg['deadzone'])
+                        abs(left.stick[0]) < self.cfg['deadzone'])
 
     def observe(self, stamp, velocity, now, clock):
         if (len(velocity) != 2 or not math.isfinite(stamp) or

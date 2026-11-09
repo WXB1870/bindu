@@ -90,7 +90,7 @@ Snowbot真机配方使用`demo.geometry_kind=none`，不再显示或检查已过
 
 ### 普通／扫雪按键（位置契约入口）
 
-左右输入固定对应左右臂／爪，A始终回准备位，Y始终停止；B在待命单击切模式，在明确的装卸或锁定状态确认当前一步。没有长短按B的隐藏分支。两种模式的摇杆方向仍预留底盘，头部跟随未接入。
+左右输入固定对应左右臂／爪，A始终回准备位，Y始终停止；B在待命单击切模式，在明确的装卸或锁定状态确认当前一步。没有长短按B的隐藏分支。两种模式均由左摇杆控制底盘前后／转向，右摇杆控制头部俯仰／左右转动；接入边界见下节。
 
 | 输入 | 普通双臂模式 | 扫雪模式 | 边界 |
 |---|---|---|---|
@@ -101,7 +101,8 @@ Snowbot真机配方使用`demo.geometry_kind=none`，不再显示或检查已过
 | 左Y | 任意状态软件停止并锁定，取消待处理操作，保持现有夹持 | 相同 | 已接停止；不是硬件急停，不自动回位／开合 |
 | 右A | 停稳松握后，长按1秒并持续按住回准备位；松开停止 | 相同，允许从偏离的耦合姿态回位 | Snowbot启用三元动作库时按已验证持铲路径回侧铲准备位；未知持铲起姿拒绝。其余配方沿用本体路径检查，缺预设拒绝 |
 | 右B | 待命松握时单击请求切耦合 | 同样条件下请求切普通，不检查装夹状态 | 先检查目标模式，成功后仍待命；锁定停稳后只恢复待命 |
-| 两侧摇杆方向 | 左摇杆前后、右摇杆转向 | 相同 | 可选底盘适配；只输出linear.x／angular.z，接入条件见下节 |
+| 左摇杆方向 | 前后移动、左右转向 | 相同 | 可选底盘适配；只输出linear.x／angular.z |
+| 右摇杆方向 | 上下抬低头、左右转头 | 相同 | Snowbot独立头部接口；回中保持当前朝向，接入条件见下节 |
 | 两侧摇杆点击 | 左侧保留，右侧录制请求 | 相同 | 不进入装夹状态确认；录制关闭时明确不可用 |
 | 头显视角 | 对应侧重握时锁定水平朝向 | 双侧共同接合时锁定水平朝向 | 跟随中转头不改方向；不控制机器人头部 |
 | Home／Menu／Capture等系统键（如有） | 保留系统用途 | 相同 | 不依赖系统键送达应用来停止或准备 |
@@ -182,17 +183,25 @@ PICO外层与工具内层共用 `bindu_runtime.stop_evidence.stop_feedback_match
 
 常态不持续扣Trigger，也不因切换模式自动开合。模拟量采用按下`>0.7`、释放`<0.3`的迟滞区间，现有模拟接合／准备的1秒为配置初值；实体阈值、开合速度与力限制须标定。首次接管、失联及操作仲裁统一见执行契约。
 
-头部后续可跟随VR视角，当前不接入。Snowbot真实夹爪位置闭环通过独立的`gripper/lease`、`gripper/control`及`gripper/state`接入，命令由现有Snowbot执行节点下发。当前真机配方显式启用`independent_trigger_control`，新Trigger输入走独立夹爪租约，不要求释放臂租约；关闭此选项的配方仍先停止手臂、松握后重新扣扳机。端点、写权限、反馈和驱动保护继续检查。直接开合不声明空载、支撑或夹持，装夹元数据不参与接管或开爪许可；左摇杆不再进入装卸确认。耦合跟随启用杆件避障，普通跟随只检查本体，完整边界见[执行契约6.1](../../../动作执行契约.md#61-snowbot-工具操作与握持切换)。旧四节点入口不启用PICO协调器；统一位置入口已接入独立夹爪、配置化A准备和X位置虚握。位置到位、软件开合状态与真实夹持分别判断，`grasp_state`当前始终为`unknown`；命令、底层保护与标定步骤见[真实夹爪位置闭环](../../hardware/bindu_hardware/README.md#snowbot真实夹爪位置闭环)。
+头部右摇杆控制见下节；头显姿态直接跟随未接入。Snowbot真实夹爪位置闭环通过独立的`gripper/lease`、`gripper/control`及`gripper/state`接入，命令由现有Snowbot执行节点下发。当前真机配方显式启用`independent_trigger_control`，新Trigger输入走独立夹爪租约，不要求释放臂租约；关闭此选项的配方仍先停止手臂、松握后重新扣扳机。端点、写权限、反馈和驱动保护继续检查。直接开合不声明空载、支撑或夹持，装夹元数据不参与接管或开爪许可；左摇杆不再进入装卸确认。耦合跟随启用杆件避障，普通跟随只检查本体，完整边界见[执行契约6.1](../../../动作执行契约.md#61-snowbot-工具操作与握持切换)。旧四节点入口不启用PICO协调器；统一位置入口已接入独立夹爪、配置化A准备和X位置虚握。位置到位、软件开合状态与真实夹持分别判断，`grasp_state`当前始终为`unknown`；命令、底层保护与标定步骤见[真实夹爪位置闭环](../../hardware/bindu_hardware/README.md#snowbot真实夹爪位置闭环)。
 
 ### 底盘摇杆适配
 
-位置版PICO配方通过可选`base_config`接入[两轴映射](bindu_teleoperation/base.py)和[`cmd_vel`适配](../../integration/bindu_runtime/bindu_runtime/teleop_base.py)。左摇杆Y取反映射机体前后速度，右摇杆X取反映射机体yaw角速度；左X与右Y不参与速度控制，`Twist`其余四个分量始终为零。不复用旧脚本的B横移／Y升降模式，所有原按键和摇杆点击保持原用途。原始`thumbstickValue`经`VRFrame.stick`和`VRInput.stick`传递，方向值缺失或非法时仅阻断底盘，手臂按键输入保持原值；字段来源可对照[TeleVuer接收实现](https://github.com/unitreerobotics/televuer/blob/main/src/televuer/televuer.py)。消息结构改变后必须重建`bindu_interfaces`及运行装配，旧安装由预检拒绝。
+位置版PICO配方通过可选`base_config`接入[两轴映射](bindu_teleoperation/base.py)和[`cmd_vel`适配](../../integration/bindu_runtime/bindu_runtime/teleop_base.py)。左摇杆Y按`linear_axis_sign`映射机体前后速度，左摇杆X取反映射机体yaw角速度；右摇杆不参与底盘速度控制，`Twist`其余四个分量始终为零。不复用旧脚本的B横移／Y升降模式，所有原按键和摇杆点击保持原用途。原始`thumbstickValue`经`VRFrame.stick`和`VRInput.stick`传递，方向值缺失或非法时仅阻断底盘，手臂按键输入保持原值；字段来源可对照[TeleVuer接收实现](https://github.com/unitreerobotics/televuer/blob/main/src/televuer/televuer.py)。消息结构改变后必须重建`bindu_interfaces`及运行装配，旧安装由预检拒绝。
 
 [配置示例](../../../../../snowbot/src/snowbot_bringup/config/robots/snowbot/snowbot_base.json)沿用旧版0.1 m/s、0.5 rad/s和0.05死区，正常速度变化率分别限制为0.2 m/s²、1.0 rad/s²；异常直接请求零速。输入250 ms过期、反馈200 ms过期、tick间隔超过100 ms、PICO锁定／操作交接或输出端存在其他发布者时均禁止继续运动。来源改变、暂停或失联后须有新鲜摇杆回中和实测停稳才能恢复。PICO准备、装卸和模式交接也纳入底盘停稳条件。完整的身份、独占和停止语义见[执行契约](../../../动作执行契约.md#2-输入模式必须显式选择)。
 
-真实写入要求原`command_enabled=true`；默认`require_driver_watchdog=true`还要求填入**已确认的底盘驱动独立断流超时**`driver_watchdog_s`（最多0.5 s），否则底盘只读且不阻断已有手臂操作。操作者明确接受暂缓下层断流停车时，可仅在现场配方显式设`require_driver_watchdog=false`；未知的超时以`null`显示，等待设备能力确认。该选择保留上层输入过期／暂停／停止的零速请求，不承诺上层进程退出后的自动停车。字段只描述接入条件，不会配置底层驱动。`receiver_node`／`feedback_node`可绑定已核实的ROS端点节点；`feedback_frame`必须匹配实际`Odometry.child_frame_id`，不根据机器人模型名猜测。118实际独立`/car_control`提供`/cmd_vel`／`/odom`和`base_link`，专属配方由Snowbot维护。适配器要求唯一反馈发布实例、后续新鲜测量及100 ms连续低速窗口才确认停止；停稳状态依据实测反馈确认。身份检查基于ROS图绑定，具体覆盖范围及Humble接口限制见执行契约。模拟模式只显示同一映射的请求，不发布真实`/cmd_vel`，尚未接入底盘物理仿真；头部跟随仍未实现。
+真实写入要求原`command_enabled=true`；默认`require_driver_watchdog=true`还要求填入**已确认的底盘驱动独立断流超时**`driver_watchdog_s`（最多0.5 s），否则底盘只读且不阻断已有手臂操作。操作者明确接受暂缓下层断流停车时，可仅在现场配方显式设`require_driver_watchdog=false`；未知的超时以`null`显示，等待设备能力确认。该选择保留上层输入过期／暂停／停止的零速请求，不承诺上层进程退出后的自动停车。字段只描述接入条件，不会配置底层驱动。`receiver_node`／`feedback_node`可绑定已核实的ROS端点节点；`feedback_frame`必须匹配实际`Odometry.child_frame_id`，不根据机器人模型名猜测。118实际独立`/car_control`提供`/cmd_vel`／`/odom`和`base_link`，专属配方由Snowbot维护。适配器要求唯一反馈发布实例、后续新鲜测量及100 ms连续低速窗口才确认停止；停稳状态依据实测反馈确认。身份检查基于ROS图绑定，具体覆盖范围及Humble接口限制见执行契约。模拟模式只显示同一映射的请求，不发布真实`/cmd_vel`，尚未接入底盘物理仿真；头部摇杆控制见下节。
 
 底盘反馈默认 `require_feedback=true`。操作者明确暂不接反馈时，仅在专属配方设置 `require_feedback=false`：不订阅或依赖 `/odom`，不把底盘反馈加入 PICO 总停止条件；新鲜输入回中后即可接管，仍检查独占输出、接收端、许可、输入过期和变化率。上肢的真实反馈与停止屏障保持原逻辑。此时状态的 `measured`／`stop_confirmed` 为 `null`，表示未测量／未确认，实体停稳需独立实测反馈；恢复默认配置后重新启用反馈绑定和持续停稳窗口。
+
+### Snowbot头部摇杆
+
+Snowbot统一位置配方的`head_control=true`接入[头部控制](../../../../../snowbot/src/snowbot_teleop/snowbot_teleop/head.py)。右Y取反控制`head_joint_1`俯仰，右X取反控制`head_joint_2`左右转动；偏转量决定转动速度，回中后保留位置目标，不自动回正。首次接管从新鲜实测位置捕获，沿用profile限位／测量容差／速度、工具反馈时效及跟随误差；不占用双臂／腰部16轴会话，也不改变头显方向标定和原按键用途。
+
+待命／跟随且无待处理操作时允许操作；暂停、故障、输入过期或控制权变化时停止头部插补，恢复须新输入回中并取得后续实测静止反馈。PICO操作交接也等待头部停止。写入仍要求`command_enabled=true`且非模拟模式；模拟和只读模式不发布头部命令。本轮仅离线验证，未完成ROS联调或真实运动验收。
+
+配套底层准备器新增`/bindu/head/target`（`Float64MultiArray`六项：pitch、yaw、原VR时间、有效期、命令生成时间、stop标志）；旧驱动无该接收端时保持不可写。原VR有效期为250ms，原生接收端检查过期／重放／限位、PDO及头部Fault，并按ROS和单调时钟限制有效期；到期或stop仅冻结当前插补参考，不归零。沿用原生smoothstep，并按实际剩余距离保证峰值速度不超过当前头部profile的0.75rad/s。ROS图检查排除已发现的竞争发布者，接管后旧`/head/motor_cmd`目标被拒绝；这不是逐消息身份认证或目标ACK。停止结果取后续实测反馈，不把已发布目标当作实际到达。
 
 ### 相对位姿映射
 

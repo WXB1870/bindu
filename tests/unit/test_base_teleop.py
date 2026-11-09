@@ -45,16 +45,16 @@ class BaseTests(unittest.TestCase):
         self.base.observe(self.now, velocity, self.now, self.now)
         return self.base.tick(self.now, self.now, allowed=allowed)
 
-    def test_only_left_y_and_right_x_drive_two_axis_command(self):
+    def test_left_stick_drives_both_base_axes(self):
         for _ in range(35):
-            result = self.step(left=(1., -1.), right=(-1., 1.))
+            result = self.step(left=(-1., -1.), right=(1., 1.))
         self.assertEqual(result, (.1, .5))
         previous = result
-        result = self.step(left=(0., 1.), right=(1., 0.))
+        result = self.step(left=(1., 1.), right=(-1., 0.))
         self.assertAlmostEqual(previous[0]-result[0], .2*.02)
         self.assertAlmostEqual(previous[1]-result[1], 1.*.02)
         for _ in range(65):
-            result = self.step(left=(0., 1.), right=(1., 0.))
+            result = self.step(left=(1., 1.), right=(-1., 0.))
         self.assertEqual(result, (-.1, -.5))
 
     def test_snowbot_forward_reverse_calibration_keeps_yaw_and_rejects_bad_signs(self):
@@ -62,26 +62,26 @@ class BaseTests(unittest.TestCase):
         self.assertEqual(configured['linear_axis_sign'],1)
         self.base.cfg=validate_base_config(dict(self.cfg,linear_axis_sign=configured['linear_axis_sign']))
         for _ in range(35):
-            result=self.step(left=(0.,-1.),right=(-1.,0.))
+            result=self.step(left=(-1.,-1.),right=(1.,0.))
         self.assertEqual(result,(-.1,.5))
         for _ in range(65):
-            result=self.step(left=(0.,1.),right=(1.,0.))
+            result=self.step(left=(1.,1.),right=(-1.,0.))
         self.assertEqual(result,(.1,-.5))
         for sign in (0,True,float('nan'),2):
             with self.assertRaisesRegex(ValueError,'linear_axis_sign'):
                 validate_base_config(dict(self.cfg,linear_axis_sign=sign))
 
     def test_unused_axes_and_all_buttons_have_no_velocity_mapping(self):
-        self.assertEqual(self.step(left=(1., 0.), right=(0., 1.)), ZERO)
+        self.assertEqual(self.step(left=(0., 0.), right=(1., 1.)), ZERO)
         for bits in range(8):
             pair = tuple(replace(f, buttons=bits) for f in self.pair())
             self.base.ingest(*pair, self.now, self.now)
             self.assertEqual(self.base.target, ZERO)
 
     def test_deadzone_matches_old_script_without_rescaling(self):
-        self.step(left=(0., -.049), right=(.049, 0.))
+        self.step(left=(.049, -.049), right=(1., 1.))
         self.assertEqual(self.base.target, ZERO)
-        self.step(left=(0., -.05), right=(.05, 0.))
+        self.step(left=(.05, -.05), right=(1., 1.))
         self.assertAlmostEqual(self.base.target[0], .005)
         self.assertAlmostEqual(self.base.target[1], -.025)
 
@@ -196,7 +196,7 @@ class BaseTests(unittest.TestCase):
     def test_only_driven_axes_need_neutral_to_rearm(self):
         self.step(allowed=False)
         for _ in range(8):
-            self.step(left=(1., 0.), right=(0., 1.))
+            self.step(left=(0., 0.), right=(1., 1.))
         self.assertTrue(self.base.armed)
 
     def test_config_rejects_invalid_limits_and_unconfirmed_watchdog_is_explicit(self):
@@ -386,7 +386,7 @@ class AdapterTests(unittest.TestCase):
         state = S(lease_active=False, state='IDLE', reference=S(name=[]), joints=object(), feedback_stamp=10.)
         owner = S(reading=lambda: (state, {}), position_ops=S(modes=lambda **kw: ('closed', 'closed'), stopped=lambda: True),
             control=S(phase='standby'), profile=S(feedback_tolerances={'joint_velocity':.01}),
-            handoff_complete=False, names=[], stop_request=None, now=lambda: 10.)
+            handoff_complete=False, names=[], stop_request=None, now=lambda: 10., head=None)
         for required in (True, False):
             core = S(healthy=Mock(return_value=False), stopped=Mock(return_value=False))
             owner.base = S(writable=True, cfg=dict(require_feedback=required), core=core)
@@ -574,8 +574,8 @@ class AdapterTests(unittest.TestCase):
                                  bButton=False, thumbstick=False)
                     event = dict(left=pose, right=pose,
                         leftState=dict(state, bButton=stop,
-                            thumbstickValue=[0., -1. if now-10. >= .3 else 0.]),
-                        rightState=dict(state, thumbstickValue=[-.5 if now-10. >= .3 else 0., 0.]))
+                            thumbstickValue=[-.5 if now-10. >= .3 else 0., -1. if now-10. >= .3 else 0.]),
+                        rightState=dict(state, thumbstickValue=[1., 1.]))
                     pair = tuple(counters[i].update(decode_controller(event, side, 'headset', sequence,
                         now, 'pico_snowbot_v1')) for i, side in enumerate(('left', 'right')))
                     bridge.ingest(pair, now)
