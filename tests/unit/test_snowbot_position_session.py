@@ -786,6 +786,28 @@ class TargetWireTests(unittest.TestCase):
         self.rig.engine.tick(self.rig.now)
         self.assertEqual(self.rig.engine.stopping[1], 'SHUTDOWN')
 
+    def test_shutdown_after_powered_hold_reuses_ack_until_measured_rest(self):
+        from bindu_execution.executor import Rejected
+        for try_acquire in (False, True):
+            with self.subTest(try_acquire=try_acquire):
+                self.setUp()
+                self.test_startup_hold_accepts_residual_speed_only_on_valid_pause_ack()
+                engine = self.rig.engine
+                if try_acquire:
+                    with self.assertRaisesRegex(Rejected, 'FEEDBACK_NOT_STATIONARY'):
+                        engine.acquire('teleop', tuple(CONTROL_GROUPS), 2., self.rig.now)
+                engine.halt(self.rig.now, 'SHUTDOWN', revoke=True, emergency=True)
+                hold = [self.rig.q[n] for n in CONTROL_NAMES]
+                self.update_target_feedback(hold=hold, velocity=.014)
+                engine.tick(self.rig.now)
+                self.assertEqual(engine.stopping[1], 'SHUTDOWN')
+                for _ in range(24):
+                    self.update_target_feedback(hold=hold)
+                    engine.tick(self.rig.now)
+                self.assertIsNone(engine.stopping)
+                self.assertFalse(engine.stop_fault)
+                self.assertEqual(self.d.publishers['arms'].publish.call_count, 2)
+
     def test_read_held_reference_survives_new_lease_without_publishing(self):
         pause=self.start_powered_hold()
         hold=[self.rig.q[n] for n in CONTROL_NAMES]
