@@ -585,6 +585,7 @@ class BimanualToolNode(RuntimeNode):
         work_stamp=0.
         work_sampled_at=0.
         work_sampled_monotonic=0.
+        work_submitted_monotonic=0.
         work_positions=None
         work_target=None
         work_dt=None
@@ -599,6 +600,17 @@ class BimanualToolNode(RuntimeNode):
         last_grasp_generation=0
         deferral=None
         reference_deadline=None
+        def stale_result(checked_ros, path):
+            self.event('BIMANUAL_RESULT_STALE', json.dumps(dict(
+                session_id=session.identity, token=token, input_seq=work_seq, path=path,
+                worker_outcome=value if kind=='error' else 'result', limit_s=reference.max_interval,
+                sampled_ros=work_sampled_at, checked_ros=checked_ros,
+                sampled_monotonic=work_sampled_monotonic, submitted_monotonic=work_submitted_monotonic,
+                loop_monotonic=now, checked_monotonic=time.monotonic(),
+                solve_span=geometry.get('solve_span') if geometry else None,
+                feedback_stamp_ros=seconds(s.feedback_stamp))), goal.request.task_id)
+            return RuntimeError('BIMANUAL_RESULT_STALE')
+
         def end_deferral(outcome):
             nonlocal deferral
             if deferral is not None:
@@ -886,9 +898,10 @@ class BimanualToolNode(RuntimeNode):
                                 if (pending is not None or s.state=='STOPPING' or
                                         s.state=='FAILED' and s.command_id.startswith(session.identity+'_')):
                                     raise RuntimeError('BIMANUAL_SOLVE_DEFERRED_UNCONFIRMED')
-                                if (not 0<=self.now()-work_sampled_at<=reference.max_interval or
+                                checked_ros = self.now()
+                                if (not 0<=checked_ros-work_sampled_at<=reference.max_interval or
                                         not 0<=now-work_sampled_monotonic<=reference.max_interval):
-                                    raise RuntimeError('BIMANUAL_RESULT_STALE')
+                                    raise stale_result(checked_ros, 'deferred')
                                 if reference_deadline is None or now>=reference_deadline:
                                     raise RuntimeError('BIMANUAL_SOLVE_DEFERRED_TIMEOUT')
                                 if deferral is None:
@@ -970,8 +983,9 @@ class BimanualToolNode(RuntimeNode):
                             # same-grasp solve. Clutch/mode changes clear awaiting.
                             # Discarded results never advance the accepted reference.
                             if (work_stamp >= self.now()-self.cfg['command_max_age'] and pending is None):
-                                if not 0 <= self.now()-work_sampled_at <= reference.max_interval:
-                                    raise RuntimeError('BIMANUAL_RESULT_STALE')
+                                checked_ros = self.now()
+                                if not 0 <= checked_ros-work_sampled_at <= reference.max_interval:
+                                    raise stale_result(checked_ros, 'candidate')
                                 positions,metrics=value
                                 command=MotionCommand(schema_version=2, runtime_mode=self.runtime_mode,
                                     command_id=session.identity+'_'+str(token),
@@ -1070,6 +1084,7 @@ class BimanualToolNode(RuntimeNode):
                         measured=dict(zip(self.state.joints.name,self.state.joints.position))
                         sampled_at=self.now()
                         sampled_monotonic=time.monotonic()
+                    work_submitted_monotonic = time.monotonic()
                     if self.worker.submit(operation,worker_token,measured,session.target,
                                           reference=baseline,dt=dt,grasp_mode=session.grasp_mode,
                                           target_stamp=session.stamp,

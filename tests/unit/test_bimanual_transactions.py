@@ -821,6 +821,34 @@ class BimanualTransactions(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(rig.engine.lease_id)
         self.assertGreater(len(rig.solve_attempts),1)
 
+    async def test_stale_solve_logs_the_expired_token_before_stopping(self):
+        for error, path in ((None, 'candidate'), ('BIMANUAL_QP_DEFERRED', 'deferred')):
+            with self.subTest(path=path):
+                rig = Rig(solve_errors=[error])
+                submit = rig.node.worker.submit
+                def delay_result(operation, token, *args, **kwargs):
+                    accepted = submit(operation, token, *args, **kwargs)
+                    if operation == 'solve':
+                        start = rig.steady
+                        span = dict(started_monotonic=start+.001, finished_monotonic=start+.006,
+                                    polled_monotonic=start+.110, thread_cpu_s=.004)
+                        rig.node.worker.diagnostic = (token, dict(scale=1., solve_span=span))
+                        rig.clock += .110
+                        rig.steady += .110
+                    return accepted
+                rig.node.worker.submit = delay_result
+                result = await rig.run()
+                self.assertEqual(result.code, 'BIMANUAL_RESULT_STALE')
+                reports = [json.loads(e[1]) for e in rig.events if e[0]=='BIMANUAL_RESULT_STALE']
+                self.assertEqual(len(reports), 1)
+                report = reports[0]
+                self.assertEqual((report['token'], report['input_seq']), rig.solve_attempts[0][1:3])
+                self.assertEqual(report['path'], path)
+                self.assertGreater(report['checked_ros']-report['sampled_ros'], report['limit_s'])
+                self.assertAlmostEqual(report['solve_span']['polled_monotonic']-
+                                       report['solve_span']['finished_monotonic'], .104)
+                self.assertFalse(rig.commands)
+
     async def test_one_guarded_iteration_failure_keeps_reference_and_uses_only_new_input(self):
         rig=Rig(solve_errors=['BIMANUAL_QP_DEFERRED'])
         result=await rig.run()

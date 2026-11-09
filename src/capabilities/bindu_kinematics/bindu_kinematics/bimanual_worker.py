@@ -97,6 +97,7 @@ def _run(config, profile, requests, results, preload_path_checks=False, grasp_ch
                 solver.rigid_grasp_q=solver.rigid_grasp_reference=None
                 solver.captured=False
             try:
+                solve_span = None
                 solver.last_constraint=solver.last_timing=None
                 independent=isinstance(grasp_mode,str) and grasp_mode.startswith('independent:')
                 if operation=='ground_recovery_path':
@@ -174,13 +175,19 @@ def _run(config, profile, requests, results, preload_path_checks=False, grasp_ch
                         fraction=min(1.,policy['max_exit_joint_travel_rad']/distance)
                         value['self_collision_recovery']['exit_waypoint']=dict(zip(names,before+fraction*(after-before)))
                 elif operation == 'solve':
-                    value=(solver.solve_independent(feedback,target,active_mask=int(grasp_mode.split(':')[1]),
-                             reference=reference,dt=dt) if independent else
-                           solver.solve(feedback,target,reference=reference,dt=dt,target_stamp=target_stamp))
+                    solve_started = time.monotonic()
+                    cpu_started = time.thread_time()
+                    try:
+                        value=(solver.solve_independent(feedback,target,active_mask=int(grasp_mode.split(':')[1]),
+                                 reference=reference,dt=dt) if independent else
+                               solver.solve(feedback,target,reference=reference,dt=dt,target_stamp=target_stamp))
+                    finally:
+                        solve_span = dict(started_monotonic=solve_started, finished_monotonic=time.monotonic(),
+                                          thread_cpu_s=time.thread_time()-cpu_started)
                 else: raise ValueError('BIMANUAL_WORKER_OPERATION')
                 if operation=='solve':
                     diagnostic=dict(getattr(solver,'last_geometry_step',None) or {'scale':1.},
-                                    timing=getattr(solver,'last_timing',None))
+                                    timing=getattr(solver,'last_timing',None), solve_span=solve_span)
                     results.put(('diagnostic',token,diagnostic))
                 elif operation in ('capture','independent_capture'):
                     results.put(('grasp',token,(solver.rigid_grasp_q,solver.rigid_grasp_reference,
@@ -188,7 +195,7 @@ def _run(config, profile, requests, results, preload_path_checks=False, grasp_ch
                 results.put(('result',token,value))
             except (ValueError,RuntimeError,TimeoutError) as exc:
                 results.put(('diagnostic',token,dict(scale=1.,operation=operation,
-                    constraint=getattr(solver,'last_constraint',None),
+                    constraint=getattr(solver,'last_constraint',None), solve_span=solve_span,
                     timing=getattr(solver,'last_timing',None) if operation=='solve' else None)))
                 results.put(('error',token,str(exc)))
             finally:
@@ -259,6 +266,10 @@ class BimanualWorker:
             else:
                 self.busy=False
                 item=(kind,token,value)
+                if self.diagnostic and self.diagnostic[0] == token:
+                    span = self.diagnostic[1].get('solve_span')
+                    if span is not None:
+                        span['polled_monotonic'] = time.monotonic()
         if self.error: self._fail('BIMANUAL_WORKER_FAILED:'+self.error)
         if not self.process.is_alive(): self._fail('BIMANUAL_WORKER_EXITED')
         return item
