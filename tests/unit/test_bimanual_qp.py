@@ -782,7 +782,7 @@ class NativeBimanual(unittest.TestCase):
                         patch.object(self.qp,'check_path',side_effect=guard), \
                         self.assertRaisesRegex(ValueError,'QP_TIMEOUT' if reason=='timeout' else reason):
                     self.qp.solve(self.feedback,target,reference=reference,dt=.01)
-                self.assertFalse(self.qp.captured)
+                self.assertEqual(self.qp.captured,reason=='timeout')
 
     def test_other_native_rejections_invalidate_capture_without_deferral(self):
         for reason in ('joint bounds infeasible','nonfinite QP input','QP exception:injected',
@@ -818,7 +818,7 @@ class NativeBimanual(unittest.TestCase):
                 with guard,self.assertRaisesRegex(ValueError,'BIMANUAL_QP_TIMEOUT:'+stage):
                     propose(self.qp,self.feedback,target)
                 timing=self.qp.last_timing
-                self.assertFalse(self.qp.captured)
+                self.assertTrue(self.qp.captured)
                 self.assertEqual(timing['stage'],stage)
                 self.assertGreater(timing['wall_us'],self.config['solve_timeout_us'])
                 self.assertGreater(timing['wall_us']-timing['thread_cpu_us'],30000.)
@@ -845,7 +845,7 @@ class NativeBimanual(unittest.TestCase):
                 self.assertRaisesRegex(ValueError,'BIMANUAL_QP_TIMEOUT:validation'):
             self.qp.solve(self.feedback,target,reference=[self.feedback[n] for n in self.qp.names],
                           dt=.01,target_stamp=1.)
-        self.assertFalse(self.qp.captured)
+        self.assertTrue(self.qp.captured)
         self.assertIsNone(self.qp.target_sample)
 
     def test_late_feedforward_copy_is_checked_before_committing_sample(self):
@@ -861,7 +861,7 @@ class NativeBimanual(unittest.TestCase):
                 self.assertRaisesRegex(ValueError,'BIMANUAL_QP_TIMEOUT:validation'):
             solver.solve(self.feedback,target,reference=[self.feedback[n] for n in solver.names],
                          dt=.01,target_stamp=1.)
-        self.assertFalse(solver.captured)
+        self.assertTrue(solver.captured)
         self.assertIsNone(solver.target_sample)
 
     def test_feedforward_uses_source_time_and_resets_on_recapture(self):

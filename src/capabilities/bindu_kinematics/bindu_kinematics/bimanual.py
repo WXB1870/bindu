@@ -12,7 +12,7 @@ ABI_VERSION = 1
 
 
 class DeferredSolve(ValueError):
-    """No candidate: retain capture only for a freshly validated safe reference."""
+    """No candidate committed; retain capture under the original reference TTL."""
 
 
 class NativeConfig(c.Structure):
@@ -1115,6 +1115,6 @@ class BimanualQP:
         self.last_timing = timing
         if timing['wall_us'] > float(self.cfg['solve_timeout_us']):
             qp_text='unknown' if qp_us is None else f'{qp_us:.0f}'
-            raise ValueError(f"BIMANUAL_QP_TIMEOUT:{stage}:wall_us={timing['wall_us']:.0f}:"
+            raise DeferredSolve(f"BIMANUAL_QP_TIMEOUT:{stage}:wall_us={timing['wall_us']:.0f}:"
                              f"cpu_us={timing['thread_cpu_us']:.0f}:native_us={native_us:.0f}:"
                              f"qp_us={qp_text}:geometry_us={geometry_us:.0f}")

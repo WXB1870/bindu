@@ -307,6 +307,48 @@ class UnheldGraspPolicyTests(unittest.TestCase):
         return s.solve({'joint':0.} if feedback is None else feedback,np.eye(4),
             reference=[0.] if reference is None else reference,dt=.01,**kw)
 
+    def test_qp_timeout_keeps_capture_and_the_next_fresh_solve_does_not_require_recapture(self):
+        for stage in ('native','validation'):
+            with self.subTest(stage=stage):
+                s=self.solver('unheld_test');s.cfg['solve_timeout_us']=1000.
+                s.feedforward=True;s.target_sample=None
+                clock=[0.];calls=[0];grasp=s.grasp_reference.copy()
+                method=s.lib.bq_solve_tracking if stage=='native' else s.checked_geometry_step
+                original=method.side_effect
+                def delayed(*args,**kwargs):
+                    result=original(*args,**kwargs)
+                    calls[0]+=1
+                    if calls[0]==1:clock[0]+=.002
+                    return result
+                method.side_effect=delayed
+                with patch.object(NS['time'],'perf_counter',side_effect=lambda:clock[0]):
+                    with self.assertRaisesRegex(NS['DeferredSolve'],'BIMANUAL_QP_TIMEOUT:'+stage):
+                        self.solve(s,target_stamp=1.)
+                    self.assertTrue(s.captured)
+                    self.assertIsNone(s.target_sample)
+                    out,_=self.solve(s,target_stamp=1.01)
+                self.assertEqual(out,(.001,))
+                self.assertEqual(s.target_sample[0],1.01)
+                np.testing.assert_array_equal(s.grasp_reference,grasp)
+                self.assertEqual(s.lib.bq_solve_tracking.call_count,2)
+
+    def test_independent_timeout_keeps_capture_and_allows_the_next_fresh_solve(self):
+        s=self.solver('unheld_test');s.grasp_mode='independent';s.cfg['solve_timeout_us']=1000.
+        clock=[0.];calls=[0]
+        def native(*args):
+            args[-2][:]=.001;args[-1][:]=[1.,0.,1.]
+            calls[0]+=1
+            if calls[0]==1:clock[0]+=.002
+            return 1
+        s.lib.bq_solve_independent=Mock(side_effect=native)
+        targets=np.array([np.eye(4),np.eye(4)])
+        with patch.object(NS['time'],'perf_counter',side_effect=lambda:clock[0]):
+            with self.assertRaisesRegex(NS['DeferredSolve'],'BIMANUAL_QP_TIMEOUT:independent'):
+                s.solve_independent({'joint':0.},targets,active_mask=1,reference=[0.],dt=.01)
+            self.assertTrue(s.captured)
+            out,_=s.solve_independent({'joint':0.},targets,active_mask=1,reference=[0.],dt=.01)
+        self.assertEqual(out,(.001,));self.assertEqual(calls[0],2)
+
     def test_axial_solve_allows_roll_but_checks_measured_slide_and_tilt(self):
         for failure in (None,'slide','tilt'):
             with self.subTest(failure=failure):
