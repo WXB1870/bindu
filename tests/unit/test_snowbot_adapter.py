@@ -854,7 +854,7 @@ class SnowbotStopDiagnosticTests(unittest.TestCase):
         self.assertIsNone(self.io.pause_targets)
         self.assertTrue(self.engine.stopping)
 
-    def test_adapter_emits_changed_reasons_immediately_and_repeated_checks_at_most_twice_per_second(self):
+    def test_adapter_stop_checks_keep_first_and_final_snapshots_and_throttle_progress(self):
         class Base:pass
         spec=importlib.util.spec_from_file_location('bindu_runtime._offline_stop_adapter',
             package_share('snowbot_hardware')/'snowbot_hardware/adapter.py')
@@ -872,9 +872,18 @@ class SnowbotStopDiagnosticTests(unittest.TestCase):
             node.record_stop_check()
         self.assertEqual(node.event.call_count,2)
         self.assertEqual(node.get_logger().warn.call_count,2)
+        self.assertIn('feedback_callbacks',json.loads(node.event.call_args_list[0].args[1]))
+        self.assertNotIn('feedback_callbacks',json.loads(node.event.call_args.args[1]))
+        self.assertIn('observed',json.loads(node.event.call_args.args[1]))
         self.assertEqual(json.loads(node.get_logger().warn.call_args.args[0].split(' ',1)[1]),
                          json.loads(node.event.call_args.args[1]))
+        for i in range(20):
+            self.obs.hold_valid=bool(i%2)
+            node.record_stop_check()
+        self.assertEqual(node.event.call_count,2)
         self.obs.hold_valid=False
+        self.now+=.5;self.steady+=.5
+        self.feed();self.engine.feedback.stamp=self.now
         node.record_stop_check()
         self.assertEqual(node.event.call_count,3)
         result=json.loads(node.event.call_args.args[1])
@@ -886,6 +895,7 @@ class SnowbotStopDiagnosticTests(unittest.TestCase):
         self.engine.stopping=None;self.engine.stop_fault='STOP_UNCONFIRMED:vendor_hold'
         node.record_stop_check()
         self.assertEqual(json.loads(node.event.call_args.args[1])['reason'],self.engine.stop_fault)
+        self.assertIn('feedback_callbacks',json.loads(node.event.call_args.args[1]))
         node.record_stop_check()
         self.assertEqual(node.event.call_count,4)
         node.get_logger=Mock(return_value=Mock())

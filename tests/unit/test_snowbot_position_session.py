@@ -730,6 +730,26 @@ class TargetWireTests(unittest.TestCase):
         self.assertFalse(self.rig.engine.lease_id)
         return self.d.publishers['arms'].publish.call_args.args[0]
 
+    def test_first_send_timing_separates_publisher_delay_without_device_access(self):
+        from unittest.mock import patch
+        clock=[1_000_000_000,100_000_000]
+        def publish(_):
+            clock[0]+=79_000_000;clock[1]+=1_300_000
+        self.d.publishers['arms'].publish.side_effect=publish
+        with patch('snowbot_hardware.position_session.time.monotonic_ns',side_effect=lambda:clock[0]),patch(
+                'snowbot_hardware.position_session.time.thread_time_ns',side_effect=lambda:clock[1]):
+            self.send()
+        takeover=self.d.send_timing['takeover']
+        points=takeover['points']
+        self.assertEqual([p['phase'] for p in points],['begin','ready_checked','packet_ready','published','event_published'])
+        self.assertEqual(points[3]['steady_ns']-points[2]['steady_ns'],79_000_000)
+        self.assertEqual(points[3]['cpu_ns']-points[2]['cpu_ns'],1_300_000)
+        self.assertEqual(points[2]['steady_ns']-points[0]['steady_ns'],0)
+        self.send('pause',pause=True)
+        self.assertIs(self.d.send_timing['takeover'],takeover)
+        self.assertEqual(set(self.d.send_timing),{'takeover','pause'})
+        json.dumps(self.d.send_timing,allow_nan=False)
+
     def test_startup_enables_once_then_confirms_powered_hold_without_vr(self):
         pause = self.start_powered_hold()
         self.assertEqual(pause.meta.operation, 2)
