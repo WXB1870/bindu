@@ -70,7 +70,7 @@ def hud_spec(view):
             notice('设备／采样异常 · 锁定','保持松握；查看电脑端首故障与停止协议，需现场排查')
             spec['action']='Y 保持停止'
         elif confirmed and view.get('ground_recovery_candidate') and not view.get('stop_failure'):
-            notice('可请求人工抬升退让','负载大不等于触地；确认适合上抬后松开侧握、扳机及 X，再长按左手 X')
+            notice('误差过大，进入保护','确认适合上抬后松开侧握、扳机及 X，再长按左手 X')
             spec['action']='长按左 X 抬升 · 右 B 仅复核'
     elif mode in ('checking','DISPLAY_WAITING'):
         spec.update(status='连接检查',grip='工具')

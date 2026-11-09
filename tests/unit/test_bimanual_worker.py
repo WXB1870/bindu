@@ -69,6 +69,12 @@ class GroundLiftTests(unittest.TestCase):
         np.testing.assert_allclose(fk(target)[:,:3,3]-fk(start)[:,:3,3],[[0,0,.05],[0,0,.05]],atol=1e-4)
         self.assertTrue(np.all(target>=bounds[:,0]) and np.all(target<=bounds[:,1]))
         self.assertLessEqual(1.875*np.max(np.abs(target-start))/plan['duration_s'],lift.config['max_joint_speed_rad_s']+1e-9)
+        from bindu_contracts.profile import Profile
+        profile=Profile.load(package_share('snowbot_bringup')/'config/robots/snowbot/snowbot_real_position.json')
+        for name,travel in zip(names,np.abs(target-start)):
+            self.assertLessEqual(1.875*travel/plan['duration_s'],profile.speed(name))
+            self.assertLessEqual(10*np.sqrt(3)/3*travel/plan['duration_s']**2,profile.acceleration(name))
+            self.assertLessEqual(60*travel/plan['duration_s']**3,profile.jerk(name))
         check.assert_called_once()
         with self.assertRaisesRegex(ValueError,'BODY_COLLISION'):
             lift.plan(start,bounds,list(range(2,len(start))),fk,Mock(side_effect=ValueError('BODY_COLLISION')))
@@ -106,7 +112,8 @@ class GroundLiftTests(unittest.TestCase):
         def fk(q):
             poses=np.array([np.eye(4),np.eye(4)]);poses[0,2,3]=q[0];poses[1,2,3]=q[1]
             return poses
-        config=self.config();bounds=np.array([[-1.,1.],[-1.,1.]])
+        config=dict(self.config(),max_speed_m_s=.02,max_joint_speed_rad_s=.05)
+        bounds=np.array([[-1.,1.],[-1.,1.]])
         slow=GroundLift(config).plan(np.zeros(2),bounds,[0,1],fk,Mock())
         faster=GroundLift(dict(config,max_speed_m_s=.05,max_joint_speed_rad_s=.1)).plan(np.zeros(2),bounds,[0,1],fk,Mock())
         self.assertGreater(slow['duration_s'],4.5);self.assertLess(slow['duration_s'],5.)
