@@ -372,6 +372,42 @@ class UnheldGraspPolicyTests(unittest.TestCase):
                     out,_=self.solve(s)
                     np.testing.assert_allclose(out,[.001])
 
+    def test_real_recipe_measured_axial_grasp_limits(self):
+        from bindu_contracts.teleoperation import load_tool_config
+        config_path=package_share('snowbot_bringup')/'config/robots/snowbot/bimanual_snowbot_real.json'
+        config=load_tool_config(config_path)
+        self.assertEqual(config['grasp_reference_source'],'measured_axial')
+        self.assertEqual(config['grasp_position_tolerance_m'],.08)
+        self.assertAlmostEqual(config['grasp_rotation_tolerance_rad'],math.radians(7))
+        self.assertEqual(config['solve_timeout_us'],150000)
+        self.assertEqual(config['demo']['acceptance']['min_tool_robot_clearance_m'],.02)
+        # Include the Orin stop and the corner where both errors approach their limits.
+        for distance,angle,accept in ((.04681671,.08004057,True),(.07999,math.radians(6.999),True),
+                                      (.08001,0.,False),(0.,math.radians(7.001),False)):
+            with self.subTest(distance=distance,angle=angle):
+                solver=self.solver()
+                solver.cfg.update(config)
+                solver.grasp_mode='right_axial'
+                solver.left_axial=None
+                solver.grasp_position_tolerance=config['grasp_position_tolerance_m']
+                solver.grasp_rotation_tolerance=config['grasp_rotation_tolerance_rad']
+                solver.tool=solver.tool_grip=solver.right_grip=np.eye(4)
+                relative=np.eye(4)
+                relative[0,3]=distance
+                relative[1:3,1:3]=[[math.cos(angle),-math.sin(angle)],
+                                    [math.sin(angle),math.cos(angle)]]
+                def read_relative(handle,q,count,out):
+                    out[:]=relative
+                    return 1
+                solver.lib.bq_relative_pose=read_relative
+                if accept:
+                    self.solve(solver)
+                    solver.lib.bq_solve_tracking.assert_called_once()
+                else:
+                    with self.assertRaisesRegex(ValueError,'BIMANUAL_MEASURED_GRASP_ERROR'):
+                        self.solve(solver)
+                    self.assertEqual(solver.last_constraint['stage'],'measured_grasp_points')
+
     def test_unheld_capture_uses_actual_relative_pose_without_nominal_grasp_gate(self):
         for policy in ('enforce','unheld_test'):
             s=self.solver(policy,.04,.05);s.handle=object();s.axial=None
