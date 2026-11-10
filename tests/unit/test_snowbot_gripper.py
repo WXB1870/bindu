@@ -715,7 +715,8 @@ class NativeGripperTests(unittest.TestCase):
         source=Path(find_spec('snowbot_hardware.gripper_node').origin)
         cls=next(n for n in ast.parse(source.read_text()).body if isinstance(n,ast.ClassDef))
         method=next(n for n in cls.body if getattr(n,'name','')=='health')
-        ns=dict(MASKS={'left':1<<7,'right':1<<15},SIDES=SIDES)
+        from snowbot_hardware.parameters import TARGET_FEEDBACK_MAX_AGE_S
+        ns=dict(MASKS={'left':1<<7,'right':1<<15},SIDES=SIDES,TARGET_FEEDBACK_MAX_AGE_S=TARGET_FEEDBACK_MAX_AGE_S)
         exec(compile(ast.Module(body=[method],type_ignores=[]),str(source),'exec'),ns)
         reader=S(node_namespace='/',node_name='servo_node',topic_type='std_msgs/msg/Float64MultiArray')
         clock=[1.]
@@ -749,7 +750,8 @@ class NativeGripperTests(unittest.TestCase):
         source=Path(find_spec('snowbot_hardware.gripper_node').origin)
         cls=next(n for n in ast.parse(source.read_text()).body if isinstance(n,ast.ClassDef))
         method=next(n for n in cls.body if getattr(n,'name','')=='health')
-        ns=dict(MASKS={'left':1<<7,'right':1<<15},SIDES=SIDES)
+        from snowbot_hardware.parameters import TARGET_FEEDBACK_MAX_AGE_S
+        ns=dict(MASKS={'left':1<<7,'right':1<<15},SIDES=SIDES,TARGET_FEEDBACK_MAX_AGE_S=TARGET_FEEDBACK_MAX_AGE_S)
         exec(compile(ast.Module(body=[method],type_ignores=[]),str(source),'exec'),ns)
         for side,slot in (('left',7),('right',15)):
             for missing in (False,True):
@@ -764,7 +766,7 @@ class NativeGripperTests(unittest.TestCase):
                               f'GRIPPER_DRIVER_FAULT:{side}:slot={slot}:status=0x0218')
                     with self.assertRaisesRegex(RuntimeError,expected):ns['health'](runtime)
                     devices.io.require_feedback.assert_not_called()
-                    devices.health.require_observation.assert_called_once()
+                    devices.health.require_observation.assert_called_once_with(.040)
                     node.count_publishers.assert_not_called()
 
     def rig(self):
@@ -1062,6 +1064,38 @@ class DirectOperationTests(unittest.TestCase):
 
 
 class CoordinatorStopBarrierTests(unittest.TestCase):
+    def test_only_unused_empty_arm_gripper_can_lack_fresh_position(self):
+        from unittest.mock import Mock
+        for case in ('idle','leased','moving','fault','triggered','held','unknown','mode_label','stopping'):
+            with self.subTest(case=case):
+                ops,_=self.rig()
+                ops.lease=ops.lease_instance=None
+                ops.last_rejection={}
+                ops.log_rejection=Mock()
+                n=ops.node
+                n.control=S(teleop_mode='independent_arms',load='empty',load_source='operator_declaration',
+                    phase='following',pending=None,source='pico',settings={'trigger_release_threshold':.2})
+                n.stop_request=None
+                n.frames=dict(right=S(source_id='pico',trigger=0.,valid=True,stop=False,button_edges=[0]*8))
+                state=ops.states['right']
+                state.state,state.code='IDLE','NO_COMMAND'
+                state.stamp=state.feedback_stamp=n.now()-.25
+                if case=='leased':state.lease_active=True
+                if case=='moving':state.state='MOVING'
+                if case=='fault':state.state='FAULT'
+                if case=='triggered':n.frames['right'].button_edges[-2:]=[1,1]
+                if case in ('held','unknown'):n.control.load=case
+                if case=='mode_label':n.control.load_source='teleop_mode'
+                if case=='stopping':n.stop_request={'epoch':3}
+                if case=='idle':
+                    self.assertIsNone(ops.reading('right',for_arms=True))
+                    ops.log_rejection.assert_not_called()
+                else:
+                    with self.assertRaisesRegex(RuntimeError,'GRIPPER_FEEDBACK'):
+                        ops.reading('right',for_arms=True)
+                with self.assertRaisesRegex(RuntimeError,'GRIPPER_FEEDBACK'):
+                    ops.reading('right')
+
     def test_b_recovery_confirms_new_epoch_without_resending_motion(self):
         ops,_=self.rig();ops.stop_unconfirmed=ops.release_pending=True
         ops.config['feedback_max_age']=.2;ops.node.current=lambda _:None

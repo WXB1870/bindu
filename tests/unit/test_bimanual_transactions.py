@@ -275,6 +275,41 @@ class Rig:
 
 
 class BimanualTransactions(unittest.IsolatedAsyncioTestCase):
+    async def test_vr_admission_waits_for_pair_without_control_authority(self):
+        for outcome in ('arrives','timeout','stop','cancel'):
+            with self.subTest(outcome=outcome):
+                rig=Rig()
+                original_update=rig.update
+                baseline_epoch=rig.engine.epoch
+                def update():
+                    original_update()
+                    if rig.step<2 or outcome!='arrives':
+                        del rig.node.frames['right']
+                        self.assertFalse(rig.engine.lease_id)
+                        if outcome=='stop' and rig.step:
+                            rig.node.frames['left']=replace(rig.node.frames['left'],stop=True)
+                        if outcome=='cancel' and rig.step:
+                            rig.goal.is_cancel_requested=True
+                    elif rig.step<5:
+                        rig.node.frames=rig.frame(rig.step,0.)
+                rig.update=update
+                update()
+                rig.node.busy=False
+                self.assertEqual(rig.node.goal(rig.goal.request),'ACCEPT')
+                result=await rig.run()
+                if outcome=='arrives':
+                    self.assertTrue(result.success,result.code)
+                    self.assertTrue(rig.commands)
+                else:
+                    prefix='BIMANUAL_LEASE_NOT_ACQUIRED:'
+                    self.assertTrue(result.code.startswith(prefix),result.code)
+                    proof=json.loads(result.code[len(prefix):])
+                    self.assertEqual(proof,dict(instance_id='executor',epoch=baseline_epoch,
+                        profile_hash=rig.profile.digest,reason=dict(timeout='BIMANUAL_START_INPUT_TIMEOUT',
+                        stop='VR_STOP',cancel='CANCELED')[outcome]))
+                    self.assertEqual(rig.engine.epoch,baseline_epoch)
+                    self.assertFalse(rig.commands)
+
     async def test_restart_waits_for_new_pair_instead_of_consuming_old_stop_projection(self):
         rig=Rig();original=rig.update
         def update():
@@ -297,7 +332,9 @@ class BimanualTransactions(unittest.IsolatedAsyncioTestCase):
             rig.node.frames={side:replace(f,stop=True) for side,f in rig.node.frames.items()}
         rig.update=update;update()
         result=await rig.run()
-        self.assertEqual(result.code,'VR_PAIR_INVALID')
+        proof=json.loads(result.code.removeprefix('BIMANUAL_LEASE_NOT_ACQUIRED:'))
+        self.assertEqual(proof['reason'],'VR_STOP')
+        self.assertEqual(result.accepted_commands,0)
         self.assertFalse(rig.commands)
 
     async def test_replacement_before_final_stop_cannot_confirm_old_execution(self):

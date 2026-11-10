@@ -347,7 +347,7 @@ class BimanualToolNode(RuntimeNode):
         reply.success,reply.message=not bool(reason),reason or 'BIMANUAL_READY'
         return reply
 
-    def check(self, require_input=True):
+    def check(self, require_input=True, *, allow_missing_pair=False):
         if getattr(self,'stop_unconfirmed',False):
             raise RuntimeError('BIMANUAL_EXECUTION_STOP_UNCONFIRMED')
         now=self.now()
@@ -392,10 +392,13 @@ class BimanualToolNode(RuntimeNode):
         elif (any(side not in self.frames or self.frames[side].stamp <= seconds(m.changed_at) or
                 not 0 <= now-self.frames[side].stamp <= self.cfg['input_max_age']
                 for side in ('left','right'))):
+            if allow_missing_pair:
+                return False
             raise RuntimeError('VR_PAIR_TIMEOUT')
+        return True
 
     def goal(self,request):
-        try: self.check()
+        try: self.check(allow_missing_pair=True)
         except RuntimeError as exc:
             self.event('BIMANUAL_GOAL_REJECTED',str(exc),request.task_id)
             return GoalResponse.REJECT
@@ -405,6 +408,7 @@ class BimanualToolNode(RuntimeNode):
                         (self.lease_client,self.submit_client,self.control_client))):
             return GoalResponse.REJECT
         self.pause_control=ToolPause()
+        self.admitted_generation=self.mode_state.generation
         self.busy=True
         return GoalResponse.ACCEPT
 
@@ -627,15 +631,19 @@ class BimanualToolNode(RuntimeNode):
         self.worker_result=None
         self.preflight_status=''
         acquisition_epoch=None
+        waiting_epoch=None
+        def no_grant_code(epoch,reason):
+            return 'BIMANUAL_LEASE_NOT_ACQUIRED:'+json.dumps(dict(
+                instance_id=self.execution_instance_id,epoch=epoch,
+                profile_hash=self.profile.digest,reason=reason))
+
         def rejected_acquisition_code(reply):
             if (not reply.lease_id and reply.epoch==acquisition_epoch and
                     reply.profile_hash==self.profile.digest and self.state is not None and
                     self.state.instance_id==self.execution_instance_id):
                 # The same Action result carries explicit no-grant evidence;
                 # its coordinator must still observe fresh baseline-epoch rest.
-                return 'BIMANUAL_LEASE_NOT_ACQUIRED:'+json.dumps(dict(
-                    instance_id=self.execution_instance_id,epoch=reply.epoch,
-                    profile_hash=reply.profile_hash,reason=reply.code))
+                return no_grant_code(reply.epoch,reply.code)
             return reply.code
         try:
             if getattr(self,'stop_unconfirmed',False):
@@ -643,6 +651,35 @@ class BimanualToolNode(RuntimeNode):
             self.execution_instance_id=self.state.instance_id if self.state else ''
             if not self.execution_instance_id:
                 raise RuntimeError('BIMANUAL_EXECUTION_REVISION_UNAVAILABLE')
+            if self.input_source=='vr':
+                # Left and right are separate DDS samples. Wait without a lease
+                # for a matching pair when the Action arrives between callbacks.
+                waiting_epoch=self.state.lease_epoch
+                deadline=time.monotonic()+min(.1,self.cfg['input_max_age'])
+                admission_ros=self.now()
+                waiting=False
+                while True:
+                    if goal.is_cancel_requested:
+                        canceled=True
+                        raise RuntimeError('CANCELED')
+                    if mode.generation!=getattr(self,'admitted_generation',mode.generation) or (
+                            self.mode_state and self.mode_state.generation!=mode.generation):
+                        raise RuntimeError('BIMANUAL_MODE_GENERATION_CHANGED')
+                    if (self.state is None or self.state.instance_id!=self.execution_instance_id
+                            or self.state.lease_epoch!=waiting_epoch):
+                        raise RuntimeError('BIMANUAL_EXECUTION_REVISION_UNAVAILABLE')
+                    available=self.check(allow_missing_pair=True)
+                    if any(f.stop and f.stamp>=admission_ros and f.stamp>seconds(mode.changed_at)
+                           for f in self.frames.values()):
+                        raise RuntimeError('VR_STOP')
+                    if waiting and time.monotonic()>=deadline:
+                        raise RuntimeError('BIMANUAL_START_INPUT_TIMEOUT')
+                    if (available and self.startup_input_ready(seconds(mode.changed_at))
+                            and all(f.valid and not f.stop for f in self.frames.values())):
+                        break
+                    waiting=True
+                    await self.pause()
+                waiting_epoch=None
             # Even a transport exception may follow request dispatch.
             stopped=False
             acquisition_epoch=self.state.lease_epoch
@@ -1129,7 +1166,7 @@ class BimanualToolNode(RuntimeNode):
                 await self.pause()
             result.code='CANCELED' if canceled else 'TELEOP_SESSION_COMPLETE'
         except Exception as exc:
-            result.code=str(exc)
+            result.code=no_grant_code(waiting_epoch,str(exc)) if waiting_epoch is not None else str(exc)
             if result.code=='BIMANUAL_MODE_NOT_SELECTED':
                 mode=self.mode_state
                 self.cleanup_event('BIMANUAL_MODE_DIAGNOSTIC',json.dumps({

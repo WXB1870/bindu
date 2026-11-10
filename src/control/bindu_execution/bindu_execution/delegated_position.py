@@ -214,7 +214,7 @@ class DelegatedPositionExecutor(Executor):
         if now-end >= timing['completion_timeout_s']:
             self.halt(now, 'REPLAY_ARRIVAL_UNCONFIRMED', revoke=True)
 
-    def acquire(self, owner, groups, ttl, now):
+    def acquire(self, owner, groups, ttl, now, *, velocity_tolerances=None):
         if self.stop_fault or self.io.stop_failures:
             raise Rejected('STOP_UNCONFIRMED')
         if not set(groups) <= self.io.writable_groups:
@@ -228,7 +228,7 @@ class DelegatedPositionExecutor(Executor):
             self.io.capture(groups)
         except RuntimeError as exc:
             raise Rejected(str(exc)) from exc
-        return super().acquire(owner, groups, ttl, now)
+        return super().acquire(owner, groups, ttl, now, velocity_tolerances=velocity_tolerances)
 
     def submit(self, motion, now):
         if motion.mode in ('prepared_trajectory', 'prepared_entry', 'prepared_trajectory_impedance', 'prepared_entry_impedance'):

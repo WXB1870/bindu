@@ -63,7 +63,7 @@ class Executor:
             while len(self.results) > 256:
                 self.results.popitem(last=False)
 
-    def acquire(self, owner, groups, ttl, now):
+    def acquire(self, owner, groups, ttl, now, *, velocity_tolerances=None):
         self.tick(now)
         if self.stop_fault or self.io.stop_failures:
             raise Rejected('STOP_UNCONFIRMED')
@@ -75,7 +75,8 @@ class Executor:
                           if getattr(self.io, 'group_feedback', False) else tuple(self.profile.limits))
         if any(j not in self.feedback.joint_velocities for j in measured_names):
             raise Rejected('FEEDBACK_VELOCITY_UNAVAILABLE')
-        if (any(not self.joint_at_rest(j) for j in measured_names) or
+        tolerances = velocity_tolerances or {}
+        if (any(not self.joint_at_rest(j, tolerances.get(j)) for j in measured_names) or
                 any(abs(v) > self.profile.feedback_tolerances.get('base_'+axis+'_velocity', 0.)
                     for axis,v in zip(('linear','angular'),self.feedback.base_velocity))):
             raise Rejected('FEEDBACK_NOT_STATIONARY')
@@ -466,7 +467,9 @@ class Executor:
                    abs(self.feedback.positions[j]-q) < tolerances.get(j, tolerance) and
                    (not require_rest or self.joint_at_rest(j)) for j, q in targets.items())
 
-    def joint_at_rest(self, name):
+    def joint_at_rest(self, name, tolerance=None):
         velocity = self.feedback.joint_velocities.get(name)
+        if tolerance is None:
+            tolerance = self.profile.feedback_tolerances.get('joint_velocity', .01)
         return (velocity is not None and math.isfinite(velocity) and
-                abs(velocity) <= self.profile.feedback_tolerances.get('joint_velocity', .01))
+                abs(velocity) <= tolerance)

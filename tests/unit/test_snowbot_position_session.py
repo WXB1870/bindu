@@ -127,44 +127,44 @@ class PositionSessionTests(unittest.TestCase):
 
     def test_ros_publication_without_pdo_progress_is_rejected(self):
         self.health.require(CONTROL_GROUPS)
-        self.now += .041
-        self.steady += .041
+        self.now += .101
+        self.steady += .101
         self.health.observe(observation(self.now, pdo_sample=2))
         with self.assertRaisesRegex(RuntimeError, 'NOT_ADVANCING'):
             self.health.require(CONTROL_GROUPS)
 
-    def test_ros_feedback_budget_is_40ms_with_independent_20ms_pdo_limit(self):
-        for age in (.021, .039):
+    def test_ros_feedback_budget_is_100ms_with_independent_20ms_pdo_limit(self):
+        for age in (.021, .041461, .053, .092, .098):
             with self.subTest(ros_age=age):
                 decode_observation(observation(pdo_age=0.), 10.+age)
-        decode_observation(observation(0., pdo_age=0.), .040)
+        decode_observation(observation(0., pdo_age=0.), .100)
         with self.assertRaisesRegex(ValueError, 'PDO_STALE'):
-            decode_observation(observation(pdo_age=0.), 10.041)
+            decode_observation(observation(pdo_age=0.), 10.100001)
         with self.assertRaisesRegex(ValueError, 'PDO_STALE'):
             decode_observation(observation(pdo_age=.021), 10.)
         decode_observation(observation(pdo_age=.020), 10.)
-        decode_observation(observation(pdo_age=.010), 10.029)
+        decode_observation(observation(pdo_age=.010), 10.089)
         with self.assertRaisesRegex(ValueError, 'PDO_STALE'):
-            decode_observation(observation(pdo_age=.010), 10.031)
+            decode_observation(observation(pdo_age=.010), 10.091)
 
-    def test_ros_progress_tolerates_39ms_but_repeated_samples_still_expire(self):
-        self.now += .039
-        self.steady += .039
+    def test_ros_progress_tolerates_98ms_but_repeated_samples_still_expire(self):
+        self.now += .098
+        self.steady += .098
         self.health.observe(observation(self.now, pdo_sample=3))
         self.health.require(CONTROL_GROUPS)
-        self.now += .041
-        self.steady += .041
+        self.now += .101
+        self.steady += .101
         self.health.observe(observation(self.now, pdo_sample=3))
         with self.assertRaisesRegex(RuntimeError, 'NOT_ADVANCING'):
             self.health.require(CONTROL_GROUPS)
 
-    def test_cached_ros_feedback_expires_after_40ms_without_new_observations(self):
+    def test_cached_ros_feedback_expires_after_100ms_without_new_observations(self):
         self.health.observation.pdo_age = 0.
-        self.now += .039
-        self.steady += .039
+        self.now += .098
+        self.steady += .098
         self.health.require(CONTROL_GROUPS)
-        self.now += .002
-        self.steady += .002
+        self.now += .003
+        self.steady += .003
         with self.assertRaisesRegex(RuntimeError, 'NOT_ADVANCING'):
             self.health.require(CONTROL_GROUPS)
 
@@ -254,7 +254,7 @@ class PositionSessionTests(unittest.TestCase):
     def test_reading_cached_feedback_does_not_decode_again_but_still_expires(self):
         with patch('snowbot_hardware.session.decode_observation', side_effect=AssertionError('decoded twice')):
             self.health.require(CONTROL_GROUPS)
-            self.now += .05
+            self.now += .101
             with self.assertRaisesRegex(RuntimeError, 'PDO_STALE'):
                 self.health.require(CONTROL_GROUPS)
 
@@ -778,6 +778,24 @@ class TargetWireTests(unittest.TestCase):
         event = self.rig.engine.results[self.d.startup_motion.command_id]
         self.assertEqual((event.state, event.code), ('SUCCEEDED', 'POWERED_HOLD'))
 
+    def test_only_startup_right_wrist_uses_measured_noise_tolerance(self):
+        from bindu_execution.executor import Rejected
+        for joint, speed, allowed in (('arm_r_joint_7', .01431, True),
+                                      ('arm_r_joint_7', .0249, False),
+                                      ('arm_r_joint_6', .01431, False)):
+            with self.subTest(joint=joint, speed=speed):
+                self.setUp()
+                velocities = [0.] * len(SLOTS)
+                velocities[SLOTS.index(joint)] = speed
+                self.update_target_feedback(speed=velocities)
+                with self.assertRaisesRegex(Rejected, 'FEEDBACK_NOT_STATIONARY'):
+                    self.rig.engine.acquire('follow', tuple(CONTROL_GROUPS), 2., self.rig.now)
+                self.d.startup_hold_state = 'waiting'
+                self.d.node.closing = False
+                self.d.advance_startup_hold(self.rig.engine)
+                self.assertEqual(self.d.startup_hold_state, 'takeover' if allowed else 'waiting')
+                self.assertEqual(self.d.publishers['arms'].publish.call_count, int(allowed))
+
     def test_shutdown_during_startup_hold_still_requires_measured_rest(self):
         self.start_powered_hold()
         self.rig.engine.halt(self.rig.now, 'SHUTDOWN', revoke=True, emergency=True)
@@ -826,6 +844,15 @@ class TargetWireTests(unittest.TestCase):
         idle=self.d.read_held_reference(None,S())
         self.assertTrue(idle.success,idle.message)
         self.assertEqual(json.loads(idle.message)['lease_id'],'')
+        before = json.loads(idle.message)
+        self.rig.now += .053
+        self.rig.steady += .053
+        delayed = self.d.read_held_reference(None,S())
+        self.assertTrue(delayed.success,delayed.message)
+        self.assertEqual(json.loads(delayed.message),before)
+        self.assertIsNone(self.d.health.confirmed_hold(old_request))
+        self.update_target_feedback(hold=hold,reference_mode=2,segment_id=pause.meta.sequence,
+            trajectory_phase=4,hold_basis=0,reference_valid=True,output_valid=True)
         lease,epoch=self.rig.engine.acquire('follow',tuple(CONTROL_GROUPS),2.,self.rig.now)
         self.assertIsNone(self.d.io.pause_request)
         self.assertEqual(self.d.io.captured_pause_request,old_request)
@@ -1091,6 +1118,7 @@ class TargetWireTests(unittest.TestCase):
 
     def test_target_loss_requests_one_pause_before_original_source_expiry(self):
         self.rig.enable_rest_window()
+        self.d.runtime_parameters['execution']['startup_hold_ttl_s'] = .2
         self.d.startup_hold_state = 'waiting'; self.d.node.closing = False
         self.d.advance_startup_hold(self.rig.engine)
         first = self.d.publishers['arms'].publish.call_args.args[0]
@@ -1657,7 +1685,7 @@ class TargetWireTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'SESSION_OWNER_CONFLICT'):
             self.d.check_health(CONTROL_GROUPS)
         self.held_feedback()
-        self.rig.steady += .041
+        self.rig.steady += .101
         with self.assertRaisesRegex(RuntimeError, 'PDO_NOT_ADVANCING'):
             self.d.check_health(CONTROL_GROUPS)
 
@@ -1830,8 +1858,8 @@ class DelayedFeedbackPauseTests(unittest.TestCase):
 
     def test_delayed_feedback_blocks_following_but_sends_one_identified_pause(self):
         original = self.delay_following()
-        with self.assertRaises(RuntimeError):
-            self.fixture.send('another-target')
+        with self.assertRaisesRegex(RuntimeError, 'PDO_STALE'):
+            self.d.io.write_joints(dict(self.fixture.target))
         # Revoking the motion must not manufacture a new source identity.
         self.d.io.source_motion = None
         self.d.io.stop()
@@ -1851,6 +1879,52 @@ class DelayedFeedbackPauseTests(unittest.TestCase):
             self.d.io.stop()
         self.assertEqual(self.d.publishers['arms'].publish.call_count, count)
         self.assertEqual(self.d.io.pause_request, request)
+
+    def test_delayed_delivery_defers_new_targets_until_fresh_without_renewing_them(self):
+        rig = self.fixture.rig
+        motion = self.fixture.source_motion(valid_for=.2)
+        rig.engine.submit(motion, rig.now)
+        rig.now += .053
+        rig.steady += .053
+        rig.engine.tick(rig.now)
+        self.d.publishers['arms'].publish.assert_not_called()
+        self.assertFalse(rig.io.targets)
+        self.assertFalse(rig.io.reference)
+        self.assertEqual(self.d.envelopes.sequence, 0)
+        self.assertEqual(rig.engine.lease_id, motion.lease_id)
+        self.fixture.update_target_feedback()
+        rig.engine.tick(rig.now)
+        packet = self.d.publishers['arms'].publish.call_args.args[0]
+        self.assertEqual(packet.meta.source_stamp_ns, round(motion.stamp*1e9))
+        self.assertEqual(packet.meta.expires_at_ns, round((motion.stamp+motion.valid_for)*1e9))
+        self.d.receive_receipt(self.fixture.receipt(packet))
+        replacement = replace(motion, command_id='later', stamp=rig.now)
+        rig.engine.submit(replacement, rig.now)
+        rig.now += .05
+        rig.steady += .05
+        self.d.brake_before_source_expiry(rig.engine)
+        packets = [c.args[0] for c in self.d.publishers['arms'].publish.call_args_list]
+        self.assertEqual([p.meta.operation for p in packets], [1, 2])
+        self.assertEqual(packets[1].meta.source_command_id,motion.command_id)
+        self.assertLess(packets[1].meta.source_stamp_ns, packets[0].meta.expires_at_ns)
+        self.assertFalse(rig.engine.lease_id)
+
+    def test_sustained_gap_and_bad_working_counter_still_reject(self):
+        for cause in ('late','wkc'):
+            with self.subTest(cause=cause):
+                self.setUp()
+                rig = self.fixture.rig
+                motion = self.fixture.source_motion()
+                rig.engine.submit(motion, rig.now)
+                if cause=='late':
+                    rig.now += .101
+                    rig.steady += .101
+                else:
+                    with self.assertRaisesRegex(ValueError,'WKC'):
+                        self.d.health.observe(observation(rig.now, wkc=61, pdo_sample=rig.sample+1))
+                rig.engine.tick(rig.now)
+                self.assertFalse(rig.engine.lease_id)
+                self.d.publishers['arms'].publish.assert_not_called()
 
     def test_pause_cannot_cross_boot_or_instance_change_or_missing_authority(self):
         for changed in ('boot', 'servo', 'middle', 'sent'):
