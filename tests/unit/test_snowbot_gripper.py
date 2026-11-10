@@ -708,15 +708,16 @@ class NativeGripperTests(unittest.TestCase):
         from snowbot_hardware.protocol import GraphSnapshot
         from snowbot_hardware.session import SessionHealth
         from tests.unit.test_snowbot_position_session import observation
-        health=SessionHealth(lambda:10., lambda:1., execution_mode='impedance')
+        now=[10.]
+        health=SessionHealth(lambda:now[0], lambda:1., execution_mode='impedance')
         status=[8]*20;status[7]=0x27
         for sample in (1,2):
             health.observe(observation(pdo_sample=sample,valid_mask=1<<7,status=status))
         source=Path(find_spec('snowbot_hardware.gripper_node').origin)
         cls=next(n for n in ast.parse(source.read_text()).body if isinstance(n,ast.ClassDef))
         method=next(n for n in cls.body if getattr(n,'name','')=='health')
-        from snowbot_hardware.parameters import TARGET_FEEDBACK_MAX_AGE_S
-        ns=dict(MASKS={'left':1<<7,'right':1<<15},SIDES=SIDES,TARGET_FEEDBACK_MAX_AGE_S=TARGET_FEEDBACK_MAX_AGE_S)
+        from snowbot_hardware.parameters import GRIPPER_FEEDBACK_MAX_AGE_S
+        ns=dict(MASKS={'left':1<<7,'right':1<<15},SIDES=SIDES,GRIPPER_FEEDBACK_MAX_AGE_S=GRIPPER_FEEDBACK_MAX_AGE_S)
         exec(compile(ast.Module(body=[method],type_ignores=[]),str(source),'exec'),ns)
         reader=S(node_namespace='/',node_name='servo_node',topic_type='std_msgs/msg/Float64MultiArray')
         clock=[1.]
@@ -726,6 +727,12 @@ class NativeGripperTests(unittest.TestCase):
         devices=S(health=health,graph=graph,receivers={'head':'/servo_node'})
         runtime=S(session_protocol=True,devices=devices,core=S(feedback_sides=lambda:{'left'}),
                   topics={'left':'/left'},publishers={'left':object()})
+        now[0]=10.040785  # 41.785 ms including the fixture's 1 ms PDO age.
+        self.assertEqual(ns['health'](runtime)['sample'],2)
+        now[0]=10.060
+        with self.assertRaisesRegex(RuntimeError,'SNOWBOT_PDO_STALE'):
+            ns['health'](runtime)
+        now[0]=10.040785
         for _ in range(10):self.assertEqual(ns['health'](runtime)['sample'],2)
         node.get_publishers_info_by_topic.assert_called_once_with('/left')
         node.get_subscriptions_info_by_topic.assert_called_once_with('/left')
@@ -750,8 +757,8 @@ class NativeGripperTests(unittest.TestCase):
         source=Path(find_spec('snowbot_hardware.gripper_node').origin)
         cls=next(n for n in ast.parse(source.read_text()).body if isinstance(n,ast.ClassDef))
         method=next(n for n in cls.body if getattr(n,'name','')=='health')
-        from snowbot_hardware.parameters import TARGET_FEEDBACK_MAX_AGE_S
-        ns=dict(MASKS={'left':1<<7,'right':1<<15},SIDES=SIDES,TARGET_FEEDBACK_MAX_AGE_S=TARGET_FEEDBACK_MAX_AGE_S)
+        from snowbot_hardware.parameters import GRIPPER_FEEDBACK_MAX_AGE_S
+        ns=dict(MASKS={'left':1<<7,'right':1<<15},SIDES=SIDES,GRIPPER_FEEDBACK_MAX_AGE_S=GRIPPER_FEEDBACK_MAX_AGE_S)
         exec(compile(ast.Module(body=[method],type_ignores=[]),str(source),'exec'),ns)
         for side,slot in (('left',7),('right',15)):
             for missing in (False,True):
@@ -766,7 +773,7 @@ class NativeGripperTests(unittest.TestCase):
                               f'GRIPPER_DRIVER_FAULT:{side}:slot={slot}:status=0x0218')
                     with self.assertRaisesRegex(RuntimeError,expected):ns['health'](runtime)
                     devices.io.require_feedback.assert_not_called()
-                    devices.health.require_observation.assert_called_once_with(.040)
+                    devices.health.require_observation.assert_called_once_with(.060)
                     node.count_publishers.assert_not_called()
 
     def rig(self):
@@ -1095,6 +1102,24 @@ class CoordinatorStopBarrierTests(unittest.TestCase):
                         ops.reading('right',for_arms=True)
                 with self.assertRaisesRegex(RuntimeError,'GRIPPER_FEEDBACK'):
                     ops.reading('right')
+
+    def test_standby_idle_gripper_delivery_gap_is_only_omitted_from_arm_feedback(self):
+        ops,clock=self.rig()
+        ops.lease=ops.lease_instance=None
+        ops.node.control=S(phase='standby',pending=None)
+        ops.node.stop_request=None
+        ops.node.tool_cfg={'feedback_max_age':.5}
+        ops.log_rejection=Mock()
+        ops.unused_trigger=Mock(return_value=False)
+        state=ops.states['right']
+        state.state,state.code='IDLE','NO_COMMAND'
+        state.stamp,state.feedback_stamp=ops.node.now()-.199764,ops.node.now()-.210057
+        self.assertIsNone(ops.reading('right',for_arms=True))
+        with self.assertRaisesRegex(RuntimeError,'GRIPPER_FEEDBACK'):
+            ops.reading('right')
+        clock.value+=.3
+        with self.assertRaisesRegex(RuntimeError,'GRIPPER_FEEDBACK'):
+            ops.reading('right',for_arms=True)
 
     def test_b_recovery_confirms_new_epoch_without_resending_motion(self):
         ops,_=self.rig();ops.stop_unconfirmed=ops.release_pending=True
