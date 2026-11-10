@@ -581,6 +581,8 @@ class BimanualToolNode(RuntimeNode):
         self.grasp_continuation=None
         session=session_type(self.cfg,mode.generation,seconds(mode.changed_at),
             **({'continuation':continuation} if self.input_source=='vr' else {}))
+        if self.input_source=='vr':
+            session.identity='vr_follow_'+session.identity
         reference=AcceptedReference(self.cfg.get('max_integration_interval',.1),
             max_sample_gap=self.cfg.get('integration_max_sample_gap'))
         result=TeleopAction.Result(simulated=self.simulation)

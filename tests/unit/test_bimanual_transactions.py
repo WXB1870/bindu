@@ -1128,6 +1128,7 @@ class BimanualTransactions(unittest.IsolatedAsyncioTestCase):
             self.assertLessEqual(row['input_pair']['right_callback_monotonic'],row['sampled_monotonic'])
             self.assertLessEqual(row['rpc_call_monotonic'],row['reply_observed_monotonic'])
         command_ids={command.command_id for command in rig.commands}
+        self.assertTrue(all(command_id.startswith('vr_follow_') for command_id in command_ids))
         self.assertTrue(all(e[3] in command_ids for e in rig.events if e[0]=='BIMANUAL_SUBMIT_TIMING'))
         self.assertGreater(len(seqs),2)
         self.assertEqual(len(seqs),len(set(seqs)))
