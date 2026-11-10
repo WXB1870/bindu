@@ -532,6 +532,10 @@ class WorkerReceiptTests(unittest.TestCase):
         self.assertEqual(results.get_nowait(),('ready',0,None))
         first,reply=results.get_nowait(),results.get_nowait()
         self.assertEqual(reply,('error',7,'BIMANUAL_MEASURED_GRASP_ERROR'))
+        span=first[2]['solve_span']
+        self.assertGreaterEqual(span['finished_monotonic'],span['started_monotonic'])
+        self.assertGreater(span['tid'],0)
+        self.assertTrue(span['runqueue_wait_s'] is None or span['runqueue_wait_s']>=0)
         worker=self.worker();worker.results.put(first);worker.results.put(reply)
         self.assertEqual(self.poll(worker,10.1),reply)
         self.assertEqual(worker.diagnostic[1]['constraint']['position_error_m'],.010024)

@@ -21,6 +21,7 @@ from .common import RuntimeNode, seconds, stamp, EVENT_QOS
 
 class ExecutionNode(RuntimeNode):
     trace_timing = False
+    pending_submit_timing = None
 
     def __init__(self, *, allow_hardware=False, device_factory=assemble_devices, executor_factory=Executor):
         super().__init__('execution', allow_hardware=allow_hardware)
@@ -168,6 +169,10 @@ class ExecutionNode(RuntimeNode):
         return reply
 
     def submit(self, request, reply):
+        m = request.command
+        traced = m.mode=='joint_target' and m.observation_id.endswith('0')
+        if traced:
+            entered, cpu = time.monotonic(), time.thread_time()
         try:
             switched = self.accept(request.command)
             reply.switch_stamp = stamp(switched)
@@ -177,6 +182,10 @@ class ExecutionNode(RuntimeNode):
             m = request.command
             self.event('REJECTED', reply.code, m.task_id, m.command_id, m.observation_id)
         reply.revision = self.engine.revision
+        if traced:
+            self.pending_submit_timing = (m.task_id, m.command_id, dict(
+                entered_monotonic=entered, returning_monotonic=time.monotonic(),
+                handler_cpu_s=time.thread_time()-cpu, accepted=reply.accepted))
         return reply
 
     def stream(self, msg):
@@ -311,6 +320,12 @@ class ExecutionNode(RuntimeNode):
         self.record_tick_phase('state_ready')
         self.state_pub.publish(msg)
         self.record_tick_phase('state_published')
+
+        # Emit on the next tick, after the service has returned its reply.
+        if self.pending_submit_timing is not None:
+            task, command, timing = self.pending_submit_timing
+            self.pending_submit_timing = None
+            self.event('EXECUTION_SUBMIT_TIMING',json.dumps(timing),task,command)
 
     def record_tick_phase(self, phase):
         if not self.trace_timing:

@@ -1,6 +1,9 @@
 """One bounded, isolated QP worker. Late results carry tokens and never command devices."""
 import multiprocessing as mp
 import math
+import os
+import resource
+import threading
 import queue
 import time
 import gc
@@ -54,8 +57,21 @@ def prepare_limit_exit_target(profile, names, feedback, reference, target, reser
     return result
 
 
+def _runqueue_ns(fd):
+    if fd is not None:
+        try:
+            return int(os.pread(fd, 128, 0).split()[1])
+        except (OSError, IndexError, ValueError):
+            return None
+
+
 def _run(config, profile, requests, results, preload_path_checks=False, grasp_checkpoint=None):
     solver = None
+    try:
+        sched_fd = os.open('/proc/thread-self/schedstat', os.O_RDONLY)
+    except OSError:
+        sched_fd = None
+    usage_scope = getattr(resource, 'RUSAGE_THREAD', None)
     try:
         import numpy as np
         from .bimanual import BimanualQP
@@ -175,6 +191,8 @@ def _run(config, profile, requests, results, preload_path_checks=False, grasp_ch
                         fraction=min(1.,policy['max_exit_joint_travel_rad']/distance)
                         value['self_collision_recovery']['exit_waypoint']=dict(zip(names,before+fraction*(after-before)))
                 elif operation == 'solve':
+                    wait_start = _runqueue_ns(sched_fd)
+                    switches = resource.getrusage(usage_scope) if usage_scope is not None else None
                     solve_started = time.monotonic()
                     cpu_started = time.thread_time()
                     try:
@@ -183,7 +201,14 @@ def _run(config, profile, requests, results, preload_path_checks=False, grasp_ch
                                solver.solve(feedback,target,reference=reference,dt=dt,target_stamp=target_stamp))
                     finally:
                         solve_span = dict(started_monotonic=solve_started, finished_monotonic=time.monotonic(),
-                                          thread_cpu_s=time.thread_time()-cpu_started)
+                                          thread_cpu_s=time.thread_time()-cpu_started, tid=threading.get_native_id())
+                        wait_end = _runqueue_ns(sched_fd)
+                        solve_span['runqueue_wait_s'] = ((wait_end-wait_start)*1e-9
+                            if wait_start is not None and wait_end is not None and wait_end>0 and wait_end>=wait_start else None)
+                        if switches is not None:
+                            end_usage = resource.getrusage(usage_scope)
+                            solve_span.update(voluntary_switches=end_usage.ru_nvcsw-switches.ru_nvcsw,
+                                              involuntary_switches=end_usage.ru_nivcsw-switches.ru_nivcsw)
                 else: raise ValueError('BIMANUAL_WORKER_OPERATION')
                 if operation=='solve':
                     diagnostic=dict(getattr(solver,'last_geometry_step',None) or {'scale':1.},
@@ -205,6 +230,8 @@ def _run(config, profile, requests, results, preload_path_checks=False, grasp_ch
     except Exception as exc:
         results.put(('fatal',0,type(exc).__name__+': '+str(exc)))
     finally:
+        if sched_fd is not None:
+            os.close(sched_fd)
         if solver is not None:
             solver.close()
 

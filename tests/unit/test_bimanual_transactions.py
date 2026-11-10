@@ -64,7 +64,7 @@ class Rig:
         definition=next(n for n in ast.parse(source.read_text()).body
                         if isinstance(n,ast.ClassDef) and n.name=='ExecutionNode')
         handlers=[n for n in definition.body if getattr(n,'name','') in ('lease','control','decode_motion','accept','submit')]
-        service_namespace=dict(Motion=Motion,Rejected=Rejected,command_mode=command_mode,
+        service_namespace=dict(time=S(monotonic=lambda:self.steady,thread_time=lambda:0.),Motion=Motion,Rejected=Rejected,command_mode=command_mode,
                                seconds=lambda x:x,stamp=lambda x:x)
         module=ast.Module(body=[ast.ClassDef(name='Services',bases=[],keywords=[],
                          body=handlers,decorator_list=[])],type_ignores=[])
@@ -124,6 +124,7 @@ class Rig:
         node.worker_error=''
         node.worker=S(ready=True,busy=False,diagnostic=None,submit=self.solve)
         node.frames={}
+        node.frame_arrivals={}
         node.mode_state=S(mode='bimanual_tool',phase='READY',generation=1,
             stamp=self.clock,changed_at=9.,profile_hash=self.profile.digest)
         node.grasp_continuation=None
@@ -182,6 +183,8 @@ class Rig:
                 for side,frame in self.node.frames.items():
                     pose=np.array(frame.pose).reshape(4,4);pose[0,3]+=.2
                     self.node.frames[side]=replace(frame,pose=tuple(pose.ravel()))
+
+        self.node.frame_arrivals={side:(frame,self.steady) for side,frame in self.node.frames.items()}
 
     def done(self,value):
         future=asyncio.get_running_loop().create_future();future.set_result(value)
@@ -1118,7 +1121,12 @@ class BimanualTransactions(unittest.IsolatedAsyncioTestCase):
         rig=Rig(duplicate_window=.1)
         result=await rig.run()
         self.assertTrue(result.success,result.code)
-        seqs=[json.loads(e[1])['input_seq'] for e in rig.events if e[0]=='BIMANUAL_SUBMIT_TIMING']
+        timings=[json.loads(e[1]) for e in rig.events if e[0]=='BIMANUAL_SUBMIT_TIMING']
+        seqs=[row['input_seq'] for row in timings]
+        for row in timings:
+            self.assertEqual(row['input_pair']['seq'],row['input_seq'])
+            self.assertLessEqual(row['input_pair']['right_callback_monotonic'],row['sampled_monotonic'])
+            self.assertLessEqual(row['rpc_call_monotonic'],row['reply_observed_monotonic'])
         command_ids={command.command_id for command in rig.commands}
         self.assertTrue(all(e[3] in command_ids for e in rig.events if e[0]=='BIMANUAL_SUBMIT_TIMING'))
         self.assertGreater(len(seqs),2)

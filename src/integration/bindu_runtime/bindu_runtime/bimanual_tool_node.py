@@ -111,6 +111,7 @@ class BimanualToolNode(RuntimeNode):
         self.preflight_mode=''
         self.preflight_grasp=''
         self.frames={}
+        self.frame_arrivals={}
         self.state=self.health=self.mode_state=None
         self.busy=False
         self.stop_unconfirmed=False
@@ -254,6 +255,7 @@ class BimanualToolNode(RuntimeNode):
             abs(v[n])<=cfg['velocity_tolerance'] for side,n in self.gripper_joints.items())
 
     def on_frame(self,msg):
+        entered=time.monotonic()
         if self.matches_mode(msg) and msg.side in ('left','right'):
             # Gripper motion is coordinated separately. Accept the projected
             # axial bit only after the configured opening has measured feedback.
@@ -274,6 +276,8 @@ class BimanualToolNode(RuntimeNode):
                 head_stamp=seconds(msg.head_stamp) if getattr(msg,'head_pose',()) else 0.,
                 head_age_s=getattr(msg,'head_age_s',0.),head_source_id=getattr(msg,'head_source_id',''),
                 head_seq=int(getattr(msg,'head_seq',0)))
+
+            self.frame_arrivals[msg.side]=(self.frames[msg.side],entered)
 
     def on_tool_frame(self,msg):
         if self.input_source == 'tool_pose' and self.matches_mode(msg):
@@ -590,6 +594,9 @@ class BimanualToolNode(RuntimeNode):
         work_sampled_at=0.
         work_sampled_monotonic=0.
         work_submitted_monotonic=0.
+        work_pair=None
+        pending_rpc_at=None
+        pending_span=None
         work_positions=None
         work_target=None
         work_dt=None
@@ -612,7 +619,7 @@ class BimanualToolNode(RuntimeNode):
         def report_stale_result(checked_ros, path, *, discarded=False):
             event = 'BIMANUAL_RESULT_DISCARDED' if discarded else 'BIMANUAL_RESULT_STALE'
             self.event(event, json.dumps(dict(
-                session_id=session.identity, token=token, input_seq=work_seq, path=path,
+                session_id=session.identity, token=token, input_seq=work_seq, path=path, input_pair=work_pair,
                 worker_outcome=value if kind=='error' else 'result', limit_s=reference.max_interval,
                 sampled_ros=work_sampled_at, checked_ros=checked_ros,
                 sampled_monotonic=work_sampled_monotonic, submitted_monotonic=work_submitted_monotonic,
@@ -799,6 +806,8 @@ class BimanualToolNode(RuntimeNode):
                     if left.source_id != right.source_id or left.seq != right.seq:
                         await self.pause()
                         continue
+                    arrivals=self.frame_arrivals
+                    left_entry,right_entry=arrivals.get('left'),arrivals.get('right')
                     session.ingest(left,right,self.now())
                 if session.grasp_generation != last_grasp_generation:
                     end_deferral('grasp_changed')
@@ -841,6 +850,7 @@ class BimanualToolNode(RuntimeNode):
                 # have executed; stop/settle it without reviving its reference.
                 if pending is not None and self.pause_control.phase!='pausing':
                     if pending.done():
+                        reply_observed=time.monotonic()
                         reply=pending.result()
                         if not reply.accepted: raise RuntimeError(reply.code)
                         if not work_stamp<=self.now()<work_stamp+self.cfg['command_max_age']:
@@ -858,6 +868,8 @@ class BimanualToolNode(RuntimeNode):
                             'executor_instance_id':execution_instance_id,'lease_epoch':lease.epoch,
                             'source_stamp':work_stamp,'source_valid_for_s':self.cfg['command_max_age'],
                             'acknowledged_at':self.now(),'submit_round_trip_s':now-pending_at,
+                            'rpc_call_monotonic':pending_rpc_at,'reply_observed_monotonic':reply_observed,
+                            'sampled_monotonic':work_sampled_monotonic,'input_pair':work_pair,'solve_span':pending_span,
                             'server_monotonic_s':now}),goal.request.task_id,command.command_id)
                         pending_reference=None
                         accepted+=1
@@ -1056,7 +1068,10 @@ class BimanualToolNode(RuntimeNode):
                                     rigid_reference=(self.trajectory_reference and
                                         self.cfg.get('rigid_reference_prediction',False) and
                                         mode.mode=='bimanual_tool' and session.grasp_mode=='rigid'))
-                                pending=self.submit_client.call_async(SubmitMotion.Request(command=command))
+                                request=SubmitMotion.Request(command=command)
+                                pending_span=geometry.get('solve_span') if geometry else None
+                                pending_rpc_at=time.monotonic()
+                                pending=self.submit_client.call_async(request)
                                 pending_reference=(positions,work_sampled_at)
                                 pending_at=now
                                 self.event('BIMANUAL_QP_RESULT',json.dumps({'solve_us':metrics[0],
@@ -1151,6 +1166,12 @@ class BimanualToolNode(RuntimeNode):
                                               if execution_sample is not None else None)):
                         awaiting=operation
                         work_seq,work_stamp=session.seq,session.stamp
+                        work_pair=None
+                        if (self.input_source=='vr' and left_entry and right_entry
+                                and left_entry[0] is left and right_entry[0] is right
+                                and work_seq==left.seq and work_stamp==max(left.stamp,right.stamp)):
+                            work_pair=dict(source_id=left.source_id,seq=left.seq,
+                                left_callback_monotonic=left_entry[1],right_callback_monotonic=right_entry[1])
                         work_sampled_at,work_dt=sampled_at,dt
                         work_sampled_monotonic=sampled_monotonic
                         work_gap=gap
