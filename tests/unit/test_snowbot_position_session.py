@@ -328,7 +328,7 @@ class PauseHandoffTests(unittest.TestCase):
         q, v, stamp = d.health.observe(msg)
         self.io.observe(q, v, stamp, self.now, sample=msg.pdo_sample)
 
-    def start_stop(self, command_id='move'):
+    def start_stop(self, command_id='move', *, code='CANCELED'):
         from bindu_contracts.contracts import Motion
         lease, epoch = self.engine.acquire('test', ('waist','left_arm','right_arm'), 2., self.now)
         names = tuple(GROUPS['left_arm'])
@@ -338,12 +338,35 @@ class PauseHandoffTests(unittest.TestCase):
         self.engine.submit(motion, self.now); self.engine.tick(self.now)
         self.now += .001; self.steady += .001
         self.devices.advance_session()
-        self.engine.halt(self.now, revoke=True)
+        self.engine.halt(self.now, code, revoke=True)
         self.assertTrue(self.engine.stopping)
         return [self.q[n] for n in CONTROL_NAMES]
 
-    def test_delayed_pause_ack_still_needs_actual_position_and_velocity(self):
+    def test_normal_pause_completes_on_first_fresh_matching_ack(self):
+        self.enable_rest_window()
         hold = self.start_stop()
+        hold[CONTROL_NAMES.index('body_joint_2')] += .02
+        self.update(hold=hold, command_sequence=999, velocity=.03)
+        self.engine.tick(self.now)
+        self.assertTrue(self.engine.stopping)
+        self.update(hold=hold, velocity=.03)
+        self.engine.feedback = replace(self.engine.feedback, stamp=self.io.stop_requested_at)
+        self.engine.tick_stop(self.now)
+        self.assertTrue(self.engine.stopping)
+        self.engine.feedback = replace(self.engine.feedback, stamp=self.now, joint_velocities={})
+        self.engine.tick_stop(self.now)
+        self.assertTrue(self.engine.stopping)
+        self.engine.tick(self.now)
+        self.assertIsNone(self.engine.stopping)
+        self.assertEqual(self.engine.events[-1].state, 'CANCELED')
+        self.assertEqual(self.engine.events[-1].code, 'PAUSE_CONFIRMED')
+        self.engine.halt(self.now, 'SHUTDOWN', revoke=True, emergency=True)
+        self.update(hold=hold, velocity=.03)
+        self.engine.tick(self.now)
+        self.assertTrue(self.engine.stopping)
+
+    def test_shutdown_delayed_pause_ack_still_needs_actual_position_and_velocity(self):
+        hold = self.start_stop(code='SHUTDOWN')
         self.update(); self.engine.tick(self.now)
         self.assertTrue(self.engine.stopping)  # Sender position at rest is not an ACK.
         hold[0] += .01; self.q['arm_l_joint_1'] = hold[0]
@@ -366,9 +389,9 @@ class PauseHandoffTests(unittest.TestCase):
         self.io.stop_requires_arrival = False
         self.io.target_stream = True
 
-    def test_target_pause_low_waist_speed_cannot_hide_remaining_hold_travel(self):
+    def test_shutdown_low_waist_speed_cannot_hide_remaining_hold_travel(self):
         self.enable_rest_window()
-        hold = self.start_stop()
+        hold = self.start_stop(code='SHUTDOWN')
         waist = CONTROL_NAMES.index('body_joint_2')
         # 118 A-return: 29.7 mrad in the old 65536-count coordinate,
         # converted to the selected 262144-count position coordinate.
@@ -383,15 +406,15 @@ class PauseHandoffTests(unittest.TestCase):
         self.assertIsNone(self.engine.stopping)
         self.assertFalse(self.engine.stop_fault)
 
-    def test_target_pause_unreached_waist_expires_without_claiming_stop(self):
+    def test_shutdown_unreached_waist_expires_without_claiming_stop(self):
         self.enable_rest_window()
-        hold = self.start_stop()
+        hold = self.start_stop(code='SHUTDOWN')
         hold[CONTROL_NAMES.index('body_joint_1')] += .007
         deadline = self.engine.stop_deadline
         for _ in range(105):
             self.update(hold=hold); self.engine.tick(self.now)
         self.assertEqual(self.engine.stop_deadline, deadline)
-        self.assertTrue(self.engine.stop_fault.startswith('STOP_UNCONFIRMED'))
+        self.assertTrue(self.engine.stop_fault.startswith('SHUTDOWN;STOP_UNCONFIRMED'))
         self.assertFalse(any(e.state == 'CANCELED' for e in self.engine.events))
 
     def test_configured_waist_stop_tolerance_accepts_recorded_residual_after_rest(self):
@@ -403,7 +426,7 @@ class PauseHandoffTests(unittest.TestCase):
         self.assertEqual(self.profile.stop_position_tolerances,
                          dict.fromkeys(GROUPS['waist'], math.radians(1)))
         self.assertEqual(self.profile.feedback_tolerances['joint_position'], .002)
-        hold = self.start_stop()
+        hold = self.start_stop(code='SHUTDOWN')
         hold[CONTROL_NAMES.index('body_joint_2')] += .006064
         for _ in range(20):
             self.update(hold=hold); self.engine.tick(self.now)
@@ -417,19 +440,19 @@ class PauseHandoffTests(unittest.TestCase):
         self.enable_rest_window()
         self.profile = replace(self.profile, stop_position_tolerances={'body_joint_2':math.radians(1)})
         self.io.profile = self.engine.profile = self.profile
-        hold = self.start_stop()
+        hold = self.start_stop(code='SHUTDOWN')
         hold[CONTROL_NAMES.index('body_joint_2')] += .018
         deadline = self.engine.stop_deadline
         for _ in range(105):
             self.update(hold=hold); self.engine.tick(self.now)
         self.assertEqual(self.engine.stop_deadline, deadline)
-        self.assertTrue(self.engine.stop_fault.startswith('STOP_UNCONFIRMED'))
+        self.assertTrue(self.engine.stop_fault.startswith('SHUTDOWN;STOP_UNCONFIRMED'))
 
     def test_relaxed_arrival_keeps_original_speed_and_position_stability_checks(self):
         self.enable_rest_window()
         self.profile = replace(self.profile, stop_position_tolerances={'body_joint_2':math.radians(1)})
         self.io.profile = self.engine.profile = self.profile
-        hold = self.start_stop()
+        hold = self.start_stop(code='SHUTDOWN')
         hold[CONTROL_NAMES.index('body_joint_2')] += .006064
         for _ in range(24):
             self.update(hold=hold, waist_velocity=.02); self.engine.tick(self.now)
@@ -450,15 +473,15 @@ class PauseHandoffTests(unittest.TestCase):
         self.io.stop_requires_arrival = True
         self.profile = replace(self.profile, stop_position_tolerances={'body_joint_2':math.radians(1)})
         self.io.profile = self.engine.profile = self.profile
-        hold = self.start_stop()
+        hold = self.start_stop(code='SHUTDOWN')
         hold[CONTROL_NAMES.index('arm_l_joint_1')] += .003
         for _ in range(105):
             self.update(hold=hold); self.engine.tick(self.now)
-        self.assertTrue(self.engine.stop_fault.startswith('STOP_UNCONFIRMED'))
+        self.assertTrue(self.engine.stop_fault.startswith('SHUTDOWN;STOP_UNCONFIRMED'))
 
-    def test_target_pause_requires_continuous_measured_rest_window(self):
+    def test_shutdown_requires_continuous_measured_rest_window(self):
         self.enable_rest_window()
-        hold = self.start_stop()
+        hold = self.start_stop(code='SHUTDOWN')
         deadline = self.engine.stop_deadline
         for _ in range(20):
             self.update(hold=hold); self.engine.tick(self.now)
@@ -468,9 +491,9 @@ class PauseHandoffTests(unittest.TestCase):
         self.assertIsNone(self.engine.stopping)
         self.assertEqual(self.engine.stop_deadline, deadline)
 
-    def test_target_pause_rest_does_not_claim_arrival_at_offset_reference(self):
+    def test_shutdown_rest_does_not_claim_arrival_at_offset_reference(self):
         self.enable_rest_window()
-        hold = self.start_stop()
+        hold = self.start_stop(code='SHUTDOWN')
         hold[0] -= .0452
         for _ in range(24):
             self.update(hold=hold); self.engine.tick(self.now)
@@ -479,9 +502,9 @@ class PauseHandoffTests(unittest.TestCase):
         self.assertEqual(self.io.pause_targets[CONTROL_NAMES[0]], hold[0])
         self.assertAlmostEqual(self.q[CONTROL_NAMES[0]]-hold[0], .0452)
 
-    def test_target_pause_fixed_window_anchor_catches_drift_inside_arrival_tolerance(self):
+    def test_shutdown_fixed_window_anchor_catches_drift_inside_arrival_tolerance(self):
         self.enable_rest_window()
-        hold = self.start_stop()
+        hold = self.start_stop(code='SHUTDOWN')
         self.q[CONTROL_NAMES[0]] = hold[0]-.0015
         for _ in range(16):
             self.update(hold=hold); self.engine.tick(self.now)
@@ -503,9 +526,9 @@ class PauseHandoffTests(unittest.TestCase):
         self.assertTrue(self.engine.stopping)
         self.assertIsNone(self.engine.stop_rest_window)
 
-    def test_target_pause_velocity_and_feedback_gap_restart_window(self):
+    def test_shutdown_velocity_and_feedback_gap_restart_window(self):
         self.enable_rest_window()
-        hold = self.start_stop()
+        hold = self.start_stop(code='SHUTDOWN')
         for _ in range(16):
             self.update(hold=hold); self.engine.tick(self.now)
         self.update(hold=hold, velocity=.03); self.engine.tick(self.now)
@@ -534,11 +557,11 @@ class PauseHandoffTests(unittest.TestCase):
         self.assertIsNone(self.engine.stopping)
 
     def test_changed_hold_ack_fails_instead_of_following_measured_drift(self):
-        hold = self.start_stop()
+        hold = self.start_stop(code='SHUTDOWN')
         self.update(hold=hold, velocity=.03); self.engine.tick(self.now)
         hold[0] += .01; self.q['arm_l_joint_1'] = hold[0]
         self.update(hold=hold); self.engine.tick(self.now)
-        self.assertEqual(self.engine.stop_fault, 'STOP_REFERENCE_INVALID')
+        self.assertEqual(self.engine.stop_fault, 'SHUTDOWN;STOP_REFERENCE_INVALID')
 
     def test_late_ack_cannot_reset_stop_budget(self):
         hold = self.start_stop()
@@ -561,7 +584,7 @@ class PauseHandoffTests(unittest.TestCase):
         self.assertIsNone(self.engine.stopping)
 
     def test_nonzero_waist_shares_one_pause_and_requires_fixed_point_and_rest(self):
-        hold = self.start_stop()
+        hold = self.start_stop(code='SHUTDOWN')
         self.assertEqual(len(self.devices.publishers['arms'].publish.call_args_list), 2)
         packet = self.devices.publishers['arms'].publish.call_args.args[0]
         self.assertEqual(packet.meta.operation, 2)

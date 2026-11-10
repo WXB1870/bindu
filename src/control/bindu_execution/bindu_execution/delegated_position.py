@@ -301,7 +301,7 @@ class DelegatedPositionExecutor(Executor):
     def prepare_path(self, motion, now):
         return DirectTarget(State.rest(motion.positions))
 
-    def halt(self, now, code='CANCELED', revoke=False, emergency=False, effective_at=None):
+    def halt(self, now, code='CANCELED', revoke=False, emergency=False, effective_at=None, *, require_rest=False):
         if self.replay_result is not None and not self.replay_result['final']:
             revoke = True
         if revoke or emergency:
@@ -323,6 +323,8 @@ class DelegatedPositionExecutor(Executor):
             self.stop_deadline = now+self.profile.stop_timeout
             self.stop_steady_deadline = self.steady()+self.profile.stop_timeout
             self.stop_rest_window = None
+        self.pause_ack_only = (code == 'CANCELED' and not emergency and not require_rest
+                               and getattr(self.io, 'pause_ack_completes_stop', False))
         motion = self.active or (self.stopping[0] if self.stopping else None)
         if motion is None and self.replay_result is not None and not self.replay_result['final']:
             motion = self.replay.motion
@@ -371,20 +373,24 @@ class DelegatedPositionExecutor(Executor):
         # A sent hold is only a request. Require feedback newer than that request.
         require_arrival = getattr(self.io, 'stop_requires_arrival', True)
         arrival_names = None if require_arrival else tuple(getattr(self.io, 'stop_arrival_joints', ()))
+        if self.pause_ack_only:
+            arrival_names = ()
         if arrival_names is not None and not set(arrival_names) <= set(self.reference_names):
             self.fail_stop(now, 'STOP_REFERENCE_INVALID')
             return
-        # A powered-hold handoff confirms the device has adopted its fixed
-        # PAUSE target. Only the normal stop path certifies measured rest.
         powered_hold = code == 'POWERED_HOLD' and confirm is not None
-        feedback_ok = all(n in self.feedback.positions and math.isfinite(self.feedback.positions[n])
-                          and (powered_hold or self.joint_at_rest(n)) for n in self.reference_names)
+        require_rest = not (powered_hold or self.pause_ack_only)
+        feedback_ok = all(math.isfinite(self.feedback.positions.get(n, math.nan))
+                          and (powered_hold or math.isfinite(self.feedback.joint_velocities.get(n, math.nan)))
+                          for n in self.reference_names)
+        if require_rest:
+            feedback_ok = feedback_ok and all(self.joint_at_rest(n) for n in self.reference_names)
         arrived = (self.feedback.stamp > self.io.stop_requested_at and
                    0 <= now-self.feedback.stamp <= .2 and feedback_ok and
                    self.references_arrived(arrival_names,
-                       position_tolerances=self.profile.stop_position_tolerances, require_rest=not powered_hold))
+                       position_tolerances=self.profile.stop_position_tolerances, require_rest=require_rest))
         window = getattr(self.io, 'stop_confirmation_window', 0.)
-        if arrived and window and not powered_hold:
+        if arrived and window and require_rest:
             positions = {n: self.feedback.positions[n] for n in self.reference_names}
             previous = self.stop_rest_window
             tolerance = self.profile.feedback_tolerances.get('joint_position', 1e-5)
@@ -405,4 +411,7 @@ class DelegatedPositionExecutor(Executor):
             self.io.stop_targets.clear()
             self.stopping = self.reference = None
             self.reference_names = ()
-            self.emit(now, motion, 'SUCCEEDED' if code in ('REPLAY_COMPLETED', 'POWERED_HOLD') else 'CANCELED' if code == 'CANCELED' else 'FAILED', code)
+            if self.pause_ack_only:
+                self.emit(now, motion, 'CANCELED', 'PAUSE_CONFIRMED')
+            else:
+                self.emit(now, motion, 'SUCCEEDED' if code in ('REPLAY_COMPLETED', 'POWERED_HOLD') else 'CANCELED' if code == 'CANCELED' else 'FAILED', code)

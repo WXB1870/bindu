@@ -126,6 +126,13 @@ class BimanualStopHandoff(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(peer.e.lease_id)
         self.assertEqual(calls[-1][1],'release')
 
+    async def test_position_pause_accepts_executor_completion_with_residual_velocity(self):
+        self.node.state = self.state(7, 'STOPPING')
+        self.steps.append(lambda: setattr(self.node, 'state', self.state(
+            7, 'CANCELED', code='PAUSE_CONFIRMED', joints=S(name=['a'],position=[.1],velocity=[.03]))))
+        self.assertTrue(await self.node.stop(self.lease))
+        self.assertEqual(self.clock.value,.02)
+
     async def test_hold_renewal_cannot_extend_original_stop_deadline(self):
         self.node.state=self.state(7,'STOPPING')
         async def fresh_moving():
@@ -408,11 +415,12 @@ class PicoStopEvidence(unittest.IsolatedAsyncioTestCase,ExecutionFixture):
         self.node=n=namespace['ActualPico']()
         n.reset_grasp_reference=AsyncMock()
         n.base=None
+        n.head=None
         n.profile,n.simulation,n.backend=self.p,True,'memory'
         n.tool_cfg={'feedback_max_age':.2};n.names=tuple(self.p.limits)
         n.groups=tuple(self.p.groups);n.prepare_position_tolerance=.035;n.position_contract=True
         n.submit=S(call_async=Mock(side_effect=AssertionError('no motion submission expected')))
-        n.position_ops=S(modes=lambda **kw:('closed','closed'),stopped=lambda:True)
+        n.position_ops=S(modes=lambda **kw:('closed','closed'),stopped=lambda readings=None:True)
         n.control=S(phase='following',pending=S(token=1),teleop_mode='independent_arms',record_fault=Mock());n.handoff_complete=True
         n.current=Mock();n.instance_id='pico-memory'
         n.now=lambda:self.clock;n.pause=self.pause;n.event=Mock()
@@ -581,6 +589,16 @@ class PicoStopEvidence(unittest.IsolatedAsyncioTestCase,ExecutionFixture):
         self.assertTrue(self.node.stop_request['failed'])
         while self.clock<started+7.1:await self.pause()
         self.assertFalse(self.node.feedback().healthy)
+
+    async def test_pico_pause_receipt_completes_while_arm_feedback_is_moving(self):
+        self.overrides.update(state='CANCELED',code='PAUSE_CONFIRMED',
+                              joints=S(name=list(self.p.limits),position=list(self.e.feedback.positions.values()),
+                                       velocity=[.03]*len(self.p.limits)))
+        await self.pause()
+        await self.node.release_lease()
+        feedback=self.node.feedback()
+        self.assertTrue(feedback.pause_confirmed)
+        self.assertFalse(feedback.stopped)
 
     async def test_pico_hold_keeps_lease_until_delayed_feedback_rest(self):
         calls=[]

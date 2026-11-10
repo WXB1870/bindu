@@ -534,6 +534,7 @@ class BimanualToolNode(RuntimeNode):
                 if stop_feedback_matches(s,instance_id=instance_id,epoch=expected_epoch,
                         lease_active=not release,profile_hash=self.profile.digest,simulated=self.simulation,
                         requested=requested,now=self.now(),max_age=self.cfg['feedback_max_age'],
+                        position_pause=True,
                         at_rest=lambda joints:joints_at_rest(joints,self.names,self.profile.feedback_tolerances.get('joint_velocity',.01))):
                     self.stop_barrier=dict(instance_id=instance_id,epoch=expected_epoch,
                                            lease_active=not release,requested=requested)

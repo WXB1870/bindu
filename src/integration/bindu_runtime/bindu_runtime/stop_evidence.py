@@ -3,7 +3,7 @@ import math
 
 
 def stop_feedback_matches(state, *, instance_id, epoch, lease_active, profile_hash,
-                          simulated, requested, now, max_age, at_rest):
+                          simulated, requested, now, max_age, at_rest, position_pause=False):
     if state is None or not instance_id:
         return False
     stamp=state.feedback_stamp
@@ -13,7 +13,9 @@ def stop_feedback_matches(state, *, instance_id, epoch, lease_active, profile_ha
             state.simulated==simulated and state.state not in ('RUNNING','STOPPING') and
             not state.stop_failures and 'EMERGENCY_STOP' not in state.code and
             state.code!='STOP_FEEDBACK_TIMEOUT' and sampled>=requested and
-            0<=now-sampled<max_age and not state.reference.name and at_rest(state.joints))
+            0<=now-sampled<max_age and not state.reference.name and
+            (sampled>requested if position_pause and state.state=='CANCELED' and state.code=='PAUSE_CONFIRMED'
+             else at_rest(state.joints)))
 
 
 def sampled_nominal_reference(state, names, epoch, now, max_age, *, wait_until=None, steady_now=None):
