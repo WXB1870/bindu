@@ -119,6 +119,9 @@ class RuntimeModeTests(unittest.TestCase):
         node.runtime_mode='simulation';node.device_backend='external_simulation'
         node.state_pub=Mock();node.last_event=None
         with patch.object(node,'now',return_value=10.):node.tick()
+        self.assertFalse(hasattr(node,'runtime_tick_timing'))
+        node.trace_timing=True
+        with patch.object(node,'now',return_value=10.):node.tick()
         timing=node.runtime_tick_timing
         self.assertEqual([p[0] for p in timing['points']],
                          ['engine','events','state_ready','state_published'])

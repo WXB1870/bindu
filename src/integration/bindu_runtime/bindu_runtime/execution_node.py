@@ -20,6 +20,8 @@ from .common import RuntimeNode, seconds, stamp, EVENT_QOS
 
 
 class ExecutionNode(RuntimeNode):
+    trace_timing = False
+
     def __init__(self, *, allow_hardware=False, device_factory=assemble_devices, executor_factory=Executor):
         super().__init__('execution', allow_hardware=allow_hardware)
         if self.runtime_mode == 'real':
@@ -28,6 +30,7 @@ class ExecutionNode(RuntimeNode):
             self.set_descriptor('use_sim_time', ParameterDescriptor(read_only=True,
                 type=self.get_parameter('use_sim_time').type_.value,
                 description='Real execution requires the system clock'))
+        self.trace_timing = os.environ.get('BINDU_TIMING_TRACE') == '1'
         self.closing = False
         self.robot_io, self.devices = device_factory(self, self.profile)
         self.engine = executor_factory(self.profile, self.robot_io, runtime_mode=self.runtime_mode)
@@ -214,11 +217,12 @@ class ExecutionNode(RuntimeNode):
         return reply
 
     def tick(self):
-        usage = resource.getrusage(resource.RUSAGE_THREAD)
-        self.previous_runtime_tick_timing = getattr(self, 'runtime_tick_timing', None)
-        self.runtime_tick_timing = dict(started_monotonic=time.monotonic(),
-            started_cpu=time.thread_time(), tid=threading.get_native_id(),
-            nvcsw=usage.ru_nvcsw, nivcsw=usage.ru_nivcsw, points=[])
+        if self.trace_timing:
+            usage = resource.getrusage(resource.RUSAGE_THREAD)
+            self.previous_runtime_tick_timing = getattr(self, 'runtime_tick_timing', None)
+            self.runtime_tick_timing = dict(started_monotonic=time.monotonic(),
+                started_cpu=time.thread_time(), tid=threading.get_native_id(),
+                nvcsw=usage.ru_nvcsw, nivcsw=usage.ru_nivcsw, points=[])
         now = self.now()
         self.engine.tick(now)
         self.record_tick_phase('engine')
@@ -309,6 +313,8 @@ class ExecutionNode(RuntimeNode):
         self.record_tick_phase('state_published')
 
     def record_tick_phase(self, phase):
+        if not self.trace_timing:
+            return
         timing = self.runtime_tick_timing
         usage = resource.getrusage(resource.RUSAGE_THREAD)
         timing['points'].append((phase, (time.monotonic()-timing['started_monotonic'])*1000,

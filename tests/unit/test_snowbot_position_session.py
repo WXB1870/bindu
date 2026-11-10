@@ -731,6 +731,7 @@ class TargetWireTests(unittest.TestCase):
         return self.d.publishers['arms'].publish.call_args.args[0]
 
     def test_first_send_timing_separates_publisher_delay_without_device_access(self):
+        self.d.node.trace_timing = True
         from unittest.mock import patch
         clock=[1_000_000_000,100_000_000]
         def publish(_):

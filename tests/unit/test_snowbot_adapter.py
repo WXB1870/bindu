@@ -867,16 +867,16 @@ class SnowbotStopDiagnosticTests(unittest.TestCase):
         node.now=lambda:self.now;node.event=Mock()
         node.get_logger=Mock(return_value=Mock())
         node.record_stop_check()
+        self.io.stop_confirmation_window = 0.
         for _ in range(51):
             self.feed();self.engine.feedback.stamp=self.now
             node.record_stop_check()
         self.assertEqual(node.event.call_count,2)
-        self.assertEqual(node.get_logger().warn.call_count,2)
+        self.assertEqual(node.get_logger().info.call_count,2)
         self.assertIn('feedback_callbacks',json.loads(node.event.call_args_list[0].args[1]))
         self.assertNotIn('feedback_callbacks',json.loads(node.event.call_args.args[1]))
         self.assertIn('observed',json.loads(node.event.call_args.args[1]))
-        self.assertEqual(json.loads(node.get_logger().warn.call_args.args[0].split(' ',1)[1]),
-                         json.loads(node.event.call_args.args[1]))
+        self.assertIn('WAIT_EXECUTOR',node.get_logger().info.call_args.args[0])
         for i in range(20):
             self.obs.hold_valid=bool(i%2)
             node.record_stop_check()
@@ -892,6 +892,10 @@ class SnowbotStopDiagnosticTests(unittest.TestCase):
         self.assertEqual(self.io.pause_targets,None)
         self.assertEqual(self.engine.stop_deadline,15.)
         self.assertEqual(self.engine.stopping[1],'CANCELED')
+        for _ in range(60):
+            self.feed();self.engine.feedback.stamp=self.now
+            node.record_stop_check()
+        self.assertEqual(node.event.call_count,3)
         self.engine.stopping=None;self.engine.stop_fault='STOP_UNCONFIRMED:vendor_hold'
         node.record_stop_check()
         self.assertEqual(json.loads(node.event.call_args.args[1])['reason'],self.engine.stop_fault)
