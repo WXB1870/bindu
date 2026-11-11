@@ -866,17 +866,22 @@ class SnowbotStopDiagnosticTests(unittest.TestCase):
         node.engine=self.engine;node.snowbot_devices=S(health=self.health)
         node.now=lambda:self.now;node.event=Mock()
         node.get_logger=Mock(return_value=Mock())
+        self.obs.command_sequence=11
         node.record_stop_check()
-        self.io.stop_confirmation_window = 0.
+        self.assertIn('等待暂停回执：期望序号12，当前序号11',node.get_logger().info.call_args.args[0])
+        self.obs.command_sequence=12
+        self.engine.feedback.joint_velocities=dict.fromkeys(self.names,.026)
         for _ in range(51):
             self.feed();self.engine.feedback.stamp=self.now
             node.record_stop_check()
         self.assertEqual(node.event.call_count,2)
         self.assertEqual(node.get_logger().info.call_count,2)
+        node.get_logger().warn.assert_not_called()
         self.assertIn('feedback_callbacks',json.loads(node.event.call_args_list[0].args[1]))
         self.assertNotIn('feedback_callbacks',json.loads(node.event.call_args.args[1]))
         self.assertIn('observed',json.loads(node.event.call_args.args[1]))
-        self.assertIn('WAIT_EXECUTOR',node.get_logger().info.call_args.args[0])
+        self.assertIn('等待停稳：速度0.026 rad/s，阈值0.010 rad/s',node.get_logger().info.call_args.args[0])
+        self.assertLess(len(node.get_logger().info.call_args.args[0]),200)
         for i in range(20):
             self.obs.hold_valid=bool(i%2)
             node.record_stop_check()
@@ -888,6 +893,9 @@ class SnowbotStopDiagnosticTests(unittest.TestCase):
         self.assertEqual(node.event.call_count,3)
         result=json.loads(node.event.call_args.args[1])
         self.assertEqual(result['ack_reason'],'HOLD_NOT_VALID')
+        self.assertIn('HOLD_NOT_VALID',node.get_logger().warn.call_args.args[0])
+        self.assertIn('runtime-events.jsonl',node.get_logger().warn.call_args.args[0])
+        self.assertLess(len(node.get_logger().warn.call_args.args[0]),200)
         self.assertEqual((result['session'],result['sequence'],result['boot_id']),(7,12,1))
         self.assertEqual(self.io.pause_targets,None)
         self.assertEqual(self.engine.stop_deadline,15.)
@@ -900,6 +908,7 @@ class SnowbotStopDiagnosticTests(unittest.TestCase):
         node.record_stop_check()
         self.assertEqual(json.loads(node.event.call_args.args[1])['reason'],self.engine.stop_fault)
         self.assertIn('feedback_callbacks',json.loads(node.event.call_args.args[1]))
+        self.assertIn('STOP_UNCONFIRMED:vendor_hold',node.get_logger().warn.call_args.args[0])
         node.record_stop_check()
         self.assertEqual(node.event.call_count,4)
         node.get_logger=Mock(return_value=Mock())

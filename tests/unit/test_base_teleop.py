@@ -384,7 +384,7 @@ class AdapterTests(unittest.TestCase):
                          joints_at_rest=lambda *args: True, time=S(monotonic=lambda: 10.))
         exec(compile(ast.Module(body=[method], type_ignores=[]), str(path), 'exec'), namespace)
         state = S(lease_active=False, state='IDLE', reference=S(name=[]), joints=object(), feedback_stamp=10.)
-        owner = S(reading=lambda: (state, {}), position_ops=S(modes=lambda **kw: ('closed', 'closed'), stopped=lambda: True),
+        owner = S(reading=lambda: (state, {}), position_ops=S(modes=lambda **kw: ('closed', 'closed'), stopped=lambda readings=None: True),
             control=S(phase='standby'), profile=S(feedback_tolerances={'joint_velocity':.01}),
             handoff_complete=False, names=[], stop_request=None, now=lambda: 10., head=None)
         for required in (True, False):

@@ -17,6 +17,7 @@ __pycache__/
 /项目上下文.md
 /当前进度.md
 /决策记录.md
+/运行与验证.md
 
 # Machine-local credentials/configuration
 .env
